@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
@@ -67,7 +66,6 @@ impl ReportingCasper for NoopReportingCasper {
 /// Real implementation using RhoReporter
 pub struct RhoReporterCasper {
     rspace_store: RSpaceStore,
-    block_dag_storage: BlockDagKeyValueStorage,
     replay_lock: Arc<crate::rust::util::rholang::runtime_manager::ReplayLock>,
     external_services: rholang::rust::interpreter::external_services::ExternalServices,
 }
@@ -97,35 +95,10 @@ impl ReportingCasper for RhoReporterCasper {
         .await
         .map_err(|e| format!("Failed to create reporting runtime: {}", e))?;
 
-        let dag = self
-            .block_dag_storage
-            .get_representation()
-            .map_err(|e| format!("Failed to get DAG representation: {}", e))?;
-
-        let invalid_blocks_set = dag.invalid_blocks();
-
         let pre_state_hash_bytes = proto_util::pre_state_hash(block);
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(&pre_state_hash_bytes);
 
         let block_data = BlockData::from_block(block);
-
-        let unseen_blocks_set =
-            proto_util::unseen_block_hashes(&dag, &block.justifications, Some(&block.block_hash))
-                .map_err(|e| format!("Failed to get unseen block hashes: {}", e))?;
-
-        let seen_invalid_blocks: HashMap<
-            models::rust::block_hash::BlockHash,
-            models::rust::validator::Validator,
-        > = invalid_blocks_set
-            .iter()
-            .filter(|block_metadata| !unseen_blocks_set.contains(&block_metadata.block_hash))
-            .map(|block_metadata| {
-                (
-                    block_metadata.block_hash.clone(),
-                    block_metadata.sender.clone(),
-                )
-            })
-            .collect();
 
         Self::replay_deploys(
             &mut reporting_runtime,
@@ -133,8 +106,9 @@ impl ReportingCasper for RhoReporterCasper {
             &block.body.deploys,
             &block.body.system_deploys,
             with_cost_accounting(&block.header.parents_hash_list),
+            block.header.parents_hash_list.is_empty(),
             &block_data,
-            seen_invalid_blocks,
+            proto_util::slash_evidence_senders(proto_util::slash_evidence(block)),
         )
         .await
     }
@@ -148,6 +122,7 @@ impl RhoReporterCasper {
         terms: &[ProcessedDeploy],
         system_deploys: &[ProcessedSystemDeploy],
         with_cost_accounting: bool,
+        is_genesis: bool,
         block_data: &BlockData,
         invalid_blocks: HashMap<
             models::rust::block_hash::BlockHash,
@@ -179,6 +154,7 @@ impl RhoReporterCasper {
         } else {
             None
         };
+        let _genesis = is_genesis.then(|| runtime.runtime.enter_genesis_phase());
 
         let mut deploy_results = Vec::new();
         for (idx, term) in terms.iter().enumerate() {
@@ -279,13 +255,11 @@ pub fn noop() -> Arc<dyn ReportingCasper> { Arc::new(NoopReportingCasper) }
 /// Factory function to create rho reporter with real reporting capability
 pub fn rho_reporter(
     rspace_store: &RSpaceStore,
-    block_dag_storage: &BlockDagKeyValueStorage,
     replay_lock: Arc<crate::rust::util::rholang::runtime_manager::ReplayLock>,
     external_services: rholang::rust::interpreter::external_services::ExternalServices,
 ) -> Arc<dyn ReportingCasper> {
     Arc::new(RhoReporterCasper {
         rspace_store: rspace_store.clone(),
-        block_dag_storage: block_dag_storage.clone(),
         replay_lock,
         external_services,
     })

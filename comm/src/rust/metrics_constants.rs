@@ -10,6 +10,9 @@ pub const PEERS_METRIC: &str = "peers";
 // Comm counter metrics
 pub const CONNECT_METRIC: &str = "connect";
 pub const DISCONNECT_METRIC: &str = "disconnect";
+/// Messages refused because the sender belongs to a different chain, or pushed
+/// chain data without naming a chain.
+pub const FOREIGN_CHAIN_REFUSED_METRIC: &str = "chain-id.refused";
 
 // Comm timer/histogram metrics
 pub const CONNECT_TIME_METRIC: &str = "connect-time";
@@ -29,5 +32,6 @@ pub const PACKETS_DROPPED_METRIC: &str = "packets.dropped";
 pub const STREAM_CHUNKS_RECEIVED_METRIC: &str = "stream.chunks.received";
 pub const STREAM_CHUNKS_ENQUEUED_METRIC: &str = "stream.chunks.enqueued";
 pub const STREAM_CHUNKS_DROPPED_METRIC: &str = "stream.chunks.dropped";
+pub const STREAM_OUTGOING_TIMEOUTS_METRIC: &str = "stream.outgoing.timeouts";
 pub const STREAM_CACHE_ENTRIES_METRIC: &str = "stream.cache.entries";
 pub const STREAM_CACHE_BYTES_METRIC: &str = "stream.cache.bytes";

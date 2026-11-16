@@ -53,7 +53,7 @@ const CONFLICT_RHO: &str = r#"
 Nil
 "#;
 const PHLO_LIMIT: i64 = 8;
-const PHLO_PRICE: i64 = 1_000_000;
+const PHLO_PRICE: u64 = 1_000_000;
 
 struct ConflictFixture {
     nodes: Vec<TestNode>,
@@ -80,7 +80,7 @@ async fn build_conflict_siblings(ctx: &TestContext) -> ConflictFixture {
         construct_deploy::source_deploy_now_full(
             CONFLICT_RHO.to_string(),
             Some(PHLO_LIMIT),
-            Some(PHLO_PRICE),
+            Some((PHLO_PRICE).into()),
             Some(construct_deploy::DEFAULT_SEC.clone()),
             None,
             Some(shard_id.clone()),
@@ -92,7 +92,7 @@ async fn build_conflict_siblings(ctx: &TestContext) -> ConflictFixture {
         construct_deploy::source_deploy_now_full(
             CONFLICT_RHO.to_string(),
             Some(PHLO_LIMIT),
-            Some(PHLO_PRICE),
+            Some((PHLO_PRICE).into()),
             Some(construct_deploy::DEFAULT_SEC.clone()),
             None,
             Some(shard_id.clone()),

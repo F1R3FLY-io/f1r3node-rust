@@ -24,7 +24,7 @@ struct CountingStore {
 }
 
 impl KeyValueStore for CountingStore {
-    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any { self.inner.as_any() }
 
     fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
         self.reads.fetch_add(keys.len(), Ordering::SeqCst);

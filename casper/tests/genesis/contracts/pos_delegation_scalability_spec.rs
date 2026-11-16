@@ -16,7 +16,8 @@ fn prepare_vault(hex_string: &str, balance: u128) -> Vault {
     Vault {
         vault_address: VaultAddress::from_public_key(&pk)
             .expect("failed to create vault address from public key"),
-        initial_balance: balance,
+        initial_balance: shared::rust::token_amount::TokenAmount::parse(&balance.to_string())
+            .expect("balance is a valid token amount"),
     }
 }
 

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use models::rhoapi::{
     connective, g_unforgeable, Bundle, Connective, EMap, GPrivate, GUnforgeable, KeyValuePair, Par,
+    Send,
 };
 use models::rust::rholang::sorter::ordering::Ordering;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
@@ -378,4 +379,70 @@ where
 fn is_sorted(par: &Par) -> bool {
     let sorted_par = ParSortMatcher::sort_match(par);
     par == &sorted_par.term
+}
+
+// Two distinct raw-form keys that canonicalize to the same Par. Each key is a
+// Par carrying two Sends in opposite order; the sort matcher reorders sends
+// into canonical order, so both inputs produce byte-identical canonical keys.
+// Values are distinct so a swapped output order would be observable.
+fn colliding_pair() -> (Par, Par, Par, Par) {
+    let send1 = Send {
+        chan: Some(new_gstring_par("alpha".to_string(), vec![], false)),
+        data: vec![new_gint_par(1, vec![], false)],
+        persistent: false,
+        locally_free: vec![],
+        connective_used: false,
+    };
+    let send2 = Send {
+        chan: Some(new_gstring_par("beta".to_string(), vec![], false)),
+        data: vec![new_gint_par(2, vec![], false)],
+        persistent: false,
+        locally_free: vec![],
+        connective_used: false,
+    };
+
+    let key_a = Par::default().with_sends(vec![send1.clone(), send2.clone()]);
+    let key_b = Par::default().with_sends(vec![send2, send1]);
+
+    assert_ne!(
+        key_a.encode_to_vec(),
+        key_b.encode_to_vec(),
+        "raw keys must differ in encoding to exercise the HashMap-ordering path"
+    );
+    assert_eq!(
+        ParSortMatcher::sort_match(&key_a).term,
+        ParSortMatcher::sort_match(&key_b).term,
+        "raw keys must canonicalize to the same Par to tie on score"
+    );
+
+    let value_a = new_gstring_par("value-a".to_string(), vec![], false);
+    let value_b = new_gstring_par("value-b".to_string(), vec![], false);
+
+    (key_a, key_b, value_a, value_b)
+}
+
+#[test]
+fn sorted_par_map_output_is_byte_identical_across_runs_when_raw_keys_canonicalize_the_same() {
+    let (key_a, key_b, value_a, value_b) = colliding_pair();
+
+    let build = || {
+        let mut map = HashMap::new();
+        map.insert(key_a.clone(), value_a.clone());
+        map.insert(key_b.clone(), value_b.clone());
+        serialize_emap(&SortedParMap::create_from_map(map))
+    };
+
+    // The HashMap uses a per-instance random hasher, so each `build` call
+    // iterates its entries in a different order. Without a deterministic
+    // tiebreaker in `Ordering::sort_map`, that iteration order leaked into
+    // the serialized output. All 200 runs must now produce identical bytes.
+    let baseline = build();
+    for i in 0..200 {
+        let next = build();
+        assert_eq!(
+            baseline, next,
+            "run {} produced different serialized bytes — nondeterminism regression",
+            i
+        );
+    }
 }

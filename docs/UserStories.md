@@ -229,26 +229,6 @@ EPIC-020 was archived on 2026-10-06 with all four tasks complete.
 
 ---
 
-#### US-015: Review exact staking amounts and fee safeguards
-
-> As a **node team reviewer**, I want **a concrete BigInt economic pipeline proposal** so that **the team can decide protocol and migration requirements**.
-
-**Implemented in:** EPIC-031
-
-**Value Stream:** Ecosystem Integration
-
-**Status:** Proposal delivered for team review
-
-**Acceptance Criteria:**
-- [x] Demonstrate a strict BigInt predicate and exact staking above the signed 64-bit limit.
-- [x] Demonstrate checked fee arithmetic and failed-precharge replay rejection.
-- [x] Preserve protocol version 1 and document the remaining compatibility and activation decisions.
-- [x] Publish the reviewed proposal on a separate branch based directly on PR #54.
-
-**Completed:** 2026-10-23. Activation, versioning, and migration decisions remain with the team.
-
----
-
 ## Relationship to Epics
 
 User stories capture the **why** (user need and benefit). Epics capture the **what** (technical implementation tasks).
@@ -300,3 +280,18 @@ Use this template when adding new user stories:
 ```
 
 ---
+
+#### US-015: Exact token amounts
+
+> As a node operator, I want all token amount paths to support unsigned 256-bit values so that large balances, bonds, and fees remain exact.
+
+**Implemented in:** EPIC-031
+
+**Value Stream:** Node reliability
+
+**Acceptance Criteria:**
+
+- [ ] Genesis, transfers, bonds, fees, APIs, and persistence retain exact amounts.
+- [ ] Consensus and replay agree for amounts above the 64-bit range.
+- [ ] The default maximum bond is 2^256-1 and invalid amounts are rejected.
+- [ ] The Integration gates pass with clients that send the new encoding.

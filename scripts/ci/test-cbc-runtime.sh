@@ -75,13 +75,15 @@ failure env CBC_RUNTIME_CACHE="$TMP/corrupt" CBC_RUNTIME_TEST_CORRUPT=1 bash "$i
 failure env CBC_RUNTIME_CACHE="$TMP/failed" CBC_RUNTIME_TEST_FAIL=1 bash "$installer"
 [ -z "$(find "$TMP/failed" -mindepth 1 -print -quit)" ]
 failure env CBC_RUNTIME_CACHE="$fixture/cache" bash "$installer"
-env CBC_RUNTIME_CACHE="$TMP/concurrent" bash "$installer" >"$TMP/install-1.log" 2>&1 &
-first=$!
-env CBC_RUNTIME_CACHE="$TMP/concurrent" bash "$installer" >"$TMP/install-2.log" 2>&1 &
-second=$!
-wait "$first" || { cat "$TMP/install-1.log"; exit 1; }
-wait "$second" || { cat "$TMP/install-2.log"; exit 1; }
-cmp "$TMP/install-1.log" "$TMP/install-2.log"
+installers=()
+for racer in 1 2 3 4; do
+    env CBC_RUNTIME_CACHE="$TMP/concurrent" bash "$installer" >"$TMP/install-$racer.log" 2>&1 &
+    installers+=("$!")
+done
+for racer in 1 2 3 4; do
+    wait "${installers[racer - 1]}" || { cat "$TMP/install-$racer.log"; exit 1; }
+    cmp "$TMP/install-1.log" "$TMP/install-$racer.log"
+done
 env CBC_RUNTIME_CACHE="$TMP/concurrent" bash "$installer" --check >/dev/null
 jq '.sha256["cbc.sh"]="0000000000000000000000000000000000000000000000000000000000000000"' \
     "$ROOT/scripts/cbc-runtime.lock.json" >"$fixture/scripts/cbc-runtime.lock.json"

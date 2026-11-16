@@ -38,6 +38,7 @@ Both Rust and Scala implementations use the same F1r3fly addressing algorithm fo
 2. **Address Calculation**: `F1r3fly_Address = Keccak256(uncompressed_public_key)[12..32]` (last 20 bytes, Ethereum-style)
 3. **Identity Verification**: Compare calculated address with sender ID in message headers
 4. **Network Validation**: Ensure peers are on the correct blockchain network
+5. **Chain Identity Validation**: Compare the sender's `chainId` (the genesis block hash) with this node's. Messages from a peer of another chain are refused before they are acknowledged. See [Chain identity](../docs/comm/README.md#chain-identity).
 
 ### SSL/TLS Interceptor Architecture
 

@@ -48,11 +48,11 @@ impl TestContext {
             .collect();
 
         // Create bonds for first 3 validators only (n4 is unbonded)
-        let bonds: HashMap<PublicKey, num_bigint::BigInt> = validator_pks
+        let bonds: HashMap<PublicKey, shared::rust::token_amount::TokenAmount> = validator_pks
             .iter()
             .take(3)
             .enumerate()
-            .map(|(i, pk)| (pk.clone(), 2 * i as i64 + 1))
+            .map(|(i, pk)| (pk.clone(), 2 * i as u64 + 1))
             .map(|(key, stake)| (key, stake.into()))
             .collect();
 
@@ -180,16 +180,11 @@ async fn failed_finalization_after_lfb_advance_rejects_an_unbonded_deploy() {
     let result = storage
         .record_directly_finalized(new_lfb.block_hash.clone(), 1.0, |_| {
             effect_calls += 1;
-            let outcome = if effect_calls == 1 {
-                storage.insert(&late_parent, InsertMode::Normal).map(|_| ())
-            } else {
-                Err(KvStoreError::IoError("injected effect failure".to_string()))
-            };
-            async move { outcome }
+            async move { Err(KvStoreError::IoError("injected effect failure".to_string())) }
         })
         .await;
     assert!(matches!(result, Err(KvStoreError::IoError(_))));
-    assert_eq!(effect_calls, 2);
+    assert_eq!(effect_calls, 1);
 
     let dag = storage.get_representation().unwrap();
     assert_eq!(dag.last_finalized_block(), new_lfb.block_hash);

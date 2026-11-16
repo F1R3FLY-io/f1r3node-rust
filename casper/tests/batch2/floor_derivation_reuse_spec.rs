@@ -12,7 +12,6 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, Justification};
 use models::rust::validator::Validator;
-use num_bigint::BigInt;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -164,7 +163,7 @@ async fn one_floor_derivation_evaluates_each_shared_spine_block_once() {
     );
 }
 
-fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, BigInt> {
+fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, shared::rust::token_amount::TokenAmount> {
     pks.into_iter().map(|pk| (pk, 100.into())).collect()
 }
 

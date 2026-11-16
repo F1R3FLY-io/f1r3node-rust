@@ -97,11 +97,7 @@ impl From<LightBlockInfo> for LightBlockInfoSerde {
                 .iter()
                 .map(|b| BondInfoJson {
                     validator: b.validator.clone(),
-                    stake: if b.stake_big_int.is_empty() {
-                        b.stake.to_string()
-                    } else {
-                        b.stake_big_int.clone()
-                    },
+                    stake: b.stake.clone(),
                 })
                 .collect(),
             block_size: block.block_size.clone(),
@@ -149,8 +145,7 @@ impl From<LightBlockInfoSerde> for LightBlockInfo {
                 .into_iter()
                 .map(|b| BondInfo {
                     validator: b.validator,
-                    stake: b.stake.parse().unwrap_or_default(),
-                    stake_big_int: b.stake,
+                    stake: b.stake,
                 })
                 .collect(),
             block_size: json.block_size,
@@ -260,9 +255,8 @@ mod tests {
             post_state_hash: "post_state_hash".to_string(),
             body_extra_bytes: Bytes::from(vec![7, 8, 9]),
             bonds: vec![BondInfo {
-                stake_big_int: "1000".to_string(),
+                stake: "1000".to_string(),
                 validator: "validator1".to_string(),
-                stake: 1000.into(),
             }],
             block_size: "1024".to_string(),
             deploy_count: 5,

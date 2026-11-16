@@ -121,7 +121,7 @@ mod tests {
     fn create_test_setup() -> (PeerNode, PeerNode, models::routing::Protocol) {
         let peer_local = create_peer_node();
         let peer_remote = create_peer_node();
-        let msg = protocol_helper::heartbeat(&peer_local, NETWORK_ID);
+        let msg = protocol_helper::heartbeat(&peer_local, NETWORK_ID, Bytes::new());
         (peer_local, peer_remote, msg)
     }
 
@@ -129,6 +129,7 @@ mod tests {
         TlResponse {
             payload: Some(Payload::Ack(Ack {
                 header: Some(Header {
+                    chain_id: Bytes::new(),
                     sender: None,
                     network_id: NETWORK_ID.to_string(),
                 }),
@@ -283,13 +284,20 @@ mod tests {
         };
 
         // Create expected chunks
-        let expected_chunks = Chunker::chunk_it(NETWORK_ID, &blob, message_size);
+        let expected_chunks = Chunker::chunk_it(NETWORK_ID, Bytes::new(), &blob, message_size);
 
         let mut stub = TestTransportLayer::new(ack_response());
 
         // when
-        let result =
-            GrpcTransport::stream(&mut stub, &peer_remote, NETWORK_ID, &blob, message_size).await;
+        let result = GrpcTransport::stream(
+            &mut stub,
+            &peer_remote,
+            NETWORK_ID,
+            Bytes::new(),
+            &blob,
+            message_size,
+        )
+        .await;
 
         // then
         assert!(result.is_ok());

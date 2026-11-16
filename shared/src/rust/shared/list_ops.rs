@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn test_sort_by_with_decreasing_order_empty_scores() {
         let items = vec!["z", "a", "m"];
-        let scores: HashMap<_, i64> = HashMap::new();
+        let scores: HashMap<&str, i64> = HashMap::new(); // All items get default score 0
 
         let sorted = ListOps::sort_by_with_decreasing_order(items, &scores);
 

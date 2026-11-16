@@ -49,6 +49,7 @@ metrics = { workspace = true }
 [dev-dependencies]
 comm = { path = ".", features = ["test-utils"] }
 paste = "1.0"
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
 [build-dependencies]

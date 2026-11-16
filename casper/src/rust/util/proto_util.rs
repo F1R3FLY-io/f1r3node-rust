@@ -13,15 +13,15 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy, RejectedDeploy,
+    BlockCommitment, BlockMessage, Body, Bond, DeployData, EquivocationEvidence, Header,
+    Justification, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
 use num_bigint::BigInt;
-use num_traits::ToPrimitive;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
 use shared::rust::dag::observation_work::{NoopWork, WorkMeter};
 use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
+use shared::rust::token_amount::TokenAmount;
 use shared::rust::ByteString;
 
 use crate::rust::errors::CasperError;
@@ -124,7 +124,7 @@ fn weight_map_from_state(
     state
         .bonds
         .iter()
-        .map(|bond| (bond.validator.clone(), bond.stake.clone()))
+        .map(|bond| (bond.validator.clone(), bond.stake.to_bigint()))
         .collect()
 }
 
@@ -141,7 +141,11 @@ pub fn min_total_validator_weight(
 ) -> Result<BigInt, KvStoreError> {
     dag.lookup(block_hash).map(|block_metadata_opt| {
         let block_metadata = block_metadata_opt.expect("Block metadata should exist");
-        let mut sorted_weights: Vec<BigInt> = block_metadata.weight_map.values().cloned().collect();
+        let mut sorted_weights: Vec<BigInt> = block_metadata
+            .weight_map
+            .values()
+            .map(TokenAmount::to_bigint)
+            .collect();
         sorted_weights.sort();
         sorted_weights
             .iter()
@@ -210,7 +214,7 @@ pub fn weight_from_validator_by_dag_metered<W: WorkMeter>(
             Ok(parent_metadata
                 .weight_map
                 .get(validator)
-                .cloned()
+                .map(TokenAmount::to_bigint)
                 .unwrap_or_default())
         }
         None => {
@@ -218,7 +222,7 @@ pub fn weight_from_validator_by_dag_metered<W: WorkMeter>(
             Ok(block_metadata
                 .weight_map
                 .get(validator)
-                .cloned()
+                .map(TokenAmount::to_bigint)
                 .unwrap_or_default())
         }
     }
@@ -347,7 +351,7 @@ where
             if visited.contains(&parent) {
                 continue;
             }
-            match dag.block_number(&parent) {
+            match dag.block_number(&parent)? {
                 Some(number) if number < block_number => {}
                 Some(_) => match dag.lookup(&parent).map_err(CasperError::from)? {
                     Some(meta) => {
@@ -408,8 +412,7 @@ pub fn block_number(block: &BlockMessage) -> i64 { block.body.state.block_number
 pub fn bond_to_bond_info(bond: &Bond) -> BondInfo {
     BondInfo {
         validator: PrettyPrinter::build_string_no_limit(&bond.validator),
-        stake: bond.stake.to_i64().unwrap_or(0),
-        stake_big_int: bond.stake.to_string(),
+        stake: bond.stake.to_string(),
     }
 }
 
@@ -487,6 +490,7 @@ pub fn block_header(parent_hashes: Vec<ByteString>, version: i64, timestamp: i64
         timestamp,
         version,
         extra_bytes: prost::bytes::Bytes::new(),
+        chain_id: prost::bytes::Bytes::new(),
     }
 }
 
@@ -497,7 +501,7 @@ pub fn unsigned_block_proto(
     shard_id: String,
     seq_num: Option<i32>,
 ) -> BlockMessage {
-    let seq_num = seq_num.unwrap_or_default();
+    let seq_num = seq_num.unwrap_or(0);
     let mut block = BlockMessage {
         block_hash: prost::bytes::Bytes::new(),
         header,
@@ -527,7 +531,7 @@ pub fn unsigned_block_proto_with_leaves(
     seq_num: Option<i32>,
     leaves: &[[u8; 32]],
 ) -> BlockMessage {
-    let seq_num = seq_num.unwrap_or_default();
+    let seq_num = seq_num.unwrap_or(0);
     let mut block = BlockMessage {
         block_hash: prost::bytes::Bytes::new(),
         header,
@@ -547,7 +551,7 @@ pub fn unsigned_block_proto_with_leaves(
 }
 
 // =========================================================================
-// Block hash — Merkle scheme v1
+// Block hash — Merkle scheme v3
 // =========================================================================
 //
 // Shape:
@@ -556,10 +560,11 @@ pub fn unsigned_block_proto_with_leaves(
 //
 // where `deploys_root` is a Merkle root over per-deploy leaves (user
 // deploys first, then system deploys, in commit order) and
-// `header_preimage` concatenates header + body-state + metadata fields
-// together with Merkle roots of the rejected-deploy and
-// applied-from-scope lists.  See `docs/designs/merkle-block-hash.md` for
-// the full recipe.  Hard-fork surface: the domain-byte constants below
+// `header_preimage` concatenates header + body-state + metadata fields,
+// each variable-length field preceded by its u32 little-endian length,
+// together with Merkle roots of the bonds, justifications, rejected-deploy
+// and applied-from-scope lists; `header_preimage` gives the field order.
+// Hard-fork surface: the domain-byte constants below
 // pin the shape — any change flips every block hash on-network.
 //
 // This is a per-release hard fork for each shard.  Shards running an
@@ -577,7 +582,7 @@ pub fn unsigned_block_proto_with_leaves(
 
 /// Scheme-version byte prepended to the header preimage.  Bumping this
 /// constant is a hard fork — see the file-level docstring.
-pub const BLOCK_HASH_SCHEME_VERSION: u8 = 0x01;
+pub const BLOCK_HASH_SCHEME_VERSION: u8 = 0x03;
 
 /// Interior-node domain byte used by `MERKLE_PARAMS`.
 const INTERIOR_DOMAIN: u8 = 0x01;
@@ -591,10 +596,11 @@ const TOP_DOMAIN: u8 = 0x02;
 const LEAF_PROCESSED_DEPLOY: u8 = 0x10;
 const LEAF_PROCESSED_SYSTEM_DEPLOY: u8 = 0x11;
 const LEAF_HEADER: u8 = 0x12;
+const V6_BODY_MARKER: u8 = 0x16;
 const LEAF_REJECTED_DEPLOY: u8 = 0x13;
 const LEAF_APPLIED_FROM_SCOPE_SIG: u8 = 0x14;
 const LEAF_BOND: u8 = 0x15;
-const LEAF_BIGINT_BOND: u8 = 0x16;
+const LEAF_JUSTIFICATION: u8 = 0x16;
 
 const MERKLE_PARAMS: crypto::rust::hash::merkle::MerkleParams =
     crypto::rust::hash::merkle::MerkleParams::new(INTERIOR_DOMAIN);
@@ -714,73 +720,88 @@ fn applied_from_scope_root(block: &BlockMessage) -> [u8; 32] {
     crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
 }
 
-/// Merkle root over the bonds sub-tree.  Bonds are sorted by validator
-/// public key before leaf-hashing so the root is independent of
-/// in-memory order.  Each leaf is
-/// `Blake2b256(LEAF_BOND || validator_pk || stake_le)`.
+/// Merkle root over the bonds, sorted by validator. Each leaf is
+/// `Blake2b256(LEAF_BOND || BondProto encoding)`, whose stake is 32 bytes.
 fn bonds_root(bonds: &[Bond]) -> [u8; 32] {
     let mut sorted: Vec<&Bond> = bonds.iter().collect();
     sorted.sort_by(|a, b| a.validator.as_ref().cmp(b.validator.as_ref()));
     let leaves: Vec<[u8; 32]> = sorted
         .iter()
         .map(|b| {
-            if let Some(stake) = b.stake.to_i64() {
-                let mut buf = Vec::with_capacity(b.validator.len() + 8);
-                buf.extend_from_slice(b.validator.as_ref());
-                buf.extend_from_slice(&stake.to_le_bytes());
-                crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_BOND, &buf)
-            } else {
-                use prost::Message;
-                let buf = (*b).clone().to_proto().encode_to_vec();
-                crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_BIGINT_BOND, &buf)
-            }
+            use prost::Message;
+            let buf = (*b).clone().to_proto().encode_to_vec();
+            crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_BOND, &buf)
         })
         .collect();
     crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
 }
 
-/// Build the header-side preimage.  See file-level docstring and
-/// `docs/designs/merkle-block-hash.md` for the field order.  Any change
-/// here is a hard fork — pinned by the `hash_block` golden-hex tests.
-fn header_preimage(block: &BlockMessage) -> Vec<u8> {
+fn justifications_root(justifications: &[Justification]) -> [u8; 32] {
+    let leaves: Vec<[u8; 32]> = justifications
+        .iter()
+        .map(|j| {
+            let mut buf = Vec::with_capacity(4 + j.validator.len() + j.latest_block_hash.len());
+            buf.extend_from_slice(&(j.validator.len() as u32).to_le_bytes());
+            buf.extend_from_slice(j.validator.as_ref());
+            buf.extend_from_slice(j.latest_block_hash.as_ref());
+            crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_JUSTIFICATION, &buf)
+        })
+        .collect();
+    crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
+}
+
+/// Build the header-side preimage.  Any change here is a hard fork —
+/// pinned by the `hash_block` golden-hex tests.
+fn header_preimage(commitment: &BlockCommitment) -> Vec<u8> {
     use prost::Message;
-    let state = &block.body.state;
-    let header_bytes = block.header.to_proto().encode_to_vec();
-    let r_root = rejected_root(block);
-    let afs_root = applied_from_scope_root(block);
-    let b_root = bonds_root(&state.bonds);
+    let header_bytes = commitment.header.to_proto().encode_to_vec();
 
     let mut buf = Vec::with_capacity(
-        1 + header_bytes.len()
-            + state.pre_state_hash.len()
-            + state.post_state_hash.len()
+        1 + 9 * 4 // length prefixes
+            + header_bytes.len()
+            + commitment.pre_state_hash.len()
+            + commitment.post_state_hash.len()
             + 32  // bonds_root
+            + 32  // justifications_root
             + 8   // block_number
             + 32  // rejected_root
             + 32  // applied_from_scope_root
-            + block.body.merge_base.len()
-            + block.body.extra_bytes.len()
-            + block.sender.len()
-            + block.sig_algorithm.len()
+            + commitment.merge_base.len()
+            + commitment.body_extra_bytes.len()
+            + commitment.sender.len()
+            + commitment.sig_algorithm.len()
             + 4   // seq_num
-            + block.shard_id.len()
-            + block.extra_bytes.len(),
+            + commitment.shard_id.len()
+            + commitment.extra_bytes.len(),
     );
+    // Every variable-length field carries its length, so no byte can move
+    // from one field to its neighbour without changing the preimage.
+    let push_field = |buf: &mut Vec<u8>, field: &[u8]| {
+        buf.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        buf.extend_from_slice(field);
+    };
     buf.push(BLOCK_HASH_SCHEME_VERSION);
-    buf.extend_from_slice(&header_bytes);
-    buf.extend_from_slice(state.pre_state_hash.as_ref());
-    buf.extend_from_slice(state.post_state_hash.as_ref());
-    buf.extend_from_slice(&b_root);
-    buf.extend_from_slice(&state.block_number.to_le_bytes());
-    buf.extend_from_slice(&r_root);
-    buf.extend_from_slice(&afs_root);
-    buf.extend_from_slice(block.body.merge_base.as_ref());
-    buf.extend_from_slice(block.body.extra_bytes.as_ref());
-    buf.extend_from_slice(block.sender.as_ref());
-    buf.extend_from_slice(block.sig_algorithm.as_bytes());
-    buf.extend_from_slice(&block.seq_num.to_le_bytes());
-    buf.extend_from_slice(block.shard_id.as_bytes());
-    buf.extend_from_slice(block.extra_bytes.as_ref());
+    push_field(&mut buf, &header_bytes);
+    push_field(&mut buf, commitment.pre_state_hash.as_ref());
+    push_field(&mut buf, commitment.post_state_hash.as_ref());
+    buf.extend_from_slice(&commitment.bonds_root);
+    buf.extend_from_slice(&commitment.justifications_root);
+    buf.extend_from_slice(&commitment.block_number.to_le_bytes());
+    buf.extend_from_slice(&commitment.rejected_root);
+    buf.extend_from_slice(&commitment.applied_from_scope_root);
+    push_field(&mut buf, commitment.merge_base.as_ref());
+    push_field(&mut buf, commitment.body_extra_bytes.as_ref());
+    if let Some(v6) = &commitment.v6 {
+        let v6_bytes = v6.to_proto().encode_to_vec();
+        buf.push(V6_BODY_MARKER);
+        buf.extend_from_slice(&(v6_bytes.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&v6_bytes);
+    }
+    push_field(&mut buf, commitment.sender.as_ref());
+    push_field(&mut buf, commitment.sig_algorithm.as_bytes());
+    buf.extend_from_slice(&commitment.seq_num.to_le_bytes());
+    push_field(&mut buf, commitment.shard_id.as_bytes());
+    push_field(&mut buf, commitment.extra_bytes.as_ref());
     buf
 }
 
@@ -795,6 +816,48 @@ fn hash_top(h_header: &[u8; 32], deploys_root: &[u8; 32]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&h);
     out
+}
+
+/// The commitment of `block`, given its deploy leaves in commit order (all
+/// user-deploy leaves, then all system-deploy leaves).
+pub fn block_commitment_with_leaves(
+    block: &BlockMessage,
+    deploys_leaves: &[[u8; 32]],
+) -> BlockCommitment {
+    let state = &block.body.state;
+    BlockCommitment {
+        header: block.header.clone(),
+        pre_state_hash: state.pre_state_hash.clone(),
+        post_state_hash: state.post_state_hash.clone(),
+        bonds_root: bonds_root(&state.bonds),
+        justifications_root: justifications_root(&block.justifications),
+        block_number: state.block_number,
+        rejected_root: rejected_root(block),
+        applied_from_scope_root: applied_from_scope_root(block),
+        merge_base: block.body.merge_base.clone(),
+        body_extra_bytes: block.body.extra_bytes.clone(),
+        v6: block.body.v6.clone(),
+        sender: block.sender.clone(),
+        sig_algorithm: block.sig_algorithm.clone(),
+        seq_num: block.seq_num,
+        shard_id: block.shard_id.clone(),
+        extra_bytes: block.extra_bytes.clone(),
+        deploys_root: crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, deploys_leaves),
+        sig: block.sig.clone(),
+    }
+}
+
+pub fn block_commitment(block: &BlockMessage) -> BlockCommitment {
+    block_commitment_with_leaves(block, &deploys_root_leaves(block))
+}
+
+/// The block hash `commitment` commits to.
+pub fn commitment_hash(commitment: &BlockCommitment) -> BlockHash {
+    let h_header =
+        crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_HEADER, &header_preimage(commitment));
+    hash_top(&h_header, &commitment.deploys_root)
+        .to_vec()
+        .into()
 }
 
 /// Compute the block hash from a `BlockMessage` alone — recomputes
@@ -815,11 +878,7 @@ pub fn hash_block(block: &BlockMessage) -> BlockHash {
 /// wrong leaves produces a wrong hash (mismatch surfaces at
 /// `Validate::block_hash` on another node).
 pub fn hash_block_with_leaves(block: &BlockMessage, deploys_leaves: &[[u8; 32]]) -> BlockHash {
-    let d_root = crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, deploys_leaves);
-    let h_header =
-        crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_HEADER, &header_preimage(block));
-    let top = hash_top(&h_header, &d_root);
-    top.to_vec().into()
+    commitment_hash(&block_commitment_with_leaves(block, deploys_leaves))
 }
 
 pub fn hash_string(b: &BlockMessage) -> BlockHash {
@@ -862,137 +921,37 @@ pub fn dependencies_hashes_of(b: &BlockMessage) -> Vec<BlockHash> {
         .collect()
 }
 
-// Return hashes of all blocks that are yet to be seen by the passed in block
-pub fn unseen_block_hashes(
-    dag: &KeyValueDagRepresentation,
-    justifications: &Vec<Justification>,
-    current_block_hash: Option<&BlockHash>,
-) -> Result<HashSet<BlockHash>, KvStoreError> {
-    let dags_latest_messages = dag.latest_messages()?;
-    let blocks_latest_messages = to_latest_message(justifications, dag)?;
-
-    // From input block perspective we want to find what latest messages are not seen
-    //  that are in the DAG latest messages.
-    // - if validator is not in the justification of the block
-    // - if justification contains validator's newer latest message
-    let unseen_latest_messages =
-        dags_latest_messages
-            .into_iter()
-            .filter(|(validator, dag_latest_message)| {
-                let validator_in_justification = blocks_latest_messages.contains_key(validator);
-                let block_has_newer_latest_message =
-                    blocks_latest_messages
-                        .get(validator)
-                        .map(|block_latest_message| {
-                            dag_latest_message.sequence_number
-                                > block_latest_message.sequence_number
-                        });
-
-                !validator_in_justification
-                    || (validator_in_justification
-                        && block_has_newer_latest_message.unwrap_or(false))
-            });
-
-    // Collect all unseen block hashes
-    let mut all_unseen_blocks = HashSet::new();
-    for (validator, unseen_latest_message) in unseen_latest_messages {
-        let validator_latest_message = blocks_latest_messages.get(&validator);
-        let creator_blocks =
-            get_creator_blocks_between(dag, &unseen_latest_message, validator_latest_message)?;
-        all_unseen_blocks.extend(creator_blocks);
-    }
-
-    // Remove blocks that are already in the block's justifications
-    for block_metadata in blocks_latest_messages.values() {
-        all_unseen_blocks.remove(&block_metadata.block_hash);
-    }
-
-    // Remove the current block hash (at block creation the block does not exist yet)
-    if let Some(h) = current_block_hash {
-        all_unseen_blocks.remove(h);
-    }
-
-    Ok(all_unseen_blocks)
+/// The invalid-blocks map (cited block hash -> offender) the PoS slash deploys
+/// of a set of slashes read through `rho:casper:invalidBlocks`. Taken from the
+/// slashes' own evidence, so creation and replay on any node produce the same
+/// map without consulting a DAG.
+pub fn slash_evidence_senders<'a>(
+    evidence: impl IntoIterator<Item = &'a EquivocationEvidence>,
+) -> std::collections::HashMap<BlockHash, Validator> {
+    evidence
+        .into_iter()
+        .map(|evidence| {
+            (
+                commitment_hash(&evidence.first),
+                evidence.first.sender.clone(),
+            )
+        })
+        .collect()
 }
 
-/// Deterministic invalid-blocks map (block_hash -> sender) for the PoS slash
-/// system deploys in a block: exactly the blocks this block slashes, each keyed
-/// to its immutable sender. Derived from the block's own recorded slash targets
-/// (NOT the node's DAG invalid-set view, which is node-view-dependent and so
-/// differs between the proposer and a validator), so block creation and replay
-/// produce a byte-identical map. That makes the slash deploy's
-/// `rho:casper:invalidBlocks` produce reproduce at replay (no slash
-/// ConsumeFailed). The slash contract only looks up its own target via
-/// `invalidBlocks.getOrElse(blockHash, ..)`, so this is exactly what it needs —
-/// and it makes the slash hit the block's true sender instead of falling back.
-pub fn slashed_block_senders(
-    dag: &KeyValueDagRepresentation,
-    slashed_hashes: &[BlockHash],
-) -> Result<std::collections::HashMap<BlockHash, Validator>, KvStoreError> {
-    let mut map = std::collections::HashMap::with_capacity(slashed_hashes.len());
-    for h in slashed_hashes {
-        let meta = dag.lookup_unsafe(h)?;
-        map.insert(h.clone(), meta.sender.clone());
-    }
-    Ok(map)
-}
-
-fn get_creator_blocks_between(
-    dag: &KeyValueDagRepresentation,
-    top_block: &BlockMetadata,
-    bottom_block: Option<&BlockMetadata>,
-) -> Result<HashSet<BlockHash>, KvStoreError> {
-    match bottom_block {
-        Some(bottom_block) => {
-            // Use the bf_traverse function from dag_ops for breadth-first traversal
-            let neighbor_fn = |block: &BlockMetadata| -> Vec<BlockMetadata> {
-                get_creator_justification_unless_goal(dag, block, bottom_block).unwrap_or_default()
-            };
-
-            // Start traversal from top_block
-            let traversal_result =
-                shared::rust::dag::dag_ops::bf_traverse(vec![top_block.clone()], neighbor_fn);
-
-            // Collect all block hashes into a HashSet
-            let blocks_set: HashSet<BlockHash> = traversal_result
-                .into_iter()
-                .map(|block| block.block_hash.clone())
-                .collect();
-
-            Ok(blocks_set)
-        }
-
-        None => Ok(HashSet::from([top_block.block_hash.clone()])),
-    }
-}
-
-fn get_creator_justification_unless_goal(
-    dag: &KeyValueDagRepresentation,
-    block: &BlockMetadata,
-    goal: &BlockMetadata,
-) -> Result<Vec<BlockMetadata>, KvStoreError> {
-    match creator_justification_block_metadata(block) {
-        Some(Justification {
-            validator: _,
-            latest_block_hash,
-        }) => match dag.lookup(&latest_block_hash) {
-            Ok(Some(creator_justification)) => {
-                if creator_justification == *goal {
-                    Ok(vec![])
-                } else {
-                    Ok(vec![creator_justification])
-                }
-            }
-
-            _ => Err(KvStoreError::KeyNotFound(format!(
-                "BlockDAG is missing justification {} for {}",
-                PrettyPrinter::build_string_bytes(&latest_block_hash),
-                PrettyPrinter::build_string_bytes(&block.block_hash)
-            ))),
-        },
-
-        None => Ok(vec![]),
-    }
+/// The evidence of every slash `block` carries.
+pub fn slash_evidence(block: &BlockMessage) -> impl Iterator<Item = &EquivocationEvidence> {
+    block
+        .body
+        .system_deploys
+        .iter()
+        .filter_map(|deploy| match deploy {
+            ProcessedSystemDeploy::Succeeded {
+                system_deploy: SystemDeployData::Slash { evidence, .. },
+                ..
+            } => Some(evidence.as_ref()),
+            _ => None,
+        })
 }
 
 pub fn justification_to_justification_info(justification: &Justification) -> JustificationInfo {
@@ -1023,7 +982,6 @@ mod fork_choice_b1_repro_tests {
 
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
     use parking_lot::RwLock as PlRwLock;
-    use proptest::prelude::*;
     use prost::bytes::Bytes;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
@@ -1034,7 +992,7 @@ mod fork_choice_b1_repro_tests {
 
     fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
         let mut wm = BTreeMap::new();
-        wm.insert(v.clone(), 7i64.into());
+        wm.insert(v.clone(), 7u64.into());
         BlockMetadata {
             block_hash: hash,
             parents,
@@ -1043,7 +1001,7 @@ mod fork_choice_b1_repro_tests {
             weight_map: wm,
             block_number: num,
             sequence_number: num as i32,
-            invalid: false,
+            equivocates: None,
             directly_finalized: false,
             finalized: false,
             fault_tolerance_value: 0.0,
@@ -1067,7 +1025,10 @@ mod fork_choice_b1_repro_tests {
         for b in blocks {
             assert!(bms.add(b).is_ok(), "test DAG metadata insert failed");
         }
-        KeyValueDagRepresentation {
+        block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
@@ -1075,7 +1036,6 @@ mod fork_choice_b1_repro_tests {
             block_number_map: bnum,
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -1089,6 +1049,7 @@ mod fork_choice_b1_repro_tests {
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
         }
+        .build()
     }
 
     /// The sixth restore-horizon walk (#306). On an LFS-restored node a held
@@ -1228,123 +1189,6 @@ mod fork_choice_b1_repro_tests {
             "unheld traversed block must be MissingBlock naming it, got {result:?}"
         );
     }
-
-    // G1 (CRITICAL) — slash-replay determinism. `slashed_block_senders` builds the slash
-    // system-deploy's invalid_blocks map from the block's OWN recorded slash targets and
-    // each target's IMMUTABLE sender — NOT the node's `dag.invalid_blocks` view (which
-    // diverges proposer-vs-validator and previously caused a `ConsumeFailed` at replay →
-    // block rejection + finalization stall). This test pins that VIEW-INDEPENDENCE: two
-    // DAGs with identical block metadata but DIFFERENT invalid-block sets produce a
-    // byte-identical map, so the PLAY map (block creation) ≡ the REPLAY map (validation).
-    fn dag_with_invalid(
-        blocks: Vec<BlockMetadata>,
-        invalid: Vec<BlockMetadata>,
-    ) -> KeyValueDagRepresentation {
-        let mut dag = dag_with(blocks);
-        let mut inv = imbl::HashSet::new();
-        for b in invalid {
-            inv.insert(b);
-        }
-        dag.invalid_blocks_set = inv;
-        dag
-    }
-
-    #[test]
-    fn slashed_block_senders_is_view_independent_g1() {
-        let (va, vb, vc) = (h(50), h(51), h(52));
-        let (b1, b2, b3) = (h(1), h(2), h(3));
-        let blocks = vec![
-            md(b1.clone(), vec![], 1, &va),
-            md(b2.clone(), vec![b1.clone()], 2, &vb),
-            md(b3.clone(), vec![b2.clone()], 3, &vc),
-        ];
-        // The block slashes b1 and b3 (its own recorded targets).
-        let slashed = vec![b1.clone(), b3.clone()];
-        // Two nodes with DIVERGENT invalid-block views over identical block metadata
-        // (the proposer sees none invalid; the validator's view flags b2 and b3).
-        let dag_proposer = dag_with_invalid(blocks.clone(), vec![]);
-        let dag_validator = dag_with_invalid(blocks.clone(), vec![
-            md(b2.clone(), vec![b1.clone()], 2, &vb),
-            md(b3.clone(), vec![b2.clone()], 3, &vc),
-        ]);
-
-        let map_play = slashed_block_senders(&dag_proposer, &slashed).expect("play map");
-        let map_replay = slashed_block_senders(&dag_validator, &slashed).expect("replay map");
-
-        // Byte-identical map regardless of the invalid-block view (PLAY ≡ REPLAY) ...
-        assert_eq!(
-            map_play, map_replay,
-            "slash map must be node-view-independent (PLAY ≡ REPLAY)"
-        );
-        // ... and it keys each slashed block to its immutable sender.
-        let mut expected = std::collections::HashMap::new();
-        expected.insert(b1.clone(), va.clone());
-        expected.insert(b3.clone(), vc.clone());
-        assert_eq!(
-            map_play, expected,
-            "slash map must key each slashed block to its sender"
-        );
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(200))]
-        // G1 (∀-views property) — the standalone view-independence "lemma" for
-        // `slashed_block_senders`, mechanized as the modality that can actually catch
-        // the regression (a Rocq abstraction of the function would model it as
-        // content-only BY CONSTRUCTION and could never witness the defect). Over
-        // arbitrary block sets, arbitrary on-chain slash records, and TWO independently
-        // random — hence divergent — `invalid_blocks_set` node views, the map is
-        // (a) identical across the two views (PLAY ≡ REPLAY) and (b) equal to the
-        // content-derived ground truth (each slashed hash ↦ its immutable sender). Were
-        // the function to read `dag.invalid_blocks_set`, (a) would fail on the first
-        // view pair that disagrees on a slashed block.
-        #[test]
-        fn slashed_block_senders_is_view_independent_prop_g1(
-            senders in prop::collection::vec(0u8..5, 1..10),
-            slashed_flags in prop::collection::vec(any::<bool>(), 1..10),
-            view_a in prop::collection::vec(any::<bool>(), 1..10),
-            view_b in prop::collection::vec(any::<bool>(), 1..10),
-        ) {
-            let n = senders.len();
-            // n distinct blocks h(1..=n) in a chain; block i's immutable sender = h(100+vid).
-            let blocks: Vec<BlockMetadata> = (0..n)
-                .map(|i| {
-                    let hash = h((i + 1) as u8);
-                    let parents = if i == 0 { vec![] } else { vec![h(i as u8)] };
-                    let sender = h(100 + senders[i]);
-                    md(hash, parents, (i + 1) as i64, &sender)
-                })
-                .collect();
-            // On-chain slash record = the flagged subset (by index, within range).
-            let slashed: Vec<Bytes> = (0..n)
-                .filter(|&i| *slashed_flags.get(i).unwrap_or(&false))
-                .map(|i| h((i + 1) as u8))
-                .collect();
-            // Two nodes: identical block metadata, INDEPENDENTLY random invalid-block sets.
-            let inv_a: Vec<BlockMetadata> = (0..n)
-                .filter(|&i| *view_a.get(i).unwrap_or(&false))
-                .map(|i| blocks[i].clone())
-                .collect();
-            let inv_b: Vec<BlockMetadata> = (0..n)
-                .filter(|&i| *view_b.get(i).unwrap_or(&false))
-                .map(|i| blocks[i].clone())
-                .collect();
-            let dag_a = dag_with_invalid(blocks.clone(), inv_a);
-            let dag_b = dag_with_invalid(blocks.clone(), inv_b);
-
-            let map_a = slashed_block_senders(&dag_a, &slashed).expect("map a");
-            let map_b = slashed_block_senders(&dag_b, &slashed).expect("map b");
-            prop_assert_eq!(&map_a, &map_b);
-
-            let mut expected = std::collections::HashMap::new();
-            for i in 0..n {
-                if *slashed_flags.get(i).unwrap_or(&false) {
-                    expected.insert(h((i + 1) as u8), h(100 + senders[i]));
-                }
-            }
-            prop_assert_eq!(&map_a, &expected);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1374,12 +1218,14 @@ mod merkle_block_hash_tests {
         let data = DeployData {
             term: format!("@{nonce}!({nonce})"),
             time_stamp: nonce,
-            phlo_price: 1,
+            phlo_price: (1).into(),
             phlo_limit: 100_000,
             valid_after_block_number: 0,
             shard_id: "test-shard".to_string(),
             expiration_timestamp: None,
             parameters: vec![],
+            cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         };
         let signed = Signed::create(data, Secp256k1.box_clone(), sk).expect("sign deploy");
         ProcessedDeploy {
@@ -1398,14 +1244,26 @@ mod merkle_block_hash_tests {
         }
     }
 
+    fn slash_evidence_pair(seed: u8) -> EquivocationEvidence {
+        let commitment = |nonce: u8| {
+            let mut b = empty_block();
+            b.seq_num = i32::from(seed);
+            b.extra_bytes = Bytes::from(vec![nonce]);
+            block_commitment(&b)
+        };
+        EquivocationEvidence {
+            first: commitment(0),
+            second: commitment(1),
+        }
+    }
+
     fn processed_system_deploy_slash(seed: u8) -> ProcessedSystemDeploy {
         ProcessedSystemDeploy::Succeeded {
             event_list: vec![],
-            system_deploy: SystemDeployData::Slash {
-                invalid_block_hash: Bytes::from(vec![seed; 32]),
-                issuer_public_key: crypto::rust::public_key::PublicKey::from_bytes(&[seed; 33]),
-                target_activation_epoch: seed as i64 + 100,
-            },
+            system_deploy: SystemDeployData::create_slash(
+                slash_evidence_pair(seed),
+                crypto::rust::public_key::PublicKey::from_bytes(&[seed; 33]),
+            ),
         }
     }
 
@@ -1424,6 +1282,7 @@ mod merkle_block_hash_tests {
                 timestamp: 1_700_000_000_000,
                 version: 1,
                 extra_bytes: Bytes::new(),
+                chain_id: Bytes::new(),
             },
             body: Body {
                 state: F1r3flyState {
@@ -1438,6 +1297,7 @@ mod merkle_block_hash_tests {
                 extra_bytes: Bytes::new(),
                 applied_from_scope: vec![],
                 merge_base: Bytes::new(),
+                v6: None,
             },
             justifications: vec![],
             sender: Bytes::from(vec![0u8; 33]),
@@ -1480,6 +1340,68 @@ mod merkle_block_hash_tests {
         let h_fast = hash_block_with_leaves(&b, &leaves);
         let h_slow = hash_block(&b);
         assert_eq!(h_fast, h_slow);
+    }
+
+    #[test]
+    fn a_commitment_off_the_wire_hashes_to_its_block() {
+        use prost::Message;
+        let mut b = empty_block();
+        b.body.deploys = vec![processed_deploy(1), processed_deploy(2)];
+        b.body.system_deploys = vec![processed_system_deploy_close()];
+        b.sender = Bytes::from(vec![0x04; 65]);
+        b.sig_algorithm = "secp256k1".to_string();
+        b.sig = Bytes::from(vec![0x30; 70]);
+        b.seq_num = 7;
+        let commitment = block_commitment(&b);
+
+        let wire = commitment.to_proto().encode_to_vec();
+        let decoded = BlockCommitment::from_proto(
+            models::casper::BlockCommitmentProto::decode(wire.as_slice()).expect("decode"),
+        )
+        .expect("from_proto");
+
+        assert_eq!(decoded, commitment);
+        assert_eq!(commitment_hash(&decoded), hash_block(&b));
+        assert_eq!(
+            (decoded.sender, decoded.seq_num, decoded.sig),
+            (b.sender, 7, b.sig)
+        );
+    }
+
+    #[test]
+    fn a_slash_cites_its_first_commitment_and_its_sender() {
+        let mut a = empty_block();
+        a.sender = Bytes::from(vec![0x04; 65]);
+        a.seq_num = 3;
+        let mut b = a.clone();
+        b.body.deploys = vec![processed_deploy(1)];
+        let evidence = models::rust::casper::protocol::casper_message::EquivocationEvidence {
+            first: block_commitment(&a),
+            second: block_commitment(&b),
+        };
+
+        let senders = slash_evidence_senders([&evidence]);
+
+        assert_eq!(
+            senders,
+            std::collections::HashMap::from([(hash_block(&a), a.sender.clone())])
+        );
+    }
+
+    #[test]
+    fn a_commitment_binds_its_sender_and_sequence_number() {
+        let mut b = empty_block();
+        b.sender = Bytes::from(vec![0x04; 65]);
+        b.seq_num = 7;
+        let commitment = block_commitment(&b);
+        let hash = commitment_hash(&commitment);
+
+        let mut other_seq = commitment.clone();
+        other_seq.seq_num = 8;
+        let mut other_sender = commitment.clone();
+        other_sender.sender = Bytes::from(vec![0x05; 65]);
+        assert_ne!(commitment_hash(&other_seq), hash);
+        assert_ne!(commitment_hash(&other_sender), hash);
     }
 
     #[test]
@@ -1646,29 +1568,18 @@ mod merkle_block_hash_tests {
     }
 
     #[test]
-    fn bigint_bonds_root_preserves_legacy_and_separates_variable_fields() {
+    fn bigint_bonds_root_uses_canonical_amounts() {
         use prost::Message;
-        let legacy = Bond {
-            validator: Bytes::from_static(b"validator"),
-            stake: i64::MAX.into(),
-        };
-        let mut legacy_payload = legacy.validator.to_vec();
-        legacy_payload.extend(i64::MAX.to_le_bytes());
-        let leaf = crypto::rust::hash::merkle::hash_leaf_tagged(0x15, &legacy_payload);
-        assert_eq!(
-            bonds_root(&[legacy]),
-            crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &[leaf])
-        );
         let first = Bond {
             validator: Bytes::from_static(b"v"),
-            stake: BigInt::from(1) << 256,
+            stake: TokenAmount::max(),
         };
         let second = Bond {
             validator: Bytes::from_static(b"v\x01"),
-            stake: BigInt::from(1) << 248,
+            stake: TokenAmount::new(BigInt::from(1) << 248).unwrap(),
         };
         let leaf = crypto::rust::hash::merkle::hash_leaf_tagged(
-            0x16,
+            LEAF_BOND,
             &first.clone().to_proto().encode_to_vec(),
         );
         assert_eq!(
@@ -1740,7 +1651,7 @@ mod merkle_block_hash_tests {
         );
 
         // Top-level: combine recomputed d_root with recomputed h_header.
-        let header_preimage_bytes = header_preimage(&b);
+        let header_preimage_bytes = header_preimage(&block_commitment(&b));
         let h_header = merkle::hash_leaf_tagged(LEAF_HEADER, &header_preimage_bytes);
         let recomputed_top = hash_top(&h_header, &d_root);
         assert_eq!(
@@ -1959,21 +1870,17 @@ mod merkle_block_hash_tests {
             "Slash with different seed must produce different hash"
         );
 
-        // Build a Slash with modified target_activation_epoch only.
+        let mut evidence = slash_evidence_pair(0x01);
+        evidence.second.sig = Bytes::from(vec![0x55; 70]);
         let mut b3 = empty_block();
         b3.body.system_deploys = vec![ProcessedSystemDeploy::Succeeded {
             event_list: vec![],
-            system_deploy: SystemDeployData::Slash {
-                invalid_block_hash: Bytes::from(vec![0x01; 32]),
-                issuer_public_key: crypto::rust::public_key::PublicKey::from_bytes(&[0x01; 33]),
-                target_activation_epoch: 999, // vs. seed=0x01 → 0x01+100 = 101
-            },
+            system_deploy: SystemDeployData::create_slash(
+                evidence,
+                crypto::rust::public_key::PublicKey::from_bytes(&[0x01; 33]),
+            ),
         }];
-        assert_ne!(
-            hash_block(&b3),
-            h0,
-            "Slash.target_activation_epoch must affect hash",
-        );
+        assert_ne!(hash_block(&b3), h0, "the slash's evidence must affect hash",);
     }
 
     /// Test 4 — strong determinism guard: no `map<_,_>` field exists
@@ -2011,6 +1918,8 @@ mod merkle_block_hash_tests {
             "RholangNil",
             "SystemDeployDataProto",
             "SlashSystemDeployDataProto",
+            "BlockCommitmentProto",
+            "HeaderProto",
             "CloseBlockSystemDeployDataProto",
             "EventProto",
             "ProduceEventProto",
@@ -2237,8 +2146,81 @@ mod merkle_block_hash_tests {
         // pre/post state hashes, sender = 33 zero bytes, timestamp =
         // 1_700_000_000_000, version = 1, shard_id = "test-shard",
         // sig_algorithm = "secp256k1".
-        const EXPECTED: &str = "e1959261b81b13412671713f51402b701fee1e1e261970e0f9215df87b051d23";
+        const EXPECTED: &str = "602ea568b611a2a16415363ffd358f08afa358a231094bce24b755e8a6f631f2";
         assert_eq!(hex, EXPECTED, "block-hash recipe changed");
+    }
+
+    #[test]
+    fn the_v6_body_is_part_of_the_block_hash() {
+        use models::rust::casper::protocol::casper_message::{Attestation, V6Body};
+        let legacy = empty_block();
+        let mut empty_v6 = empty_block();
+        empty_v6.body.v6 = Some(V6Body::default());
+        let attested = |records: Vec<Bytes>| {
+            let mut b = empty_block();
+            b.body.v6 = Some(V6Body {
+                attestation: Some(Attestation {
+                    block_hash: Bytes::from_static(b"E"),
+                    root: Bytes::from_static(b"r"),
+                }),
+                records,
+            });
+            b
+        };
+        let one = attested(vec![Bytes::from_static(b"record-1")]);
+        let other = attested(vec![Bytes::from_static(b"record-2")]);
+        assert_ne!(hash_block(&legacy), hash_block(&empty_v6));
+        assert_ne!(hash_block(&empty_v6), hash_block(&one));
+        assert_ne!(hash_block(&one), hash_block(&other));
+        assert_eq!(hash_block(&one), hash_block(&one.clone()));
+        let commitment = block_commitment(&one);
+        let decoded = BlockCommitment::from_proto(commitment.to_proto()).unwrap();
+        assert_eq!(decoded, commitment);
+        assert_eq!(commitment_hash(&decoded), hash_block(&one));
+    }
+
+    /// A block with every field the hash commits to set.
+    fn populated_block() -> BlockMessage {
+        let mut b = empty_block();
+        b.header.parents_hash_list = vec![Bytes::from(vec![1; 32]), Bytes::from(vec![2; 32])];
+        b.header.extra_bytes = Bytes::from(vec![3; 4]);
+        b.header.chain_id = Bytes::from(vec![4; 32]);
+        b.body.state.pre_state_hash = Bytes::from(vec![5; 32]);
+        b.body.state.post_state_hash = Bytes::from(vec![6; 32]);
+        b.body.state.bonds = vec![Bond {
+            validator: Bytes::from(vec![7; 65]),
+            stake: 100.into(),
+        }];
+        b.body.state.block_number = 42;
+        b.body.rejected_deploys = vec![RejectedDeploy {
+            sig: Bytes::from(vec![8; 64]),
+            duplicate: true,
+            carrier: Bytes::from(vec![9; 32]),
+        }];
+        b.body.applied_from_scope = vec![Bytes::from(vec![10; 64])];
+        b.body.merge_base = Bytes::from(vec![11; 32]);
+        b.body.extra_bytes = Bytes::from(vec![12; 4]);
+        b.body.system_deploys = vec![processed_system_deploy_slash(13)];
+        b.sender = Bytes::from(vec![14; 65]);
+        b.seq_num = 7;
+        b.extra_bytes = Bytes::from(vec![15; 4]);
+        b.justifications = vec![Justification {
+            validator: Bytes::from(vec![16; 65]),
+            latest_block_hash: Bytes::from(vec![17; 32]),
+        }];
+        b
+    }
+
+    /// Pins the hash of a block with every committed field set, so a field
+    /// dropped from or reordered in the preimage changes it.
+    #[test]
+    fn hash_block_populated_golden_hex() {
+        const EXPECTED: &str = "32d5b2c9339bb446ea23c20cde55b24873ef5f03866a2545fbd8ad5ac7e38b03";
+        assert_eq!(
+            hex::encode(hash_block(&populated_block())),
+            EXPECTED,
+            "block-hash recipe changed"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -2343,5 +2325,86 @@ mod merkle_block_hash_tests {
             "hash_block_with_leaves on 32-user+1-system block took {fast_32_us} us, \
              exceeds regression ceiling {CEILING_US} us (paper target ~7 us)"
         );
+    }
+}
+
+#[cfg(test)]
+mod hash_block_tests {
+    use models::rust::block_implicits::get_random_block_default;
+
+    use super::*;
+
+    fn justification(validator: u8, block: u8) -> Justification {
+        Justification {
+            validator: vec![validator; 65].into(),
+            latest_block_hash: vec![block; 32].into(),
+        }
+    }
+
+    #[test]
+    fn hash_block_commits_to_justifications() {
+        let mut block = get_random_block_default();
+        block.justifications = vec![justification(1, 1), justification(2, 2)];
+        let original = hash_block(&block);
+
+        let mut changed = block.clone();
+        changed.justifications[1].latest_block_hash = vec![3; 32].into();
+        let mut removed = block.clone();
+        removed.justifications.pop();
+        let mut added = block.clone();
+        added.justifications.push(justification(3, 3));
+        let mut moved_to_extra_bytes = removed.clone();
+        moved_to_extra_bytes.extra_bytes = [vec![2; 65], vec![2; 32]].concat().into();
+
+        for mutated in [changed, removed, added, moved_to_extra_bytes] {
+            assert_ne!(hash_block(&mutated), original);
+        }
+    }
+
+    #[test]
+    fn moving_bytes_between_adjacent_fields_changes_the_hash() {
+        use prost::bytes::Bytes;
+
+        let mut block = get_random_block_default();
+        block.body.merge_base = vec![7; 32].into();
+        block.body.extra_bytes = vec![8; 4].into();
+        block.extra_bytes = vec![9; 4].into();
+        block.sig_algorithm = "secp256k1".to_string();
+        block.shard_id = "root".to_string();
+        let original = hash_block(&block);
+        let join = |a: &[u8], b: &[u8]| -> Bytes { [a, b].concat().into() };
+
+        let mut pre_into_post = block.clone();
+        let pre = block.body.state.pre_state_hash.clone();
+        pre_into_post.body.state.pre_state_hash = pre.slice(..pre.len() - 1);
+        pre_into_post.body.state.post_state_hash =
+            join(&pre[pre.len() - 1..], &block.body.state.post_state_hash);
+
+        let mut merge_base_into_body_extra = block.clone();
+        merge_base_into_body_extra.body.merge_base = Bytes::new();
+        merge_base_into_body_extra.body.extra_bytes =
+            join(&block.body.merge_base, &block.body.extra_bytes);
+
+        let mut body_extra_into_sender = block.clone();
+        body_extra_into_sender.body.extra_bytes = Bytes::new();
+        body_extra_into_sender.sender = join(&block.body.extra_bytes, &block.sender);
+
+        let mut sig_algorithm_into_sender = block.clone();
+        sig_algorithm_into_sender.sender = join(&block.sender, b"s");
+        sig_algorithm_into_sender.sig_algorithm = "ecp256k1".to_string();
+
+        let mut shard_id_into_extra = block.clone();
+        shard_id_into_extra.shard_id = String::new();
+        shard_id_into_extra.extra_bytes = join(b"root", &block.extra_bytes);
+
+        for mutated in [
+            pre_into_post,
+            merge_base_into_body_extra,
+            body_extra_into_sender,
+            sig_algorithm_into_sender,
+            shard_id_into_extra,
+        ] {
+            assert_ne!(hash_block(&mutated), original);
+        }
     }
 }

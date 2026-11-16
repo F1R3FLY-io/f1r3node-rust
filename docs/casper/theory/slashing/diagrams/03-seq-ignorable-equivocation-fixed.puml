@@ -38,7 +38,7 @@ participant "EquivocationDetector" as D   #FFECB3
 participant "MultiParentCasperImpl" as C  #FFECB3
 participant "BlockDagStorage"      as DS  #C8E6C9
 participant "EquivocationTrackerStore" as T #C8E6C9
-participant "CasperSnapshot\n(in-memory snapshot of\nDAG + on-chain state\npre-loaded by block_processor)" as CS #C8E6C9
+participant "CasperSnapshot\n(in-memory snapshot of\nDAG + on-chain state\npre-loaded by block ingest)" as CS #C8E6C9
 participant "BlockCreator"         as BC  #B2DFDB
 participant "PoS Rholang"          as PoS #D1C4E9
 database    "Bond map\n(on-chain state)" as B   #D1C4E9
@@ -121,7 +121,7 @@ P -[#00838F]> BC ++ : propose new block at seqM (seqM > seqN)
 note over BC, CS
   prepare_slashing_deploys reads from the
   CasperSnapshot pre-loaded by the
-  block-processor — NOT live DS calls.
+  block ingest — NOT live DS calls.
 end note
 BC -[#1565C0]> CS  : casper_snapshot.dag.invalid_blocks()
 CS -[#1565C0]-> BC : { (A, b1', epoch e) }

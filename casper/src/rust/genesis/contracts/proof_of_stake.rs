@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/genesis/contracts/ProofOfStake.scala
 
-use num_bigint::BigInt;
+use shared::rust::token_amount::TokenAmount;
 
 use super::validator::Validator;
 
@@ -9,8 +9,8 @@ use super::validator::Validator;
 // TODO: Remove hardcoded keys from standard deploys: https://rchain.atlassian.net/browse/RCHAIN-3321?atlOrigin=eyJpIjoiNDc0NjE4YzYxOTRkNDcyYjljZDdlOWMxYjE1NWUxNjIiLCJwIjoiaiJ9 - OLD
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ProofOfStake {
-    pub minimum_bond: BigInt,
-    pub maximum_bond: BigInt,
+    pub minimum_bond: TokenAmount,
+    pub maximum_bond: TokenAmount,
     pub validators: Vec<Validator>,
     pub epoch_length: i32,
     pub quarantine_length: i32,
@@ -18,7 +18,7 @@ pub struct ProofOfStake {
     pub fault_tolerance_threshold_ppm: i64,
     pub max_parent_depth: i32,
     pub deploy_lifespan: i64,
-    pub min_phlo_price: i64,
+    pub min_phlo_price: TokenAmount,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
 }
@@ -32,6 +32,10 @@ impl ProofOfStake {
     //       when this must be done during genesis, under the authority of the genesisPk, which calls the
     //       linear receive in PoS.rho - OLD
     pub fn initial_bonds(validators: &[Validator]) -> String {
+        Self::initial_bonds_with_suffix(validators, "n")
+    }
+
+    pub(crate) fn initial_bonds_with_suffix(validators: &[Validator], suffix: &str) -> String {
         let mut sorted_validators = validators.to_vec();
         sorted_validators.sort_by(|a, b| a.pk.bytes.cmp(&b.pk.bytes));
 
@@ -39,7 +43,10 @@ impl ProofOfStake {
             .iter()
             .map(|validator| {
                 let pk_string = hex::encode(validator.pk.bytes.clone());
-                format!(" \"{}\".hexToBytes() : {}n", pk_string, validator.stake)
+                format!(
+                    " \"{}\".hexToBytes() : {}{}",
+                    pk_string, validator.stake, suffix
+                )
             })
             .collect::<Vec<String>>()
             .join(", ");

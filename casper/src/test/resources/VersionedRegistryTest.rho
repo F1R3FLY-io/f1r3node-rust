@@ -6,11 +6,12 @@
 // TestResultCollector; the Rust spec asserts on both presence (no
 // vacuous passes) and success of every recorded assertion.
 //
-// Identity: mutators fetch the authenticated deployerId from
-// `rho:deploy:data`, so tests can't pass deployer names as strings.
-// The probe extracts the runtime's pubKey hex once at the top and
-// publishes it on `pkHexCh` (persistent). Every test peeks that
-// channel to build URNs and to shape notify-message assertions.
+// Identity: mutators require an explicit `deployerId` unforgeable
+// (bound via `rho:system:deployerId` in the caller's `new`). The
+// probe binds `deployerId` once here and threads it into every
+// mutator call. The runtime pubKey hex (needed for URN construction
+// in the resolver tests) comes straight from `rho:deploy:data`'s
+// second slot (a ByteArray) and is published on `pkHexCh`.
 
 new
   v1Api(`rho:registry:v1:internal`),
@@ -18,11 +19,16 @@ new
   opsV1(`rho:registry:ops:1.0.0`),
   assert(`rho:test:assertAck`),
 
-  // GAP-2 authentication scaffolding: pkHexCh publishes the
-  // authenticated deployer's pubKey hex once for all tests to reuse.
+  // Mutator argument. Bound here so `*deployerId` is a `GDeployerId`
+  // Par carrying this deploy's pubkey.
+  deployerId(`rho:system:deployerId`),
+
+  // Observational: pkHexCh publishes the deployer's pubKey hex once
+  // for URN construction. The bytes come from `rho:deploy:data`'s
+  // second slot (a ByteArray), so no `deployerIdOps.pubKeyBytes`
+  // round-trip is needed.
   deployData(`rho:deploy:data`),
-  deployerIdOps(`rho:system:deployerId:ops`),
-  ddCh, pkbCh, pkHexCh,
+  ddCh, pkHexCh,
 
   // sequencing channels for each test
   ins1, ack1,
@@ -64,17 +70,15 @@ new
   ins26, rl26, ack26,
   ins27, rl27, dispatch27, ack27
 in {
-  // ─── Authenticate once, publish the pubKey hex for every test ────────
+  // ─── Publish the deployer's pubKey hex (observational) ───────────────
   deployData!(*ddCh) |
-  for (@_ts, @deployerId, @_phlo <- ddCh) {
-    deployerIdOps!("pubKeyBytes", deployerId, *pkbCh) |
-    for (@pkb <- pkbCh) {
-      pkHexCh!!(pkb.bytesToHex()) |
+  for (@_ts, @deployerPkBytes, @_dId <- ddCh) {
+    pkHexCh!!(deployerPkBytes.bytesToHex()) |
 
-      // Every test lives inside this peek so it can splice `pkHex`
-      // into the URNs it constructs. The peek is non-consuming, so
-      // parallel tests each see the same published value.
-      for (@pkHex <<- pkHexCh) {
+    // Every test lives inside this peek so it can splice `pkHex`
+    // into the URNs it constructs. The peek is non-consuming, so
+    // parallel tests each see the same published value.
+    for (@pkHex <<- pkHexCh) {
 
   // 1. insertVersion under lib is rejected. `lib` promises importers
   //    that the code creates only temporary names (FIP §lib), a
@@ -82,23 +86,23 @@ in {
   //    scan, no name-lifetime mechanism). Until that lands, lib
   //    registrations are refused rather than accepted with an
   //    unenforceable safety promise.
-  v1Api!("insertVersion", "lib", "projA", "1.0.0", "codeA", *ins1) |
+  v1Api!("insertVersion", "lib", "projA", "1.0.0", "codeA", *deployerId, *ins1) |
   for (@r1 <- ins1) {
     assert!("insertVersion_lib_rejected", 1, (false, "==", r1),
             "insertVersion under lib should return false until temp-name enforcement lands", *ack1)
   } |
 
   // 2. insertVersion under serve happy path returns true
-  v1Api!("insertVersion", "serve", "projB", "1.0.0", "codeB", *ins2) |
+  v1Api!("insertVersion", "serve", "projB", "1.0.0", "codeB", *deployerId, *ins2) |
   for (@r2 <- ins2) {
     assert!("insertVersion_serve_happy_path", 1, (true, "==", r2),
             "First insertVersion under serve should return true", *ack2)
   } |
 
   // 3. Duplicate (ns, deployer, proj, ver) returns false on the second insert
-  v1Api!("insertVersion", "serve", "projDup", "1.0.0", "first", *ins3a) |
+  v1Api!("insertVersion", "serve", "projDup", "1.0.0", "first", *deployerId, *ins3a) |
   for (@_ <- ins3a) {
-    v1Api!("insertVersion", "serve", "projDup", "1.0.0", "second", *ins3b) |
+    v1Api!("insertVersion", "serve", "projDup", "1.0.0", "second", *deployerId, *ins3b) |
     for (@r3 <- ins3b) {
       assert!("insertVersion_duplicate_rejected", 1, (false, "==", r3),
               "Duplicate insertVersion should return false", *ack3)
@@ -107,16 +111,16 @@ in {
 
   // 4. Non-serve namespace returns false (covers lib and any unknown
   //    string; #1 covers lib specifically).
-  v1Api!("insertVersion", "other", "projC", "1.0.0", "code", *ins4) |
+  v1Api!("insertVersion", "other", "projC", "1.0.0", "code", *deployerId, *ins4) |
   for (@r4 <- ins4) {
     assert!("insertVersion_bad_namespace_rejected", 1, (false, "==", r4),
             "Non-serve namespace should return false", *ack4)
   } |
 
   // 5. deprecateVersion of a known entry returns true
-  v1Api!("insertVersion", "serve", "projDep", "1.0.0", "code", *ins5a) |
+  v1Api!("insertVersion", "serve", "projDep", "1.0.0", "code", *deployerId, *ins5a) |
   for (@_ <- ins5a) {
-    v1Api!("deprecateVersion", "serve", "projDep", "1.0.0", *dep5) |
+    v1Api!("deprecateVersion", "serve", "projDep", "1.0.0", *deployerId, *dep5) |
     for (@r5 <- dep5) {
       assert!("deprecateVersion_sets_flag", 1, (true, "==", r5),
               "deprecateVersion of a known entry should return true", *ack5)
@@ -125,18 +129,18 @@ in {
 
   // 6. deprecateVersion of an unknown entry returns false.
   //    Nothing was inserted under (pkHex, "ghostProj"), so deprecate misses.
-  v1Api!("deprecateVersion", "serve", "ghostProj", "1.0.0", *dep6) |
+  v1Api!("deprecateVersion", "serve", "ghostProj", "1.0.0", *deployerId, *dep6) |
   for (@r6 <- dep6) {
     assert!("deprecateVersion_unknown_rejected", 1, (false, "==", r6),
             "deprecateVersion of an unknown entry should return false", *ack6)
   } |
 
   // 7. approveVersion of a deprecated entry returns true
-  v1Api!("insertVersion", "serve", "projApr", "1.0.0", "code", *ins7a) |
+  v1Api!("insertVersion", "serve", "projApr", "1.0.0", "code", *deployerId, *ins7a) |
   for (@_ <- ins7a) {
-    v1Api!("deprecateVersion", "serve", "projApr", "1.0.0", *dep7) |
+    v1Api!("deprecateVersion", "serve", "projApr", "1.0.0", *deployerId, *dep7) |
     for (@_ <- dep7) {
-      v1Api!("approveVersion", "serve", "projApr", "1.0.0", *app7) |
+      v1Api!("approveVersion", "serve", "projApr", "1.0.0", *deployerId, *app7) |
       for (@r7 <- app7) {
         assert!("approveVersion_clears_flag", 1, (true, "==", r7),
                 "approveVersion after deprecate should return true", *ack7)
@@ -185,7 +189,7 @@ in {
   // the temp-name enforcement lands.
 
   // 12. exact-version lookup returns the inserted code
-  v1Api!("insertVersion", "serve", "p12", "1.0.0", "code12", *lk12a) |
+  v1Api!("insertVersion", "serve", "p12", "1.0.0", "code12", *deployerId, *lk12a) |
   for (@_ <- lk12a) {
     v1Api!("lookupVersion", "rho:serve:1.0.0:" ++ pkHex ++ ":p12:1.0.0", Nil, *lk12b) |
     for (@code <- lk12b) {
@@ -195,11 +199,11 @@ in {
   } |
 
   // 13. patch wildcard returns the highest matching patch
-  v1Api!("insertVersion", "serve", "p13", "1.0.0", "patch0", *lk13a) |
+  v1Api!("insertVersion", "serve", "p13", "1.0.0", "patch0", *deployerId, *lk13a) |
   for (@_ <- lk13a) {
-    v1Api!("insertVersion", "serve", "p13", "1.0.1", "patch1", *lk13b) |
+    v1Api!("insertVersion", "serve", "p13", "1.0.1", "patch1", *deployerId, *lk13b) |
     for (@_ <- lk13b) {
-      v1Api!("insertVersion", "serve", "p13", "1.0.2", "patch2", *lk13c) |
+      v1Api!("insertVersion", "serve", "p13", "1.0.2", "patch2", *deployerId, *lk13c) |
       for (@_ <- lk13c) {
         v1Api!("lookupVersion", "rho:serve:1.*:" ++ pkHex ++ ":p13:1.0.*", Nil, *lk13d) |
         for (@code <- lk13d) {
@@ -211,11 +215,11 @@ in {
   } |
 
   // 14. minor wildcard picks the highest minor.patch under a major
-  v1Api!("insertVersion", "serve", "p14", "1.0.5", "minor10x", *lk14a) |
+  v1Api!("insertVersion", "serve", "p14", "1.0.5", "minor10x", *deployerId, *lk14a) |
   for (@_ <- lk14a) {
-    v1Api!("insertVersion", "serve", "p14", "1.2.3", "minor12x", *lk14b) |
+    v1Api!("insertVersion", "serve", "p14", "1.2.3", "minor12x", *deployerId, *lk14b) |
     for (@_ <- lk14b) {
-      v1Api!("insertVersion", "serve", "p14", "1.1.9", "minor11x", *lk14c) |
+      v1Api!("insertVersion", "serve", "p14", "1.1.9", "minor11x", *deployerId, *lk14c) |
       for (@_ <- lk14c) {
         v1Api!("lookupVersion", "rho:serve:1.*:" ++ pkHex ++ ":p14:1.*", Nil, *lk14d) |
         for (@code <- lk14d) {
@@ -227,9 +231,9 @@ in {
   } |
 
   // 15. major wildcard picks the highest version across majors
-  v1Api!("insertVersion", "serve", "p15", "1.5.0", "major1", *lk15a) |
+  v1Api!("insertVersion", "serve", "p15", "1.5.0", "major1", *deployerId, *lk15a) |
   for (@_ <- lk15a) {
-    v1Api!("insertVersion", "serve", "p15", "2.0.0", "major2", *lk15b) |
+    v1Api!("insertVersion", "serve", "p15", "2.0.0", "major2", *deployerId, *lk15b) |
     for (@_ <- lk15b) {
       v1Api!("lookupVersion", "rho:serve:1.*:" ++ pkHex ++ ":p15:*", Nil, *lk15c) |
       for (@code <- lk15c) {
@@ -240,9 +244,9 @@ in {
   } |
 
   // 16. prereleases are skipped by wildcards (per FIP)
-  v1Api!("insertVersion", "serve", "p16", "1.0.0", "stable", *lk16a) |
+  v1Api!("insertVersion", "serve", "p16", "1.0.0", "stable", *deployerId, *lk16a) |
   for (@_ <- lk16a) {
-    v1Api!("insertVersion", "serve", "p16", "1.1.0-alpha", "prerelease", *lk16b) |
+    v1Api!("insertVersion", "serve", "p16", "1.1.0-alpha", "prerelease", *deployerId, *lk16b) |
     for (@_ <- lk16b) {
       v1Api!("lookupVersion", "rho:serve:1.*:" ++ pkHex ++ ":p16:1.*", Nil, *lk16c) |
       for (@code <- lk16c) {
@@ -253,11 +257,11 @@ in {
   } |
 
   // 17. deprecated versions are skipped; lookup falls back to the next
-  v1Api!("insertVersion", "serve", "p17", "1.0.0", "old", *lk17a) |
+  v1Api!("insertVersion", "serve", "p17", "1.0.0", "old", *deployerId, *lk17a) |
   for (@_ <- lk17a) {
-    v1Api!("insertVersion", "serve", "p17", "1.0.1", "newer", *lk17b) |
+    v1Api!("insertVersion", "serve", "p17", "1.0.1", "newer", *deployerId, *lk17b) |
     for (@_ <- lk17b) {
-      v1Api!("deprecateVersion", "serve", "p17", "1.0.1", *lk17c) |
+      v1Api!("deprecateVersion", "serve", "p17", "1.0.1", *deployerId, *lk17c) |
       for (@_ <- lk17c) {
         v1Api!("lookupVersion", "rho:serve:1.*:" ++ pkHex ++ ":p17:1.0.*", Nil, *lk17d) |
         for (@code <- lk17d) {
@@ -295,7 +299,7 @@ in {
   //     the call lands and returns `true`.
   getReg!(*reg20Ch, *notify20) |
   for (@reg <- reg20Ch) {
-    @reg!("insertVersion", "serve", "p20", "1.0.0", "code20", *ins20) |
+    @reg!("insertVersion", "serve", "p20", "1.0.0", "code20", *deployerId, *ins20) |
     for (@r <- ins20) {
       assert!("public_v1_returns_v1Api_bundle", 1, (true, "==", r),
               "Calling insertVersion via the public rho:registry:1.0.0 bundle should return true", *ack20)
@@ -306,7 +310,7 @@ in {
   //     insert via the public bundle, then look up via the same bundle.
   getReg21!(*reg21Ch, *notify21) |
   for (@reg <- reg21Ch) {
-    @reg!("insertVersion", "serve", "p21", "1.0.0", "publicCode", *ins21) |
+    @reg!("insertVersion", "serve", "p21", "1.0.0", "publicCode", *deployerId, *ins21) |
     for (@_ <- ins21) {
       @reg!("lookupVersion", "rho:serve:1.0.0:" ++ pkHex ++ ":p21:1.0.0", Nil, *lk21) |
       for (@code <- lk21) {
@@ -325,11 +329,11 @@ in {
   // lookupVersion call adds an independent listener.
 
   // 22. Single notify channel: lookup with notify, deprecate, observe.
-  v1Api!("insertVersion", "serve", "p22", "1.0.0", "code22", *ins22) |
+  v1Api!("insertVersion", "serve", "p22", "1.0.0", "code22", *deployerId, *ins22) |
   for (@_ <- ins22) {
     v1Api!("lookupVersion", "rho:serve:1.0.0:" ++ pkHex ++ ":p22:1.0.0", *notify22, *lk22) |
     for (@_ <- lk22) {
-      v1Api!("deprecateVersion", "serve", "p22", "1.0.0", *dep22) |
+      v1Api!("deprecateVersion", "serve", "p22", "1.0.0", *deployerId, *dep22) |
       for (@_ <- dep22 & @msg <- notify22) {
         assert!("notify_fires_to_one_listener", 1,
                 (("deprecated", pkHex, "p22", "1.0.0"), "==", msg),
@@ -339,13 +343,13 @@ in {
   } |
 
   // 23. Multiple notify channels from independent lookups all fire.
-  v1Api!("insertVersion", "serve", "p23", "1.0.0", "code23", *ins23) |
+  v1Api!("insertVersion", "serve", "p23", "1.0.0", "code23", *deployerId, *ins23) |
   for (@_ <- ins23) {
     v1Api!("lookupVersion", "rho:serve:1.0.0:" ++ pkHex ++ ":p23:1.0.0", *n23a, *lk23a) |
     v1Api!("lookupVersion", "rho:serve:1.0.0:" ++ pkHex ++ ":p23:1.0.0", *n23b, *lk23b) |
     v1Api!("lookupVersion", "rho:serve:1.0.0:" ++ pkHex ++ ":p23:1.0.0", *n23c, *lk23c) |
     for (@_ <- lk23a & @_ <- lk23b & @_ <- lk23c) {
-      v1Api!("deprecateVersion", "serve", "p23", "1.0.0", *dep23) |
+      v1Api!("deprecateVersion", "serve", "p23", "1.0.0", *deployerId, *dep23) |
       for (@_ <- dep23 & @ma <- n23a & @mb <- n23b & @mc <- n23c) {
         assert!("notify_fires_to_many_listeners", 1,
                 ((ma, mb, mc), "==",
@@ -358,15 +362,15 @@ in {
   } |
 
   // 24. approve then deprecate re-fires the warning.
-  v1Api!("insertVersion", "serve", "p24", "1.0.0", "code24", *ins24) |
+  v1Api!("insertVersion", "serve", "p24", "1.0.0", "code24", *deployerId, *ins24) |
   for (@_ <- ins24) {
     v1Api!("lookupVersion", "rho:serve:1.0.0:" ++ pkHex ++ ":p24:1.0.0", *n24, *lk24) |
     for (@_ <- lk24) {
-      v1Api!("deprecateVersion", "serve", "p24", "1.0.0", *dep24) |
+      v1Api!("deprecateVersion", "serve", "p24", "1.0.0", *deployerId, *dep24) |
       for (@_ <- dep24 & @firstFire <- n24) {
-        v1Api!("approveVersion", "serve", "p24", "1.0.0", *app24) |
+        v1Api!("approveVersion", "serve", "p24", "1.0.0", *deployerId, *app24) |
         for (@_ <- app24) {
-          v1Api!("deprecateVersion", "serve", "p24", "1.0.0", *redep24) |
+          v1Api!("deprecateVersion", "serve", "p24", "1.0.0", *deployerId, *redep24) |
           for (@_ <- redep24 & @secondFire <- n24) {
             assert!("approve_then_deprecate_refires", 1,
                     ((firstFire, secondFire), "==",
@@ -399,7 +403,7 @@ in {
 
   // 26. Versioned URN: registry_lookup delegates to v1Api's lookupVersion
   //     and the resolved code comes back on our ret channel.
-  v1Api!("insertVersion", "serve", "p26", "1.0.0", "code26", *ins26) |
+  v1Api!("insertVersion", "serve", "p26", "1.0.0", "code26", *deployerId, *ins26) |
   for (@_ <- ins26) {
     registryLookup!("rho:serve:1.0.0:" ++ pkHex ++ ":p26:1.0.0", *rl26) |
     for (@code <- rl26) {
@@ -412,7 +416,7 @@ in {
   // 27. registry_lookup composes with `for(@x <- registry_lookup!?(URN))`
   //     — the desugaring eval_new will use. Verifies the for-bound x
   //     is the resolved value directly.
-  v1Api!("insertVersion", "serve", "p27", "1.0.0", "code27", *ins27) |
+  v1Api!("insertVersion", "serve", "p27", "1.0.0", "code27", *deployerId, *ins27) |
   for (@_ <- ins27) {
     registryLookup!("rho:serve:1.0.0:" ++ pkHex ++ ":p27:1.0.0", *rl27) |
     for (@boundProcess <- rl27) {
@@ -422,7 +426,6 @@ in {
     }
   }
 
-      }
     }
   }
 }

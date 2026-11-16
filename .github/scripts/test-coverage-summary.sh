@@ -22,10 +22,19 @@ check_absent() {
 	fi
 }
 
+mklcov() { # file lines covered [first-line]: lines first..first+lines-1, the first `covered` of them hit
+	local first="${4:-1}"
+	{
+		echo "SF:/src/lib.rs"
+		for ((line = first; line < first + $2; line++)); do
+			if [ $((line - first)) -lt "$3" ]; then echo "DA:$line,3"; else echo "DA:$line,0"; fi
+		done
+		echo "end_of_record"
+	} >"$tmp/$1"
+}
+
 mkjson() { # crate lines covered
-	jq -n --argjson count "$2" --argjson covered "$3" \
-		'{data:[{totals:{lines:{count:$count,covered:$covered,percent:(100 * $covered / $count)}}}]}' \
-		>"$tmp/coverage-$1.json"
+	mklcov "coverage-$1.lcov" "$2" "$3"
 }
 
 mkjson crypto 100 80
@@ -65,7 +74,23 @@ check "| **All** | 250 | 220 | 88.0% |" "$out"
 check "models line coverage is below 80%" "$out"
 check_absent "workspace line coverage is below 80%" "$out"
 
-echo "not json" >"$tmp/coverage-shared.json"
+# Two shards report the same 100 lines. Shard 1 ran lines 1-60, shard 2 ran
+# lines 41-90: the crate has 100 lines, 90 of them covered.
+mklcov coverage-casper-1.lcov 100 60
+{
+	echo "SF:/src/lib.rs"
+	for ((line = 1; line <= 100; line++)); do
+		if [ "$line" -ge 41 ] && [ "$line" -le 90 ]; then echo "DA:$line,1"; else echo "DA:$line,0"; fi
+	done
+	echo "end_of_record"
+} >"$tmp/coverage-casper-2.lcov"
+if ! out="$("$SCRIPT" "$tmp" casper 2>&1)"; then
+	printf '::error::expected merged shard coverage to pass\n%s\n' "$out"
+	fail=1
+fi
+check "| casper | 100 | 90 | 90.0% |" "$out"
+
+echo "not lcov" >"$tmp/coverage-shared.lcov"
 if out="$("$SCRIPT" "$tmp" shared 2>&1)"; then
 	printf '::error::expected malformed coverage to fail\n%s\n' "$out"
 	fail=1
@@ -73,8 +98,7 @@ fi
 check "| shared | — | — | missing |" "$out"
 check "| **All** | 0 | 0 | n/a |" "$out"
 
-jq -n '{data:[{totals:{lines:{count:10,covered:null,percent:null}}}]}' \
-	>"$tmp/coverage-node.json"
+printf 'SF:/src/lib.rs\nDA:1,x\nend_of_record\n' >"$tmp/coverage-node.lcov"
 if out="$("$SCRIPT" "$tmp" node 2>&1)"; then
 	printf '::error::expected incomplete coverage to fail\n%s\n' "$out"
 	fail=1

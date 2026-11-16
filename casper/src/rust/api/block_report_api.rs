@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::casper::{
     BlockEventInfo, DeployInfoWithEventData, ReportProto, SingleReport,
@@ -12,6 +13,7 @@ use models::rust::casper::protocol::casper_message::{BlockMessage, SystemDeployD
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::reporting_transformer::ReportingTransformer;
+use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::ByteString;
 use tokio::sync::Semaphore;
@@ -40,6 +42,27 @@ impl Drop for ReportQueueMetricGuard {
 }
 
 fn report_cache_key(block_hash: &BlockHash) -> ByteString { block_hash.to_vec() }
+
+/// Upper bound on the heights holding reports that one prune step deletes,
+/// so a step holds only a few reports in memory.
+const REPORT_PRUNE_STEP_HEIGHTS: usize = 8;
+
+/// Upper bound on the heights one prune step walks. A height without cached
+/// reports costs only lookups, so a step after a restart, when the cursor is
+/// back at 0, crosses many already-pruned heights.
+const REPORT_PRUNE_STEP_WALK: i64 = 4_096;
+
+/// The height (exclusive) where the prune step that starts at `cursor` stops
+/// walking.
+fn report_prune_walk_end(cursor: i64, window_start: i64) -> i64 {
+    window_start.min(cursor.saturating_add(REPORT_PRUNE_STEP_WALK))
+}
+
+/// True when a block at `block_height` is below the report window. A block
+/// that is not in the DAG is not below it.
+fn below_report_window(block_height: Option<i64>, window_start: i64) -> bool {
+    block_height.is_some_and(|height| height < window_start)
+}
 
 /// How a caller waits for the single report permit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +124,11 @@ pub struct BlockReportAPI {
     report_transformer: Arc<ReportingProtoTransformer>,
     /// When true, allows block reports on validator nodes (bypasses read-only check)
     dev_mode: bool,
+    /// Height window of the report cache below the last finalized block; 0
+    /// keeps every report.
+    report_cache_retention: u32,
+    /// First height that may still hold reports below the window.
+    report_prune_cursor: Arc<std::sync::Mutex<i64>>,
 }
 
 impl BlockReportAPI {
@@ -122,7 +150,16 @@ impl BlockReportAPI {
             block_report_semaphore: Arc::new(Semaphore::new(1)),
             report_transformer: Arc::new(ReportingProtoTransformer::new()),
             dev_mode,
+            report_cache_retention: 0,
+            report_prune_cursor: Arc::new(std::sync::Mutex::new(0)),
         }
+    }
+
+    /// Keep cached reports only for blocks at most `blocks` heights below the
+    /// last finalized block. 0 keeps every report.
+    pub fn with_report_cache_retention(mut self, blocks: u32) -> Self {
+        self.report_cache_retention = blocks;
+        self
     }
 
     /// Replay a block and create BlockEventInfo
@@ -236,11 +273,99 @@ impl BlockReportAPI {
 
         let report = self.replay_block(block, casper).await?;
 
+        let window = self.report_window(casper).await?;
+        if let Some((dag, window_start)) = &window {
+            let block_number = dag
+                .block_number(&block.block_hash)
+                .map_err(|e| BlockReportError::StoreError(e.to_string()))?;
+            if below_report_window(block_number, *window_start) {
+                metrics::counter!("block_report.cache_skipped_below_window", "source" => "casper")
+                    .increment(1);
+                return Ok(report);
+            }
+        }
+
         self.report_store
             .put(vec![(report_cache_key(&block.block_hash), report.clone())])
             .map_err(|e| BlockReportError::StoreError(e.to_string()))?;
 
+        if let Some((dag, window_start)) = window {
+            self.prune_step(&dag, window_start);
+        }
+
         Ok(report)
+    }
+
+    /// The DAG and the first height of the report window, or `None` when
+    /// every report is kept.
+    async fn report_window(
+        &self,
+        casper: &Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
+    ) -> ApiErr<Option<(KeyValueDagRepresentation, i64)>> {
+        if self.report_cache_retention == 0 {
+            return Ok(None);
+        }
+        let dag = casper
+            .block_dag()
+            .await
+            .map_err(|e| BlockReportError::StoreError(e.to_string()))?;
+        let Some(lfb_height) = dag
+            .block_number(&dag.last_finalized_block())
+            .map_err(|e| BlockReportError::StoreError(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let window_start = lfb_height - i64::from(self.report_cache_retention);
+        Ok(Some((dag, window_start)))
+    }
+
+    /// Delete the reports of the next few heights below `window_start` that
+    /// hold any, one height at a time, so a step holds only a few reports in
+    /// memory.
+    fn prune_step(&self, dag: &KeyValueDagRepresentation, window_start: i64) {
+        let mut cursor = self
+            .report_prune_cursor
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let walk_end = report_prune_walk_end(*cursor, window_start);
+        let mut pruned_heights = 0;
+        while *cursor < walk_end && pruned_heights < REPORT_PRUNE_STEP_HEIGHTS {
+            let height = *cursor;
+            match self.prune_height(dag, height) {
+                Ok((reports, bytes)) => {
+                    if reports > 0 {
+                        pruned_heights += 1;
+                        metrics::counter!("block_report.cache_pruned_reports", "source" => "casper")
+                            .increment(reports as u64);
+                        metrics::counter!("block_report.cache_pruned_bytes", "source" => "casper")
+                            .increment(bytes);
+                    }
+                    *cursor = height + 1;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        height,
+                        error = %e,
+                        "Block report cache prune failed; retrying after the next cached report"
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    fn prune_height(
+        &self,
+        dag: &KeyValueDagRepresentation,
+        height: i64,
+    ) -> Result<(usize, u64), KvStoreError> {
+        let keys = dag
+            .topo_sort(height, Some(height))?
+            .into_iter()
+            .flatten()
+            .map(|hash| report_cache_key(&hash))
+            .collect();
+        self.report_store.delete_measured(keys)
     }
 
     /// Get block report for a given block hash.
@@ -390,5 +515,35 @@ impl BlockReportAPI {
                 }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{below_report_window, report_prune_walk_end, REPORT_PRUNE_STEP_WALK};
+
+    #[test]
+    fn a_prune_step_stops_walking_at_the_window() {
+        assert_eq!(report_prune_walk_end(0, 3), 3);
+        assert_eq!(report_prune_walk_end(5, 5), 5);
+        assert_eq!(report_prune_walk_end(5, -3), -3);
+    }
+
+    #[test]
+    fn a_prune_step_walks_a_bounded_number_of_heights() {
+        assert_eq!(report_prune_walk_end(0, 1_000_000), REPORT_PRUNE_STEP_WALK);
+        assert_eq!(
+            report_prune_walk_end(REPORT_PRUNE_STEP_WALK, 1_000_000),
+            2 * REPORT_PRUNE_STEP_WALK
+        );
+    }
+
+    #[test]
+    fn only_blocks_below_the_window_start_are_below_the_window() {
+        assert!(below_report_window(Some(9), 10));
+        assert!(!below_report_window(Some(10), 10));
+        assert!(!below_report_window(Some(11), 10));
+        assert!(!below_report_window(None, 10));
+        assert!(!below_report_window(Some(0), -50));
     }
 }

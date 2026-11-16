@@ -139,6 +139,13 @@ End Conflict.
    Section Overfill - THE §3c produce-only single-value-cell over-fill proof
    (RCA-asi-devnet-finality-halt).
 
+   SUPERSEDED. The guard this section models classified a single-value cell by
+   datum shape and has been removed from the node. A single-value cell is now a
+   channel whose name carries a registered mergeable tag: every write to it
+   records the tag and is folded by its merge type, and an untagged write to a
+   folded channel is rejected (split_untagged_writes_to_folded_channels). The
+   results below still hold of the model; they no longer describe shipped code.
+
    Section Conflict (GAP-3) proved the REMOVED consume-then-produce predicate is
    subsumed, modelling a cell update as `svc_update := consumes && produces` -- an
    update that ALWAYS consumes the base. But a PRODUCE-ONLY write (a produce that

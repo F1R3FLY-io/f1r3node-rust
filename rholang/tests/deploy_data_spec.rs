@@ -6,8 +6,7 @@ use crypto::rust::public_key::PublicKey;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{
-    BindPattern, Expr, GDeployId, GDeployerId, GUnforgeable, ListParWithRandom, Par,
-    TaggedContinuation,
+    BindPattern, Expr, GDeployId, GUnforgeable, ListParWithRandom, Par, TaggedContinuation,
 };
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
@@ -18,7 +17,8 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn rho_deploy_data_system_channel_should_return_timestamp_deployer_id_and_deploy_id() {
+async fn rho_deploy_data_system_channel_should_return_timestamp_deployer_pubkey_bytes_and_deploy_id(
+) {
     let contract = r#"
         new deployData(`rho:deploy:data`) in {
           deployData!(0)
@@ -33,16 +33,17 @@ async fn rho_deploy_data_system_channel_should_return_timestamp_deployer_id_and_
         timestamp,
         deployer_id: key.clone(),
         deploy_id: sig.clone(),
+        cosigners: Vec::new(),
+        phlo_price: 0,
+        phlo_limit: 0,
     };
 
     let expected = vec![
         Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::GInt(timestamp)),
         }]),
-        Par::default().with_unforgeables(vec![GUnforgeable {
-            unf_instance: Some(UnfInstance::GDeployerIdBody(GDeployerId {
-                public_key: key.bytes.as_ref().to_vec(),
-            })),
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GByteArray(key.bytes.as_ref().to_vec())),
         }]),
         Par::default().with_unforgeables(vec![GUnforgeable {
             unf_instance: Some(UnfInstance::GDeployIdBody(GDeployId { sig })),

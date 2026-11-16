@@ -695,7 +695,7 @@ in {
               // and runs them regardless of local configuration. Immutable
               // until an on-chain parameter-upgrade mechanism exists.
               contract PoS(@"getConsensusParameters", returnCh) = {
-                returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$))
+                returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$n, $$epochLength$$))
               } |
               contract PoS(@"getMinimumBond", returnCh) = {
                 returnCh!($$minimumBond$$n)
@@ -726,7 +726,7 @@ in {
                        @userPk          <- userCh) {
                     if (state.get("allBonds").contains(userPk)) {
                       resultCh!(state, (false, "Public key is already bonded."))
-                    } else if (not amount.isBigInt()) {
+                    } else if (not (amount matches BigInt)) {
                       resultCh!(state, (false, "Bond amount must be a BigInt."))
                     } else if (amount <= 0n) {
                       // Bug #5 fix: explicit positive-stake assertion. The
@@ -769,7 +769,7 @@ in {
                   getUser!(deployerId, *userCh) |
                   for (@state, resultCh <- processCh &
                        @delegatorPk      <- userCh) {
-                    if (not amount.isBigInt()) {
+                    if (not (amount matches BigInt)) {
                       resultCh!(state, (false, "Delegation amount must be a BigInt."))
                     } else if (amount <= 0n) {
                       resultCh!(state, (false, "Delegation amount must be positive."))
@@ -871,7 +871,7 @@ in {
                   for (@state, resultCh <- processCh &
                        @delegatorPk      <- userCh &
                        @blockNumber, _, _ <- blockDataCh) {
-                    if (not amount.isBigInt()) {
+                    if (not (amount matches BigInt)) {
                       resultCh!(state, (false, "Undelegation amount must be a BigInt."))
                     } else if (amount <= 0n) {
                       resultCh!(state, (false, "Undelegation amount must be positive."))
@@ -1126,7 +1126,7 @@ in {
                     for (@isValid <- isValidTokenCh) {
                       if (isValid) {
                         for (@(deployerId, initialPaymentAmount) <- currentDeployerData){
-                          if (refundAmount > 0) {
+                          if (refundAmount > 0n) {
                             new vaultAddressCh, transferCh in {
                               vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |
                               for (@deployerVaultAddress <- vaultAddressCh) {
@@ -1412,13 +1412,24 @@ in {
                                       // design/09-bug-fixes-and-rationale.md §9.13
                                       // (theorem t_9_10_withdraw_transfer_failure_safety,
                                       // formal/rocq/slashing/theories/BugFixWithdrawTransferFailure.v).
+                                      // A slashed withdrawer is owed nothing,
+                                      // and a transfer of nothing fails, so
+                                      // it is removed without one.
                                       contract payWithdraw(@(pk, (bonds, quantine)), resultCh) = {
                                         new transferResultCh in {
-                                          payWithdrawer!((pk, bonds.toBigInt() + state.get("committedRewards").getOrElse(pk, 0n)), *transferResultCh) |
-                                          for (@transferResult <- transferResultCh) {
-                                            match transferResult {
-                                              (true, _) => { resultCh!((pk, true)) }
-                                              (_, _)    => { resultCh!((pk, false)) }
+                                          match bonds.toBigInt() + state.get("committedRewards").getOrElse(pk, 0n) {
+                                            amount => {
+                                              if (amount <= 0n) {
+                                                resultCh!((pk, true))
+                                              } else {
+                                                payWithdrawer!((pk, amount), *transferResultCh) |
+                                                for (@transferResult <- transferResultCh) {
+                                                  match transferResult {
+                                                    (true, _) => { resultCh!((pk, true)) }
+                                                    (_, _)    => { resultCh!((pk, false)) }
+                                                  }
+                                                }
+                                              }
                                             }
                                           }
                                         }

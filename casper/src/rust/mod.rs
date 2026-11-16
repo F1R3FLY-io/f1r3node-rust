@@ -4,7 +4,6 @@ pub mod blocks;
 pub mod casper;
 pub mod casper_conf;
 pub mod engine;
-pub mod epoch;
 pub mod equivocation_detector;
 pub mod errors;
 pub mod estimator;
@@ -29,6 +28,7 @@ pub mod synchrony_constraint_checker;
 pub mod system_deploy;
 pub mod util;
 pub mod validate;
+pub mod v6;
 pub mod validator_identity;
 
 // See casper/src/main/scala/coop/rchain/casper/package.scala

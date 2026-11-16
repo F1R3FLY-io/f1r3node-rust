@@ -1,5 +1,5 @@
-// A Finalized verdict written against the adopted LFB survives a later merge
-// that rejects the deploy over a lower base.
+// A Finalized verdict written against the floor of the adopted LFB survives a
+// later merge that rejects the deploy over a lower base.
 //
 // v0 and v2 finalize the carrier A while v1 is partitioned with a conflicting
 // sibling B. Once v0 has written Finalized for A's deploy, v1 receives A alone
@@ -100,7 +100,7 @@ async fn view(node: &TestNode, sig: &Bytes) -> View {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn a_finalized_verdict_on_the_lfb_survives_a_low_base_merge() {
+async fn a_finalized_verdict_survives_a_low_base_merge() {
     let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
@@ -180,9 +180,9 @@ async fn a_finalized_verdict_on_the_lfb_survives_a_low_base_merge() {
     let window = window.expect("v0 must write a verdict for A's deploy while v1 is partitioned");
     assert_eq!(window.terminal, Some(TerminalState::Finalized));
     assert!(
-        window.lfb_has && !window.floor_has,
-        "fixture precondition: the verdict must be written while A's effect is \
-         on the LFB's lineage but not yet on the floor's"
+        window.floor_has,
+        "the verdict is written only once A's effect is on the lineage of the \
+         LFB's floor"
     );
 
     deliver(&mut nodes[1], std::slice::from_ref(&a)).await;

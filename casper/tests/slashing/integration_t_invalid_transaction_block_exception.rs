@@ -12,7 +12,8 @@
 // Spec reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4.
 //
 // What this pins (and UC-34 does not):
-//   - block_processor.rs:358-371 — the BlockException catch-all. UC-34
+//   - The BlockException catch-all in `Validation::judge`
+//     (blocks/ingest/validation_worker.rs). UC-34
 //     reaches InvalidTransaction via the `Right(None)` path in
 //     validation_dispatcher.rs:114-118 (returned from
 //     validate_block_checkpoint when computed_post_state_hash disagrees
@@ -23,18 +24,14 @@
 //       * UC-34 (Right(None) path): returned status is converted to
 //         `Left(BlockError::Invalid(InvalidTransaction))` by the
 //         dispatcher at validation_dispatcher.rs:114-118 before
-//         returning to block_processor; both DAG and status are
+//         returning to `Validation::judge`; both DAG and status are
 //         normalized.
 //       * This test (BlockException path): returned status is the
 //         ORIGINAL `Left(BlockError::BlockException(_))` raised by
-//         validate_block_checkpoint; the block_processor.rs:358-371
+//         validate_block_checkpoint; the `Validation::judge`
 //         catch-all converts ONLY at the DAG-mutation layer (via
 //         `effects_for_invalid_block(..., &InvalidBlock::InvalidTransaction, ...)`),
-//         NOT at the status returned to the caller. The pre-existing
-//         comment at line 339-340 ("this is to maintain backward
-//         compatibility with casper validate method. as it returns
-//         not only InvalidBlock or ValidBlock") confirms this is
-//         intentional.
+//         NOT at the status returned to the caller.
 //   - The propose_with_block_mutation helper's "mutation runs AFTER
 //     compute_deploys_checkpoint records the deployLog" property for
 //     timestamp-class mutations.
@@ -52,7 +49,7 @@
 //   on blockDataCh with the NEW timestamp; the matcher compares against
 //   the recorded deployLog (events for the OLD timestamp); ConsumeFailed
 //   fires; after the 3-retry budget gives up, BlockException propagates
-//   out of validate_block_checkpoint; block_processor.rs:358-371's
+//   out of validate_block_checkpoint; the `Validation::judge`
 //   catch-all maps it to InvalidTransaction; the dispatcher's
 //   is_slashable() arm (validation_dispatcher.rs:548) mints an
 //   EquivocationRecord at (v0, seq-1) identically to the
@@ -106,12 +103,12 @@ async fn integration_t_invalid_transaction_block_exception() {
         .expect("process_block");
 
     // Status assertion: the BlockException is returned to the caller
-    // verbatim. The block_processor.rs:358-371 catch-all does NOT
+    // verbatim. The `Validation::judge` catch-all does NOT
     // convert the status — only the DAG-level state. This is the
     // semantic distinction from UC-34, which receives the converted
     // `Left(BlockError::Invalid(InvalidTransaction))` because the
-    // dispatcher normalizes status BEFORE the value reaches the
-    // block_processor's match arms (validation_dispatcher.rs:114-118).
+    // dispatcher normalizes status BEFORE the value reaches
+    // `Validation::judge`'s match arms (validation_dispatcher.rs:114-118).
     assert!(
         matches!(status, Either::Left(BlockError::BlockException(_))),
         "expected BlockException raised by closeBlock replay \

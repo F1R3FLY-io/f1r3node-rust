@@ -4,10 +4,10 @@
 
 ### Concurrency Model
 - **Async/await** (Tokio) throughout for I/O-bound operations
-- **`DashMap`** for lock-free concurrent hash maps (hot store, casper buffer, in-flight deduplication)
+- **`DashMap`** for lock-free concurrent hash maps (hot store, the block ingest view)
 - **`imbl`** persistent collections for O(1) snapshot cloning (DAG state)
 - **`Arc<Mutex<T>>`** for shared mutable state (connections, cost manager)
-- **`mpsc::unbounded_channel`** for block processor queue (no backpressure)
+- **One owner task with bounded input channels** for block ingest: producers never wait on it, and it never waits on the network
 - **`Semaphore`-bounded spawning** for background tasks (e.g., transfer extraction limited to 8 concurrent)
 - **`Shared<BoxFuture>`** for in-flight request deduplication (CacheTransactionAPI)
 

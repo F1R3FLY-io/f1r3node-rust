@@ -16,6 +16,34 @@ use crate::rspace::hashing::stable_hash_provider;
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
 
+pub trait ChangeReader<C>: Sync {
+    fn data_binary(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<u8>>, HistoryError>;
+
+    fn continuations_binary(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<u8>>, HistoryError>;
+
+    fn joins(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<C>>, HistoryError>;
+}
+
+impl<C, P, A, K> ChangeReader<C> for RSpaceHistoryReaderImpl<C, P, A, K>
+where
+    C: Clone + for<'a> Deserialize<'a> + Serialize + 'static + Sync + Send,
+    P: Clone + for<'a> Deserialize<'a> + 'static + Sync + Send,
+    A: Clone + for<'a> Deserialize<'a> + 'static + Sync + Send,
+    K: Clone + for<'a> Deserialize<'a> + 'static + Sync + Send,
+{
+    fn data_binary(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<u8>>, HistoryError> {
+        self.get_data_proj_binary(key)
+    }
+
+    fn continuations_binary(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<u8>>, HistoryError> {
+        self.get_continuations_proj_binary(key)
+    }
+
+    fn joins(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<C>>, HistoryError> {
+        self.get_joins(key)
+    }
+}
+
 /**
  * Datum changes are referenced by channel, continuation changes are
  * references by consume. In addition, map from consume channels to binary
@@ -267,16 +295,13 @@ impl Ord for StateChange {
 }
 
 impl StateChange {
-    pub fn new<C, P, A, K>(
-        pre_state_reader: RSpaceHistoryReaderImpl<C, P, A, K>,
-        post_state_reader: RSpaceHistoryReaderImpl<C, P, A, K>,
+    pub fn new<C>(
+        pre_state_reader: impl ChangeReader<C>,
+        post_state_reader: impl ChangeReader<C>,
         event_log_index: &EventLogIndex,
     ) -> Result<Self, HistoryError>
     where
-        C: Clone + for<'a> Deserialize<'a> + Serialize + 'static + Sync + Send,
-        P: Clone + for<'a> Deserialize<'a> + 'static + Sync + Send,
-        A: Clone + for<'a> Deserialize<'a> + 'static + Sync + Send,
-        K: Clone + for<'a> Deserialize<'a> + 'static + Sync + Send,
+        C: Clone + Serialize + 'static + Sync + Send,
     {
         let datums_diff = DashMap::new();
         let cont_diff = DashMap::new();
@@ -321,8 +346,8 @@ impl StateChange {
             .try_for_each(|history_pointer| {
                 let change = Self::compute_value_change(
                     history_pointer,
-                    |h| pre_state_reader.get_data_proj_binary(h),
-                    |h| post_state_reader.get_data_proj_binary(h),
+                    |h| pre_state_reader.data_binary(h),
+                    |h| post_state_reader.data_binary(h),
                 )?;
 
                 // Since each channel is processed exactly once, we can just insert directly
@@ -341,8 +366,8 @@ impl StateChange {
 
                 let change = Self::compute_value_change(
                     &history_pointer,
-                    |h| pre_state_reader.get_continuations_proj_binary(h),
-                    |h| post_state_reader.get_continuations_proj_binary(h),
+                    |h| pre_state_reader.continuations_binary(h),
+                    |h| post_state_reader.continuations_binary(h),
                 )?;
 
                 // Since each consume channels set is processed exactly once, we can just insert
@@ -358,8 +383,8 @@ impl StateChange {
             .try_for_each(|consume_channels| {
                 let mut consume_channels = consume_channels.clone();
                 let history_pointer = consume_channels[0].clone();
-                let pre = pre_state_reader.get_joins(&history_pointer)?;
-                let post = post_state_reader.get_joins(&history_pointer)?;
+                let pre = pre_state_reader.joins(&history_pointer)?;
+                let post = post_state_reader.joins(&history_pointer)?;
 
                 // find join which match channels
                 let join = pre

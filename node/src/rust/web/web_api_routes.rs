@@ -43,6 +43,10 @@ impl WebApiRoutes {
             .route("/prepare-deploy", post(prepare_deploy_post_handler))
             .route("/deploy", post(shared_handlers::deploy_handler))
             .route(
+                "/deploy/offered/{deploy_id}/receipt",
+                get(shared_handlers::offered_receipt_handler),
+            )
+            .route(
                 "/explore-deploy",
                 post(shared_handlers::explore_deploy_handler),
             )
@@ -122,6 +126,8 @@ pub async fn prepare_deploy_get_handler(State(app_state): State<AppState>) -> Re
     responses(
         (status = 200, description = "Next deploy sequence number and pre-generated unforgeable names for the given deployer/timestamp", body = PrepareResponse),
         (status = 400, description = "Malformed request body or invalid deployer hex (`invalid_request_body`, `invalid_hash`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"
@@ -144,6 +150,8 @@ pub async fn prepare_deploy_post_handler(
     responses(
         (status = 200, description = "Channel data at the given name in the specified block", body = RhoDataResponse),
         (status = 400, description = "Malformed request body or invalid block hash (`invalid_request_body`, `invalid_hash`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
     ),
@@ -566,7 +574,8 @@ use crate::rust::api::web_api::{
         (status = 200, description = "Estimated phlogiston (gas) cost for the given Rholang term", body = EstimateCostResponse),
         (status = 400, description = "Malformed request body, invalid Rholang term, invalid deployer key, or invalid block hash (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
-        (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
     ),
     tag = "Query"
@@ -709,7 +718,7 @@ mod tests {
                 None
             },
             system_deploy_error: if is_full { Some(String::new()) } else { None },
-            phlo_price: if is_full { Some(10) } else { None },
+            phlo_price: if is_full { Some(10.to_string()) } else { None },
             phlo_limit: if is_full { Some(100000) } else { None },
             sig_algorithm: if is_full {
                 Some("secp256k1".to_string())
@@ -769,6 +778,18 @@ mod tests {
         async fn find_deploy(&self, _: String, view: ViewMode) -> eyre::Result<DeployResponse> {
             Ok(sample_deploy_response(view))
         }
+        async fn offered_receipt(
+            &self,
+            deploy_id: String,
+        ) -> eyre::Result<crate::rust::api::web_api::OfferedReceiptResponse> {
+            let id = crate::rust::api::web_api::parse_offered_id(&deploy_id)?;
+            Ok(
+                crate::rust::api::web_api::OfferedReceiptResponse::from_status(
+                    hex::encode(id),
+                    casper::rust::v6::receipt::OfferedStatus::Unknown,
+                ),
+            )
+        }
         async fn exploratory_deploy(
             &self,
             _: String,
@@ -802,7 +823,7 @@ mod tests {
                 Some(pk) if !pk.is_empty() => vec![PendingDeployJson {
                     term: "for (x <- ch) { return!(x) }".to_string(),
                     timestamp: 1770028092477,
-                    phlo_price: 1,
+                    phlo_price: (1).to_string(),
                     phlo_limit: 100_000,
                     valid_after_block_number: 0,
                     shard_id: String::new(),
@@ -816,7 +837,7 @@ mod tests {
                     PendingDeployJson {
                         term: "Nil".to_string(),
                         timestamp: 1770028092477,
-                        phlo_price: 1,
+                        phlo_price: (1).to_string(),
                         phlo_limit: 100_000,
                         valid_after_block_number: 0,
                         shard_id: String::new(),
@@ -829,7 +850,7 @@ mod tests {
                     PendingDeployJson {
                         term: "@0!(42)".to_string(),
                         timestamp: 1770028092478,
-                        phlo_price: 1,
+                        phlo_price: (1).to_string(),
                         phlo_limit: 100_000,
                         valid_after_block_number: 0,
                         shard_id: String::new(),
@@ -935,6 +956,18 @@ mod tests {
         Router::new()
             .route("/deploy/{deploy_id}", get(test_find_deploy_handler))
             .route(
+                "/deploy/offered/{deploy_id}/receipt",
+                get(
+                    |State(web_api): State<Arc<dyn WebApi + Send + Sync>>,
+                     AppPath(deploy_id): AppPath<String>| async move {
+                        match web_api.offered_receipt(deploy_id).await {
+                            Ok(response) => Json(response).into_response(),
+                            Err(e) => AppError(e).into_response(),
+                        }
+                    },
+                ),
+            )
+            .route(
                 "/pending-deploys",
                 get(
                     move |State(web_api): State<Arc<dyn WebApi + Send + Sync>>,
@@ -949,6 +982,43 @@ mod tests {
     async fn body_to_string(body: Body) -> String {
         let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn offered_receipt_route_answers_unknown_ids_and_refuses_bad_ones() {
+        let id = "ab".repeat(70);
+        let request = axum::http::Request::builder()
+            .uri(format!("/deploy/offered/{id}/receipt"))
+            .body(Body::empty())
+            .unwrap();
+        let response = test_router().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_str(&body_to_string(response.into_body()).await).unwrap();
+        assert_eq!(body["status"], "unknown");
+        assert_eq!(body["deployId"], id);
+
+        for bad in ["zz", "abc"] {
+            let request = axum::http::Request::builder()
+                .uri(format!("/deploy/offered/{bad}/receipt"))
+                .body(Body::empty())
+                .unwrap();
+            let response = test_router().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_offered_receipt_route_does_not_shadow_find_deploy() {
+        let request = axum::http::Request::builder()
+            .uri("/deploy/offered")
+            .body(Body::empty())
+            .unwrap();
+        let response = test_router().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_str(&body_to_string(response.into_body()).await).unwrap();
+        assert!(body.get("status").is_none());
     }
 
     #[tokio::test]
@@ -980,11 +1050,11 @@ mod tests {
         assert_eq!(
             json["parameters"],
             serde_json::json!([
-                {"name": "amount", "value": {"type": "int", "value": 42}}
+                {"name": "amount", "value": {"type": "int", "value": "42"}}
             ])
         );
         assert!(json.get("term").is_some());
-        assert!(json.get("phloPrice").is_some());
+        assert_eq!(json["phloPrice"], "10");
         assert!(json.get("phloLimit").is_some());
         assert!(json.get("sigAlgorithm").is_some());
         assert!(json.get("transfers").is_some());
@@ -1064,6 +1134,7 @@ mod tests {
         assert_eq!(json["deploys"][0]["deployer"], "0487def456");
         assert_eq!(json["deploys"][1]["deployer"], "0499abc789");
         assert_eq!(json["deploys"][0]["sigAlgorithm"], "secp256k1");
+        assert_eq!(json["deploys"][0]["phloPrice"], "1");
         for deploy in json["deploys"].as_array().unwrap() {
             assert!(deploy.get("parameters").is_none());
         }
@@ -1121,6 +1192,13 @@ mod router_tests {
         WebApi,
     };
 
+    fn stub_self_stake() -> shared::rust::token_amount::TokenAmount {
+        shared::rust::token_amount::TokenAmount::new(
+            shared::rust::token_amount::TokenAmount::max().into_bigint() - 3,
+        )
+        .unwrap()
+    }
+
     struct StubAdminWebApi;
 
     #[async_trait::async_trait]
@@ -1144,12 +1222,22 @@ mod router_tests {
     }
 
     fn light_block() -> LightBlockInfoSerde {
-        LightBlockInfoSerde::from(models::casper::LightBlockInfo::default())
+        LightBlockInfoSerde::from(models::casper::LightBlockInfo {
+            bonds: vec![models::casper::BondInfo {
+                validator: "validator".to_string(),
+                stake: shared::rust::token_amount::TokenAmount::max().to_string(),
+            }],
+            ..Default::default()
+        })
     }
 
     fn rho_data_response() -> RhoDataResponse {
         RhoDataResponse {
-            expr: vec![RhoExpr::ExprInt { data: 11 }],
+            expr: vec![RhoExpr::ExprInt { data: 11 }, RhoExpr::ExprList {
+                data: vec![RhoExpr::ExprInt { data: i64::MIN }, RhoExpr::ExprUint64 {
+                    data: u64::MAX,
+                }],
+            }],
             block: light_block(),
             cost: 7,
         }
@@ -1178,7 +1266,7 @@ mod router_tests {
                 shard_id: "root".to_string(),
                 peers: 1,
                 nodes: 2,
-                min_phlo_price: 1,
+                min_phlo_price: shared::rust::token_amount::TokenAmount::max().to_string(),
                 peer_list: vec![],
                 native_token_name: "F1R3".to_string(),
                 native_token_symbol: "F1R3".to_string(),
@@ -1283,7 +1371,7 @@ mod router_tests {
             }
             Ok(BalanceResponse {
                 address,
-                balance: "1000".to_string(),
+                balance: "10000000000000000000".to_string(),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })
@@ -1308,12 +1396,12 @@ mod router_tests {
             Ok(ValidatorsResponse {
                 validators: vec![ValidatorInfo {
                     public_key: "vk".to_string(),
-                    stake: 10.into(),
-                    self_stake: 7.into(),
+                    stake: shared::rust::token_amount::TokenAmount::max(),
+                    self_stake: stub_self_stake(),
                     delegated_stake: 3.into(),
                 }],
-                total_stake: 10.into(),
-                total_self_stake: 7.into(),
+                total_stake: shared::rust::token_amount::TokenAmount::max().into_bigint(),
+                total_self_stake: stub_self_stake().into_bigint(),
                 total_delegated_stake: 3.into(),
                 block_number: 5,
                 block_hash: "aa".to_string(),
@@ -1417,8 +1505,8 @@ mod router_tests {
             Ok(ValidatorStatusResponse {
                 public_key: pubkey,
                 is_bonded: true,
-                stake: Some(10.into()),
-                self_stake: Some(7.into()),
+                stake: Some(shared::rust::token_amount::TokenAmount::max()),
+                self_stake: Some(stub_self_stake()),
                 delegated_stake: Some(3.into()),
                 block_number: 5,
                 block_hash: "aa".to_string(),
@@ -1459,6 +1547,7 @@ mod router_tests {
         let rp_conf = RPConf::new(
             local,
             "testnet".to_string(),
+            comm::rust::rp::chain_id::ChainIdCell::unknown(),
             None,
             Duration::from_secs(1),
             8,
@@ -1518,6 +1607,10 @@ mod router_tests {
         let (status, json) = get_response("/status").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["networkId"], "testnet");
+        assert_eq!(
+            json["minPhloPrice"],
+            shared::rust::token_amount::TokenAmount::max().to_string()
+        );
         assert_eq!(json["shardId"], "root");
         assert_eq!(json["isReady"], true);
         assert_eq!(json["lastFinalizedBlockNumber"], 5);
@@ -1581,7 +1674,7 @@ mod router_tests {
             "data": {
                 "term": "Nil",
                 "timestamp": 1,
-                "phloPrice": 1,
+                "phloPrice": "1",
                 "phloLimit": 100,
                 "validAfterBlockNumber": 0,
                 "shardId": "root",
@@ -1627,6 +1720,19 @@ mod router_tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["cost"], 7);
+        assert_eq!(json["expr"][0]["ExprInt"]["data"], "11");
+        assert_eq!(
+            json["expr"][1]["ExprList"]["data"][0]["ExprInt"]["data"],
+            "-9223372036854775808"
+        );
+        assert_eq!(
+            json["expr"][1]["ExprList"]["data"][1]["ExprUint64"]["data"],
+            "18446744073709551615"
+        );
+        assert_eq!(
+            json["block"]["bonds"][0]["stake"],
+            shared::rust::token_amount::TokenAmount::max().to_string()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1685,7 +1791,7 @@ mod router_tests {
     async fn query_routes_answer() {
         let (status, json) = get_response("/balance/wallet-address").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json["balance"], "1000");
+        assert_eq!(json["balance"], "10000000000000000000");
 
         let (status, json) = get_response("/registry/rho:id:abc").await;
         assert_eq!(status, StatusCode::OK);
@@ -1693,11 +1799,13 @@ mod router_tests {
 
         let (status, json) = get_response("/validators").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json["totalStake"], "10");
-        assert_eq!(json["totalSelfStake"], "7");
+        let max = shared::rust::token_amount::TokenAmount::max().to_string();
+        let self_stake = stub_self_stake().to_string();
+        assert_eq!(json["totalStake"], max);
+        assert_eq!(json["totalSelfStake"], self_stake);
         assert_eq!(json["totalDelegatedStake"], "3");
-        assert_eq!(json["validators"][0]["stake"], "10");
-        assert_eq!(json["validators"][0]["selfStake"], "7");
+        assert_eq!(json["validators"][0]["stake"], max);
+        assert_eq!(json["validators"][0]["selfStake"], self_stake);
         assert_eq!(json["validators"][0]["delegatedStake"], "3");
         assert_eq!(json["blockNumber"], 5);
 
@@ -1737,6 +1845,10 @@ mod router_tests {
         let (status, json) = get_response("/validator/04aa").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["isBonded"], true);
+        assert_eq!(
+            json["stake"],
+            shared::rust::token_amount::TokenAmount::max().to_string()
+        );
 
         let (status, json) = get_response("/epoch").await;
         assert_eq!(status, StatusCode::OK);
@@ -1744,7 +1856,7 @@ mod router_tests {
 
         let (status, json) = get_response("/epoch/rewards").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json["rewards"]["ExprInt"]["data"], 3);
+        assert_eq!(json["rewards"]["ExprInt"]["data"], "3");
 
         let (status, json) = get_response("/bond-status/04aa").await;
         assert_eq!(status, StatusCode::OK);

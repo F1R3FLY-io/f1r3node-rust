@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::hash::Hash;
 
+use models::rust::block_metadata::BlockMetadata;
+use models::rust::validator::Validator;
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::ToPrimitive;
@@ -15,6 +17,17 @@ pub(crate) fn equivocating_weight<'a, K: Eq + Hash + 'a>(
         .sum()
 }
 
+/// One entry per equivocation: the distinct (sender, sequence number) of the
+/// blocks held as equivocations.
+pub(crate) fn equivocations<'a>(
+    invalid_blocks: impl IntoIterator<Item = &'a BlockMetadata>,
+) -> BTreeSet<(Validator, i32)> {
+    invalid_blocks
+        .into_iter()
+        .map(|block| (block.sender.clone(), block.sequence_number))
+        .collect()
+}
+
 pub(crate) fn total_weight<K: Eq + Hash>(weights: &HashMap<K, BigInt>) -> BigInt {
     weights.values().sum()
 }
@@ -25,7 +38,7 @@ pub(crate) fn normalized_initial_fault(equivocating_weight: BigInt, total_weight
     } else {
         BigRational::new(equivocating_weight, total_weight)
             .to_f32()
-            .unwrap_or(f32::INFINITY)
+            .expect("A BigInt ratio with a positive denominator cannot be NaN")
     }
 }
 
@@ -61,5 +74,10 @@ mod tests {
             );
         }
         assert_eq!(normalized_initial_fault(1.into(), 0.into()), 0.0);
+        assert_eq!(normalized_initial_fault(0.into(), 0.into()), 0.0);
+        assert_eq!(
+            normalized_initial_fault(0.into(), BigInt::from(1) << 1024),
+            0.0
+        );
     }
 }

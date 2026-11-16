@@ -73,6 +73,9 @@ impl HasLocallyFree for Expr {
             Some(EPathmapBody(e)) => e.connective_used,
             Some(EZipperBody(e)) => e.connective_used,
             Some(EMethodBody(e)) => e.connective_used,
+            Some(ELambdaBody(e)) => e.connective_used,
+            Some(EAppBody(e)) => e.connective_used,
+            Some(EPiBody(e)) => e.connective_used,
 
             Some(EVarBody(EVar { v })) => required(v, "variable").connective_used(),
             Some(ENotBody(ENot { p }) | ENegBody(ENeg { p })) => {
@@ -122,6 +125,9 @@ impl HasLocallyFree for Expr {
             Some(EPathmapBody(e)) => e.locally_free.clone(),
             Some(EZipperBody(e)) => e.locally_free.clone(),
             Some(EMethodBody(e)) => e.locally_free.clone(),
+            Some(ELambdaBody(e)) => e.locally_free.clone(),
+            Some(EAppBody(e)) => e.locally_free.clone(),
+            Some(EPiBody(e)) => e.locally_free.clone(),
 
             Some(EVarBody(EVar { v })) => required(v, "variable").locally_free(depth),
             Some(ENotBody(ENot { p }) | ENegBody(ENeg { p })) => {
@@ -199,11 +205,76 @@ impl HasLocallyFree for ReceiveBind {
 
     fn locally_free(&self, depth: i32) -> Vec<u8> {
         union(
-            required(&self.source, "source").locally_free(depth),
-            self.patterns.iter().fold(Vec::new(), |acc, pattern| {
-                union(acc, pattern.locally_free(depth + 1))
-            }),
+            union(
+                required(&self.source, "source").locally_free(depth),
+                self.patterns.iter().fold(Vec::new(), |acc, pattern| {
+                    union(acc, pattern.locally_free(depth + 1))
+                }),
+            ),
+            self.cost_signature
+                .as_ref()
+                .map(signature_locally_free)
+                .unwrap_or_default(),
         )
+    }
+}
+
+fn signature_locally_free(signature: &CostSignature) -> Vec<u8> {
+    use models::rhoapi::cost_signature::Value;
+
+    match &signature.value {
+        Some(Value::BoundLevel(level)) if *level >= 0 => create_bit_vector(&[*level as usize]),
+        Some(Value::Quote(par)) | Some(Value::Name(par)) => par.locally_free.clone(),
+        Some(Value::Compound(compound)) => compound
+            .elements
+            .iter()
+            .map(signature_locally_free)
+            .fold(Vec::new(), union),
+        _ => Vec::new(),
+    }
+}
+
+fn signature_connective_used(signature: &CostSignature) -> bool {
+    use models::rhoapi::cost_signature::Value;
+
+    match &signature.value {
+        Some(Value::Quote(par)) | Some(Value::Name(par)) => par.connective_used,
+        Some(Value::Compound(compound)) => compound.elements.iter().any(signature_connective_used),
+        _ => false,
+    }
+}
+
+impl HasLocallyFree for CostSignedTerm {
+    fn connective_used(&self) -> bool {
+        self.body.as_ref().is_some_and(|p| p.connective_used)
+            || self
+                .signature
+                .as_ref()
+                .is_some_and(signature_connective_used)
+    }
+
+    fn locally_free(&self, _depth: i32) -> Vec<u8> {
+        union(
+            self.body
+                .as_ref()
+                .map(|p| p.locally_free.clone())
+                .unwrap_or_default(),
+            self.signature
+                .as_ref()
+                .map(signature_locally_free)
+                .unwrap_or_default(),
+        )
+    }
+}
+
+impl HasLocallyFree for CostStack {
+    fn connective_used(&self) -> bool { self.cells.iter().any(signature_connective_used) }
+
+    fn locally_free(&self, _depth: i32) -> Vec<u8> {
+        self.cells
+            .iter()
+            .map(signature_locally_free)
+            .fold(Vec::new(), union)
     }
 }
 
@@ -229,8 +300,25 @@ impl HasLocallyFree for Connective {
         match &self.connective_instance {
             None | Some(VarRefBody(_)) => false,
             Some(
-                ConnAndBody(_) | ConnOrBody(_) | ConnNotBody(_) | ConnBool(_) | ConnInt(_)
-                | ConnString(_) | ConnUri(_) | ConnByteArray(_),
+                ConnAndBody(_)
+                | ConnOrBody(_)
+                | ConnNotBody(_)
+                | ConnBool(_)
+                | ConnInt(_)
+                | ConnString(_)
+                | ConnUri(_)
+                | ConnByteArray(_)
+                | ConnType(_)
+                | ConnInt32(_)
+                | ConnUint64(_)
+                | ConnUint32(_)
+                | ConnUint16(_)
+                | ConnUint8(_)
+                | ConnFloat64(_)
+                | ConnFloat32(_)
+                | ConnBigInt(_)
+                | ConnBigRat(_)
+                | ConnFixedPointBody(_),
             ) => true,
         }
     }
@@ -241,6 +329,11 @@ impl HasLocallyFree for Connective {
                 index,
                 depth: var_depth,
             })) if depth == *var_depth => create_bit_vector(&[*index as usize]),
+            Some(ConnFixedPointBody(body)) => body
+                .scale
+                .as_ref()
+                .map(|p| p.locally_free(depth))
+                .unwrap_or_default(),
             _ => Vec::new(),
         }
     }
@@ -568,6 +661,7 @@ mod tests {
             source: Some(marked_par(2)),
             remainder: None,
             free_count: 0,
+            cost_signature: None,
         };
         assert!(!bind.connective_used());
         assert_eq!(
@@ -580,6 +674,7 @@ mod tests {
             source: Some(free_par()),
             remainder: None,
             free_count: 1,
+            cost_signature: None,
         };
         assert!(dirty_bind.connective_used());
 

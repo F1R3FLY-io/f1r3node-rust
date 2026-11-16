@@ -75,7 +75,7 @@ impl APIServers {
         transfer_unforgeable: models::rhoapi::Par,
         network_id: String,
         shard_id: String,
-        min_phlo_price: i64,
+        min_phlo_price: shared::rust::token_amount::TokenAmount,
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,

@@ -20,11 +20,11 @@ pub struct CliqueOracle;
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ExactOracleResult {
     pub decision: bool,
-    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    #[serde(with = "shared::rust::decimal::unsigned::option")]
     pub total_stake: Option<BigInt>,
-    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    #[serde(with = "shared::rust::decimal::unsigned::option")]
     pub agreeing_stake: Option<BigInt>,
-    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    #[serde(with = "shared::rust::decimal::unsigned::option")]
     pub clique_weight: Option<BigInt>,
     pub early_return: Option<&'static str>,
 }
@@ -73,6 +73,9 @@ impl FtThreshold {
     }
 }
 
+/// Exact finalization test for θ = num/den: `strict=false` decides
+/// (2q−S)/S ≥ θ, `strict=true` decides > θ, both cleared of denominators as
+/// `2·q·den ⋛ S·(den+num)`. Expects den > 0 and num ∈ [-den, den].
 pub fn ft_decides_exact(
     agreeing: impl Into<BigInt>,
     q: impl Into<BigInt>,
@@ -97,13 +100,41 @@ pub fn ft_decides_exact(
 }
 
 pub struct CliqueOracleRunCache {
-    latest_justifications_cache: BTreeMap<V, BTreeMap<V, M>>,
+    latest_justifications_cache: BTreeMap<M, BTreeMap<V, M>>,
     self_justification_cache: BTreeMap<M, Option<M>>,
     ancestor_cache: BTreeMap<(M, M), bool>,
     yield_check_interval: usize,
     yield_timeslice: Duration,
+    max_latest_justifications_cache_entries: usize,
     max_self_justification_cache_entries: usize,
     max_ancestor_cache_entries: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OracleCacheBounds {
+    pub latest_justifications: usize,
+    pub self_justification: usize,
+    pub ancestor: usize,
+}
+
+pub type SharedOracleCache = tokio::sync::Mutex<CliqueOracleRunCache>;
+
+pub struct OracleCacheMeter {
+    cache: std::sync::Arc<SharedOracleCache>,
+}
+
+impl OracleCacheMeter {
+    pub fn new(cache: std::sync::Arc<SharedOracleCache>) -> Self { OracleCacheMeter { cache } }
+}
+
+impl WorkMeter for OracleCacheMeter {
+    const ENABLED: bool = false;
+
+    fn charge(&self, _: WorkKind, _: u64, _: u64) -> Result<(), KvStoreError> { Ok(()) }
+
+    fn expand(&self, _: usize) -> Result<(), KvStoreError> { Ok(()) }
+
+    fn oracle_cache(&self) -> Option<&(dyn std::any::Any + Send + Sync)> { Some(&*self.cache) }
 }
 
 impl CliqueOracle {
@@ -114,9 +145,18 @@ impl CliqueOracle {
             ancestor_cache: BTreeMap::new(),
             yield_check_interval: COOPERATIVE_YIELD_CHECK_INTERVAL,
             yield_timeslice: Duration::from_millis(COOPERATIVE_YIELD_TIMESLICE_MS),
+            max_latest_justifications_cache_entries: MAX_SELF_JUSTIFICATION_CACHE_ENTRIES,
             max_self_justification_cache_entries: MAX_SELF_JUSTIFICATION_CACHE_ENTRIES,
             max_ancestor_cache_entries: MAX_ANCESTOR_CACHE_ENTRIES,
         }
+    }
+
+    pub fn new_shared_cache(bounds: OracleCacheBounds) -> std::sync::Arc<SharedOracleCache> {
+        let mut cache = Self::new_run_cache();
+        cache.max_latest_justifications_cache_entries = bounds.latest_justifications;
+        cache.max_self_justification_cache_entries = bounds.self_justification;
+        cache.max_ancestor_cache_entries = bounds.ancestor;
+        std::sync::Arc::new(tokio::sync::Mutex::new(cache))
     }
 
     fn bounded_cache_insert<K: Ord + Clone, V>(
@@ -220,7 +260,7 @@ impl CliqueOracle {
         let mut result = HashMap::new();
         for (validator, weight) in meta.weight_map {
             meter.step(WorkKind::Oracle)?;
-            result.insert(validator, weight);
+            result.insert(validator, weight.into_bigint());
         }
         Ok(result)
     }
@@ -244,7 +284,7 @@ impl CliqueOracle {
         let mut participating = WeightMap::with_capacity(weight_map.len());
         for (validator, weight) in weight_map {
             let counts = match latest_messages.get(&validator) {
-                Some(latest) if dag.block_number_map.get(latest) == Some(&0) => {
+                Some(latest) if dag.block_number(latest)? == Some(0) => {
                     dag.lookup(latest)?.is_none_or(|block| {
                         block.sender == validator || block.weight_map.contains_key(&validator)
                     })
@@ -475,7 +515,7 @@ impl CliqueOracle {
                 pairwise_latest_messages.insert(validator.clone(), latest.clone());
 
                 let all_justifications =
-                    if let Some(cached) = run_cache.latest_justifications_cache.get(validator) {
+                    if let Some(cached) = run_cache.latest_justifications_cache.get(&latest) {
                         cached.clone()
                     } else {
                         let metadata = dag.lookup_unsafe_metered(meter, &latest)?;
@@ -487,9 +527,13 @@ impl CliqueOracle {
                                 justification.latest_block_hash.clone(),
                             );
                         }
-                        run_cache
-                            .latest_justifications_cache
-                            .insert(validator.clone(), all.clone());
+                        let max_entries = run_cache.max_latest_justifications_cache_entries;
+                        CliqueOracle::bounded_cache_insert(
+                            &mut run_cache.latest_justifications_cache,
+                            latest.clone(),
+                            all.clone(),
+                            max_entries,
+                        );
                         all
                     };
 
@@ -736,7 +780,7 @@ impl CliqueOracle {
         strict: bool,
     ) -> Result<ExactOracleResult, KvStoreError> {
         // Non-existing message: MIN ⇒ not finalized (mirrors ft_witnessed).
-        if !dag.contains(target_msg) {
+        if !dag.contains(target_msg)? {
             tracing::warn!(
                 ?target_msg,
                 "Exact fault tolerance for non existing message requested."
@@ -786,16 +830,35 @@ impl CliqueOracle {
                 early_return: Some("no_strict_majority"),
             });
         }
-        let mut run_cache = Self::new_run_cache();
-        let max_clique_weight = CliqueOracle::compute_max_clique_weight_metered(
-            meter,
-            target_msg,
-            &agreeing_weight_map,
-            dag,
-            &mut run_cache,
-            latest_messages,
-        )
-        .await?;
+        let shared = meter
+            .oracle_cache()
+            .and_then(|cache| cache.downcast_ref::<SharedOracleCache>());
+        let max_clique_weight = match shared {
+            Some(cache) => {
+                let mut run_cache = cache.lock().await;
+                CliqueOracle::compute_max_clique_weight_metered(
+                    meter,
+                    target_msg,
+                    &agreeing_weight_map,
+                    dag,
+                    &mut run_cache,
+                    latest_messages,
+                )
+                .await?
+            }
+            None => {
+                let mut run_cache = Self::new_run_cache();
+                CliqueOracle::compute_max_clique_weight_metered(
+                    meter,
+                    target_msg,
+                    &agreeing_weight_map,
+                    dag,
+                    &mut run_cache,
+                    latest_messages,
+                )
+                .await?
+            }
+        };
         let decision = ft_decides_exact(
             agreeing.clone(),
             max_clique_weight.clone(),
@@ -856,7 +919,7 @@ impl CliqueOracle {
         // Using tracing events for async - Span[F].traceI("normalized-fault-tolerance") from Scala
         tracing::debug!(target: "f1r3fly.casper.safety.clique_oracle", "normalized-fault-tolerance-started");
 
-        if dag.contains(target_msg) {
+        if dag.contains(target_msg)? {
             tracing::debug!("Calculating fault tolerance for {:?}.", target_msg);
             let committee =
                 CliqueOracle::get_corresponding_weight_map_metered(meter, target_msg, dag).await?;

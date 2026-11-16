@@ -189,6 +189,25 @@ mod tests {
     }
 
     #[test]
+    fn compute_synchrony_value_preserves_large_ratios_and_zero_denominator() {
+        let validator = Validator::from(vec![1u8]);
+        let unknown = Validator::from(vec![2u8]);
+        let seen_senders = HashSet::from([validator.clone(), unknown]);
+        for shift in [0, 64, 256, 1024] {
+            let unit = BigInt::from(1) << shift;
+            let weights = HashMap::from([(validator.clone(), &unit * 3)]);
+            let (seen, ratio) =
+                super::compute_synchrony_value(&seen_senders, &weights, &(&unit * 4));
+            assert_eq!(seen, &unit * 3);
+            assert_eq!(ratio, 0.75);
+        }
+        assert_eq!(
+            super::compute_synchrony_value(&HashSet::new(), &HashMap::new(), &0.into()),
+            (0.into(), 1.0)
+        );
+    }
+
+    #[test]
     fn compute_synchrony_value_with_all_senders_reaches_full_ratio() {
         let mut validator_weight_map = HashMap::new();
         let validator1 = Validator::from(vec![1u8]);
@@ -267,7 +286,7 @@ fn compute_synchrony_value(
     } else {
         BigRational::new(seen_senders_weight.clone(), other_validators_weight.clone())
             .to_f64()
-            .unwrap_or(0.0)
+            .expect("A BigInt ratio with a nonzero denominator cannot be NaN")
     };
 
     (seen_senders_weight, synchrony_constraint_value)
@@ -353,13 +372,17 @@ pub async fn check(
                 // local to the proposer, so this node's own latest messages decide.
                 let latest_messages: BTreeMap<Validator, BlockHash> = snapshot
                     .dag
-                    .latest_messages_map
+                    .latest_message_hashes()
                     .iter()
                     .map(|(validator, hash)| (validator.clone(), hash.clone()))
                     .collect();
                 let validator_weight_map: HashMap<Validator, BigInt> =
                     CliqueOracle::participating_weight_map(
-                        main_parent_meta.weight_map.into_iter().collect(),
+                        main_parent_meta
+                            .weight_map
+                            .into_iter()
+                            .map(|(validator, stake)| (validator, stake.into_bigint()))
+                            .collect(),
                         &snapshot.dag,
                         &latest_messages,
                     )?;
@@ -369,7 +392,7 @@ pub async fn check(
                     last_proposed_block_meta.clone(),
                     snapshot.dag.clone(),
                     &validator,
-                );
+                )?;
 
                 // This method can be called on readonly node or not active validator.
                 // So map validator -> stake might not have key associated with the node,
@@ -421,7 +444,7 @@ pub async fn check(
                             last_finalized_block_meta,
                             snapshot.dag.clone(),
                             &validator,
-                        );
+                        )?;
                         let (finalized_seen_senders_weight, finalized_synchrony_constraint_value) =
                             compute_synchrony_value(
                                 &finalized_seen_senders,
@@ -495,7 +518,7 @@ fn calculate_seen_senders_since(
     last_proposed: BlockMetadata,
     dag: KeyValueDagRepresentation,
     excluded_validator: &Validator,
-) -> HashSet<Validator> {
+) -> Result<HashSet<Validator>, CasperError> {
     let latest_messages = dag.latest_message_hashes();
     let mut seen_senders: HashSet<Validator> = HashSet::new();
 
@@ -540,7 +563,7 @@ fn calculate_seen_senders_since(
             continue;
         }
 
-        if let Ok(latest_block_number) = dag.block_number_unsafe(latest_block_hash) {
+        if let Some(latest_block_number) = dag.block_number(latest_block_hash)? {
             if should_count_fallback_sender(
                 latest_block_hash.as_ref(),
                 latest_block_number,
@@ -552,7 +575,7 @@ fn calculate_seen_senders_since(
         }
     }
 
-    seen_senders
+    Ok(seen_senders)
 }
 
 fn should_count_fallback_sender(

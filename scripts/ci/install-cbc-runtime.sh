@@ -43,7 +43,7 @@ publish_lock=""
 trap '
     rm -f "$checks"
     [ -z "$staging" ] || rm -rf "$staging"
-    [ -z "$publish_lock" ] || rmdir "$publish_lock"
+    [ -z "$publish_lock" ] || rm -f "$publish_lock"
 ' EXIT
 jq -r '.sha256|to_entries[]|"\(.value)  AItools/scripts/\(.key)"' "$lock" >"$checks"
 valid() {
@@ -73,9 +73,10 @@ while IFS= read -r path; do
 done < <(jq -r '.sha256|keys[]' "$lock")
 valid "$staging" || fail 'The downloaded CbC runtime differs from the lockfile.'
 find "$staging" -type f -exec chmod a-w {} +
+# noclobber creates the lock with O_EXCL; racing uutils `mkdir` calls can both succeed.
 for ((attempt=0; attempt<30; attempt++)); do
-    if mkdir "$cache/.publish-$identity" 2>/dev/null; then
-        publish_lock="$cache/.publish-$identity"
+    if (set -C; : >"$cache/.publish-$identity.lock") 2>/dev/null; then
+        publish_lock="$cache/.publish-$identity.lock"
         if [ ! -e "$destination" ] && [ ! -L "$destination" ]; then
             mv "$staging" "$destination"
             staging=""

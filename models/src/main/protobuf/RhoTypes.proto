@@ -45,6 +45,41 @@ message Par {
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
   bool connective_used = 10;
+  repeated CostSignedTerm cost_signed_terms = 13;
+  repeated CostStack cost_stacks = 14;
+}
+
+message CostSignature {
+  oneof value {
+    bytes ground = 1;
+    sint32 bound_level = 2;
+    Par quote = 3;
+    CostSignatureCompound compound = 4;
+    Par name = 5;
+    bool unit = 6;
+    uint32 signer = 7;
+  }
+}
+
+message CostSignatureCompound {
+  repeated CostSignature elements = 1;
+}
+
+message CostSignedTerm {
+  Par body = 1;
+  CostSignature signature = 2;
+  reserved 3;
+  ElaboratedSeal seal = 4;
+}
+
+message ElaboratedSeal {
+  int32 kind = 1;
+  bytes origin = 2;
+  uint64 phlo_limit = 3;
+}
+
+message CostStack {
+  repeated CostSignature cells = 1;
 }
 
 /**
@@ -61,6 +96,21 @@ message TaggedContinuation {
   // every spatial pattern has matched, so cross-channel guards see every
   // bound variable. Empty Par = no guard. See plan §7.12.
   Par guard = 3;
+  SealRecordProto seal = 4;
+}
+
+message SealOrigin {
+  bytes envelope = 1;
+  repeated bytes signers = 2;
+  uint64 phlo_price = 3;
+  uint64 phlo_limit = 4;
+}
+
+message SealRecordProto {
+  bytes owner = 1;
+  int32 kind = 2;
+  SealOrigin origin = 3;
+  reserved 4;
 }
 
 /**
@@ -84,6 +134,7 @@ message ListParWithRandom {
   repeated Par pars = 1;
   bytes randomState = 2
       [(scalapb.field).type = "coop.rchain.crypto.hash.Blake2b512Random"];
+  SealRecordProto seal = 3;
 }
 
 // While we use vars in both positions, when producing the normalized
@@ -131,6 +182,7 @@ message ReceiveBind {
   Par source = 2 [(scalapb.field).no_box = true];
   Var remainder = 3;
   int32 freeCount = 4;
+  CostSignature cost_signature = 5;
 }
 
 message BindPattern {
@@ -276,6 +328,21 @@ message Expr {
     uint32 g_uint32 = 41;          // Unsigned 32-bit integer (u32 suffix)
     uint32 g_uint16 = 42;          // Unsigned 16-bit integer (u16 suffix), always <= u16::MAX
     uint32 g_uint8 = 43;           // Unsigned 8-bit integer (u8 suffix), always <= u8::MAX
+
+    // Calculus of Constructions (Phase 1a): lambda abstraction and application.
+    // Terms-as-processes; types will reuse these variants plus EPi in a later
+    // phase. Binders are DeBruijn levels, same convention as `New`/`Receive`:
+    // a lambda introduces `bindCount` levels that the body references via
+    // `Var::bound_var`.
+    ELambda e_lambda_body = 44;
+    EApp e_app_body = 45;
+
+    // Calculus of Constructions (Phase 2a): dependent function type `(x: A)
+    // -> B`. `A -> B` surface syntax is sugar for `(_: A) -> B` where the
+    // binder is unused in `B`. Types-as-processes; a Pi value reduces to
+    // itself under β-WHNF (same as ELambda). Typechecker arrives in a later
+    // phase; for now Pi flows through the pipeline as an opaque value.
+    EPi e_pi_body = 46;
   }
 }
 
@@ -372,6 +439,44 @@ message EMethod {
 message KeyValuePair {
   Par key = 1 [(scalapb.field).no_box = true];
   Par value = 2 [(scalapb.field).no_box = true];
+}
+
+// Lambda abstraction. `bindCount` DeBruijn levels are bound in `body`.
+// Non-dependent (no per-binder type annotation yet); Phase 2 adds annotations
+// via a parallel ELambdaTyped or by widening this message.
+message ELambda {
+  sint32 bindCount = 1;
+  Par body = 2 [(scalapb.field).no_box = true];
+  bytes locallyFree = 3
+      [(scalapb.field).type =
+           "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
+  bool connective_used = 4;
+}
+
+// Function application. `args.len()` must equal `fun`'s ELambda bindCount at
+// reduction time; otherwise InterpreterError. Reduction is β-WHNF.
+message EApp {
+  Par fun = 1 [(scalapb.field).no_box = true];
+  repeated Par args = 2;
+  bytes locallyFree = 3
+      [(scalapb.field).type =
+           "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
+  bool connective_used = 4;
+}
+
+// Dependent function type. `bindCount` DeBruijn levels are bound in
+// `codomain`, each with the corresponding entry in `paramTypes`.
+// `paramTypes.len() == bindCount`. Non-dependent sugar `A -> B` is stored
+// as `Pi { bindCount: 1, paramTypes: [A], codomain: B }` with the binder
+// unused in `B`.
+message EPi {
+  sint32 bindCount = 1;
+  repeated Par paramTypes = 2;
+  Par codomain = 3 [(scalapb.field).no_box = true];
+  bytes locallyFree = 4
+      [(scalapb.field).type =
+           "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
+  bool connective_used = 5;
 }
 
 // A variable used as a var should be bound in a process context, not a name
@@ -493,7 +598,26 @@ message Connective {
     bool conn_string = 7;
     bool conn_uri = 8;
     bool conn_byte_array = 9;
+    bool conn_int32 = 10;
+    bool conn_uint64 = 11;
+    bool conn_uint32 = 12;
+    bool conn_uint16 = 13;
+    bool conn_uint8 = 14;
+    bool conn_float64 = 15;
+    bool conn_float32 = 16;
+    bool conn_big_int = 17;
+    bool conn_big_rat = 18;
+    ConnFixedPointBody conn_fixed_point_body = 19;
+    // CoC Phase 2c: the universe. `Type` is a process (a value) and
+    // also a pattern that matches any well-typed type-level process.
+    // Pattern-matching semantics arrive with the typechecker (Phase 2d
+    // onward); for now `Type` flows through as an opaque value.
+    bool conn_type = 20;
   }
+}
+
+message ConnFixedPointBody {
+  Par scale = 1 [(scalapb.field).no_box = true];
 }
 
 message VarRef {

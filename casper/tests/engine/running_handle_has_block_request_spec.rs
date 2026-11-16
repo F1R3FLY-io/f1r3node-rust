@@ -69,7 +69,7 @@ async fn running_handle_has_block_request_if_given_block_is_stored_should_send_b
     let ctx = TestContext::new().await;
     // given
     let sender = TestContext::peer_node("peer", 40400);
-    let block_lookup = |_hash: BlockHash| true;
+    let block_lookup = |_hash: BlockHash| Ok(true);
     // then
     ctx.fixture
         .engine
@@ -98,7 +98,7 @@ async fn running_handle_has_block_request_if_given_block_is_not_stored_in_block_
     // given
     let sender = TestContext::peer_node("peer", 40400);
 
-    let block_lookup = |_hash: BlockHash| false;
+    let block_lookup = |_hash: BlockHash| Ok(false);
     // then
     ctx.fixture
         .engine

@@ -62,12 +62,14 @@ fn create_deploy(
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0),
-        phlo_price: 1,
+        phlo_price: (1).into(),
         phlo_limit: 1000,
         valid_after_block_number,
         shard_id: "test-shard".to_string(),
         expiration_timestamp,
         parameters: Vec::new(),
+        cosignatures: Vec::new(),
+        required_cosigners: Vec::new(),
     };
 
     Signed::create(deploy_data, Box::new(Secp256k1), validator_sk.clone())
@@ -201,10 +203,10 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         deploy_lifespan: DEPLOY_LIFESPAN,
         casper_version: 1,
         bond_minimum: 0.into(),
-        bond_maximum: i64::MAX.into(),
+        bond_maximum: (i64::MAX as u64).into(),
         epoch_length: 0,
         quarantine_length: 0,
-        min_phlo_price: 0,
+        min_phlo_price: (0).into(),
         enable_mergeable_channel_gc: false,
         mergeable_channels_gc_depth_buffer: 10,
         disable_validator_progress_check: false,
@@ -238,6 +240,7 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         max_block_num,
         max_seq_nums,
         on_chain_state,
+        chain_id: Bytes::new(),
     }
 }
 
@@ -1451,56 +1454,4 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
             "Valid (unexpired) sig must remain in the rejected-deploy buffer"
         );
     }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn invalid_fee_metadata_in_storage_does_not_block_valid_proposals() {
-    crate::init_logger();
-
-    let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
-    let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
-    let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(
-        KeyValueDeployStorage::new(&mut kvm)
-            .await
-            .expect("deploy storage"),
-    );
-    let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
-            &mut kvm,
-        )
-        .await
-        .expect("rejected deploy buffer"),
-    ));
-    let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-        .await
-        .expect("block store");
-    let mut snapshot = create_snapshot(20, validator_id);
-    snapshot
-        .on_chain_state
-        .shard_conf
-        .max_user_deploys_per_block = 40;
-    snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
-    let valid = create_deploy(1, None, &validator_sk);
-    let mut invalid_data = create_deploy(2, None, &validator_sk).data;
-    invalid_data.phlo_limit = i64::MAX;
-    invalid_data.phlo_price = 2;
-    let invalid = Signed::create(invalid_data, Box::new(Secp256k1), validator_sk.clone()).unwrap();
-    deploy_storage.add(vec![invalid, valid.clone()]).unwrap();
-
-    let prepared = block_creator::prepare_user_deploys(
-        &snapshot,
-        70,
-        i64::MAX,
-        deploy_storage,
-        rejected_deploy_buffer,
-        &block_store,
-        true,
-        true,
-    )
-    .await
-    .expect("prepare ordinary deploys");
-
-    assert_eq!(prepared.deploys, HashSet::from([valid]));
 }

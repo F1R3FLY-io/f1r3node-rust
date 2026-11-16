@@ -1,6 +1,7 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/ChargingRSpace.scala
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use models::rhoapi::tagged_continuation::TaggedCont;
@@ -8,6 +9,7 @@ use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hot_store::HotStore;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceResult,
@@ -16,10 +18,12 @@ use rspace_plus_plus::rspace::trace::event::Produce;
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::util::unpack_option;
 
-use crate::rust::interpreter::accounting::_cost;
+use crate::rust::interpreter::accounting::comm_ledger::comm_cells;
 use crate::rust::interpreter::accounting::costs::{
     comm_event_storage_cost, event_storage_cost, storage_cost_consume, storage_cost_produce, Cost,
 };
+use crate::rust::interpreter::accounting::rev_stack::seal;
+use crate::rust::interpreter::accounting::{_cost, membrane};
 use crate::rust::interpreter::errors::InterpreterError;
 
 pub struct ChargingRSpace;
@@ -75,11 +79,38 @@ impl ChargingRSpace {
                 MaybeConsumeResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
                 RSpaceError,
             > {
-                self.cost
-                    .charge(storage_cost_consume(&channels, &patterns, &continuation))?;
+                let precharged = membrane::take_precharged();
+                let (consume_storage, reserve) =
+                    consume_issue(&channels, &patterns, &continuation, persist);
+                let channels_count = channels.len() as i64;
+                if !precharged {
+                    self.cost
+                        .charge_reserving(consume_storage.clone(), reserve)?;
+                }
 
                 let id = consume_id_bytes(&continuation)?;
-                let channels_count = channels.len() as i64;
+                if self.cost.storage_left_in_space().is_some() {
+                    let consume_res = self
+                        .space
+                        .consume(channels, patterns, continuation, persist, peeks)
+                        .await?;
+                    match consume_res.as_ref() {
+                        Some((cont, data_list)) => {
+                            left_in_space_match(cont, data_list, &Trigger::Consume, &self.cost)?
+                        }
+                        None => match with_rule(&self.cost, |rule| {
+                            rule.left_continuation(&id, seal::current())
+                        }) {
+                            true => membrane::settling(|| {
+                                self.cost.charge(event_storage_cost(channels_count))
+                            })?,
+                            false => {
+                                refund(&self.cost, consume_storage.value, "consume storage refund")?
+                            }
+                        },
+                    }
+                    return Ok(consume_res);
+                }
                 let consume_res = self
                     .space
                     .consume(channels, patterns, continuation, persist, peeks)
@@ -108,10 +139,51 @@ impl ChargingRSpace {
                 MaybeProduceResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
                 RSpaceError,
             > {
-                self.cost.charge(storage_cost_produce(&channel, &data))?;
+                let precharged = membrane::take_precharged();
+                if self.cost.storage_left_in_space().is_some() {
+                    let id = data.random_state.clone();
+                    let restored = with_rule(&self.cost, |rule| rule.restores(&id));
+                    let (produce_storage, reserve) = produce_issue(&channel, &data, persist);
+                    if !restored && !precharged {
+                        self.cost
+                            .charge_reserving(produce_storage.clone(), reserve)?;
+                    }
+                    with_rule(&self.cost, |rule| rule.announce_datum(&id, seal::current()));
+                    let produce_res = (self.space.produce(channel, data, persist)).await?;
+                    match produce_res.as_ref() {
+                        Some((cont, data_list, _)) => left_in_space_match(
+                            cont,
+                            data_list,
+                            &Trigger::Produce {
+                                id: id.clone(),
+                                restored,
+                            },
+                            &self.cost,
+                        )?,
+                        None if !restored => match with_rule(&self.cost, |rule| {
+                            rule.left_datum(&id, seal::current())
+                        }) {
+                            true => membrane::settling(|| self.cost.charge(event_storage_cost(1)))?,
+                            false => refund(
+                                &self.cost,
+                                produce_storage.value,
+                                "produces storage refund",
+                            )?,
+                        },
+                        None => {}
+                    }
+                    with_rule(&self.cost, |rule| rule.withdraw_announcement(&id));
+                    return Ok(produce_res);
+                }
+
+                let (produce_storage, reserve) = produce_issue(&channel, &data, persist);
+                if !precharged {
+                    self.cost
+                        .charge_reserving(produce_storage.clone(), reserve)?;
+                }
 
                 let id = data.random_state.clone();
-                let produce_res = self.space.produce(channel, data, persist).await?;
+                let produce_res = (self.space.produce(channel, data, persist)).await?;
                 handle_result(
                     produce_res
                         .as_ref()
@@ -142,6 +214,14 @@ impl ChargingRSpace {
 
             async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
                 self.space.get_data(channel).await
+            }
+
+            fn hot_store(
+                &self,
+            ) -> Option<
+                Arc<Box<dyn HotStore<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>,
+            > {
+                self.space.hot_store()
             }
 
             async fn get_data_at(
@@ -258,6 +338,10 @@ fn handle_result(
     triggered_by: TriggeredBy,
     cost: _cost,
 ) -> Result<(), InterpreterError> {
+    let trigger_produce = match &triggered_by {
+        TriggeredBy::Produce { id, .. } => Some(id.clone()),
+        TriggeredBy::Consume { .. } => None,
+    };
     let (triggered_by_id_bytes, triggered_by_channels_count, triggered_by_persistent) =
         match triggered_by {
             TriggeredBy::Consume {
@@ -268,30 +352,72 @@ fn handle_result(
             TriggeredBy::Produce { id, persistent, .. } => (id, 1, persistent),
         };
 
+    if let Some((cont, data_list)) = result {
+        let receive = seal::of_continuation(&cont.continuation).ok().flatten();
+        let sends: Vec<Option<seal::SealRecord>> = data_list
+            .iter()
+            .map(|data| {
+                if trigger_produce.as_ref() == Some(&data.removed_datum.random_state) {
+                    seal::current()
+                } else {
+                    data.removed_datum
+                        .seal
+                        .as_ref()
+                        .and_then(|p| seal::SealRecord::from_proto(p).ok())
+                }
+            })
+            .collect();
+        cost.comm_ledger().on_comm_between(comm_cells(
+            receive.as_ref(),
+            sends.iter().map(Option::as_ref),
+        ));
+    }
     match result {
-        Some((cont, data_list)) => {
+        Some((cont, data_list)) => membrane::settling(|| {
+            hold_replayed_comm(cont, data_list)?;
             let consume_id_bytes = consume_id_bytes(&cont.continuation)?;
 
             // We refund for non-persistent continuations, and for the persistent continuation triggering the comm.
             // That persistent continuation is going to be charged for (without refund) once it has no matches in TS.
-            let refund_for_consume =
-                if !cont.persistent || consume_id_bytes == triggered_by_id_bytes {
-                    storage_cost_consume(&cont.channels, &cont.patterns, &cont.continuation)
+            let triggered_by_consume = consume_id_bytes == triggered_by_id_bytes;
+            if !cont.persistent || triggered_by_consume {
+                let refund =
+                    storage_cost_consume(&cont.channels, &cont.patterns, &cont.continuation);
+                let payer = if triggered_by_consume {
+                    seal::current()
                 } else {
-                    Cost::create(0, "refund_for_consume")
+                    seal::of_continuation(&cont.continuation).ok().flatten()
                 };
+                seal::within_now(payer, || {
+                    cost.charge(Cost::create(-refund.value, "consume storage refund"))
+                })?;
+            } else {
+                cost.charge(Cost::create(0, "consume storage refund"))?;
+            }
 
-            let refund_for_produces =
-                refund_for_removing_produces(data_list, &cont.channels, &triggered_by_id_bytes);
-
-            cost.charge(Cost::create(
-                -refund_for_consume.value,
-                "consume storage refund",
-            ))?;
-            cost.charge(Cost::create(
-                -refund_for_produces.value,
-                "produces storage refund",
-            ))?;
+            let mut refunded = false;
+            for (data, channel) in data_list.iter().zip(cont.channels.iter()) {
+                let triggered_by_datum = data.removed_datum.random_state == triggered_by_id_bytes;
+                if data.persistent && !triggered_by_datum {
+                    continue;
+                }
+                let refund = storage_cost_produce(channel, &data.removed_datum);
+                let payer = if triggered_by_datum {
+                    seal::current()
+                } else {
+                    data.removed_datum
+                        .seal
+                        .as_ref()
+                        .and_then(|p| seal::SealRecord::from_proto(p).ok())
+                };
+                seal::within_now(payer, || {
+                    cost.charge(Cost::create(-refund.value, "produces storage refund"))
+                })?;
+                refunded = true;
+            }
+            if !refunded {
+                cost.charge(Cost::create(0, "produces storage refund"))?;
+            }
 
             let last_iteration = !triggered_by_persistent;
 
@@ -299,34 +425,149 @@ fn handle_result(
                 cost.charge(event_storage_cost(triggered_by_channels_count))?;
             }
 
-            cost.charge(comm_event_storage_cost(cont.channels.len() as i64))
-        }
-        None => cost.charge(event_storage_cost(triggered_by_channels_count)),
+            seal::within_now(
+                seal::of_continuation(&cont.continuation).ok().flatten(),
+                || cost.charge(comm_event_storage_cost(cont.channels.len() as i64)),
+            )
+        }),
+        None => membrane::settling(|| cost.charge(event_storage_cost(triggered_by_channels_count))),
     }
 }
 
-fn refund_for_removing_produces(
-    data_list: &[RSpaceResult<Par, ListParWithRandom>],
+pub fn produce_issue(channel: &Par, data: &ListParWithRandom, persist: bool) -> (Cost, i64) {
+    let storage = storage_cost_produce(channel, data);
+    let left = event_storage_cost(1).value;
+    let reserve = left + if persist { storage.value + left } else { 0 };
+    (storage, reserve)
+}
+
+pub fn consume_issue(
     channels: &[Par],
-    triggered_id_bytes: &[u8],
-) -> Cost {
-    data_list
+    patterns: &[BindPattern],
+    continuation: &TaggedContinuation,
+    persist: bool,
+) -> (Cost, i64) {
+    let storage = storage_cost_consume(channels, patterns, continuation);
+    let count = channels.len() as i64;
+    let left = event_storage_cost(count).value;
+    let reserve = left
+        + comm_event_storage_cost(count).value
+        + if persist { storage.value + left } else { 0 };
+    (storage, reserve)
+}
+
+fn hold_replayed_comm(
+    cont: &ContResult<Par, BindPattern, TaggedContinuation>,
+    data_list: &[RSpaceResult<Par, ListParWithRandom>],
+) -> Result<(), InterpreterError> {
+    let Some(meter) = seal::meter() else {
+        return Ok(());
+    };
+    if !meter.is_replay() {
+        return Ok(());
+    }
+    let covered = seal::holds_comm(
+        &meter,
+        &cont.continuation,
+        data_list.iter().map(|d| d.removed_datum.seal.clone()),
+        cont.channels.len(),
+    );
+    if covered {
+        Ok(())
+    } else {
+        Err(InterpreterError::ReduceError(
+            "a replayed COMM is not covered by the share of its wallets".to_string(),
+        ))
+    }
+}
+
+enum Trigger {
+    Consume,
+    Produce { id: Vec<u8>, restored: bool },
+}
+
+fn with_rule<T: Default>(
+    cost: &_cost,
+    f: impl FnOnce(&mut crate::rust::interpreter::accounting::storage_rule::LeftInSpace) -> T,
+) -> T {
+    cost.storage_left_in_space()
+        .as_mut()
+        .map(f)
+        .unwrap_or_default()
+}
+
+fn refund(cost: &_cost, amount: i64, operation: &'static str) -> Result<(), InterpreterError> {
+    if amount == 0 {
+        return Ok(());
+    }
+    cost.charge(Cost::create(-amount, operation))
+}
+
+fn left_in_space_match(
+    cont: &ContResult<Par, BindPattern, TaggedContinuation>,
+    data_list: &[RSpaceResult<Par, ListParWithRandom>],
+    trigger: &Trigger,
+    cost: &_cost,
+) -> Result<(), InterpreterError> {
+    hold_replayed_comm(cont, data_list)?;
+    let receive = seal::of_continuation(&cont.continuation).ok().flatten();
+    let sends: Vec<Option<seal::SealRecord>> = data_list
         .iter()
-        .zip(channels.iter())
-        // A persistent produce is charged for upfront before reaching the TS, and needs to be refunded
-        // after each iteration it matches an existing consume. We treat it as 'removed' on each such iteration.
-        // It is going to be 'not removed' and charged for on the last iteration, where it doesn't match anything.
-        .filter(|(data, _)| {
-            !data.persistent || data.removed_datum.random_state == triggered_id_bytes
+        .map(|data| {
+            let id = &data.removed_datum.random_state;
+            match trigger {
+                Trigger::Produce { id: trigger_id, .. } if id == trigger_id => seal::current(),
+                _ => match data
+                    .removed_datum
+                    .seal
+                    .as_ref()
+                    .map(seal::SealRecord::from_proto)
+                {
+                    Some(Ok(record)) => Some(record),
+                    _ => with_rule(cost, |rule| rule.datum_payer(id)).flatten(),
+                },
+            }
         })
-        .map(|(data, channel)| storage_cost_produce(channel, &data.removed_datum))
-        .fold(
-            Cost::create(0, "refund_for_removing_produces init"),
-            |acc, cost| {
-                Cost::create(
-                    acc.value + cost.value,
-                    "refund_for_removing_produces operation",
-                )
-            },
-        )
+        .collect();
+    let surfaces = comm_cells(receive.as_ref(), sends.iter().map(Option::as_ref));
+    let consume_storage = storage_cost_consume(&cont.channels, &cont.patterns, &cont.continuation);
+    match trigger {
+        Trigger::Consume => refund(cost, consume_storage.value, "consume storage refund")?,
+        Trigger::Produce { .. } if cont.persistent => {}
+        Trigger::Produce { .. } => {
+            let id = consume_id_bytes(&cont.continuation)?;
+            if let Some(payer) = with_rule(cost, |rule| rule.removed_continuation(&id)) {
+                let amount =
+                    consume_storage.value + event_storage_cost(cont.channels.len() as i64).value;
+                seal::within_now(payer, || refund(cost, amount, "consume storage refund"))?;
+            }
+        }
+    }
+
+    let mut produce_refund = 0;
+    for (data, channel) in data_list.iter().zip(cont.channels.iter()) {
+        let id = &data.removed_datum.random_state;
+        match trigger {
+            Trigger::Produce {
+                id: trigger_id,
+                restored,
+            } if id == trigger_id => {
+                if !restored {
+                    produce_refund += storage_cost_produce(channel, &data.removed_datum).value;
+                }
+            }
+            _ if data.persistent => {}
+            _ => {
+                if let Some(payer) = with_rule(cost, |rule| rule.removed_datum(id)) {
+                    let amount = storage_cost_produce(channel, &data.removed_datum).value
+                        + event_storage_cost(1).value;
+                    seal::within_now(payer, || refund(cost, amount, "produces storage refund"))?;
+                }
+            }
+        }
+    }
+    refund(cost, produce_refund, "produces storage refund")?;
+
+    cost.comm_ledger().on_comm_between(surfaces);
+    Ok(())
 }

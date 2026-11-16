@@ -22,4 +22,6 @@ pub trait Match<P, A, K>: Send + Sync {
     /// consume back so the messages stay in the tuple space and the
     /// continuation stays installed.
     fn check_commit(&self, _k: &K, _matched: &[A]) -> bool { true }
+
+    fn admits_waiting(&self, _k: &K) -> bool { true }
 }

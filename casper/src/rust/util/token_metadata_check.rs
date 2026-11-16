@@ -17,6 +17,7 @@ use models::rust::block::state_hash::StateHash;
 use rholang::rust::interpreter::rho_type::{RhoNumber, RhoString};
 
 use crate::rust::errors::CasperError;
+use crate::rust::rholang::runtime::ConsensusParameters;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 const TOKEN_METADATA_QUERY: &str = r#"
@@ -36,7 +37,12 @@ pub async fn read_on_chain_token_metadata(
     post_state_hash: &StateHash,
 ) -> Result<(String, String, u32), CasperError> {
     let (result, _cost) = runtime_manager
-        .play_exploratory_deploy(TOKEN_METADATA_QUERY.to_string(), post_state_hash, None)
+        .play_exploratory_deploy(
+            TOKEN_METADATA_QUERY.to_string(),
+            post_state_hash,
+            None,
+            Vec::new(),
+        )
         .await?;
 
     // The contract's "all" method returns a single tuple `(name, symbol, decimals)`
@@ -116,8 +122,7 @@ pub async fn read_on_chain_fault_tolerance_threshold_ppm(
         })
 }
 
-/// The CANONICAL read of the on-chain consensus parameters
-/// `(max-parent-depth, deploy-lifespan, min-phlo-price)`. Same policy as the
+/// The CANONICAL read of the on-chain consensus parameters. Same policy as the
 /// protocol FTT above: validity rules fork on these values, so absent is a
 /// HARD ERROR, never a fallback to local configuration — a node running its
 /// own copies would accept blocks its peers reject (and vice versa). Safe to
@@ -126,14 +131,14 @@ pub async fn read_on_chain_fault_tolerance_threshold_ppm(
 pub async fn read_on_chain_consensus_parameters(
     runtime_manager: &RuntimeManager,
     post_state_hash: &StateHash,
-) -> Result<(i32, i64, i64), CasperError> {
+) -> Result<ConsensusParameters, CasperError> {
     runtime_manager
         .get_consensus_parameters(post_state_hash)
         .await?
         .ok_or_else(|| {
             CasperError::RuntimeError(
                 "PoS contract exposes no getConsensusParameters: max-parent-depth, \
-                 deploy-lifespan and min-phlo-price are consensus values and MUST come \
+                 deploy-lifespan, min-phlo-price and epoch-length are consensus values and MUST come \
                  from chain state; refusing to fall back to local configuration (it \
                  would diverge this node's validity verdicts from its peers')"
                     .to_string(),

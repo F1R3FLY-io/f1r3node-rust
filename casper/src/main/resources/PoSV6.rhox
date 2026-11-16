@@ -1,0 +1,443 @@
+new PoS,
+    registryLookup(`rho:registry:lookup`),
+    listOpsCh,
+    pickActiveValidators,
+    runMVar,
+    rs(`rho:registry:insertSigned:secp256k1`),
+    sysAuthTokenOps(`sys:authToken:ops`),
+    RevBond(`rho:rev:bond`),
+    RevBondAdmin(`rho:rev:bondAdmin`),
+    uriOut
+in {
+  registryLookup!(`rho:lang:listOps`, *listOpsCh) |
+  for (@(_, ListOps) <- listOpsCh) {
+    new initialActiveCh, stateCh, lastEpochCh, settlePendingBonds in {
+      pickActiveValidators!($$initialBonds$$, *initialActiveCh) |
+      for (@initialActive <- initialActiveCh) {
+        lastEpochCh!(0) |
+        stateCh!({
+          "allBonds"          : $$initialBonds$$,
+          "activeValidators"  : initialActive,
+          "committedRewards"  : {},
+          "pendingWithdrawers": {},
+          "releases"          : {},
+          "pendingEnd"        : 0,
+          "randomImages"      : {},
+          "randomNumbers"     : {},
+          "pendingBonds"      : {},
+          "spentReceipts"     : Set(),
+        }) |
+        contract settlePendingBonds(doneCh) = {
+          new processCh in {
+            runMVar!(*stateCh, *processCh, *doneCh) |
+            for (@state, resultCh <- processCh) {
+              new foldedCh, settleOne in {
+                @ListOps!("fold", state.get("pendingBonds").toList(), state.set("pendingBonds", {}), *settleOne, *foldedCh) |
+                for (@settled <- foldedCh) { resultCh!(settled, (true, Nil)) } |
+                contract settleOne(@(pk, pendings), @current, retCh) = {
+                  new nativeCh in {
+                    RevBond!("balance", pk, *nativeCh) |
+                    for (@(_, native) <- nativeCh) {
+                      new admittedCh, admit in {
+                        contract admit(@(amount, handleCh), @(s, total), r) = {
+                          if (total + amount <= native) {
+                            new handleOfCh in {
+                              RevBondAdmin!("handleOf", pk, *handleOfCh) |
+                              for (@(_, handle) <- handleOfCh) {
+                                @handleCh!((true, handle)) |
+                                r!((s.set("allBonds", s.get("allBonds").set(pk, s.get("allBonds").getOrElse(pk, 0) + amount)),
+                                    total + amount))
+                              }
+                            }
+                          } else {
+                            @handleCh!((false, "The native bond does not cover this bond")) |
+                            r!((s, total))
+                          }
+                        } |
+                        new withdrawingCh, sumOne in {
+                          @ListOps!("fold", current.get("releases").toList(), 0, *sumOne, *withdrawingCh) |
+                          contract sumOne(@(_, entry), @sum, sumCh) = { sumCh!(sum + entry.getOrElse(pk, 0)) } |
+                          for (@withdrawing <- withdrawingCh) {
+                            @ListOps!("fold", pendings, (current, current.get("allBonds").getOrElse(pk, 0) + withdrawing), *admit, *admittedCh)
+                          }
+                        } |
+                        for (@(s, total) <- admittedCh) {
+                          if (native > total) {
+                            new releaseCh in {
+                              RevBondAdmin!("release", (pk, native - total), *releaseCh) |
+                              for (_ <- releaseCh) { retCh!(s) }
+                            }
+                          } else {
+                            retCh!(s)
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } |
+        contract PoS(@"getCurrentEpochRewards", returnCh) = {
+          for (@state <<- stateCh) {
+            new zero in {
+              @ListOps!("fold", state.get("allBonds").toList(), {}, *zero, *returnCh) |
+              contract zero(@(pk, _), @acc, outCh) = { outCh!(acc.set(pk, 0)) }
+            }
+          }
+        } |
+        contract PoS(@"getRewards", returnCh) = {
+          for (@state <<- stateCh) {
+            returnCh!(state.get("committedRewards"))
+          }
+        } |
+        contract PoS(@"getBonds", returnCh) = {
+          for (@state <<- stateCh) {
+            new convertBond in {
+              contract convertBond(@(pk, amount), @acc, ret) = {
+                ret!(acc.set(pk, amount.toBigInt()))
+              } |
+              @ListOps!("fold", state.get("allBonds").toList(), {}, *convertBond, *returnCh)
+            }
+          }
+        } |
+        contract PoS(@"getActiveValidators", returnCh) = {
+          for (@state <<- stateCh) {
+            returnCh!(state.get("activeValidators"))
+          }
+        } |
+        contract PoS(@"getWithdrawers", returnCh) = {
+          for (@state <<- stateCh) {
+            returnCh!(state.get("releases"))
+          }
+        } |
+        contract PoS(@"getPendingWithdrawer", returnCh) = {
+          for (@state <<- stateCh) {
+            returnCh!(state.get("pendingWithdrawers"))
+          }
+        } |
+        contract PoS(@"getEpochLength", returnCh) = {
+          returnCh!($$epochLength$$)
+        } |
+        contract PoS(@"getQuarantineLength", returnCh) = {
+          returnCh!($$quarantineLength$$)
+        } |
+        contract PoS(@"getFaultToleranceThresholdPpm", returnCh) = {
+          returnCh!($$faultToleranceThresholdPpm$$)
+        } |
+        contract PoS(@"getConsensusParameters", returnCh) = {
+          returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$n, $$epochLength$$))
+        } |
+        contract PoS(@"bond", @receipt, @amount, returnCh, handleCh) = {
+          new keyCh in {
+            RevBondAdmin!("receipt", receipt, *keyCh) |
+            for (@key <- keyCh) {
+              match key {
+                (false, message) => { returnCh!((false, message)) }
+                (true, userPk) => {
+                  new processCh in {
+                    runMVar!(*stateCh, *processCh, *returnCh) |
+                    for (@state, resultCh <- processCh) {
+                      if (state.get("spentReceipts").contains(receipt)) {
+                        resultCh!(state, (false, "This bond receipt is already spent."))
+                      } else if (state.get("allBonds").contains(userPk)) {
+                        resultCh!(state, (false, "Public key is already bonded."))
+                      } else if (not (amount matches Int)) {
+                        resultCh!(state, (false, "Bond amount must be an Int."))
+                      } else if (amount <= 0) {
+                        resultCh!(state, (false, "Bond amount must be positive."))
+                      } else if (amount.toBigInt() < $$minimumBond$$n) {
+                        resultCh!(state, (false, "Bond is less than minimum!"))
+                      } else if (amount.toBigInt() > $$maximumBond$$n) {
+                        resultCh!(state, (false, "Bond is greater than maximum!"))
+                      } else {
+                        resultCh!(state.set("pendingBonds",
+                                            state.get("pendingBonds").set(userPk,
+                                              state.get("pendingBonds").getOrElse(userPk, []) ++ [(amount, *handleCh)]))
+                                       .set("spentReceipts", state.get("spentReceipts").add(receipt)),
+                                  (true, Nil))
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } |
+        contract PoS(@"withdraw", @handle, returnCh) = {
+          new processCh, blockDataCh,
+              getBlockData(`rho:block:data`)
+          in {
+            runMVar!(*stateCh, *processCh, *returnCh) |
+            getBlockData!(*blockDataCh) |
+            for (@state, resultCh   <- processCh &
+                 @blockNumber, _, _ <- blockDataCh) {
+              new keyCh in {
+                RevBondAdmin!("handleKey", handle, *keyCh) |
+                for (@key <- keyCh) {
+                  match key {
+                    (false, message) => { resultCh!(state, (false, message)) }
+                    (true, userPk) => {
+                  if (state.get("allBonds").contains(userPk)) {
+                    match $$quarantineLength$$ + $$epochLength$$ * (1 + blockNumber / $$epochLength$$) {
+                      end => {
+                        resultCh!(
+                          state
+                            .set("pendingWithdrawers", state.get("pendingWithdrawers").set(userPk, end))
+                            .set("pendingEnd", end),
+                          (true, Nil))
+                      }
+                    }
+                  } else {
+                    resultCh!(state, (false, "User is not bonded"))
+                  }
+                }
+                  }
+                }
+              }
+            }
+          }
+        } |
+        contract PoS(@"slash", @deployerId, @blockHash, @sysAuthToken, returnCh) = {
+          new isValidTokenCh in {
+            sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+            for (@isValid <- isValidTokenCh) {
+              if (isValid) {
+                new invalidBlocksCh, stateProcessCh,
+                    getInvalidBlocks(`rho:casper:invalidBlocks`)
+                in {
+                  getInvalidBlocks!(*invalidBlocksCh) |
+                  runMVar!(*stateCh, *stateProcessCh, *returnCh) |
+                  for (@invalidBlocks        <- invalidBlocksCh &
+                       @state, stateUpdateCh <- stateProcessCh) {
+                    if (invalidBlocks.contains(blockHash)) {
+                      new slashCh in {
+                        match invalidBlocks.get(blockHash) {
+                          validator => {
+                            if (state.get("allBonds").getOrElse(validator, 0) <= 0) {
+                              stateUpdateCh!(state, (true, Nil))
+                            } else {
+                              RevBondAdmin!("slash", validator, *slashCh) |
+                              for (@slashResult <- slashCh) {
+                                match slashResult {
+                                  (true, _) => {
+                                    stateUpdateCh!(state
+                                      .set("allBonds", state.get("allBonds").set(validator, 0))
+                                      .set("activeValidators", state.get("activeValidators").delete(validator))
+                                      .set("committedRewards", state.get("committedRewards").delete(validator)),
+                                      (true, Nil))
+                                  }
+                                  (_, errorMessage) => {
+                                    stateUpdateCh!(state, (false, "slash failed: " ++ errorMessage))
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    } else {
+                      stateUpdateCh!(state, (false, "invalid slash evidence"))
+                    }
+                  }
+                }
+              } else {
+                returnCh!((false, "Invalid system auth token"))
+              }
+            }
+          }
+        } |
+        contract PoS(@"closeBlock", @sysAuthToken, ackCh) = {
+          new isValidTokenCh in {
+            sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+            for (@isValid <- isValidTokenCh) {
+              if (isValid) {
+                new settledCh, blockDataCh, getBlockData(`rho:block:data`) in {
+                  settlePendingBonds!(*settledCh) |
+                  for (_ <- settledCh) {
+                  getBlockData!(*blockDataCh) |
+                  for (@blockNumber, _, _ <- blockDataCh) {
+                  for (@lastEpoch <<- lastEpochCh) {
+                    if (blockNumber / $$epochLength$$ <= lastEpoch) {
+                      ackCh!((true, Nil))
+                    } else {
+                      for (_ <- lastEpochCh) { lastEpochCh!(blockNumber / $$epochLength$$) } |
+                      new stateProcessCh, movePendingWithdrawer, movePendingCh,
+                          removeQuarantinedWithdrawers, removeQuarantinedCh, newValidatorsCh
+                      in {
+                        runMVar!(*stateCh, *stateProcessCh, *ackCh) |
+                        for (@state, stateUpdateCh <- stateProcessCh) {
+                          movePendingWithdrawer!(state, *movePendingCh) |
+                          for (@moved <- movePendingCh) {
+                            removeQuarantinedWithdrawers!(blockNumber, moved, *removeQuarantinedCh) |
+                            for (@removed <- removeQuarantinedCh) {
+                              pickActiveValidators!(moved.get("allBonds"), *newValidatorsCh) |
+                              for (@newValidators <- newValidatorsCh) {
+                                stateUpdateCh!(removed.set("activeValidators", newValidators), (true, Nil))
+                              }
+                            }
+                          }
+                        } |
+                        contract movePendingWithdrawer(@state, returnCh) = {
+                          match state.get("pendingWithdrawers").size() {
+                            0 => { returnCh!(state) }
+                            _ => {
+                              returnCh!(state
+                                        .set("releases",
+                                             state.get("releases").set(state.get("pendingEnd"),
+                                               state.get("releases").getOrElse(state.get("pendingEnd"), {}) ++
+                                                 state.get("allBonds").diff(state.get("allBonds").diff(state.get("pendingWithdrawers")))))
+                                        .set("allBonds", state.get("allBonds").diff(state.get("pendingWithdrawers")))
+                                        .set("pendingWithdrawers", {}))
+                            }
+                          }
+                        } |
+                        contract removeQuarantinedWithdrawers(@currentBlockNumber, @state, returnCh) = {
+                          new dueCh, collectDue in {
+                            @ListOps!("fold", state.get("releases").keys().toList(), ([], state.get("releases")), *collectDue, *dueCh) |
+                            contract collectDue(@end, @(due, rest), resultCh) = {
+                              if (end <= currentBlockNumber) {
+                                resultCh!((due ++ rest.get(end).toList(), rest.delete(end)))
+                              } else {
+                                resultCh!((due, rest))
+                              }
+                            } |
+                            for (@(due, rest) <- dueCh) {
+                              if (due.length() == 0) {
+                                returnCh!(state.set("releases", rest))
+                              } else {
+                                new spawn, release, resultsCh, collect, failedCh, finish in {
+                                  spawn!(due) |
+                                  contract spawn(@entries) = {
+                                    match entries.length() {
+                                      0 => { Nil }
+                                      1 => { release!(entries.nth(0)) }
+                                      n => { spawn!(entries.slice(0, n / 2)) | spawn!(entries.slice(n / 2, n)) }
+                                    }
+                                  } |
+                                  contract release(@(pk, bonds)) = {
+                                    if (bonds <= 0) {
+                                      resultsCh!((pk, true, bonds))
+                                    } else {
+                                      new releaseCh in {
+                                        RevBondAdmin!("release", (pk, bonds), *releaseCh) |
+                                        for (@releaseResult <- releaseCh) {
+                                          match releaseResult {
+                                            (true, _) => { resultsCh!((pk, true, bonds)) }
+                                            _         => { resultsCh!((pk, false, bonds)) }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  } |
+                                  collect!(due.length(), {}) |
+                                  contract collect(@remaining, @failed) = {
+                                    if (remaining <= 0) {
+                                      failedCh!(failed)
+                                    } else {
+                                      for (@(pk, ok, bonds) <- resultsCh) {
+                                        if (ok) { collect!(remaining - 1, failed) }
+                                        else    { collect!(remaining - 1, failed.set(pk, failed.getOrElse(pk, 0) + bonds)) }
+                                      }
+                                    }
+                                  } |
+                                  for (@failed <- failedCh) {
+                                    match failed.size() {
+                                      0 => { finish!(rest) }
+                                      _ => { finish!(rest.set(currentBlockNumber, rest.getOrElse(currentBlockNumber, {}) ++ failed)) }
+                                    } |
+                                    for (@releases <- finish) {
+                                      returnCh!(state.set("releases", releases))
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                  }
+                  }
+                }
+              } else {
+                ackCh!((false, "Invalid system auth token"))
+              }
+            }
+          }
+        } |
+        contract PoS(@"commitRandomImage", @handle, @hash, ackCh) = {
+          new mvarCh in {
+            runMVar!(*stateCh, *mvarCh, *ackCh) |
+            for (@state, resultCh <- mvarCh) {
+              new keyCh in {
+                RevBondAdmin!("handleKey", handle, *keyCh) |
+                for (@key <- keyCh) {
+                  match key {
+                    (false, message) => { resultCh!(state, (false, message)) }
+                    (true, validator) => {
+                  if (state.get("randomImages").contains(validator)) {
+                    resultCh!(state, (false, "Image already committed"))
+                  } else {
+                    resultCh!(state.set("randomImages", state.get("randomImages").set(validator, hash)), true)
+                  }
+                }
+                  }
+                }
+              }
+            }
+          }
+        } |
+        contract PoS(@"revealRandom", @handle, @random, ackCh) = {
+          new mvarCh, computeHash(`rho:crypto:keccak256Hash`), hashCh in {
+            runMVar!(*stateCh, *mvarCh, *ackCh) |
+            computeHash!(random, *hashCh) |
+            for (@state, resultCh <- mvarCh &
+                 @hash            <- hashCh) {
+              new keyCh in {
+                RevBondAdmin!("handleKey", handle, *keyCh) |
+                for (@key <- keyCh) {
+                  match key {
+                    (false, message) => { resultCh!(state, (false, message)) }
+                    (true, validator) => {
+                  if (state.get("randomImages").contains(validator)) {
+                    if (hash == state.get("randomImages").get(validator)) {
+                      resultCh!(state.set("randomNumbers", state.get("randomNumbers").set(validator, random)), true)
+                    } else {
+                      resultCh!(state, (false, "Previously committed image doesn't match the random number"))
+                    }
+                  } else {
+                    resultCh!(state, (false, "Previously committed random image not found"))
+                  }
+                }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } |
+  contract runMVar(varCh, processCh, returnCh) = {
+    new resultCh in {
+      for (@v <- varCh) {
+        processCh!(v, *resultCh) |
+        for (@newV, @result <- resultCh) {
+          varCh!(newV) |
+          returnCh!(result)
+        }
+      }
+    }
+  } |
+  contract pickActiveValidators(@allBonds, returnCh) = {
+    returnCh!(allBonds.keys().toList().take($$numberOfActiveValidators$$).toSet())
+  } |
+  rs!(
+    "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e524e6f237cde5f80dbb921cac12e6500791e9a9ed1254a745a816fe1f".hexToBytes(),
+    (9223372036854775807, bundle+{*PoS}),
+    "3045022100cd1a32e04e21deb1bb3cd108cb0a3ab1357495f6ad99dfeb08eb17eaa082d388022015a9c5f9cd3b489a1fe3e359dbfe791ddd7d66e8a9a1dfb4978c980128c53f69".hexToBytes(),
+    *uriOut)
+}

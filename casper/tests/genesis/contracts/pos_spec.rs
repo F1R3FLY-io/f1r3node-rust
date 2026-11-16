@@ -142,7 +142,7 @@ fn prepare_vault(vault_data: (&str, u64)) -> Vault {
     Vault {
         vault_address: VaultAddress::from_public_key(&pk)
             .expect("Failed to create VaultAddress from public key"),
-        initial_balance: balance as u128,
+        initial_balance: balance.into(),
     }
 }
 

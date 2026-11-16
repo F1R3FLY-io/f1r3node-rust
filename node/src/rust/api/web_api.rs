@@ -6,26 +6,27 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use casper::rust::api::block_api::{
-    BlockAPI, DeployNotFoundError, InvalidHashError, InvalidPublicKeyError,
+    BlockAPI, DeployNotFoundError, DeployValidationError, InvalidHashError, InvalidPublicKeyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
+use casper::rust::v6::receipt::OfferedStatus;
 use casper::rust::ProposeFunction;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
 use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
 use crypto::rust::signatures::signed::Signed;
-#[cfg(feature = "schnorr_secp256k1_experimental")]
-use crypto::rust::signatures::{
-    frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1,
-};
 use eyre::{eyre, Result};
 use hex;
 use models::casper::LightBlockInfo;
 use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::deploy_parameters::{DeployParameter, RholangValue};
 use num_bigint::BigInt;
+use rholang::rust::interpreter::accounting::rev_stack::native;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use serde::{Deserialize, Serialize};
+use shared::rust::token_amount::TokenAmount;
 use tokio::time::sleep;
 use tracing::warn;
 use utoipa::ToSchema;
@@ -42,6 +43,43 @@ const FIND_DEPLOY_MAX_ATTEMPTS: u16 = 1;
 fn find_deploy_retry_interval_ms() -> u64 { FIND_DEPLOY_RETRY_INTERVAL_MS }
 
 fn find_deploy_max_attempts() -> u16 { FIND_DEPLOY_MAX_ATTEMPTS }
+
+// Balance- and registry-lookup Rholang templates. The user-supplied address
+// and URI are bound through deploy parameters (`rho:deploy:param:*`) and land
+// in the AST as leaf GString / GUri Pars at normalization time. The parser
+// never sees the user's bytes, so no closing quote or backtick in the input
+// can escape into Rholang code.
+pub(crate) const BALANCE_RHOLANG_TEMPLATE: &str = r#"new return, rl(`rho:registry:lookup`), systemVaultCh, vaultCh, balanceCh,
+    addressParam(`rho:deploy:param:address`) in {
+  rl!(`rho:vault:system`, *systemVaultCh) |
+  for (@(_, SystemVault) <- systemVaultCh) {
+    @SystemVault!("findOrCreate", *addressParam, *vaultCh) |
+    for (@either <- vaultCh) {
+      match either {
+        (true, vault) => {
+          @vault!("balance", *balanceCh) |
+          for (@balance <- balanceCh) {
+            return!(balance)
+          }
+        }
+        (false, errorMsg) => {
+          return!(errorMsg)
+        }
+      }
+    }
+  }
+}"#;
+
+pub(crate) const REGISTRY_RHOLANG_TEMPLATE: &str = r#"new return, rl(`rho:registry:lookup`), ch,
+    uriParam(`rho:deploy:param:uri`) in {
+  rl!(*uriParam, *ch) |
+  for (@val <- ch) {
+    match val {
+      (true, data) => { return!(data) }
+      (false, _)   => { return!("not found") }
+    }
+  }
+}"#;
 
 /// Web API trait defining the interface for HTTP endpoints
 #[async_trait::async_trait]
@@ -76,6 +114,10 @@ pub trait WebApi {
 
     /// Find a deploy by ID with the specified view.
     async fn find_deploy(&self, deploy_id: String, view: ViewMode) -> Result<DeployResponse>;
+
+    async fn offered_receipt(&self, _deploy_id: String) -> Result<OfferedReceiptResponse> {
+        Err(eyre!("offer status is not available on this node"))
+    }
 
     /// Perform exploratory deploy against the requested block or the LFB post-state.
     async fn exploratory_deploy(
@@ -181,7 +223,7 @@ pub struct PendingDeployJson {
     pub term: String,
     pub timestamp: i64,
     #[serde(rename = "phloPrice")]
-    pub phlo_price: i64,
+    pub phlo_price: String,
     #[serde(rename = "phloLimit")]
     pub phlo_limit: i64,
     #[serde(rename = "validAfterBlockNumber")]
@@ -232,7 +274,7 @@ pub struct WebApiImpl {
     dev_mode: bool,
     network_id: String,
     shard_id: String,
-    min_phlo_price: i64,
+    min_phlo_price: TokenAmount,
     native_token_name: String,
     native_token_symbol: String,
     native_token_decimals: u32,
@@ -248,6 +290,56 @@ pub struct WebApiImpl {
     epoch_length: i32,
     quarantine_length: i32,
     is_ready: Arc<AtomicBool>,
+    wallet_path: WalletPath,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WalletPath {
+    #[default]
+    Legacy,
+    Native,
+}
+
+fn balance_query_term(
+    wallet_path: WalletPath,
+    address: &str,
+) -> Result<(String, Vec<DeployParameter>)> {
+    if !VaultAddress::is_valid(address) {
+        return Err(eyre!("Invalid REV address {}", address));
+    }
+    match wallet_path {
+        WalletPath::Native => Ok((
+            native::balance_term(address).map_err(|e| eyre!(e))?,
+            Vec::new(),
+        )),
+        WalletPath::Legacy => Ok((BALANCE_RHOLANG_TEMPLATE.to_string(), vec![
+            DeployParameter {
+                name: "address".to_string(),
+                value: RholangValue::String(address.to_string()),
+            },
+        ])),
+    }
+}
+
+fn balance_from_result(wallet_path: WalletPath, address: &str, pars: Vec<Par>) -> Result<String> {
+    match wallet_path {
+        WalletPath::Native => {
+            let first = pars
+                .first()
+                .ok_or_else(|| eyre!("No balance result for address {}", address))?;
+            native::parse_balance(first)
+                .map(|balance| balance.to_string())
+                .map_err(|e| eyre!("Balance lookup for address {} failed: {}", address, e))
+        }
+        WalletPath::Legacy => {
+            let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
+            match exprs.first() {
+                Some(RhoExpr::ExprBigInt { data }) => Ok(data.clone()),
+                Some(RhoExpr::ExprInt { data }) => Ok(data.to_string()),
+                _ => Err(eyre!("Unexpected balance result for address {}", address)),
+            }
+        }
+    }
 }
 
 impl WebApiImpl {
@@ -256,7 +348,7 @@ impl WebApiImpl {
         dev_mode: bool,
         network_id: String,
         shard_id: String,
-        min_phlo_price: i64,
+        min_phlo_price: TokenAmount,
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
@@ -294,7 +386,13 @@ impl WebApiImpl {
             epoch_length,
             quarantine_length,
             is_ready,
+            wallet_path: WalletPath::default(),
         }
+    }
+
+    pub fn with_wallet_path(mut self, wallet_path: WalletPath) -> Self {
+        self.wallet_path = wallet_path;
+        self
     }
     /// Resolve a block hash to query against. If provided, use it; otherwise use LFB.
     /// Returns (block_hash, block_number).
@@ -336,6 +434,7 @@ impl WebApiImpl {
             false,
             self.dev_mode,
             None,
+            Vec::new(),
         )
         .await?;
 
@@ -350,7 +449,7 @@ impl WebApiImpl {
         &self,
         method: &str,
         resolved_hash: &str,
-    ) -> Result<HashMap<String, BigInt>> {
+    ) -> Result<HashMap<String, TokenAmount>> {
         let expr = self.get_pos_value(method, resolved_hash).await?;
         parse_amount_map(method, &expr)
     }
@@ -359,7 +458,7 @@ impl WebApiImpl {
         &self,
         method: &str,
         resolved_hash: &str,
-    ) -> Result<HashMap<String, HashMap<String, BigInt>>> {
+    ) -> Result<HashMap<String, HashMap<String, TokenAmount>>> {
         let expr = self.get_pos_value(method, resolved_hash).await?;
         parse_nested_amount_map(method, &expr)
     }
@@ -498,12 +597,15 @@ impl WebApi for WebApiImpl {
 
         // Advertise the floor admission and validity actually enforce — the
         // chain-adopted value; local conf only until casper is up.
-        let min_phlo_price = match self.engine_cell.get().await.with_casper() {
-            Some(casper) => casper.casper_shard_conf().min_phlo_price,
-            None => self.min_phlo_price,
+        let (min_phlo_price, epoch_length) = match self.engine_cell.get().await.with_casper() {
+            Some(casper) => (
+                casper.casper_shard_conf().min_phlo_price.clone(),
+                casper.casper_shard_conf().epoch_length,
+            ),
+            None => (self.min_phlo_price.clone(), self.epoch_length),
         };
-        let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
-            lfb_number / self.epoch_length as i64
+        let current_epoch = if epoch_length > 0 && lfb_number >= 0 {
+            lfb_number / epoch_length as i64
         } else {
             0
         };
@@ -518,7 +620,7 @@ impl WebApi for WebApiImpl {
             shard_id: self.shard_id.clone(),
             peers,
             nodes,
-            min_phlo_price,
+            min_phlo_price: min_phlo_price.to_string(),
             peer_list,
             native_token_name: self.native_token_name.clone(),
             native_token_symbol: self.native_token_symbol.clone(),
@@ -528,7 +630,7 @@ impl WebApi for WebApiImpl {
             is_read_only: self.is_node_read_only,
             is_ready,
             current_epoch,
-            epoch_length: self.epoch_length,
+            epoch_length,
         })
     }
 
@@ -626,6 +728,15 @@ impl WebApi for WebApiImpl {
                 .map(|block| BlockInfoSerde::from_light(LightBlockInfoSerde::from(block)))
                 .collect())
         }
+    }
+
+    async fn offered_receipt(&self, deploy_id: String) -> Result<OfferedReceiptResponse> {
+        let id = parse_offered_id(&deploy_id)?;
+        let status = BlockAPI::offered_status(&self.engine_cell, &id).await?;
+        Ok(OfferedReceiptResponse::from_status(
+            hex::encode(&id),
+            status,
+        ))
     }
 
     async fn find_deploy(&self, deploy_id: String, view: ViewMode) -> Result<DeployResponse> {
@@ -769,6 +880,7 @@ impl WebApi for WebApiImpl {
             use_pre_state_hash,
             self.dev_mode,
             None,
+            Vec::new(),
         )
         .await?;
 
@@ -856,7 +968,7 @@ impl WebApi for WebApiImpl {
                 PendingDeployJson {
                     term: dd.term.clone(),
                     timestamp: dd.time_stamp,
-                    phlo_price: dd.phlo_price,
+                    phlo_price: dd.phlo_price.to_string(),
                     phlo_limit: dd.phlo_limit,
                     valid_after_block_number: dd.valid_after_block_number,
                     shard_id: dd.shard_id.clone(),
@@ -880,27 +992,7 @@ impl WebApi for WebApiImpl {
         address: String,
         block_hash: Option<String>,
     ) -> Result<BalanceResponse> {
-        let term = format!(
-            r#"new return, rl(`rho:registry:lookup`), systemVaultCh, vaultCh, balanceCh in {{
-  rl!(`rho:vault:system`, *systemVaultCh) |
-  for (@(_, SystemVault) <- systemVaultCh) {{
-    @SystemVault!("findOrCreate", "{address}", *vaultCh) |
-    for (@either <- vaultCh) {{
-      match either {{
-        (true, vault) => {{
-          @vault!("balance", *balanceCh) |
-          for (@balance <- balanceCh) {{
-            return!(balance)
-          }}
-        }}
-        (false, errorMsg) => {{
-          return!(errorMsg)
-        }}
-      }}
-    }}
-  }}
-}}"#
-        );
+        let (term, parameters) = balance_query_term(self.wallet_path, &address)?;
 
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
@@ -911,15 +1003,11 @@ impl WebApi for WebApiImpl {
             false,
             self.dev_mode,
             None,
+            parameters,
         )
         .await?;
 
-        let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
-        let balance = match exprs.first() {
-            Some(RhoExpr::ExprBigInt { data }) => data.clone(),
-            Some(RhoExpr::ExprInt { data }) => data.to_string(),
-            _ => return Err(eyre!("Unexpected balance result for address {}", address)),
-        };
+        let balance = balance_from_result(self.wallet_path, &address, pars)?;
 
         Ok(BalanceResponse {
             address,
@@ -934,17 +1022,12 @@ impl WebApi for WebApiImpl {
         uri: String,
         block_hash: Option<String>,
     ) -> Result<RegistryResponse> {
-        let term = format!(
-            r#"new return, rl(`rho:registry:lookup`), ch in {{
-  rl!(`{uri}`, *ch) |
-  for (@val <- ch) {{
-    match val {{
-      (true, data) => {{ return!(data) }}
-      (false, _)   => {{ return!("not found") }}
-    }}
-  }}
-}}"#
-        );
+        let term = REGISTRY_RHOLANG_TEMPLATE.to_string();
+
+        let parameters = vec![DeployParameter {
+            name: "uri".to_string(),
+            value: RholangValue::Uri(uri.clone()),
+        }];
 
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
@@ -955,6 +1038,7 @@ impl WebApi for WebApiImpl {
             false,
             self.dev_mode,
             None,
+            parameters,
         )
         .await?;
 
@@ -976,16 +1060,13 @@ impl WebApi for WebApiImpl {
             .await?;
 
         let mut validators = Vec::new();
-        let mut total_stake = BigInt::from(0);
-        let mut total_self_stake = BigInt::from(0);
-        let mut total_delegated_stake = BigInt::from(0);
-
         for (public_key, effective_stake) in effective_bonds {
-            let self_stake = self_bonds.get(&public_key).cloned().unwrap_or_default();
-            let delegated_stake = &effective_stake - &self_stake;
-            total_stake += &effective_stake;
-            total_self_stake += &self_stake;
-            total_delegated_stake += &delegated_stake;
+            let self_stake = self_bonds
+                .get(&public_key)
+                .cloned()
+                .unwrap_or_else(TokenAmount::zero);
+            let delegated_stake =
+                delegated_part("getEffectiveBonds", &effective_stake, &self_stake)?;
             validators.push(ValidatorInfo {
                 public_key,
                 stake: effective_stake,
@@ -994,6 +1075,12 @@ impl WebApi for WebApiImpl {
             });
         }
 
+        let total_stake = sum_validator_stakes(&validators);
+        let total_self_stake = validators.iter().map(|v| v.self_stake.as_bigint()).sum();
+        let total_delegated_stake = validators
+            .iter()
+            .map(|v| v.delegated_stake.as_bigint())
+            .sum();
         Ok(ValidatorsResponse {
             validators,
             total_stake,
@@ -1046,7 +1133,10 @@ impl WebApi for WebApiImpl {
     async fn get_epoch(&self, block_hash: Option<String>) -> Result<EpochResponse> {
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
-        let epoch_length = self.epoch_length as i64;
+        let epoch_length = match self.engine_cell.get().await.with_casper() {
+            Some(casper) => casper.casper_shard_conf().epoch_length,
+            None => self.epoch_length,
+        } as i64;
         let quarantine_length = self.quarantine_length as i64;
 
         let current_epoch = if epoch_length > 0 {
@@ -1097,6 +1187,7 @@ impl WebApi for WebApiImpl {
             false,
             self.dev_mode,
             deployer_pk,
+            Vec::new(),
         )
         .await?;
 
@@ -1126,6 +1217,7 @@ impl WebApi for WebApiImpl {
             false,
             self.dev_mode,
             None,
+            Vec::new(),
         )
         .await?;
 
@@ -1156,13 +1248,13 @@ impl WebApi for WebApiImpl {
             .await?;
         let self_stake = self_bonds.get(&pubkey).cloned();
         let effective_stake = effective_bonds.get(&pubkey).cloned();
-        let is_bonded = self_stake
-            .as_ref()
-            .is_some_and(|stake| *stake > BigInt::from(0));
-        let delegated_stake = effective_stake
-            .as_ref()
-            .zip(self_stake.as_ref())
-            .map(|(effective, own)| effective - own);
+        let is_bonded = self_stake.as_ref().is_some_and(|stake| !stake.is_zero());
+        let delegated_stake = match (effective_stake.as_ref(), self_stake.as_ref()) {
+            (Some(effective), Some(own)) => {
+                Some(delegated_part("getEffectiveBonds", effective, own)?)
+            }
+            _ => None,
+        };
 
         Ok(ValidatorStatusResponse {
             public_key: pubkey,
@@ -1213,9 +1305,13 @@ pub enum RhoExpr {
         data: bool,
     },
     ExprInt {
+        #[serde(with = "shared::rust::decimal::signed")]
+        #[schema(value_type = String)]
         data: i64,
     },
     ExprUint64 {
+        #[serde(with = "shared::rust::decimal::signed")]
+        #[schema(value_type = String)]
         data: u64,
     },
     ExprInt32 {
@@ -1513,7 +1609,7 @@ pub struct ApiStatus {
     pub peers: i32,
     pub nodes: i32,
     #[serde(rename = "minPhloPrice")]
-    pub min_phlo_price: i64,
+    pub min_phlo_price: String,
     #[serde(rename = "peerList")]
     pub peer_list: Vec<PeerInfoData>,
     /// Full display name of the native token. Baked into genesis state via
@@ -1552,6 +1648,87 @@ pub struct VersionInfo {
     pub node: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferedRejectionJson {
+    pub reason: String,
+    pub pre_state_root: Option<String>,
+    pub block_number: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferedReceiptJson {
+    pub outcome: String,
+    pub comm_phlo: u64,
+    pub compute_phlo: u64,
+    pub event_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferedReceiptResponse {
+    pub deploy_id: String,
+    pub status: String,
+    pub block_hash: Option<String>,
+    pub rejection: Option<OfferedRejectionJson>,
+    pub receipt: Option<OfferedReceiptJson>,
+}
+
+pub fn parse_offered_id(deploy_id: &str) -> Result<Vec<u8>> {
+    match hex::decode(deploy_id.trim_start_matches("0x")) {
+        Ok(id) if !id.is_empty() => Ok(id),
+        _ => Err(eyre::Report::new(InvalidHashError(format!(
+            "'{}' is not a hex deploy id",
+            deploy_id
+        )))),
+    }
+}
+
+impl OfferedReceiptResponse {
+    pub fn from_status(deploy_id: String, status: OfferedStatus) -> Self {
+        let mut response = OfferedReceiptResponse {
+            deploy_id,
+            status: String::new(),
+            block_hash: None,
+            rejection: None,
+            receipt: None,
+        };
+        response.status = match status {
+            OfferedStatus::Unknown => "unknown",
+            OfferedStatus::Pending => "pending",
+            OfferedStatus::Rejected(rejection) => {
+                response.rejection = Some(OfferedRejectionJson {
+                    reason: rejection.reason,
+                    pre_state_root: rejection.pre_state_root.map(hex::encode),
+                    block_number: rejection.block_number,
+                });
+                "rejected"
+            }
+            OfferedStatus::Ordered { block_hash } => {
+                response.block_hash = Some(hex::encode(block_hash));
+                "ordered"
+            }
+            OfferedStatus::NotRetained { block_hash } => {
+                response.block_hash = Some(hex::encode(block_hash));
+                "notRetained"
+            }
+            OfferedStatus::Executed(receipt) => {
+                response.block_hash = Some(hex::encode(&receipt.block_hash));
+                response.receipt = Some(OfferedReceiptJson {
+                    outcome: format!("{:?}", receipt.outcome),
+                    comm_phlo: receipt.comm_phlo,
+                    compute_phlo: receipt.compute_phlo,
+                    event_count: receipt.event_count,
+                });
+                "executed"
+            }
+        }
+        .to_string();
+        response
+    }
+}
+
 /// Unified deploy response. Default (full) includes all fields.
 /// Summary view (`?view=summary`) omits Optional fields for lightweight polling.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1581,7 +1758,7 @@ pub struct DeployResponse {
     #[serde(skip_serializing_if = "Option::is_none", rename = "systemDeployError")]
     pub system_deploy_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "phloPrice")]
-    pub phlo_price: Option<i64>,
+    pub phlo_price: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "phloLimit")]
     pub phlo_limit: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "sigAlgorithm")]
@@ -1638,17 +1815,14 @@ pub struct RegistryResponse {
 pub struct ValidatorInfo {
     #[serde(rename = "publicKey")]
     pub public_key: String,
-    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
     #[schema(value_type = String)]
-    pub stake: BigInt,
+    pub stake: TokenAmount,
     #[serde(rename = "selfStake")]
-    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
     #[schema(value_type = String)]
-    pub self_stake: BigInt,
+    pub self_stake: TokenAmount,
     #[serde(rename = "delegatedStake")]
-    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
     #[schema(value_type = String)]
-    pub delegated_stake: BigInt,
+    pub delegated_stake: TokenAmount,
 }
 
 /// Active validator set response
@@ -1656,15 +1830,15 @@ pub struct ValidatorInfo {
 pub struct ValidatorsResponse {
     pub validators: Vec<ValidatorInfo>,
     #[serde(rename = "totalStake")]
-    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[serde(with = "shared::rust::decimal::unsigned")]
     #[schema(value_type = String)]
     pub total_stake: BigInt,
     #[serde(rename = "totalSelfStake")]
-    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[serde(with = "shared::rust::decimal::unsigned")]
     #[schema(value_type = String)]
     pub total_self_stake: BigInt,
     #[serde(rename = "totalDelegatedStake")]
-    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[serde(with = "shared::rust::decimal::unsigned")]
     #[schema(value_type = String)]
     pub total_delegated_stake: BigInt,
     #[serde(rename = "blockNumber")]
@@ -1675,9 +1849,8 @@ pub struct ValidatorsResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
 pub struct PendingUndelegationInfo {
-    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
     #[schema(value_type = String)]
-    pub amount: BigInt,
+    pub amount: TokenAmount,
     #[serde(rename = "unlockBlock")]
     pub unlock_block: i64,
 }
@@ -1686,31 +1859,27 @@ pub struct PendingUndelegationInfo {
 pub struct DelegationEntry {
     #[serde(rename = "validatorPublicKey")]
     pub validator_public_key: String,
-    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
     #[schema(value_type = String)]
-    pub amount: BigInt,
+    pub amount: TokenAmount,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
 pub struct PendingUndelegationEntry {
     #[serde(rename = "validatorPublicKey")]
     pub validator_public_key: String,
-    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
     #[schema(value_type = String)]
-    pub amount: BigInt,
+    pub amount: TokenAmount,
     #[serde(rename = "unlockBlock")]
     pub unlock_block: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DelegationsResponse {
-    #[serde(with = "models::rust::serde_helpers::nested_decimal_bigint_map")]
     #[schema(value_type = HashMap<String, HashMap<String, String>>)]
-    pub delegations: HashMap<String, HashMap<String, BigInt>>,
+    pub delegations: HashMap<String, HashMap<String, TokenAmount>>,
     #[serde(rename = "delegatedTotals")]
-    #[serde(with = "models::rust::serde_helpers::decimal_bigint_map")]
     #[schema(value_type = HashMap<String, String>)]
-    pub delegated_totals: HashMap<String, BigInt>,
+    pub delegated_totals: HashMap<String, TokenAmount>,
     #[serde(rename = "delegatorRewards")]
     pub delegator_rewards: HashMap<String, String>,
     #[serde(rename = "pendingUndelegations")]
@@ -1732,17 +1901,24 @@ pub struct DelegatorStateResponse {
     #[serde(rename = "claimableRewards")]
     pub claimable_rewards: String,
     #[serde(rename = "totalActiveDelegated")]
-    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[serde(with = "shared::rust::decimal::unsigned")]
     #[schema(value_type = String)]
     pub total_active_delegated: BigInt,
     #[serde(rename = "totalPendingUndelegation")]
-    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[serde(with = "shared::rust::decimal::unsigned")]
     #[schema(value_type = String)]
     pub total_pending_undelegation: BigInt,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]
     pub block_hash: String,
+}
+
+fn sum_validator_stakes(validators: &[ValidatorInfo]) -> BigInt {
+    validators
+        .iter()
+        .map(|validator| validator.stake.as_bigint())
+        .sum()
 }
 
 /// Epoch info response
@@ -1803,17 +1979,14 @@ pub struct ValidatorStatusResponse {
     pub public_key: String,
     #[serde(rename = "isBonded")]
     pub is_bonded: bool,
-    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
     #[schema(value_type = Option<String>)]
-    pub stake: Option<BigInt>,
+    pub stake: Option<TokenAmount>,
     #[serde(rename = "selfStake")]
-    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
     #[schema(value_type = Option<String>)]
-    pub self_stake: Option<BigInt>,
+    pub self_stake: Option<TokenAmount>,
     #[serde(rename = "delegatedStake")]
-    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
     #[schema(value_type = Option<String>)]
-    pub delegated_stake: Option<BigInt>,
+    pub delegated_stake: Option<TokenAmount>,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]
@@ -1829,7 +2002,7 @@ pub struct BondStatusResponse {
     pub is_bonded: bool,
 }
 
-fn parse_stake_amount(method: &str, value: &RhoExpr) -> Result<BigInt> {
+fn parse_stake_amount(method: &str, value: &RhoExpr) -> Result<TokenAmount> {
     let amount = match value {
         RhoExpr::ExprInt { data } => BigInt::from(*data),
         RhoExpr::ExprBigInt { data } => data.parse::<BigInt>()?,
@@ -1841,13 +2014,21 @@ fn parse_stake_amount(method: &str, value: &RhoExpr) -> Result<BigInt> {
             ))
         }
     };
-    if amount < BigInt::from(0) {
-        return Err(eyre!("Negative staking amount from {}", method));
-    }
-    Ok(amount)
+    TokenAmount::new(amount)
+        .map_err(|error| eyre!("Invalid staking amount from {}: {}", method, error))
 }
 
-fn parse_amount_map(method: &str, expr: &RhoExpr) -> Result<HashMap<String, BigInt>> {
+fn delegated_part(method: &str, effective: &TokenAmount, own: &TokenAmount) -> Result<TokenAmount> {
+    TokenAmount::new(effective.as_bigint() - own.as_bigint()).map_err(|error| {
+        eyre!(
+            "Effective stake below self stake from {}: {}",
+            method,
+            error
+        )
+    })
+}
+
+fn parse_amount_map(method: &str, expr: &RhoExpr) -> Result<HashMap<String, TokenAmount>> {
     let RhoExpr::ExprMap { data } = expr else {
         return Err(eyre!("Expected map result from {}: {:?}", method, expr));
     };
@@ -1883,7 +2064,7 @@ fn parse_reward_map(method: &str, expr: &RhoExpr) -> Result<HashMap<String, Stri
 fn parse_nested_amount_map(
     method: &str,
     expr: &RhoExpr,
-) -> Result<HashMap<String, HashMap<String, BigInt>>> {
+) -> Result<HashMap<String, HashMap<String, TokenAmount>>> {
     let RhoExpr::ExprMap { data } = expr else {
         return Err(eyre!(
             "Expected nested map result from {}: {:?}",
@@ -1953,7 +2134,7 @@ fn parse_pending_undelegation_map(
                 ));
             };
             parsed_validators.insert(validator.clone(), PendingUndelegationInfo {
-                amount: amount.clone(),
+                amount,
                 unlock_block: *unlock_block,
             });
         }
@@ -2025,10 +2206,13 @@ fn delegator_state_from_snapshot(
         .collect::<Vec<_>>();
     pending_undelegations.sort_by(|a, b| a.validator_public_key.cmp(&b.validator_public_key));
 
-    let total_active_delegated = active_delegations.iter().map(|entry| &entry.amount).sum();
+    let total_active_delegated = active_delegations
+        .iter()
+        .map(|entry| entry.amount.as_bigint())
+        .sum();
     let total_pending_undelegation = pending_undelegations
         .iter()
-        .map(|entry| &entry.amount)
+        .map(|entry| entry.amount.as_bigint())
         .sum();
     let claimable_rewards = snapshot
         .delegator_rewards
@@ -2052,42 +2236,57 @@ fn delegator_state_from_snapshot(
 
 /// Convert DeployRequest to Signed DeployData
 fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
-    models::rust::deploy_parameters::validate_parameters(&request.data.parameters)
-        .map_err(|error| eyre!("Invalid deploy parameters: {}", error))?;
+    request
+        .data
+        .validate_amounts()
+        .map_err(|error| DeployValidationError {
+            message: format!("Invalid deploy amount: {error}"),
+        })?;
+    models::rust::deploy_parameters::validate_parameters(&request.data.parameters).map_err(
+        |error| DeployValidationError {
+            message: format!("Invalid deploy parameters: {error}"),
+        },
+    )?;
     // Decode hex strings
-    let pk_bytes = hex::decode(&request.deployer)
-        .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
+    let pk_bytes = hex::decode(&request.deployer).map_err(|e| DeployValidationError {
+        message: format!("Public key is not valid base16 format: {e}"),
+    })?;
 
-    let sig_bytes = hex::decode(&request.signature)
-        .map_err(|e| eyre!("Signature is not valid base16 format: {}", e))?;
+    let sig_bytes = hex::decode(&request.signature).map_err(|e| DeployValidationError {
+        message: format!("Signature is not valid base16 format: {e}"),
+    })?;
 
     // Create public key
     let pk = PublicKey::from_bytes(&pk_bytes);
 
     // Look up signature algorithm by name
-    let sig_alg: Box<dyn SignaturesAlg> = match request.sig_algorithm.as_str() {
-        "secp256k1" => Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
-        "secp256k1-eth" => Box::new(crypto::rust::signatures::secp256k1_eth::Secp256k1Eth),
-        "ed25519" => Box::new(crypto::rust::signatures::ed25519::Ed25519),
-        #[cfg(feature = "schnorr_secp256k1_experimental")]
-        "schnorr-secp256k1" => Box::new(SchnorrSecp256k1),
-        #[cfg(feature = "schnorr_secp256k1_experimental")]
-        "frost-secp256k1" => Box::new(FrostSecp256k1),
-        _ => {
-            return Err(eyre!(
+    let sig_alg = SignaturesAlgFactory::apply(&request.sig_algorithm).ok_or_else(|| {
+        DeployValidationError {
+            message: format!(
                 "Signature algorithm not supported: {}",
                 request.sig_algorithm
-            ))
+            ),
         }
-    };
+    })?;
 
     // Create DeployData (use the data from request)
     let deploy_data = request.data.clone();
 
     // Create signed deploy
-    Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
-        .map_err(|e| eyre!("Invalid signature: {}", e))?
-        .ok_or_else(|| eyre!("Failed to create signed deploy"))
+    let signed =
+        Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg).ok_or_else(|| {
+            DeployValidationError {
+            message:
+                "Invalid signature: the signature does not verify for this deployer and deploy data"
+                    .to_string(),
+        }
+        })?;
+    DeployData::with_complete_cosignatures(signed).map_err(|error| {
+        DeployValidationError {
+            message: format!("Invalid cosignatures: {error}"),
+        }
+        .into()
+    })
 }
 
 // Conversion functions for protobuf generated types
@@ -2373,6 +2572,19 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
                 .unwrap_or(-1);
             RhoExpr::ExprVar { index }
         }
+
+        // CoC Phase 1a: no first-class JSON encoding for lambdas/apps yet.
+        // Surface as opaque. A future phase can add ExprLambda/ExprApp with
+        // body + arg encodings.
+        ExprInstance::ELambdaBody(_) => RhoExpr::ExprUnknown {
+            type_name: "Lambda".to_string(),
+        },
+        ExprInstance::EAppBody(_) => RhoExpr::ExprUnknown {
+            type_name: "App".to_string(),
+        },
+        ExprInstance::EPiBody(_) => RhoExpr::ExprUnknown {
+            type_name: "Pi".to_string(),
+        },
     })
 }
 
@@ -2472,42 +2684,466 @@ fn to_rho_data_response(
 
 #[cfg(test)]
 mod tests {
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::g_unforgeable::UnfInstance;
     use models::rhoapi::{
         Bundle, EList, EMap, ESet, ETuple, GDeployId, GDeployerId, GPrivate, KeyValuePair,
     };
+    use models::rust::deploy_parameters::RholangValue;
+    use rholang::rust::interpreter::compiler::compiler::Compiler;
 
     use super::*;
 
+    fn tuple(flag: bool, value: Par) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: vec![
+                    Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(ExprInstance::GBool(flag)),
+                    }]),
+                    value,
+                ],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }])
+    }
+
+    fn int(n: i64) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(n)),
+        }])
+    }
+
+    const ADDRESS: &str = "1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5";
+
     #[test]
-    fn staking_json_preserves_large_amounts_as_decimal_strings() {
-        let amount = "100000000000000000001";
-        let response = ValidatorInfo {
+    fn balance_query_uses_the_selected_wallet_path() {
+        let (native, native_params) = balance_query_term(WalletPath::Native, ADDRESS).unwrap();
+        assert!(native.contains("rho:rev:wallet"));
+        assert!(!native.contains("findOrCreate"));
+        assert!(native_params.is_empty());
+        let (legacy, legacy_params) = balance_query_term(WalletPath::Legacy, ADDRESS).unwrap();
+        assert!(legacy.contains("findOrCreate"));
+        assert!(!legacy.contains(ADDRESS));
+        assert_eq!(legacy_params.len(), 1);
+        assert_eq!(WalletPath::default(), WalletPath::Legacy);
+    }
+
+    #[test]
+    fn balance_query_rejects_addresses_that_are_not_valid() {
+        let injected = format!("{ADDRESS}\", *vaultCh) | @\"x\"!(\"y");
+        for path in [WalletPath::Native, WalletPath::Legacy] {
+            for bad in ["", "lala", injected.as_str()] {
+                assert!(balance_query_term(path, bad).is_err(), "{path:?} {bad}");
+            }
+        }
+    }
+
+    #[test]
+    fn native_balance_results_parse() {
+        let ok = balance_from_result(WalletPath::Native, ADDRESS, vec![tuple(true, int(42))]);
+        assert_eq!(ok.unwrap(), "42");
+        let failed = balance_from_result(WalletPath::Native, ADDRESS, vec![tuple(false, int(0))]);
+        assert!(failed.is_err());
+        assert!(balance_from_result(WalletPath::Native, ADDRESS, vec![]).is_err());
+        let legacy = balance_from_result(WalletPath::Legacy, ADDRESS, vec![int(7)]);
+        assert_eq!(legacy.unwrap(), "7");
+    }
+
+    #[test]
+    fn offered_ids_are_non_empty_hex() {
+        let id = "ab".repeat(70);
+        assert_eq!(parse_offered_id(&id).unwrap(), vec![0xab; 70]);
+        assert_eq!(parse_offered_id(&format!("0x{id}")).unwrap(), vec![
+            0xab;
+            70
+        ]);
+        for bad in ["zz", "abc", "", "0x"] {
+            assert!(parse_offered_id(bad)
+                .unwrap_err()
+                .downcast_ref::<InvalidHashError>()
+                .is_some());
+        }
+    }
+
+    #[test]
+    fn offered_statuses_serialize_with_their_details() {
+        use block_storage::rust::deploy::offer_rejection::OfferRejection;
+        use casper::rust::v6::block_record::EnvelopeOutcome;
+        use casper::rust::v6::receipt::OfferedReceipt;
+
+        let unknown = serde_json::to_value(OfferedReceiptResponse::from_status(
+            "aa".into(),
+            OfferedStatus::Unknown,
+        ))
+        .unwrap();
+        assert_eq!(unknown["status"], "unknown");
+        assert!(unknown["receipt"].is_null());
+
+        let rejected = serde_json::to_value(OfferedReceiptResponse::from_status(
+            "aa".into(),
+            OfferedStatus::Rejected(OfferRejection {
+                deploy_id: vec![7; 70],
+                pre_state_root: Some(vec![1, 2]),
+                block_number: 9,
+                reason: "unfunded".into(),
+            }),
+        ))
+        .unwrap();
+        assert_eq!(rejected["status"], "rejected");
+        assert_eq!(rejected["rejection"]["reason"], "unfunded");
+        assert_eq!(rejected["rejection"]["preStateRoot"], "0102");
+        assert_eq!(rejected["rejection"]["blockNumber"], 9);
+
+        let not_retained = serde_json::to_value(OfferedReceiptResponse::from_status(
+            "aa".into(),
+            OfferedStatus::NotRetained {
+                block_hash: vec![0xcd].into(),
+            },
+        ))
+        .unwrap();
+        assert_eq!(not_retained["status"], "notRetained");
+        assert_eq!(not_retained["blockHash"], "cd");
+
+        let executed = serde_json::to_value(OfferedReceiptResponse::from_status(
+            "aa".into(),
+            OfferedStatus::Executed(OfferedReceipt {
+                block_hash: vec![0xef].into(),
+                outcome: EnvelopeOutcome::Completed,
+                comm_phlo: 2,
+                compute_phlo: 40,
+                event_count: 5,
+            }),
+        ))
+        .unwrap();
+        assert_eq!(executed["status"], "executed");
+        assert_eq!(executed["blockHash"], "ef");
+        let receipt = &executed["receipt"];
+        assert_eq!(receipt["outcome"], "Completed");
+        assert_eq!(receipt["commPhlo"], 2);
+        assert_eq!(receipt["computePhlo"], 40);
+        assert_eq!(receipt["eventCount"], 5);
+    }
+
+    fn param_env(name: &str, value: RholangValue) -> HashMap<String, Par> {
+        let mut env = HashMap::new();
+        env.insert(format!("rho:deploy:param:{}", name), value.to_par());
+        env
+    }
+
+    fn compile_with(template: &str, env: HashMap<String, Par>) -> Par {
+        Compiler::source_to_adt_with_normalizer_env(template, env)
+            .expect("template must parse with the deploy-parameter env")
+    }
+
+    // The user-supplied address never passes through the Rholang parser —
+    // whatever bytes it carries end up only inside a GString leaf of the
+    // deploy-parameter Par. Compiling the balance template with a benign
+    // address and with an injection payload must produce the same process
+    // structure (same send/receive/new/match counts).
+    #[test]
+    fn get_balance_template_binds_address_through_ast_not_source() {
+        let benign = "1111111111111111111111111111111111111111111111111111";
+        let injection = r#"X", *vaultCh) | @"pwned"!("hello") | @Nil!("Y"#;
+
+        let par_benign = compile_with(
+            BALANCE_RHOLANG_TEMPLATE,
+            param_env("address", RholangValue::String(benign.to_string())),
+        );
+        let par_injection = compile_with(
+            BALANCE_RHOLANG_TEMPLATE,
+            param_env("address", RholangValue::String(injection.to_string())),
+        );
+
+        assert_eq!(
+            par_benign.sends.len(),
+            par_injection.sends.len(),
+            "injection payload must not add any sends to the compiled Par"
+        );
+        assert_eq!(
+            par_benign.receives.len(),
+            par_injection.receives.len(),
+            "injection payload must not add any receives to the compiled Par"
+        );
+        assert_eq!(
+            par_benign.news.len(),
+            par_injection.news.len(),
+            "injection payload must not add any new names to the compiled Par"
+        );
+        assert_eq!(
+            par_benign.matches.len(),
+            par_injection.matches.len(),
+            "injection payload must not add any match constructs"
+        );
+    }
+
+    // Same guarantee for the registry endpoint: a backtick inside the URI
+    // never terminates a URI literal because the user input is bound through
+    // a GUri Par in the normalizer env, not spliced into the source.
+    #[test]
+    fn get_registry_template_binds_uri_through_ast_not_source() {
+        let benign = "rho:registry:0abcdef";
+        let injection = "`, *x) | @\"pwned\"!(1) | @Nil!(`anything";
+
+        let par_benign = compile_with(
+            REGISTRY_RHOLANG_TEMPLATE,
+            param_env("uri", RholangValue::Uri(benign.to_string())),
+        );
+        let par_injection = compile_with(
+            REGISTRY_RHOLANG_TEMPLATE,
+            param_env("uri", RholangValue::Uri(injection.to_string())),
+        );
+
+        assert_eq!(par_benign.sends.len(), par_injection.sends.len());
+        assert_eq!(par_benign.receives.len(), par_injection.receives.len());
+        assert_eq!(par_benign.news.len(), par_injection.news.len());
+        assert_eq!(par_benign.matches.len(), par_injection.matches.len());
+    }
+
+    #[test]
+    fn validator_json_uses_canonical_uint256_stakes() {
+        let max = TokenAmount::max().into_bigint();
+        for stake in [
+            "0".to_string(),
+            (BigInt::from(1) << 128usize).to_string(),
+            max.to_string(),
+        ] {
+            let info = serde_json::json!({"publicKey": "validator", "stake": stake,
+                "selfStake": stake, "delegatedStake": "0"});
+            let value: ValidatorInfo = serde_json::from_value(info.clone()).unwrap();
+            assert_eq!(serde_json::to_value(value).unwrap(), info);
+            let status = serde_json::json!({"publicKey": "validator", "isBonded": true,
+                "stake": stake, "selfStake": stake, "delegatedStake": "0",
+                "blockNumber": 0, "blockHash": "hash"});
+            let value: ValidatorStatusResponse = serde_json::from_value(status.clone()).unwrap();
+            assert_eq!(serde_json::to_value(value).unwrap(), status);
+        }
+        for stake in [
+            serde_json::json!(0),
+            serde_json::json!(-5),
+            serde_json::json!("-5"),
+            serde_json::json!("-0"),
+            serde_json::json!("007"),
+            serde_json::json!("+1"),
+            serde_json::json!("1e2"),
+            serde_json::json!((max + 1u8).to_string()),
+        ] {
+            assert!(serde_json::from_value::<ValidatorInfo>(serde_json::json!(
+                {"publicKey": "validator", "stake": stake,
+                 "selfStake": "0", "delegatedStake": "0"}))
+            .is_err());
+            assert!(
+                serde_json::from_value::<ValidatorStatusResponse>(serde_json::json!(
+                {"publicKey": "validator", "isBonded": true, "stake": stake,
+                 "blockNumber": 0, "blockHash": "hash"}))
+                .is_err()
+            );
+        }
+        let status: ValidatorStatusResponse = serde_json::from_value(serde_json::json!(
+            {"publicKey": "validator", "isBonded": false, "stake": null,
+             "selfStake": null, "delegatedStake": null,
+             "blockNumber": 0, "blockHash": "hash"}))
+        .unwrap();
+        assert!(status.stake.is_none());
+        let total = TokenAmount::max().into_bigint() * 2u8;
+        let response: ValidatorsResponse = serde_json::from_value(serde_json::json!(
+            {"validators": [], "totalStake": total.to_string(),
+             "totalSelfStake": total.to_string(), "totalDelegatedStake": "0",
+             "blockNumber": 0, "blockHash": "hash"}))
+        .unwrap();
+        assert_eq!(response.total_stake, total);
+        assert_eq!(response.total_self_stake, total);
+    }
+
+    #[test]
+    fn deploy_request_uses_the_protobuf_algorithm_contract() {
+        let deploy = Signed::create(
+            DeployData {
+                term: "Nil".to_string(),
+                time_stamp: 0,
+                phlo_price: 1.into(),
+                phlo_limit: 100_000,
+                valid_after_block_number: 0,
+                shard_id: "root".to_string(),
+                expiration_timestamp: None,
+                parameters: Vec::new(),
+                cosignatures: Vec::new(),
+                required_cosigners: Vec::new(),
+            },
+            Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
+            crypto::rust::private_key::PrivateKey::from_bytes(&[1; 32]),
+        )
+        .unwrap();
+        let mut request = DeployRequest {
+            data: deploy.data.clone(),
+            deployer: hex::encode(&deploy.pk.bytes),
+            signature: hex::encode(&deploy.sig),
+            sig_algorithm: deploy.sig_algorithm.name(),
+        };
+        assert_eq!(to_signed_deploy(&request).unwrap(), deploy);
+        request.sig_algorithm = "ed25519".to_string();
+        assert_eq!(
+            to_signed_deploy(&request).unwrap_err().to_string(),
+            "Signature algorithm not supported: ed25519"
+        );
+    }
+
+    #[test]
+    fn nested_integer_boundaries_remain_exact_in_json() {
+        let expr = RhoExpr::ExprList {
+            data: vec![
+                RhoExpr::ExprInt { data: i64::MIN },
+                RhoExpr::ExprInt { data: i64::MAX },
+                RhoExpr::ExprUint64 { data: u64::MAX },
+                RhoExpr::ExprMap {
+                    data: HashMap::from([("key".to_string(), RhoExpr::ExprTuple {
+                        data: vec![RhoExpr::ExprUint64 {
+                            data: (1 << 53) + 1,
+                        }],
+                    })]),
+                },
+            ],
+        };
+        let expected = serde_json::json!({"ExprList": {"data": [
+            {"ExprInt": {"data": "-9223372036854775808"}},
+            {"ExprInt": {"data": "9223372036854775807"}},
+            {"ExprUint64": {"data": "18446744073709551615"}},
+            {"ExprMap": {"data": {"key": {"ExprTuple": {"data": [
+                {"ExprUint64": {"data": "9007199254740993"}}
+            ]}}}}}
+        ]}});
+        assert_eq!(serde_json::to_value(&expr).unwrap(), expected);
+        let restored: RhoExpr = serde_json::from_value(expected.clone()).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), expected);
+        for number in [serde_json::json!(1), serde_json::json!(u64::MAX)] {
+            assert!(serde_json::from_value::<RhoExpr>(
+                serde_json::json!({"ExprInt": {"data": number}})
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn validator_totals_preserve_sums_above_uint256() {
+        let validator = |stake: TokenAmount| ValidatorInfo {
             public_key: "validator".to_string(),
-            stake: amount.parse().unwrap(),
-            self_stake: amount.parse().unwrap(),
-            delegated_stake: 0.into(),
+            self_stake: stake.clone(),
+            stake,
+            delegated_stake: TokenAmount::zero(),
         };
-        let json = serde_json::to_value(&response).unwrap();
-        assert_eq!(json["stake"], amount);
-        assert_eq!(json["selfStake"], amount);
-        assert_eq!(json["delegatedStake"], "0");
-        assert_eq!(
-            serde_json::from_value::<ValidatorInfo>(json).unwrap().stake,
-            response.stake
-        );
-        let pending = PendingUndelegationInfo {
-            amount: response.stake,
-            unlock_block: 7,
+        assert_eq!(sum_validator_stakes(&[]), BigInt::from(0));
+        let max = TokenAmount::max();
+        let validators = vec![
+            validator(max.clone()),
+            validator(max.clone()),
+            validator(1.into()),
+        ];
+        let total_stake = sum_validator_stakes(&validators);
+        assert_eq!(total_stake, max.to_bigint() * 2 + 1);
+        let json = serde_json::to_value(ValidatorsResponse {
+            validators,
+            total_stake: total_stake.clone(),
+            total_self_stake: total_stake.clone(),
+            total_delegated_stake: BigInt::from(0),
+            block_number: 1,
+            block_hash: "block".to_string(),
+        })
+        .unwrap();
+        assert_eq!(json["totalStake"], total_stake.to_string());
+        assert_eq!(json["validators"][0]["stake"], max.to_string());
+    }
+
+    #[test]
+    fn optional_validator_stake_serializes_as_null_or_decimal_string() {
+        let response = |stake: Option<TokenAmount>| ValidatorStatusResponse {
+            public_key: "validator".to_string(),
+            is_bonded: stake.is_some(),
+            self_stake: stake.clone(),
+            delegated_stake: stake.as_ref().map(|_| TokenAmount::zero()),
+            stake,
+            block_number: 1,
+            block_hash: "block".to_string(),
         };
-        let json = serde_json::to_value(&pending).unwrap();
-        assert_eq!(json["amount"], amount);
-        assert_eq!(json["unlockBlock"], 7);
+        assert!(serde_json::to_value(response(None)).unwrap()["stake"].is_null());
         assert_eq!(
-            serde_json::from_value::<PendingUndelegationInfo>(json).unwrap(),
-            pending
+            serde_json::to_value(response(Some(TokenAmount::max()))).unwrap()["stake"],
+            TokenAmount::max().to_string()
         );
+    }
+
+    #[test]
+    fn public_and_admin_schemas_describe_exact_integer_strings() {
+        use utoipa::OpenApi;
+
+        use crate::rust::web::web_api_docs::{AdminApi, PublicApi};
+
+        for api in [PublicApi::openapi(), AdminApi::openapi()] {
+            let json = serde_json::to_value(api).unwrap();
+            let schemas = &json["components"]["schemas"];
+            for variant in ["ExprInt", "ExprUint64"] {
+                let schema = schemas["RhoExpr"]["oneOf"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find_map(|s| s["properties"].get(variant))
+                    .unwrap();
+                assert_eq!(schema["properties"]["data"]["type"], "string", "{variant}");
+                assert!(
+                    schema["properties"]["data"].get("format").is_none(),
+                    "{variant}"
+                );
+            }
+            for (name, field) in [
+                ("ValidatorInfo", "stake"),
+                ("ValidatorsResponse", "totalStake"),
+                ("BondInfoJson", "stake"),
+                ("TransferInfoSerde", "amount"),
+                ("BalanceResponse", "balance"),
+                ("ApiStatus", "minPhloPrice"),
+                ("DeployInfoSerde", "phloPrice"),
+                ("PendingDeployJson", "phloPrice"),
+            ] {
+                assert_eq!(
+                    schemas[name]["properties"][field]["type"], "string",
+                    "{name}"
+                );
+                assert!(
+                    schemas[name]["properties"][field].get("format").is_none(),
+                    "{name}"
+                );
+            }
+            assert!(
+                schemas["ValidatorStatusResponse"]["properties"]["stake"]["type"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!("string"))
+            );
+            assert!(schemas["DeployResponse"]["properties"]["phloPrice"]["type"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("string")));
+        }
+    }
+
+    #[test]
+    fn pending_deploy_phlo_price_stays_exact_in_json() {
+        let pending = PendingDeployJson {
+            term: "Nil".to_string(),
+            timestamp: 1,
+            phlo_price: TokenAmount::max().to_string(),
+            phlo_limit: 1,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            deployer: "04aa".to_string(),
+            sig: "aa".to_string(),
+            sig_algorithm: "secp256k1".to_string(),
+            expiration_timestamp: None,
+            is_rejected: false,
+        };
+        let json = serde_json::to_value(pending).unwrap();
+        assert_eq!(json["phloPrice"], TokenAmount::max().to_string());
     }
 
     #[test]
@@ -2525,7 +3161,7 @@ mod tests {
             deployer: Some("deployer1".to_string()),
             term: Some("new ret in { ret!(42) }".to_string()),
             system_deploy_error: Some(String::new()),
-            phlo_price: Some(10),
+            phlo_price: Some((10).to_string()),
             phlo_limit: Some(100000),
             sig_algorithm: Some("secp256k1".to_string()),
             valid_after_block_number: Some(0),
@@ -2544,7 +3180,7 @@ mod tests {
         assert_eq!(json["rejectionCount"], 0);
         assert!(json.get("deployer").is_some());
         assert!(json.get("term").is_some());
-        assert!(json.get("phloPrice").is_some());
+        assert_eq!(json["phloPrice"], "10");
         assert!(json.get("phloLimit").is_some());
         assert!(json.get("transfers").is_some());
         assert!(json.get("parameters").is_none());
@@ -2604,12 +3240,14 @@ mod tests {
             data: DeployData {
                 term: "contract".to_string(),
                 time_stamp: 1234567890,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit: 1000000,
                 valid_after_block_number: 0,
                 shard_id: "".to_string(),
                 expiration_timestamp: None,
                 parameters: Vec::new(),
+                cosignatures: Vec::new(),
+                required_cosigners: Vec::new(),
             },
             deployer: "0123456789abcdef".to_string(),
             signature: "fedcba9876543210".to_string(),
@@ -3149,7 +3787,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             as_json(&not),
-            serde_json::json!({"ExprNot": {"data": {"ExprInt": {"data": 1}}}})
+            serde_json::json!({"ExprNot": {"data": {"ExprInt": {"data": "1"}}}})
         );
 
         let neg = expr_from_expr_proto(Expr {
@@ -3178,8 +3816,8 @@ mod tests {
         assert_eq!(
             as_json(&plus),
             serde_json::json!({"ExprPlus": {
-                "left": {"ExprInt": {"data": 1}},
-                "right": {"ExprInt": {"data": 2}},
+                "left": {"ExprInt": {"data": "1"}},
+                "right": {"ExprInt": {"data": "2"}},
             }})
         );
 
@@ -3301,8 +3939,8 @@ mod tests {
                 json.get(expected_variant).is_some(),
                 "expected {expected_variant}, got {json}"
             );
-            assert_eq!(json[expected_variant]["left"]["ExprInt"]["data"], 1);
-            assert_eq!(json[expected_variant]["right"]["ExprInt"]["data"], 2);
+            assert_eq!(json[expected_variant]["left"]["ExprInt"]["data"], "1");
+            assert_eq!(json[expected_variant]["right"]["ExprInt"]["data"], "2");
         }
     }
 
@@ -3318,8 +3956,8 @@ mod tests {
         })
         .unwrap();
         let json = as_json(&matches_expr);
-        assert_eq!(json["ExprMatches"]["target"]["ExprInt"]["data"], 1);
-        assert_eq!(json["ExprMatches"]["pattern"]["ExprInt"]["data"], 2);
+        assert_eq!(json["ExprMatches"]["target"]["ExprInt"]["data"], "1");
+        assert_eq!(json["ExprMatches"]["pattern"]["ExprInt"]["data"], "2");
 
         let method_expr = expr_from_expr_proto(Expr {
             expr_instance: Some(ExprInstance::EMethodBody(EMethod {
@@ -3514,6 +4152,36 @@ mod tests {
     }
 
     #[test]
+    fn staking_json_preserves_large_amounts_as_decimal_strings() {
+        let amount = "100000000000000000001";
+        let response = ValidatorInfo {
+            public_key: "validator".to_string(),
+            stake: amount.parse().unwrap(),
+            self_stake: amount.parse().unwrap(),
+            delegated_stake: TokenAmount::zero(),
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["stake"], amount);
+        assert_eq!(json["selfStake"], amount);
+        assert_eq!(json["delegatedStake"], "0");
+        assert_eq!(
+            serde_json::from_value::<ValidatorInfo>(json).unwrap().stake,
+            response.stake
+        );
+        let pending = PendingUndelegationInfo {
+            amount: response.stake,
+            unlock_block: 7,
+        };
+        let json = serde_json::to_value(&pending).unwrap();
+        assert_eq!(json["amount"], amount);
+        assert_eq!(json["unlockBlock"], 7);
+        assert_eq!(
+            serde_json::from_value::<PendingUndelegationInfo>(json).unwrap(),
+            pending
+        );
+    }
+
+    #[test]
     fn test_delegator_state_from_snapshot_sorts_and_totals() {
         let secp = crypto::rust::signatures::secp256k1::Secp256k1;
         let (_sk0, delegator_pk) = secp.new_key_pair();
@@ -3591,8 +4259,8 @@ mod tests {
         assert_eq!(state.active_delegations, expected_active_delegations);
         assert_eq!(state.pending_undelegations, expected_pending_undelegations);
         assert_eq!(state.claimable_rewards, "9223372036854775808");
-        assert_eq!(state.total_active_delegated, 12.into());
-        assert_eq!(state.total_pending_undelegation, 5.into());
+        assert_eq!(state.total_active_delegated, BigInt::from(12));
+        assert_eq!(state.total_pending_undelegation, BigInt::from(5));
         assert_eq!(state.block_number, 42);
         assert_eq!(state.block_hash, "block-hash");
     }
@@ -3628,16 +4296,67 @@ mod tests {
         assert!(parse_reward_map("getDelegatorRewards", &expr).is_err());
     }
 
+    #[test]
+    fn test_delegation_state_parsers() {
+        let delegations_expr = RhoExpr::ExprMap {
+            data: [("delegator".to_string(), RhoExpr::ExprMap {
+                data: [("validator".to_string(), RhoExpr::ExprBigInt {
+                    data: "30".to_string(),
+                })]
+                .into_iter()
+                .collect(),
+            })]
+            .into_iter()
+            .collect(),
+        };
+        let delegations = parse_nested_amount_map("getDelegations", &delegations_expr).unwrap();
+        assert_eq!(delegations["delegator"]["validator"], 30.into());
+
+        let pending_expr = RhoExpr::ExprMap {
+            data: [("delegator".to_string(), RhoExpr::ExprMap {
+                data: [("validator".to_string(), RhoExpr::ExprTuple {
+                    data: vec![
+                        RhoExpr::ExprBigInt {
+                            data: "7".to_string(),
+                        },
+                        RhoExpr::ExprInt { data: 55 },
+                    ],
+                })]
+                .into_iter()
+                .collect(),
+            })]
+            .into_iter()
+            .collect(),
+        };
+        let pending =
+            parse_pending_undelegation_map("getPendingUndelegations", &pending_expr).unwrap();
+        assert_eq!(pending["delegator"]["validator"], PendingUndelegationInfo {
+            amount: 7.into(),
+            unlock_block: 55,
+        });
+    }
+
+    #[test]
+    fn delegation_amounts_reject_negative_values() {
+        let expr = RhoExpr::ExprMap {
+            data: HashMap::from([("validator".to_string(), RhoExpr::ExprInt { data: -1 })]),
+        };
+        assert!(parse_amount_map("getDelegatedTotals", &expr).is_err());
+        assert!(delegated_part("getEffectiveBonds", &1.into(), &2.into()).is_err());
+    }
+
     fn sample_deploy_data() -> DeployData {
         DeployData {
             term: "new x in { x!(1) }".to_string(),
             time_stamp: 1,
-            phlo_price: 1,
+            phlo_price: (1).into(),
             phlo_limit: 1000,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
             parameters: Vec::new(),
+            cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         }
     }
 
@@ -3804,38 +4523,5 @@ mod tests {
             }),
             "SysAuthToken"
         );
-    }
-
-    #[test]
-    fn test_delegation_state_parsers() {
-        let delegations_expr = RhoExpr::ExprMap {
-            data: [("delegator".to_string(), RhoExpr::ExprMap {
-                data: [("validator".to_string(), RhoExpr::ExprInt { data: 30 })]
-                    .into_iter()
-                    .collect(),
-            })]
-            .into_iter()
-            .collect(),
-        };
-        let delegations = parse_nested_amount_map("getDelegations", &delegations_expr).unwrap();
-        assert_eq!(delegations["delegator"]["validator"], 30.into());
-
-        let pending_expr = RhoExpr::ExprMap {
-            data: [("delegator".to_string(), RhoExpr::ExprMap {
-                data: [("validator".to_string(), RhoExpr::ExprTuple {
-                    data: vec![RhoExpr::ExprInt { data: 7 }, RhoExpr::ExprInt { data: 55 }],
-                })]
-                .into_iter()
-                .collect(),
-            })]
-            .into_iter()
-            .collect(),
-        };
-        let pending =
-            parse_pending_undelegation_map("getPendingUndelegations", &pending_expr).unwrap();
-        assert_eq!(pending["delegator"]["validator"], PendingUndelegationInfo {
-            amount: 7.into(),
-            unlock_block: 55,
-        });
     }
 }

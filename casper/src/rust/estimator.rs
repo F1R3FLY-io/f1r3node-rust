@@ -29,6 +29,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::validator::Validator;
 use num_bigint::BigInt;
+use shared::rust::blocking::in_blocking;
 use shared::rust::dag::observation_work::{NoopWork, WorkKind, WorkMeter};
 use shared::rust::shared::list_ops::ListOps;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -325,33 +326,36 @@ impl Estimator {
             // Saves one clone per node and one Vec allocation. Preallocate
             // visited/result to a reasonable capacity for typical fork-choice
             // BFS sizes (≤ ~few hundred blocks).
-            let mut result = score_map;
-            let mut queue: VecDeque<BlockHash> = VecDeque::from(vec![latest_block_hash.clone()]);
-            let mut visited: HashSet<BlockHash> = HashSet::with_capacity(64);
+            in_blocking(|| {
+                let mut result = score_map;
+                let mut queue: VecDeque<BlockHash> =
+                    VecDeque::from(vec![latest_block_hash.clone()]);
+                let mut visited: HashSet<BlockHash> = HashSet::with_capacity(64);
 
-            while let Some(hash) = queue.pop_front() {
-                meter.step(WorkKind::Traversal)?;
-                if !visited.insert(hash.clone()) {
-                    continue;
-                }
-                meter.allocate(1, std::mem::size_of::<BlockHash>())?;
-                let validator_weight = proto_util::weight_from_validator_by_dag_metered(
-                    meter, block_dag, &hash, validator,
-                )?;
-                if !result.contains_key(&hash) {
-                    meter.allocate(1, std::mem::size_of::<(BlockHash, BigInt)>())?;
-                }
-                let entry = result.entry(hash.clone()).or_default();
-                *entry += validator_weight;
-                for parent in hash_parents(meter, &hash, lca_block_num, block_dag)? {
-                    if !visited.contains(&parent) {
-                        meter.step(WorkKind::Traversal)?;
-                        queue.push_back(parent);
+                while let Some(hash) = queue.pop_front() {
+                    meter.step(WorkKind::Traversal)?;
+                    if !visited.insert(hash.clone()) {
+                        continue;
+                    }
+                    meter.allocate(1, std::mem::size_of::<BlockHash>())?;
+                    let validator_weight = proto_util::weight_from_validator_by_dag_metered(
+                        meter, block_dag, &hash, validator,
+                    )?;
+                    if !result.contains_key(&hash) {
+                        meter.allocate(1, std::mem::size_of::<(BlockHash, BigInt)>())?;
+                    }
+                    let entry = result.entry(hash.clone()).or_default();
+                    *entry += validator_weight;
+                    for parent in hash_parents(meter, &hash, lca_block_num, block_dag)? {
+                        if !visited.contains(&parent) {
+                            meter.step(WorkKind::Traversal)?;
+                            queue.push_back(parent);
+                        }
                     }
                 }
-            }
 
-            Ok(result)
+                Ok(result)
+            })
         }
 
         // TODO: Scala message - Since map scores are additive it should be possible to do this in parallel
@@ -411,23 +415,25 @@ impl Estimator {
             scores: &HashMap<BlockHash, BigInt>,
         ) -> Result<Vec<BlockHash>, KvStoreError> {
             meter.lookup()?;
-            match block_dag.children(block) {
+            match block_dag.children(block)? {
                 Some(children_set) => {
                     meter.charge(WorkKind::Traversal, children_set.len() as u64, 0)?;
-                    Ok(children_set
-                        .iter()
-                        .filter(|child| {
-                            scores.contains_key(*child)
-                                && block_dag.main_parent(child).as_ref() == Some(block)
-                        })
-                        .cloned()
-                        .collect())
+                    let mut children = Vec::new();
+                    for child in children_set {
+                        if scores.contains_key(&child)
+                            && block_dag.main_parent(&child)?.as_ref() == Some(block)
+                        {
+                            children.push(child);
+                        }
+                    }
+                    Ok(children)
                 }
                 None => Ok(Vec::new()),
             }
         }
 
         let mut head = lca;
+        let zero_score = BigInt::from(0);
         loop {
             meter.step(WorkKind::Traversal)?;
             let mut children = scored_main_children(meter, &head, block_dag, scores)?;
@@ -436,9 +442,9 @@ impl Estimator {
             }
             meter.charge(WorkKind::Traversal, children.len() as u64, 0)?;
             children.sort_by(|a, b| {
-                let score_a = scores.get(a).cloned().unwrap_or_default();
-                let score_b = scores.get(b).cloned().unwrap_or_default();
-                score_b.cmp(&score_a).then_with(|| a.cmp(b))
+                let score_a = scores.get(a).unwrap_or(&zero_score);
+                let score_b = scores.get(b).unwrap_or(&zero_score);
+                score_b.cmp(score_a).then_with(|| a.cmp(b))
             });
             head = children.swap_remove(0);
         }

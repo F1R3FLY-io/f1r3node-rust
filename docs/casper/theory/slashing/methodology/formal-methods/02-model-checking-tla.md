@@ -16,7 +16,7 @@ Organization:
 
 - [§1 — Why TLA⁺ at all](#1--why-tla-at-all)
 - [§2 — TLC vs. Apalache](#2--tlc-vs-apalache)
-- [§3 — The seven slashing models](#3--the-seven-slashing-models-overview)
+- [§3 — The seven slashing models](#3--the-seven-slashing-models--overview)
 - [§4 — Anatomy of a model-checked invariant](#4--anatomy-of-a-model-checked-invariant)
 - [§5 — Concurrency and the `ConcurrentTracker` toggle](#5--concurrency-and-the-concurrenttracker-toggle)
 - [§6 — Pitfalls](#6--pitfalls)
@@ -277,7 +277,7 @@ Step 4: Thread_B writes tracker[v] = {h_B}    (* lost: h_A *)
 ```
 
 This trace is the **direct cause** of the Rust regression test
-[`casper/tests/slashing/loom_t_9_2_atomic_record.rs`](../../../../../../casper/tests/slashing/loom_t_9_2_atomic_record.rs)
+[`casper/tests/slashing/loom_t_9_2_atomic_record.rs`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/504963ab546be84e50650ad81bb5df11965954ca/casper/tests/slashing/loom_t_9_2_atomic_record.rs)
 which reproduces the same race in actual Rust under Loom; see
 [`../randomized-search/04-concurrency-interleaving-loom.md`](../randomized-search/04-concurrency-interleaving-loom.md)
 for the Loom side of the story.

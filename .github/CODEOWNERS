@@ -1,4 +1,4 @@
-# Code owners for CI and its credential wiring.
+# Code owners for CI, its credential wiring, and the security process.
 #
 # @F1R3FLY-io/ci-maintainers must retain at least `push` on this repository:
 # GitHub silently ignores code owners without write access, so a team demoted to
@@ -22,3 +22,5 @@ Dockerfile          @F1R3FLY-io/ci-maintainers
 /rust-toolchain.toml @F1R3FLY-io/ci-maintainers
 /scripts/ci/        @F1R3FLY-io/ci-maintainers
 /scripts/supply-chain/ @F1R3FLY-io/ci-maintainers
+/SECURITY.md        @F1R3FLY-io/ci-maintainers
+/docs/security-advisory-process.md @F1R3FLY-io/ci-maintainers
