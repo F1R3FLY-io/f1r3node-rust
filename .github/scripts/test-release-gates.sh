@@ -64,7 +64,7 @@ cp "$TMP/ci-run.json" "$GATES/ci-run.json"
 cp "$TMP/ci-jobs.json" "$GATES/ci-jobs.json"
 run_doc .github/workflows/slashing-tests.yml 555 1 "$SOURCE_SHA" >"$GATES/slashing-run.json"
 jq -n '{jobs: (
-	[{name: "Example-based UC tests"}, {name: "Property-based theorem tests"}, {name: "Loom exhaustive interleaving (T-9.2)"}]
+	[{name: "Example-based UC tests"}, {name: "Property-based theorem tests"}]
 	+ [range(1; 12) | {name: ("Pre-fix regression backstops (" + tostring + ")")}]
 	+ [{name: "TLA+ invariant check", status: "completed", conclusion: "skipped"}]
 	| map(. + {status: "completed", conclusion: (.conclusion // "success")}))}' >"$GATES/slashing-jobs.json"

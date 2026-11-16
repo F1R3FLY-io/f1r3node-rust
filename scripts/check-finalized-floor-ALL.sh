@@ -311,7 +311,7 @@ echo "== [8/8] Loom concurrency (fail-soft) =="
 # {absent, canonical}, the final value is canonical, and no read regresses below a
 # prior read. The REAL guarantee is idempotence + LMDB single-key MVCC; loom checks
 # the Rust memory-model shape. Uses loom::sync::* directly, so no --cfg loom flag is
-# needed (matches loom_equivocations_tracker). SKIPPED (fail-soft) if cargo is absent
+# needed. SKIPPED (fail-soft) if cargo is absent
 # or the loom test cannot be built in this cfg; a genuine interleaving violation FAILS.
 if command -v cargo >/dev/null 2>&1; then
   if cargo test -p block-storage --test loom_frontier_floor_cache >/tmp/ff_loom.log 2>&1; then

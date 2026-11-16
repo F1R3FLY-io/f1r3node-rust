@@ -3,45 +3,71 @@
 // its merged parents already carry, and a proposer whose view trails its own
 // finalized frontier still slashes.
 
-use std::collections::BTreeSet;
-
 use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use casper::rust::block_status::ValidBlock;
 use casper::rust::casper::Casper;
-use casper::rust::slashing_authorization::checked_base_seq;
 use casper::rust::util::{construct_deploy, proto_util};
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, ProcessedSystemDeploy, SystemDeployData,
 };
-use models::rust::equivocation_record::EquivocationRecord;
+use models::rust::validator::Validator;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
+use crate::slashing::integration_helpers::equivocate_block;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
-/// Seed the evidence state an equivocation verdict leaves behind: the
-/// invalid record in the DAG plus the tracker's EquivocationRecord. The
-/// recovery machinery under test starts downstream of that state;
-/// verdict classification itself is covered by the `slashing::`
-/// integration suite, and only the equivocation class mints evidence
-/// since the `is_slashable` narrowing.
-fn observe_slashable_evidence(node: &TestNode, block: &BlockMessage) {
-    node.casper
-        .block_dag_storage
-        .insert(block, InsertMode::Invalid)
-        .expect("record invalid evidence");
-    let base_seq = checked_base_seq(block.seq_num).expect("evidence block has positive seq");
-    node.casper
-        .block_dag_storage
-        .access_equivocations_tracker(|tracker| {
-            tracker.add(EquivocationRecord::new(
-                block.sender.clone(),
-                base_seq,
-                BTreeSet::new(),
-            ))
-        })
-        .expect("record equivocation evidence");
+/// Validator 0 signs two blocks at one sequence number. Each of `observers`
+/// receives the first, then judges the second an equivocation and holds the
+/// pair. Returns the equivocator.
+async fn equivocation(nodes: &mut [TestNode], shard_id: &str, observers: &[usize]) -> Validator {
+    let deploy = |nonce: i32| {
+        construct_deploy::basic_deploy_data(nonce, None, Some(shard_id.to_string()))
+            .expect("build deploy")
+    };
+    let first = nodes[0]
+        .create_block_unsafe(&[deploy(900)])
+        .await
+        .expect("validator 0 creates a block");
+    let second = equivocate_block(&mut nodes[0], &first, vec![deploy(901)])
+        .await
+        .expect("validator 0 signs a sibling");
+    for &observer in observers {
+        let accepted = nodes[observer]
+            .process_block(first.clone())
+            .await
+            .expect("observer processes the first block");
+        assert!(
+            matches!(accepted, Either::Right(ValidBlock::Valid)),
+            "node {observer} accepts the first block: {accepted:?}"
+        );
+        let flagged = nodes[observer]
+            .process_block(second.clone())
+            .await
+            .expect("observer processes the sibling");
+        assert!(
+            matches!(flagged, Either::Left(_)),
+            "node {observer} holds the sibling as an equivocation: {flagged:?}"
+        );
+    }
+    first.sender
+}
+
+/// `node` receives `first`, then judges `second` an equivocation and holds
+/// the pair.
+async fn hold_pair(node: &mut TestNode, first: &BlockMessage, second: &BlockMessage) {
+    node.process_block(first.clone())
+        .await
+        .expect("observer processes the first block");
+    let flagged = node
+        .process_block(second.clone())
+        .await
+        .expect("observer processes the sibling");
+    assert!(
+        matches!(flagged, Either::Left(_)),
+        "the observer holds the sibling as an equivocation: {flagged:?}"
+    );
 }
 
 struct TestContext {
@@ -57,24 +83,14 @@ type BondsFunction = fn(
 >;
 
 impl TestContext {
-    async fn new() -> Self { Self::build(None, None).await }
-
-    async fn with_epoch_length(epoch_length: Option<i32>) -> Self {
-        Self::build(epoch_length, None).await
-    }
-
-    async fn with_bonds(bonds_function: BondsFunction) -> Self {
-        Self::build(None, Some(bonds_function)).await
-    }
-
-    async fn build(epoch_length: Option<i32>, bonds: Option<BondsFunction>) -> Self {
+    async fn new() -> Self {
         // The default `GenesisBuilder::create_bonds` formula
         // `(i as i64) * 2 + 1` puts validator 0 at stake 1, which is
         // exactly the genesis `minimum_bond`. With deductions from the
         // genesis PoS Rholang initialization, validator 0 ends up at
         // stake 0 (unbonded), which then trips
         // `slashing_authorization::validate_received_slash_deploys`'s
-        // `TargetNotBonded` guard when an honest validator tries to
+        // `NothingToSlash` guard when an honest validator tries to
         // slash validator 0 for equivocating. The dev-side tests in
         // this file assume the equivocator is bonded — so use a custom
         // bonds_function that gives every validator a comfortably-bonded
@@ -96,13 +112,12 @@ impl TestContext {
                 .map(|(key, stake)| (key, stake.into()))
                 .collect()
         }
-        let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(
-            Some(bonds.unwrap_or(bonds_function as BondsFunction)),
-            None,
-        );
-        if let Some(epoch_length) = epoch_length {
-            parameters.2.proof_of_stake.epoch_length = epoch_length;
-        }
+        Self::with_bonds(bonds_function).await
+    }
+
+    async fn with_bonds(bonds_function: BondsFunction) -> Self {
+        let parameters =
+            GenesisBuilder::build_genesis_parameters_with_defaults(Some(bonds_function), None);
         let genesis = GenesisBuilder::new()
             .build_genesis_with_parameters(Some(parameters))
             .await
@@ -112,19 +127,17 @@ impl TestContext {
     }
 }
 
-fn slashes_in(block: &BlockMessage) -> Vec<prost::bytes::Bytes> {
+/// The validators the slashes in `block` punish.
+fn slashes_in(block: &BlockMessage) -> Vec<Validator> {
     block
         .body
         .system_deploys
         .iter()
         .filter_map(|psd| match psd {
             ProcessedSystemDeploy::Succeeded {
-                system_deploy:
-                    SystemDeployData::Slash {
-                        invalid_block_hash, ..
-                    },
+                system_deploy: SystemDeployData::Slash { evidence, .. },
                 ..
-            } => Some(invalid_block_hash.clone()),
+            } => Some(evidence.first.sender.clone()),
             _ => None,
         })
         .collect()
@@ -134,7 +147,7 @@ fn slashes_in(block: &BlockMessage) -> Vec<prost::bytes::Bytes> {
 /// blocks, and node 1 holds both.
 struct ParallelSlashes {
     nodes: Vec<TestNode>,
-    invalid_block: BlockMessage,
+    equivocator: Validator,
     block_1: BlockMessage,
     block_2: BlockMessage,
 }
@@ -144,26 +157,7 @@ async fn parallel_slashes(ctx: &TestContext) -> ParallelSlashes {
         .await
         .expect("create_network(3)");
 
-    // Equivocation: a forged copy of node[0]'s block with a mutated
-    // seq_num. Honest validators see this as InvalidBlockHash and queue
-    // a slashing deploy for the equivocator.
-    let deploy_data = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone()))
-        .expect("build deploy");
-    nodes[0]
-        .casper
-        .deploy(deploy_data)
-        .expect("validator 0 deploy");
-    let signed_block = nodes[0]
-        .create_block_unsafe(&[])
-        .await
-        .expect("validator 0 creates signed_block");
-    let invalid_block = {
-        let mut b = signed_block.clone();
-        b.seq_num = 47;
-        b
-    };
-    observe_slashable_evidence(&nodes[1], &invalid_block);
-    observe_slashable_evidence(&nodes[2], &invalid_block);
+    let equivocator = equivocation(&mut nodes, &ctx.shard_id, &[1, 2]).await;
 
     // Each honest validator proposes a block containing its own
     // auto-emitted SlashDeploy via prepare_slashing_deploys.
@@ -198,12 +192,12 @@ async fn parallel_slashes(ctx: &TestContext) -> ParallelSlashes {
         .expect("node 2 processes its own block_2");
 
     assert!(
-        slashes_in(&block_1).contains(&invalid_block.block_hash),
-        "block_1 must contain a SlashDeploy for the equivocator's invalid_block"
+        slashes_in(&block_1).contains(&equivocator),
+        "block_1 must slash the equivocator"
     );
     assert!(
-        slashes_in(&block_2).contains(&invalid_block.block_hash),
-        "block_2 must contain a SlashDeploy for the equivocator's invalid_block"
+        slashes_in(&block_2).contains(&equivocator),
+        "block_2 must slash the equivocator"
     );
 
     // Sync block_2 into node 1 so the next propose can take both as parents.
@@ -218,7 +212,7 @@ async fn parallel_slashes(ctx: &TestContext) -> ParallelSlashes {
 
     ParallelSlashes {
         nodes,
-        invalid_block,
+        equivocator,
         block_1,
         block_2,
     }
@@ -325,7 +319,7 @@ async fn a_slash_the_merged_parents_carry_is_not_re_issued() {
     let ctx = TestContext::new().await;
     let ParallelSlashes {
         mut nodes,
-        invalid_block,
+        equivocator,
         block_1,
         block_2,
     } = parallel_slashes(&ctx).await;
@@ -353,7 +347,7 @@ async fn a_slash_the_merged_parents_carry_is_not_re_issued() {
     );
 
     assert!(
-        !slashes_in(&merge_block).contains(&invalid_block.block_hash),
+        !slashes_in(&merge_block).contains(&equivocator),
         "merge_block re-issues a slash its merged parents already applied"
     );
     let verdict = nodes[1]
@@ -377,9 +371,7 @@ async fn a_slash_the_merged_parents_carry_is_not_re_issued() {
 // arbitration: the finalized floor may still predate the slash, so
 // `Validate::bonds_cache_from_floor` does not yet force it; safety in that
 // window comes from the merge combining the parents' bond-channel state without
-// netting a re-bond (and, on a node that has seen the equivocation,
-// `neglected_invalid_block` re-enforcing it). Either way the equivocator must
-// end at the bond floor. Contrast `slash_for_equivocator_survives_multi_parent_merge`,
+// netting a re-bond. The equivocator must end at the bond floor. Contrast `slash_for_equivocator_survives_multi_parent_merge`,
 // where BOTH parents carry the slash.
 //
 // Coverage note: the sibling here is a normal user block that does not itself
@@ -393,32 +385,8 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
     let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
         .await
         .expect("create_network(3)");
-    let equivocator_pk = nodes[0]
-        .validator_id_opt
-        .as_ref()
-        .expect("node 0 has validator identity")
-        .public_key
-        .clone();
-
-    // V0 equivocates: a forged copy of node[0]'s block with a mutated seq_num.
-    let deploy_data = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone()))
-        .expect("build deploy");
-    nodes[0]
-        .casper
-        .deploy(deploy_data)
-        .expect("validator 0 deploy");
-    let signed_block = nodes[0]
-        .create_block_unsafe(&[])
-        .await
-        .expect("validator 0 creates signed_block");
-    let invalid_block = {
-        let mut b = signed_block.clone();
-        b.seq_num = 47;
-        b
-    };
-
     // ONLY node 1 observes the equivocation → only node 1 will slash.
-    observe_slashable_evidence(&nodes[1], &invalid_block);
+    let equivocator = equivocation(&mut nodes, &ctx.shard_id, &[1]).await;
 
     // Node 1 proposes a POST-slash block (auto-emitted SlashDeploy for V0).
     let deploy_data_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
@@ -449,27 +417,9 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
         .await
         .expect("validator 2 creates pre_slash_block");
 
-    let slashes_in =
-        |block: &models::rust::casper::protocol::casper_message::BlockMessage| -> Vec<prost::bytes::Bytes> {
-            block
-                .body
-                .system_deploys
-                .iter()
-                .filter_map(|psd| match psd {
-                    ProcessedSystemDeploy::Succeeded {
-                        system_deploy:
-                            SystemDeployData::Slash {
-                                invalid_block_hash, ..
-                            },
-                        ..
-                    } => Some(invalid_block_hash.clone()),
-                    _ => None,
-                })
-                .collect()
-        };
     assert!(
-        slashes_in(&slash_block).contains(&invalid_block.block_hash),
-        "slash_block must contain a SlashDeploy for the equivocator's invalid_block"
+        slashes_in(&slash_block).contains(&equivocator),
+        "slash_block must slash the equivocator"
     );
     assert!(
         slashes_in(&pre_slash_block).is_empty(),
@@ -517,7 +467,7 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
         .expect("compute_bonds");
     let equivocator_stake = post_merge_bonds
         .iter()
-        .find(|b| b.validator == equivocator_pk.bytes)
+        .find(|b| b.validator == equivocator)
         .map(|b| b.stake.clone())
         .expect("equivocator must still appear in bonds map");
     assert!(
@@ -528,34 +478,20 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
     );
 }
 
-/// A slash's epoch is its carrier's block number, which every node judges the
-/// same way: a proposer whose finalized frontier is an epoch ahead of its
-/// proposal view still slashes, and a peer with a current view accepts it.
+/// A proposer whose finalized frontier is ahead of its proposal view still
+/// slashes, and a peer with a current view accepts it.
 #[tokio::test]
 async fn a_view_lagging_its_finalized_frontier_slashes_and_peers_accept() {
     use casper::rust::blocks::proposer::block_creator;
     use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
     use casper::rust::blocks::proposer::proposer::DeploySelection;
-    use casper::rust::slashing_authorization::epoch_for_block_number;
-
-    let epoch_length = 4;
-    let ctx = TestContext::with_epoch_length(Some(epoch_length)).await;
+    let ctx = TestContext::new().await;
     let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
         .await
         .expect("create_network(3)");
     let deploy = |nonce: i32| {
         construct_deploy::basic_deploy_data(nonce, None, Some(ctx.shard_id.clone()))
             .expect("build deploy")
-    };
-
-    let signed_block = nodes[0]
-        .create_block_unsafe(&[deploy(0)])
-        .await
-        .expect("validator 0 creates signed_block");
-    let invalid_block = {
-        let mut b = signed_block.clone();
-        b.seq_num = 47;
-        b
     };
 
     let block_a = nodes[1]
@@ -587,16 +523,12 @@ async fn a_view_lagging_its_finalized_frontier_slashes_and_peers_accept() {
             .await
             .expect("node 1 processes validator 2's block");
     }
-    let view_epoch = epoch_for_block_number(lagging.max_block_num + 1, epoch_length).unwrap();
-    let frontier_epoch =
-        epoch_for_block_number(frontier.body.state.block_number, epoch_length).unwrap();
     assert!(
-        frontier_epoch > view_epoch,
-        "the frontier must sit in a later epoch than the view"
+        frontier.body.state.block_number > lagging.max_block_num + 1,
+        "the frontier must sit above the view"
     );
 
-    observe_slashable_evidence(&nodes[1], &invalid_block);
-    observe_slashable_evidence(&nodes[2], &invalid_block);
+    let equivocator = equivocation(&mut nodes, &ctx.shard_id, &[1, 2]).await;
     lagging.dag = nodes[1]
         .casper
         .block_dag_storage
@@ -630,7 +562,7 @@ async fn a_view_lagging_its_finalized_frontier_slashes_and_peers_accept() {
     };
 
     assert!(
-        slashes_in(&block).contains(&invalid_block.block_hash),
+        slashes_in(&block).contains(&equivocator),
         "block #{} carries no slash for the equivocation",
         block.body.state.block_number
     );
@@ -640,10 +572,8 @@ async fn a_view_lagging_its_finalized_frontier_slashes_and_peers_accept() {
         .expect("node 2 validates validator 1's block");
     assert!(
         matches!(verdict, Either::Right(ValidBlock::Valid)),
-        "node 2 judges block #{} (view epoch {}, frontier epoch {}): {verdict:?}",
-        block.body.state.block_number,
-        view_epoch.get(),
-        frontier_epoch.get()
+        "node 2 judges block #{}: {verdict:?}",
+        block.body.state.block_number
     );
 }
 
@@ -655,56 +585,37 @@ async fn slash_block_replays_with_its_own_slash_targets() {
         .await
         .expect("create_network(3)");
 
-    let deploy_data = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone()))
-        .expect("build deploy");
-    nodes[0]
-        .casper
-        .deploy(deploy_data)
-        .expect("validator 0 deploy");
-    let signed_block = nodes[0]
-        .create_block_unsafe(&[])
-        .await
-        .expect("validator 0 creates signed_block");
-    let invalid_block = {
-        let mut b = signed_block.clone();
-        b.seq_num = 47;
-        b
-    };
-    observe_slashable_evidence(&nodes[1], &invalid_block);
-    observe_slashable_evidence(&nodes[2], &invalid_block);
-
-    let deploy_data_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
-        .expect("build deploy a");
-    nodes[1]
-        .casper
-        .deploy(deploy_data_a)
-        .expect("validator 1 deploy");
+    let equivocator = equivocation(&mut nodes, &ctx.shard_id, &[1, 2]).await;
     let slash_block = nodes[1]
-        .create_block_unsafe(&[])
+        .create_block_unsafe(&[construct_deploy::basic_deploy_data(
+            1,
+            None,
+            Some(ctx.shard_id.clone()),
+        )
+        .expect("build deploy")])
         .await
         .expect("validator 1 creates slash_block");
 
     let unrelated_invalid = {
-        let mut b = invalid_block.clone();
+        let mut b = slash_block.clone();
         b.block_hash = vec![7; 32].into();
         b.sender = ctx.genesis.validator_pks()[3].bytes.clone();
         b
     };
     nodes[2]
         .block_dag_storage
-        .insert(&unrelated_invalid, InsertMode::Invalid)
+        .insert(&unrelated_invalid, InsertMode::Equivocation {
+            sibling: vec![8; 32].into(),
+        })
         .expect("record unrelated invalid block");
 
     let dag = nodes[2]
         .block_dag_storage
         .get_representation()
         .expect("dag");
-    let own_targets =
-        proto_util::block_slash_invalid_blocks(&dag, &slash_block).expect("own slash targets");
+    let own_targets = proto_util::slash_evidence_senders(proto_util::slash_evidence(&slash_block));
     let dag_invalid_set = dag.invalid_blocks_map().expect("dag invalid set");
-    assert_eq!(own_targets.keys().collect::<Vec<_>>(), vec![
-        &invalid_block.block_hash
-    ]);
+    assert_eq!(own_targets.values().collect::<Vec<_>>(), vec![&equivocator]);
     assert!(dag_invalid_set.contains_key(&unrelated_invalid.block_hash));
 
     let pre_state = &slash_block.body.state.pre_state_hash;
@@ -790,22 +701,20 @@ async fn a_slash_lost_to_the_merge_is_issued_again_by_the_merge_proposer() {
             .map(|bond| bond.stake.clone())
     };
 
-    let signed_block = nodes[0]
-        .create_block_unsafe(&[deploy(0)])
+    let first = nodes[0]
+        .create_block_unsafe(&[deploy(900)])
         .await
-        .expect("validator 0 creates signed_block");
-    let invalid_block = {
-        let mut b = signed_block.clone();
-        b.seq_num = 47;
-        b
-    };
-    observe_slashable_evidence(&nodes[1], &invalid_block);
+        .expect("validator 0 creates a block");
+    let second = equivocate_block(&mut nodes[0], &first, vec![deploy(901)])
+        .await
+        .expect("validator 0 signs a sibling");
+    hold_pair(&mut nodes[1], &first, &second).await;
 
     let block_1 = nodes[1]
         .create_block_unsafe(&[deploy(1)])
         .await
         .expect("validator 1 creates block_1");
-    assert!(slashes_in(&block_1).contains(&invalid_block.block_hash));
+    assert!(slashes_in(&block_1).contains(&offender));
     let verdict = nodes[1]
         .process_block(block_1.clone())
         .await
@@ -862,10 +771,10 @@ async fn a_slash_lost_to_the_merge_is_issued_again_by_the_merge_proposer() {
     );
 
     assert!(
-        slashes_in(&merge_block).contains(&invalid_block.block_hash),
+        slashes_in(&merge_block).contains(&offender),
         "the merge proposer issues the lost slash again"
     );
-    observe_slashable_evidence(&nodes[2], &invalid_block);
+    hold_pair(&mut nodes[2], &first, &second).await;
     let verdict = nodes[2]
         .process_block(block_1.clone())
         .await

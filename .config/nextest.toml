@@ -44,6 +44,7 @@
 [[profile.default.overrides]]
 filter = '''
   test(/genesis::contracts::pos_spec::pos_spec/)
+  | test(/batch2::floor_cap_deadlock_spec::past_the_floor_cap_a_proposal_is_held_or_mints_a_witness_every_node_accepts$/)
   | test(/soft_checkpoint_cost_does_not_scale_with_accumulated_store_size/)
   | test(/rspace::rspace::tests::(event_log_mutex_does_not_contend_under_concurrent_produces|par_branch_event_log_does_not_contend_at_rholang_par_scale|event_log_and_produce_counter_isolated_cost_at_rholang_par_scale|get_store_read_lock_isolated_cost_at_rholang_par_scale)$/)
 '''

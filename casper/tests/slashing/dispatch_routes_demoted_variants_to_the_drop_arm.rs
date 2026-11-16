@@ -4,7 +4,7 @@
 // minted slash evidence that diverged across honest nodes, and the
 // recursive carrier verdicts burned honest stake to FT −18.55. Every
 // demoted variant now routes past the evidence-minting arms to the drop
-// arm: no DAG insert, no EquivocationRecord — the block is refused without
+// arm: no DAG insert — the block is refused without
 // becoming anyone's economic evidence.
 //
 // AdmissibleEquivocation and IgnorableEquivocation keep their own
@@ -31,8 +31,8 @@ const DEMOTED_VARIANTS: &[InvalidBlock] = &[
     InvalidBlock::InvalidFollows,
     InvalidBlock::InvalidSequenceNumber,
     InvalidBlock::InvalidShardId,
+    InvalidBlock::InvalidChainId,
     InvalidBlock::JustificationRegression,
-    InvalidBlock::NeglectedInvalidBlock,
     InvalidBlock::NeglectedEquivocation,
     InvalidBlock::InvalidTransaction,
     InvalidBlock::InvalidBondsCache,
@@ -54,7 +54,6 @@ async fn dispatch_routes_demoted_variants_to_the_drop_arm() {
         .expect("Failed to build standalone node");
 
     let seq_num: i32 = 2;
-    let expected_base_seq: i32 = 1;
 
     for (i, variant) in DEMOTED_VARIANTS.iter().enumerate() {
         assert!(
@@ -80,21 +79,6 @@ async fn dispatch_routes_demoted_variants_to_the_drop_arm() {
         assert!(
             !dag_after.contains(&synth.block_hash).unwrap(),
             "[{:?}] a demoted verdict's block must not enter the DAG",
-            variant
-        );
-
-        let records = node
-            .casper
-            .block_dag_storage
-            .access_equivocations_tracker(|tracker| tracker.data())
-            .expect("equivocations tracker access");
-        let has_record = records.iter().any(|record| {
-            record.equivocator == synth.sender
-                && record.equivocation_base_block_seq_num == expected_base_seq
-        });
-        assert!(
-            !has_record,
-            "[{:?}] a demoted verdict must not mint an EquivocationRecord",
             variant
         );
     }

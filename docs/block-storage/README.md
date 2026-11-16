@@ -67,12 +67,6 @@ Fixture mutation requires a detached view and cannot modify a view backed by dur
 
 **`BlockDagKeyValueStorage::set_insert_observer`** reports each block that the DAG inserts. Block ingest uses it to release the blocks that wait on the inserted block.
 
-## Finality Storage
-
-**`LastFinalizedStorage` trait**: `put(hash)`, `get()`, `get_or_else(default)`
-- `LastFinalizedKeyValueStorage` (persistent)
-- `LastFinalizedMemoryStorage` (in-memory)
-
 ## Deploy Storage
 
 **`KeyValueDeployStorage`** -- Stores `Signed<DeployData>` indexed by deploy signature. Methods: `add()`, `remove()`, `read_all()`, `any()`, `non_empty()`. Deploy index maps deploy signature to block hash.

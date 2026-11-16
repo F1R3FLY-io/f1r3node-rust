@@ -62,6 +62,7 @@ grep -Fxq "api repos/example/repo/git/refs -f ref=refs/heads/$branch -f sha=$mas
 	fail "the backmerge branch was not created at the master commit: $(cat "$TMP/gh.log")"
 grep -q "^pr create --repo example/repo --base dev --head $branch --title Back-merge master into dev (20261016-1602) " "$TMP/gh.log" ||
 	fail "the pull request was not opened from the backmerge branch to dev: $(cat "$TMP/gh.log")"
+grep -Fq '@Mergifyio queue' "$TMP/gh.log" || fail 'the manual back-merge does not explain the explicit merge request'
 if grep -q -- '--head master' "$TMP/gh.log"; then
 	fail "the pull request used master as its head branch"
 fi
@@ -164,6 +165,10 @@ grep -Fq 'created by `just ca-backmerge`.' "$TMP/gh.log" ||
 	fail "the just ca-backmerge body does not name just ca-backmerge: $(cat "$TMP/gh.log")"
 grep -Fq 'so that `ca-canary` keeps the `ca-release` history.' "$TMP/gh.log" ||
 	fail "the just ca-backmerge body does not ask for a merge commit into ca-canary: $(cat "$TMP/gh.log")"
+grep -Fq '@Mergifyio queue' "$TMP/gh.log" || fail 'the manual release back-merge does not request the queue'
+if grep -Fq 'created by the scheduled Release Train Daily Back-merge workflow' "$TMP/gh.log"; then
+	fail 'the manual release back-merge identifies itself as scheduled'
+fi
 if grep -q -- '--head ca-release' "$TMP/gh.log"; then
 	fail "the pull request used ca-release as its head branch"
 fi
@@ -218,8 +223,11 @@ grep -q "^pr create --repo example/repo --base ca-canary --head $sync_branch --l
 	fail "the sync pull request was not opened from the sync branch to ca-canary with ci-heavy: $(cat "$TMP/gh.log")"
 grep -Fq 'created by `just ca-sync`.' "$TMP/gh.log" ||
 	fail "the sync body does not name just ca-sync: $(cat "$TMP/gh.log")"
-grep -Fq 'Add the `ca-soak` label to start the 22-hour soak.' "$TMP/gh.log" ||
-	fail "the sync body does not ask for the ca-soak label: $(cat "$TMP/gh.log")"
+if grep -Eq 'ca-soak|after the soak passes' "$TMP/gh.log"; then
+	fail "the sync body requires a soak before merge: $(cat "$TMP/gh.log")"
+fi
+grep -Fq '@Mergifyio queue' "$TMP/gh.log" ||
+	fail "the sync body does not explain the explicit merge request: $(cat "$TMP/gh.log")"
 if grep -q -- '--label ca-soak' "$TMP/gh.log"; then
 	fail "the sync pull request started a soak: $(cat "$TMP/gh.log")"
 fi
@@ -244,6 +252,23 @@ grep -Fq 'created by the scheduled Release Train Daily Back-merge workflow.' "$T
 	fail "the scheduled back-merge body does not name the daily back-merge workflow: $(cat "$TMP/gh.log")"
 grep -Fxq 'Mergify merges this back-merge when its CI passes. It needs no review.' "$TMP/gh.log" ||
 	fail "the scheduled back-merge body does not say that Mergify merges it: $(cat "$TMP/gh.log")"
+if grep -Fq '@Mergifyio queue' "$TMP/gh.log"; then
+	fail 'the scheduled back-merge asks for a manual merge request'
+fi
+
+: >"$TMP/gh.log"
+out="$(cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" BACKMERGE_REPOSITORY=example/repo \
+	BACKMERGE_SOURCE=ca-release BACKMERGE_TARGET=ca-canary BACKMERGE_SCHEDULED=0 \
+	BACKMERGE_TRIGGERED_BY=octo-cat bash "$TOOL")"
+grep -Fq '@octo-cat started this back-merge.' "$TMP/gh.log" || fail 'the manual daily dispatch does not name its initiator'
+grep -Fq 'created by the Release Train Daily Back-merge workflow for @octo-cat' "$TMP/gh.log" || fail 'the manual daily dispatch names the wrong workflow'
+grep -Fq '@Mergifyio queue' "$TMP/gh.log" || fail 'the manual daily dispatch does not request the queue'
+if grep -Fq 'A different member' "$TMP/gh.log"; then
+	fail 'the manual daily dispatch adds a review requirement to the daily queue'
+fi
+if grep -Fq 'created by the scheduled Release Train Daily Back-merge workflow' "$TMP/gh.log"; then
+	fail 'the manual daily dispatch identifies itself as scheduled'
+fi
 
 for scheduled in master:dev dev:ca-canary; do
 	: >"$TMP/gh.log"
