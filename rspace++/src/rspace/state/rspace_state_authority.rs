@@ -13,6 +13,7 @@ use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use async_trait::async_trait;
 use heed::types::SerdeBincode;
 use heed::{Database, Env};
 use serde::Serialize;
@@ -20,10 +21,11 @@ use shared::rust::ByteBuffer;
 use shared::rust::store::key_value_store::{
     KeyValueStore, KeyValueStoreMutation, KvStoreError, validate_atomic_batch,
 };
+use tokio::sync::OwnedRwLockWriteGuard;
 
 use crate::rspace::data_index::DataIndexError;
 use crate::rspace::errors::{
-    AuthorityBackendMismatch, HistoryError, HistoryRepositoryError, RootError,
+    AuthorityBackendMismatch, HistoryError, HistoryRepositoryError, RSpaceError, RootError,
 };
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
@@ -32,11 +34,11 @@ use crate::rspace::history::instances::radix_history::{PreparedHistoryCheckpoint
 use crate::rspace::history::roots_store::CurrentRoot;
 use crate::rspace::hot_store::{DurableJournalBaseV1, HotStore, HotStoreInstances, HotStoreState};
 use crate::rspace::persistence::{
-    DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableDirectoryV1, DurableIoError,
-    DurableLimits, DurablePublishedCoreV1, DurableRSpaceAuthorityV1, DurableRSpaceTransactionError,
-    DurableStateReadHandleErrorV1, DurableStateRootV1, DurableStoreGenesisErrorV1,
-    DurableViewReaderV1, GenerationLeaseRegistryV1, LogPackDecodeLimits, RSpaceSemanticProfile,
-    SemanticProfile, create_empty_store_v1, recover_read_authority,
+    DurableAdmissionErrorV1, DurableDirectoryV1, DurableIoError, DurablePublishedCoreV1,
+    DurableRSpaceAuthorityV1, DurableRSpaceTransactionError, DurableStateReadHandleErrorV1,
+    DurableStateRootV1, DurableStoreGenesisErrorV1, DurableViewReaderV1, GenerationLeaseRegistryV1,
+    OwnerIncarnationV1, RSpaceSemanticProfile, SemanticProfile, ViewBaseV1, ViewCheckpointLimitsV1,
+    create_empty_store_v1, recover_read_authority,
 };
 use crate::rspace::rho_path::RhoPathEncode;
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
@@ -161,9 +163,7 @@ type DurableOwnerMutexV1<S> = tokio::sync::Mutex<DurableRSpaceAuthorityV1<S>>;
 
 pub(crate) struct DurableBackendV1 {
     directory: PathBuf,
-    recovery: DurableLimits,
-    wal: LogPackDecodeLimits,
-    admission: DurableAdmissionLimitsV1,
+    limits: ViewCheckpointLimitsV1,
     opening: Mutex<()>,
     slot: OnceLock<Arc<dyn Any + Send + Sync>>,
 }
@@ -174,6 +174,29 @@ where S::Channel: Clone + Hash + Eq
     owner: DurableOwnerMutexV1<S>,
     published: DurablePublishedCoreV1<S>,
     generation_leases: GenerationLeaseRegistryV1,
+    incarnation: OwnerIncarnationV1,
+    checkpoint_limits: ViewCheckpointLimitsV1,
+}
+
+#[async_trait]
+pub(crate) trait DurableViewOwnerV1<C, P, A, K>: Send + Sync {
+    async fn checkpoint_from_base(
+        &self,
+        permit: OwnedRwLockWriteGuard<()>,
+        base: ViewBaseV1,
+        gate: &Arc<tokio::sync::RwLock<()>>,
+        hot: &Arc<Box<dyn HotStore<C, P, A, K>>>,
+    ) -> Result<(Blake2b256Hash, OwnedRwLockWriteGuard<()>), DurableBackendErrorV1>;
+
+    fn view_at(
+        &self,
+        root: &Blake2b256Hash,
+    ) -> Result<(ViewBaseV1, Box<dyn HotStore<C, P, A, K>>), DurableBackendErrorV1>;
+}
+
+pub(crate) struct DurableViewV1<C, P, A, K> {
+    owner: Arc<dyn DurableViewOwnerV1<C, P, A, K>>,
+    base: Mutex<ViewBaseV1>,
 }
 
 #[derive(Debug)]
@@ -184,6 +207,7 @@ pub(crate) enum DurableBackendErrorV1 {
     View(DurableStateReadHandleErrorV1),
     HotStore(DataIndexError),
     Owner(Box<DurableRSpaceTransactionError>),
+    Checkpoint(Box<DurableRSpaceTransactionError>),
     ProfileMismatch { requested: &'static str },
 }
 
@@ -326,17 +350,13 @@ impl RSpaceStateAuthority {
 
     pub(crate) fn durable(
         directory: impl Into<PathBuf>,
-        recovery: DurableLimits,
-        wal: LogPackDecodeLimits,
-        admission: DurableAdmissionLimitsV1,
+        limits: ViewCheckpointLimitsV1,
     ) -> Arc<Self> {
         Arc::new(Self {
             identity: Arc::new(AuthorityIdentity),
             backend: AuthorityBackend::Durable(DurableBackendV1 {
                 directory: directory.into(),
-                recovery,
-                wal,
-                admission,
+                limits,
                 opening: Mutex::new(()),
                 slot: OnceLock::new(),
             }),
@@ -1121,14 +1141,6 @@ impl DurableBackendV1 {
 impl<S: SemanticProfile> DurableOwnerSlotV1<S>
 where S::Channel: Clone + Hash + Eq
 {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only unit tests lock the durable owner until \
-                      rspace-hard-checkpoint-durable-wiring checkpoints through it"
-        )
-    )]
     pub(crate) fn owner(&self) -> &DurableOwnerMutexV1<S> { &self.owner }
 
     pub(crate) fn published_core(&self) -> DurablePublishedCoreV1<S> { self.published.clone() }
@@ -1167,15 +1179,15 @@ where
         if store_files.is_empty() {
             create_empty_store_v1::<RSpaceSemanticProfile<C, P, A, K>>(
                 directory.path(),
-                backend.recovery,
+                backend.limits.publication.recovery,
             )
             .map_err(|error| DurableBackendErrorV1::Genesis(Box::new(error)))?;
         }
         let view = recover_read_authority::<RSpaceSemanticProfile<C, P, A, K>>(
             directory.path(),
-            backend.recovery,
-            backend.wal,
-            backend.admission,
+            backend.limits.publication.recovery,
+            backend.limits.publication.wal,
+            backend.limits.publication.admission,
         )
         .map_err(|error| DurableBackendErrorV1::Recovery(Box::new(error)))?;
         let resolved = view
@@ -1205,9 +1217,15 @@ where
                 return Err(DurableBackendErrorV1::Owner(Box::new(error)));
             }
         };
+        let incarnation = owner
+            .attach(&probe)
+            .map_err(|error| DurableBackendErrorV1::Owner(Box::new(error)))?
+            .incarnation();
         Ok(Self {
             published: owner.published_core(),
             generation_leases: owner.generation_leases(),
+            incarnation,
+            checkpoint_limits: backend.limits,
             owner: DurableOwnerMutexV1::new(owner),
         })
     }
@@ -1229,6 +1247,27 @@ where
         })
     }
 
+    pub(crate) fn view_at(
+        &self,
+        root: &Blake2b256Hash,
+    ) -> Result<(ViewBaseV1, Box<dyn HotStore<C, P, A, K>>), DurableBackendErrorV1> {
+        let target = DurableStateRootV1::try_from(root).map_err(|error| {
+            DurableBackendErrorV1::View(DurableStateReadHandleErrorV1::Root(error))
+        })?;
+        let (resolved, handle) = self
+            .published
+            .read_handle(Some(target))
+            .map_err(DurableBackendErrorV1::View)?;
+        let store = Self::lazy_store(
+            DurableViewReaderV1::new(handle, resolved.roots()),
+            DurableJournalBaseV1 {
+                manifest: resolved.manifest(),
+                registry: self.generation_leases.clone(),
+            },
+        )?;
+        Ok((ViewBaseV1::new(self.incarnation, resolved), store))
+    }
+
     fn lazy_store(
         reader: DurableViewReaderV1<RSpaceSemanticProfile<C, P, A, K>>,
         base: DurableJournalBaseV1,
@@ -1239,6 +1278,100 @@ where
             base,
         )
         .map_err(DurableBackendErrorV1::HotStore)
+    }
+}
+
+#[async_trait]
+impl<C, P, A, K> DurableViewOwnerV1<C, P, A, K>
+    for DurableOwnerSlotV1<RSpaceSemanticProfile<C, P, A, K>>
+where
+    C: Default
+        + Clone
+        + Debug
+        + Eq
+        + Hash
+        + RhoPathEncode
+        + ColdStoreDecode
+        + Send
+        + Sync
+        + 'static,
+    P: Default + Clone + Debug + StableHashSerialize + ColdStoreDecode + Send + Sync + 'static,
+    A: Default
+        + Clone
+        + Debug
+        + Serialize
+        + RhoPathEncode
+        + ColdStoreDecode
+        + Send
+        + Sync
+        + 'static,
+    K: Default + Clone + Debug + StableHashSerialize + ColdStoreDecode + Send + Sync + 'static,
+{
+    async fn checkpoint_from_base(
+        &self,
+        permit: OwnedRwLockWriteGuard<()>,
+        base: ViewBaseV1,
+        gate: &Arc<tokio::sync::RwLock<()>>,
+        hot: &Arc<Box<dyn HotStore<C, P, A, K>>>,
+    ) -> Result<(Blake2b256Hash, OwnedRwLockWriteGuard<()>), DurableBackendErrorV1> {
+        let mut owner = self.owner().lock().await;
+        let outcome = owner
+            .checkpoint_view_from_base(permit, base, gate, hot, self.checkpoint_limits)
+            .await;
+        drop(owner);
+        outcome
+            .map(|(reached, permit)| (reached.root().into(), permit))
+            .map_err(|refusal| DurableBackendErrorV1::Checkpoint(Box::new(refusal)))
+    }
+
+    fn view_at(
+        &self,
+        root: &Blake2b256Hash,
+    ) -> Result<(ViewBaseV1, Box<dyn HotStore<C, P, A, K>>), DurableBackendErrorV1> {
+        Self::view_at(self, root)
+    }
+}
+
+impl<C, P, A, K> DurableViewV1<C, P, A, K> {
+    pub(crate) fn new(owner: Arc<dyn DurableViewOwnerV1<C, P, A, K>>, base: ViewBaseV1) -> Self {
+        Self {
+            owner,
+            base: Mutex::new(base),
+        }
+    }
+
+    pub(crate) async fn checkpoint(
+        &self,
+        permit: OwnedRwLockWriteGuard<()>,
+        gate: &Arc<tokio::sync::RwLock<()>>,
+        hot: &Arc<Box<dyn HotStore<C, P, A, K>>>,
+    ) -> Result<(Blake2b256Hash, OwnedRwLockWriteGuard<()>), DurableBackendErrorV1> {
+        let base = self.base();
+        self.owner
+            .checkpoint_from_base(permit, base, gate, hot)
+            .await
+    }
+
+    pub(crate) fn view_at(
+        &self,
+        root: &Blake2b256Hash,
+    ) -> Result<(ViewBaseV1, Box<dyn HotStore<C, P, A, K>>), DurableBackendErrorV1> {
+        self.owner.view_at(root)
+    }
+
+    pub(crate) fn record_base(&self, base: ViewBaseV1) {
+        let mut recorded = match self.base.lock() {
+            Ok(recorded) => recorded,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *recorded = base;
+    }
+
+    fn base(&self) -> ViewBaseV1 {
+        match self.base.lock() {
+            Ok(recorded) => *recorded,
+            Err(poisoned) => *poisoned.into_inner(),
+        }
     }
 }
 
@@ -1263,6 +1396,9 @@ impl Display for DurableBackendErrorV1 {
             Self::Owner(error) => {
                 write!(formatter, "the durable owner cannot be built: {error:?}")
             }
+            Self::Checkpoint(error) => {
+                write!(formatter, "the durable owner refused the view checkpoint: {error:?}")
+            }
             Self::ProfileMismatch { requested } => write!(
                 formatter,
                 "the durable owner slot holds another semantic profile than {requested}"
@@ -1279,7 +1415,7 @@ impl std::error::Error for DurableBackendErrorV1 {
             Self::Recovery(error) => Some(&**error),
             Self::View(error) => Some(error),
             Self::HotStore(error) => Some(error),
-            Self::Owner(_) | Self::ProfileMismatch { .. } => None,
+            Self::Owner(_) | Self::Checkpoint(_) | Self::ProfileMismatch { .. } => None,
         }
     }
 }
@@ -1287,6 +1423,30 @@ impl std::error::Error for DurableBackendErrorV1 {
 impl From<DurableBackendErrorV1> for HistoryRepositoryError {
     fn from(error: DurableBackendErrorV1) -> Self {
         HistoryRepositoryError::DurableBackend(Box::new(error))
+    }
+}
+
+impl From<DurableBackendErrorV1> for RSpaceError {
+    fn from(error: DurableBackendErrorV1) -> Self {
+        match error {
+            DurableBackendErrorV1::Checkpoint(refusal) => match *refusal {
+                DurableRSpaceTransactionError::Journal(journal) => journal,
+                DurableRSpaceTransactionError::Root(root) => {
+                    RSpaceError::HistoryError(HistoryError::RootError(root))
+                }
+                refusal => RSpaceError::HistoryError(HistoryError::ActionError(
+                    DurableBackendErrorV1::Checkpoint(Box::new(refusal)).to_string(),
+                )),
+            },
+            DurableBackendErrorV1::View(DurableStateReadHandleErrorV1::Root(root)) => {
+                RSpaceError::HistoryError(HistoryError::RootError(root))
+            }
+            DurableBackendErrorV1::View(lease) => RSpaceError::HistoryError(
+                HistoryError::RootError(RootError::KvStoreError(lease.to_string())),
+            ),
+            DurableBackendErrorV1::HotStore(index) => RSpaceError::DataIndexError(index),
+            other => RSpaceError::HistoryError(HistoryError::ActionError(other.to_string())),
+        }
     }
 }
 

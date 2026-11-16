@@ -81,9 +81,12 @@ for control in \
   "ForeignPermitMutant:Invariant PermitProvenance is violated" \
   "CloseNoBumpMutant:Invariant StaleIncarnationRefused is violated" \
   "ReopenReusesIncarnationMutant:Invariant StaleIncarnationRefused is violated" \
+  "ReleaseBeforeInstallMutant:Invariant NoViewOperationOnSupersededStore is violated" \
+  "AckReleasesPermitMutant:Invariant NoViewOperationOnSupersededStore is violated" \
   "NeverPublishedAcrossBases:Invariant NeverPublishedAcrossBases is violated" \
   "NeverRefusedRetainedIncarnation:Invariant NeverRefusedRetainedIncarnation is violated" \
-  "NeverReconciledByOtherView:Invariant NeverReconciledByOtherView is violated"
+  "NeverReconciledByOtherView:Invariant NeverReconciledByOtherView is violated" \
+  "NeverInstalledAnswer:Invariant NeverInstalledAnswer is violated"
 do
   config="${control%%:*}"
   expected="${control#*:}"
@@ -98,4 +101,4 @@ do
     exit 1
   fi
 done
-echo "journal-owner: control, view-gate control with liveness, twenty-seven causal mutants (nineteen plus eight) and fourteen reachability witnesses (eleven plus three) passed"
+echo "journal-owner: control, view-gate control with liveness, twenty-nine causal mutants (nineteen plus ten) and fifteen reachability witnesses (eleven plus four) passed"

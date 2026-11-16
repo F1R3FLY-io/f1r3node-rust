@@ -98,5 +98,5 @@
     }
   ],
   "runtime_authority": "rspace++/src/rspace/state/rspace_state_authority.rs",
-  "runtime_authority_sha256": "d3cbca00b88112aaae53ce19bb23bf1b21134d53635b7ecdab8f2ad1585822b6"
+  "runtime_authority_sha256": "f638e8d439ccf4578209d5e0dfe0bee2bed51d6c8ca4839f56cc9bcaff0bac52"
 }

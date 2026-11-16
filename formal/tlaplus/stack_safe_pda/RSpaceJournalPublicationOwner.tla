@@ -43,7 +43,7 @@ Sessions == 0..MaxSession
 OwnerIncarnations == 0..(2 * MaxSession)
 Requests == {"checkpoint"}
 ViewOutcomes == {"new", "unknown-new", "unknown-old"}
-ViewStages == {"idle", "wait", "retake", "run", "publish", "ack", "done"}
+ViewStages == {"idle", "wait", "retake", "run", "publish", "ack", "done", "install"}
 ViewResults == {"none", "refused-permit", "refused-incarnation",
                 "uncertain", "acknowledged", "spawned"}
 PendingPhases == {"Captured", "RecoveryRequired", "AwaitingAck"}
@@ -372,6 +372,11 @@ Quiescent ==
     /\ ownerMutex = "free"
     /\ pending = NoPending
     /\ \A view \in Views: caller[view].stage = "idle"
+Released(view) == [gate \in Views |-> IF viewGate[gate] = view THEN "free" ELSE viewGate[gate]]
+InstallationDue(view) ==
+    \/ caller[view].stage = "install"
+    \/ /\ caller[view].stage = "done"
+       /\ caller[view].result = "acknowledged"
 
 CallCheckpoint(view, permit) ==
     /\ caller[view].stage = "idle"
@@ -493,7 +498,8 @@ AcknowledgeView(view, completes) ==
     /\ pending.acks = 0
     /\ attachment' = [attachment EXCEPT ![pending.view].base = owner.root]
     /\ IF completes
-       THEN /\ viewGate' = [viewGate EXCEPT ![pending.permit] = "free"]
+       THEN /\ viewGate' = [viewGate EXCEPT ![pending.permit] =
+                               IF Fault = "ack-releases-permit" THEN "free" ELSE pending.view]
             /\ pending' = NoPending
             /\ caller' = [caller EXCEPT ![view].stage = "done", ![view].result = "acknowledged"]
        ELSE /\ pending' = [pending EXCEPT !.acks = 1]
@@ -505,9 +511,18 @@ ReturnCall(view) ==
     /\ ownerMutex = view
     /\ caller[view].stage = "done"
     /\ ownerMutex' = "free"
-    /\ viewGate' = [gate \in Views |-> IF viewGate[gate] = view THEN "free" ELSE viewGate[gate]]
-    /\ caller' = [caller EXCEPT ![view] = Idle]
+    /\ IF caller[view].result = "acknowledged"
+       THEN /\ caller' = [caller EXCEPT ![view].stage = "install"]
+            /\ viewGate' = IF Fault = "release-before-install" THEN Released(view) ELSE viewGate
+       ELSE /\ caller' = [caller EXCEPT ![view] = Idle]
+            /\ viewGate' = Released(view)
     /\ UNCHANGED <<owner, attachment, pending, lastPublished>>
+
+InstallView(view) ==
+    /\ caller[view].stage = "install"
+    /\ viewGate' = Released(view)
+    /\ caller' = [caller EXCEPT ![view] = Idle]
+    /\ UNCHANGED <<owner, attachment, ownerMutex, pending, lastPublished>>
 
 CloseOwner ==
     /\ owner.live
@@ -540,6 +555,7 @@ OwnerAction ==
         \/ \E outcome \in ViewOutcomes: PublishView(view, outcome)
         \/ \E completes \in BOOLEAN: AcknowledgeView(view, completes)
         \/ ReturnCall(view)
+        \/ InstallView(view)
 
 ViewNext ==
     /\ \/ \E view \in Views, permit \in Views: CallCheckpoint(view, permit)
@@ -594,6 +610,8 @@ PermitProvenance ==
     pending # NoPending => pending.permit = pending.view
 LockOrder ==
     \A view \in Views: ~(ownerMutex = view /\ caller[view].stage = "retake")
+NoViewOperationOnSupersededStore ==
+    \A view \in Views: InstallationDue(view) => viewGate[view] = view
 SpawnSharesOwner ==
     [][\A view \in Views:
            CallSpawn(view) =>
@@ -616,4 +634,5 @@ NeverReconciledByOtherView ==
         /\ caller[view].stage = "run"
         /\ pending # NoPending
         /\ pending.view # view
+NeverInstalledAnswer == \A view \in Views: caller[view].stage # "install"
 =============================================================================

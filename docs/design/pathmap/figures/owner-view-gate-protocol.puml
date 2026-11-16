@@ -3,7 +3,9 @@
 ' One operation of each kind of the view-gate model: a checkpoint, from the
 ' owner's current root or from another base; a view-local reset; a spawn;
 ' close and reopen. Model of leaf G01 of task 7931, revised at commit
-' 7851c684e for ruling Q1 option A. Every action is an action of ViewSpec in
+' 7851c684e for ruling Q1 option A, and by leaf G15 of task 12424 for the
+' installation of an acknowledged answer under the caller's gate. Every
+' action is an action of ViewSpec in
 ' formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwner.tla, whose
 ' configuration is RSpaceJournalPublicationOwnerViews.cfg.
 '   BLUE   #BBDEFB  a checkpoint caller's locks: the view gate first, the
@@ -13,8 +15,9 @@
 '   PURPLE #E1BEE7  the decisions of the operation
 '   RED    #FFCDD2  the two refusals, before anything is captured
 '   GREEN  #C8E6C9  the effects of an admitted checkpoint: completion without
-'                   a publication, capture, publish, acknowledge
-'   GREY   #CFD8DC  the return, which releases the call's locks
+'                   a publication, capture, publish, acknowledge, install
+'   GREY   #CFD8DC  the return, which releases the mutex and, unless the call
+'                   is acknowledged, the gates that the call holds
 '   YELLOW #FFF9C4  the view-local steps, reset and spawn: no gate or mutex is
 '                   taken, and the owner's state is unchanged
 '   TEAL   #B2DFDB  close and reopen, only while the owner is quiescent
@@ -30,7 +33,7 @@ skinparam ActivityDiamondBackgroundColor #E1BEE7
 skinparam NoteBorderColor #455A64
 skinparam PartitionBorderColor #455A64
 
-title <b>One operation of each kind in the view-gate model</b>\nA checkpoint takes its gate first and the owner mutex second, and the owner checks before it captures;\na reset and a spawn change only the views; close and reopen need a quiescent owner
+title <b>One operation of each kind in the view-gate model</b>\nA checkpoint takes its gate first and the owner mutex second, the owner checks before it captures,\nand an acknowledged caller keeps its gate until it has installed the answer;\na reset and a spawn change only the views; close and reopen need a quiescent owner
 
 start
 partition "a checkpoint's locks" {
@@ -98,8 +101,8 @@ partition "CheckRequest(view), with no base check" {
           :AcknowledgeView(view, completes):
           the view's base becomes the new root.;<<#C8E6C9>>
           if (the acknowledgement completes?) then (yes)
-            :the gate is freed, the record is
-            cleared, result "acknowledged";<<#C8E6C9>>
+            :the gate goes back to the caller, the
+            record is cleared, result "acknowledged";<<#C8E6C9>>
           else (no)
             :the record keeps one acknowledgement,
             the gate stays pending, result "uncertain";<<#FFE0B2>>
@@ -114,8 +117,26 @@ partition "CheckRequest(view), with no base check" {
     endif
   endif
 }
-:ReturnCall(view): the mutex and every gate that this call holds are freed.
-A gate marked pending stays held by its record.;<<#CFD8DC>>
+:ReturnCall(view): the mutex is freed. A call that is not acknowledged
+becomes idle and frees every gate that it holds; an acknowledged call
+keeps its gate and enters the stage install. A gate marked pending
+stays held by its record.;<<#CFD8DC>>
+if (is the result "acknowledged"?) then (yes)
+  :InstallView(view): holding its gate and no mutex, the caller
+  installs the answer; only then is the gate freed, and the
+  caller is idle.;<<#C8E6C9>>
+  note right #E8F5E9
+    <b>NoViewOperationOnSupersededStore</b>
+    From the result "acknowledged" until InstallView the
+    caller holds its own gate, so no operation of the view
+    runs on the store that the answer supersedes.
+    The faults "ack-releases-permit" and
+    "release-before-install" free the gate early and violate it
+    (AckReleasesPermitMutant, ReleaseBeforeInstallMutant);
+    the witness NeverInstalledAnswer reaches the stage install.
+  end note
+else (no)
+endif
 stop
 
 start

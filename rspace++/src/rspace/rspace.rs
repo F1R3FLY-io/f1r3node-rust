@@ -56,10 +56,14 @@ use crate::rspace::history::durable_history_repository::DurableHistoryRepository
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
 use crate::rspace::hot_store::{HotStore, HotStoreInstances};
 use crate::rspace::internal::*;
+#[cfg(test)]
+use crate::rspace::persistence::journal_owner_hooks;
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use crate::rspace::serializers::serializers::CandidateOrderingBytes;
 use crate::rspace::space_matcher::SpaceMatcher;
-use crate::rspace::state::rspace_state_authority::{AuthorityRouteV1, DurableBackendV1};
+use crate::rspace::state::rspace_state_authority::{
+    AuthorityRouteV1, DurableBackendV1, DurableViewV1,
+};
 
 #[derive(Clone)]
 pub struct RSpaceStore {
@@ -112,6 +116,7 @@ pub struct RSpace<C, P, A, K> {
     /// fields so their offsets are unchanged.
     step_observer: Option<Arc<dyn StepCommObserver<C, P, A, K>>>,
     retained_set_automata: Arc<DashMap<Vec<C>, CachedRetainedSetAutomaton>>,
+    durable_view: Option<Arc<DurableViewV1<C, P, A, K>>>,
 }
 
 impl<C, P, A, K> RSpace<C, P, A, K>
@@ -271,6 +276,9 @@ where
     K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
 {
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
+        if let Some(view) = self.durable_view.as_deref() {
+            return self.create_durable_checkpoint(view).await;
+        }
         let _operation_guard = self.operation_gate.write().await;
         // Span[F].withMarks("create-checkpoint") from Scala - works because this is NOT
         // async
@@ -705,6 +713,7 @@ where
             operation_gate: Arc::new(tokio::sync::RwLock::new(())),
             step_observer: None,
             retained_set_automata: Arc::new(DashMap::new()),
+            durable_view: None,
         }
     }
 
@@ -735,6 +744,12 @@ where
         A: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
         K: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
     {
+        if let AuthorityRouteV1::Durable(durable) = store.authority.route() {
+            let (repository, hot_store, view) = Self::create_durable_view(durable)?;
+            let mut space = Self::apply(Arc::new(repository), hot_store, matcher);
+            space.durable_view = Some(Arc::new(view));
+            return Ok(space);
+        }
         let setup = Self::create_history_repo(store)?;
         let (history_reader, store) = setup;
         let space = Self::apply(Arc::new(history_reader), store, matcher);
@@ -847,6 +862,65 @@ where
         let repository = DurableHistoryRepositoryV1::new(slot.published_core())?;
         let hot_store = slot.view_store(&repository.root())?;
         Ok((Box::new(repository), hot_store))
+    }
+
+    fn create_durable_view(
+        durable: &DurableBackendV1,
+    ) -> Result<
+        (
+            Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>,
+            Box<dyn HotStore<C, P, A, K>>,
+            DurableViewV1<C, P, A, K>,
+        ),
+        HistoryRepositoryError,
+    >
+    where
+        C: Clone
+            + Debug
+            + Default
+            + Send
+            + Sync
+            + Serialize
+            + ColdStoreDecode
+            + Eq
+            + Hash
+            + 'static,
+        P: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
+        A: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
+        K: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
+    {
+        let slot = durable.owner_slot::<C, P, A, K>()?;
+        let repository = DurableHistoryRepositoryV1::new(slot.published_core())?;
+        let (base, hot_store) = slot.view_at(&repository.root())?;
+        Ok((Box::new(repository), hot_store, DurableViewV1::new(slot, base)))
+    }
+
+    async fn create_durable_checkpoint(
+        &self,
+        view: &DurableViewV1<C, P, A, K>,
+    ) -> Result<Checkpoint, RSpaceError> {
+        let permit = Arc::clone(&self.operation_gate).write_owned().await;
+        event!(Level::DEBUG, mark = "started-create-checkpoint", "create_checkpoint");
+        let hot = self.get_store();
+        let (root, _operation_guard) = view.checkpoint(permit, &self.operation_gate, &hot).await?;
+        #[cfg(test)]
+        journal_owner_hooks::run(
+            journal_owner_hooks::JournalOwnerHookPoint::BeforeViewInstallation,
+        );
+        let (base, next_store) = view.view_at(&root)?;
+        let next_history = self.get_history_repository().reset(&root)?;
+        *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
+        let log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
+        self.produce_counter
+            .lock()
+            .expect("produce counter lock")
+            .clear();
+        *self.store.write().expect("store write lock") = Arc::new(next_store);
+        self.retained_set_automata.clear();
+        view.record_base(base);
+        self.restore_installs();
+        event!(Level::DEBUG, mark = "finished-create-checkpoint", "create_checkpoint");
+        Ok(Checkpoint { root, log })
     }
 
     fn produce_counters(&self, produce_refs: &[Produce]) -> BTreeMap<Produce, i32> {

@@ -40,6 +40,9 @@ pub(crate) use closure::{
     RetainedUnionClosureLimitsV1, StructuralClosureLedgerV1, verify_incremental_closure,
     verify_structural_closure_in_ledger_with_limits,
 };
+pub(crate) use difference::StateDifferenceLimits;
+#[cfg(test)]
+pub(crate) use durable::journal_owner_hooks;
 pub use durable::{
     CATALOG_IMAGE_LEN, CatalogAuthorityTokenV1, CatalogSlotV1, DurableLimits, ObjectIndexRecordV1,
     PackTerminalIdentityV1,
@@ -54,15 +57,14 @@ pub(crate) use durable::{
 pub(crate) use durable::{
     DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableDirectoryV1, DurableExportSessionV1,
     DurableIoError, DurablePublishedCoreV1, DurableRSpaceAuthorityV1,
-    DurableRSpaceTransactionError, DurableStateReadHandleErrorV1, DurableStateRootV1,
-    DurableStoreGenesisErrorV1, DurableViewReaderV1, TransferExportErrorV1, TransferPageLimitsV1,
-    TransferPageViewV1, TransferTokenV1, create_empty_store_v1, recover_read_authority,
+    DurableRSpacePublicationLimitsV1, DurableRSpaceTransactionError, DurableStateReadHandleErrorV1,
+    DurableStateRootV1, DurableStoreGenesisErrorV1, DurableViewReaderV1, OwnerIncarnationV1,
+    TransferExportErrorV1, TransferPageLimitsV1, TransferPageViewV1, TransferTokenV1,
+    TrustedSuccessorPolicyV1, ViewBaseV1, ViewCheckpointLimitsV1, create_empty_store_v1,
+    recover_read_authority,
 };
 #[cfg(test)]
-pub(crate) use durable::{
-    DurableAuthorityViewV1, DurableObjectReadErrorV1, DurableRSpacePublicationLimitsV1,
-    TrustedSuccessorPolicyV1,
-};
+pub(crate) use durable::{DurableAuthorityViewV1, DurableObjectReadErrorV1};
 pub(crate) use manifest::AcceleratorManifestView;
 #[cfg(test)]
 pub(crate) use manifest::{

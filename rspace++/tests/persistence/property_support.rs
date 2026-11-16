@@ -499,6 +499,13 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
         "the_memo_is_bounded_evicts_its_oldest_transition_and_is_empty_after_close_and_a_reopen",
     ),
     ("KG-14", "forced_digest_collisions_retain_distinct_full_images"),
+    (
+        "OG-30",
+        "hard_checkpoints_of_choice_free_traces_return_the_expected_contents_and_replayable_roots",
+    ),
+    ("OG-31", "a_hard_checkpoint_under_the_held_view_gate_and_owner_mutex_completes"),
+    ("OG-42", "a_view_behind_the_current_state_publishes_the_successor_of_its_own_base"),
+    ("OG-47", "a_concurrent_operation_waits_until_every_owner_exit_is_installed"),
 ];
 
 pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {

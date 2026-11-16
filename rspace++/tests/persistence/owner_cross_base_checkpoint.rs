@@ -673,6 +673,7 @@ impl Trial {
             self.owner
                 .checkpoint_view_from_base(permit, base, &self.gate, hot, limits),
         )
+        .map(|(reached, _)| reached)
         .map_err(Box::new)
     }
 
@@ -1710,6 +1711,7 @@ impl RefusedCall<'_> {
                     view_limits(),
                 ),
             )
+            .map(|(reached, _)| reached)
             .map_err(Box::new)
         });
         drop(hook);
@@ -2068,7 +2070,7 @@ fn every_refusal_precedes_the_first_write_and_changes_nothing() {
             view_limits(),
         ),
     )
-    .map(|reached| (reached.root(), trial.slot().state().generation()))
+    .map(|(reached, _)| (reached.root(), trial.slot().state().generation()))
     .map_err(Box::new);
     assert!(
         matches!(
@@ -2204,6 +2206,7 @@ const fn owner_hook_point_index(point: JournalOwnerHookPoint) -> usize {
         JournalOwnerHookPoint::AfterSuccessorPin => 3,
         JournalOwnerHookPoint::AfterAcknowledgement => 4,
         JournalOwnerHookPoint::AfterPublishedCoreLoad => 5,
+        JournalOwnerHookPoint::BeforeViewInstallation => OWNER_HOOK_POINTS.len(),
     }
 }
 
@@ -2272,6 +2275,9 @@ fn a_crash_at_every_owner_hook_point_recovers_the_old_state_or_the_successor() {
                         .map(|(resolved, _)| resolved.root())
                 })
             }
+            JournalOwnerHookPoint::BeforeViewInstallation => {
+                unreachable!("the owner returns before a view installs its answer")
+            }
         };
         drop(hook);
         let (precedes_the_write, phase, held) = match point {
@@ -2285,6 +2291,9 @@ fn a_crash_at_every_owner_hook_point_recovers_the_old_state_or_the_successor() {
             }
             JournalOwnerHookPoint::AfterPublishedCoreLoad => {
                 (false, JournalPublicationPhaseV1::Ready, false)
+            }
+            JournalOwnerHookPoint::BeforeViewInstallation => {
+                unreachable!("the owner returns before a view installs its answer")
             }
         };
         let recovered = match precedes_the_write {

@@ -43,7 +43,7 @@ mod view_reader;
 pub(crate) use admission::{
     AdmittedCheckpointSourceV1, DurableAdmissionErrorV1, DurableAdmissionLimitsV1,
     DurableAdmissionReportV1, DurableIndexedObjectStoreV1, DurableObjectCopyErrorV1,
-    DurableObjectReadErrorV1, SemanticallyAdmittedDurableWriterV1,
+    DurableObjectReadErrorV1, SemanticallyAdmittedDurableWriterV1, TrustedSuccessorPolicyV1,
 };
 #[cfg(test)]
 pub(crate) use admission::{
@@ -53,8 +53,7 @@ pub(crate) use admission::{
 #[cfg(test)]
 pub(crate) use admission::{
     DurableAuthorityCoreV1, PreparedTrustedSuccessorV1, SealedDurableTransactionV1,
-    SuccessorBindingV1, TrustedCeilingAxisV1, TrustedStateCeilingsV1, TrustedSuccessorPolicyV1,
-    TrustedTrialWorkV1,
+    SuccessorBindingV1, TrustedCeilingAxisV1, TrustedStateCeilingsV1, TrustedTrialWorkV1,
 };
 #[cfg(test)]
 pub(crate) use admission::{
@@ -116,15 +115,14 @@ pub(crate) use recovery::{
 #[cfg(test)]
 pub(crate) use rspace_authority::hooks as journal_owner_hooks;
 pub(crate) use rspace_authority::{
-    DurablePublishedCoreV1, DurableRSpaceAuthorityV1, DurableRSpaceTransactionError,
+    DurablePublishedCoreV1, DurableRSpaceAuthorityV1, DurableRSpacePublicationLimitsV1,
+    DurableRSpaceTransactionError, OwnerIncarnationV1, ViewBaseV1, ViewCheckpointLimitsV1,
 };
 #[cfg(test)]
 pub(crate) use rspace_authority::{
-    DurableRSpacePublicationLimitsV1, JournalPublicationPhaseV1, OwnerIncarnationAllocatorV1,
-    OwnerIncarnationExhaustedV1, ViewAttachmentRefusalV1,
+    JournalPublicationPhaseV1, OwnerIncarnationAllocatorV1, OwnerIncarnationExhaustedV1,
+    ViewAttachmentRefusalV1,
 };
-#[cfg(test)]
-pub(crate) use rspace_authority::{ViewBaseV1, ViewCheckpointLimitsV1};
 #[cfg(test)]
 pub(crate) use startup::{
     DurableStartupErrorV1, IndexBindingDispositionV1, PhysicallyRecoveredDurableWriterV1,

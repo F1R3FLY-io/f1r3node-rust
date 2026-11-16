@@ -10,6 +10,7 @@ use super::durable_recovery::limits;
 use super::durable_rspace_authority::{
     Profile, fixture, poll_checkpoint_with, populate, publication_limits,
 };
+use super::owner_cross_base_checkpoint::view_limits;
 use super::support::trial_scratch;
 use crate::rspace::errors::{
     AuthorityBackendMismatch, HistoryError, HistoryRepositoryError, RootError,
@@ -25,7 +26,8 @@ use crate::rspace::persistence::durable::{
     pack_file_name, start_durable_store_genesis_trace, take_durable_store_genesis_trace,
 };
 use crate::rspace::persistence::{
-    DurableStateRootV1, IndexGenerationV1, LogPackDecodeLimits, PackId, RSpaceSemanticProfile,
+    DurableRSpacePublicationLimitsV1, DurableStateRootV1, IndexGenerationV1, LogPackDecodeLimits,
+    PackId, RSpaceSemanticProfile, ViewCheckpointLimitsV1,
 };
 use crate::rspace::rspace::{RSpace, RSpaceStore};
 use crate::rspace::state::closure_verifier::RecordValidator;
@@ -48,12 +50,15 @@ type ByteChannelRepository =
 type ByteChannelHotStore = Box<dyn HotStore<Vec<u8>, String, String, String>>;
 
 fn durable_authority(root: &Path) -> Arc<RSpaceStateAuthority> {
-    RSpaceStateAuthority::durable(
-        root,
-        limits(),
-        LogPackDecodeLimits::UNBOUNDED,
-        DurableAdmissionLimitsV1::UNBOUNDED,
-    )
+    RSpaceStateAuthority::durable(root, ViewCheckpointLimitsV1 {
+        publication: DurableRSpacePublicationLimitsV1 {
+            recovery: limits(),
+            wal: LogPackDecodeLimits::UNBOUNDED,
+            admission: DurableAdmissionLimitsV1::UNBOUNDED,
+            ..publication_limits()
+        },
+        difference: view_limits().difference,
+    })
 }
 
 fn open(

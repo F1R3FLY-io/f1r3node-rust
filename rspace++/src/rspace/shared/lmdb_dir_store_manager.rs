@@ -11,7 +11,11 @@ use tokio::sync::Mutex;
 
 use super::key_value_store_manager::{KeyValueStoreManager, RSpaceBackendSelection};
 use super::lmdb_store_manager::LmdbStoreManager;
-use crate::rspace::persistence::{DurableAdmissionLimitsV1, DurableLimits, LogPackDecodeLimits};
+use crate::rspace::persistence::{
+    DagTransactionLimits, DurableAdmissionLimitsV1, DurableLimits,
+    DurableRSpacePublicationLimitsV1, LogPackDecodeLimits, StateDifferenceLimits,
+    TrustedSuccessorPolicyV1, ViewCheckpointLimitsV1,
+};
 use crate::rspace::state::rspace_state_authority::{LmdbAuthorityLayout, RSpaceStateAuthority};
 
 /**
@@ -38,6 +42,25 @@ pub const GB: usize = 1024 * MB;
 pub const TB: usize = 1024 * GB;
 
 pub const DURABLE_RSPACE_DIRECTORY_NAME: &str = "durable";
+
+const DURABLE_DIFFERENCE_WORKLIST_ENTRIES: u64 = 1 << 20;
+const DURABLE_DIFFERENCE_PATH_BYTES: u64 = 1 << 26;
+
+const DURABLE_VIEW_CHECKPOINT_LIMITS: ViewCheckpointLimitsV1 = ViewCheckpointLimitsV1 {
+    publication: DurableRSpacePublicationLimitsV1 {
+        transaction: DagTransactionLimits::UNBOUNDED,
+        recovery: DurableLimits::UNBOUNDED,
+        wal: LogPackDecodeLimits::UNBOUNDED,
+        admission: DurableAdmissionLimitsV1::UNBOUNDED,
+        trusted: TrustedSuccessorPolicyV1::UNBOUNDED,
+    },
+    difference: StateDifferenceLimits {
+        max_object_reads: u64::MAX,
+        max_object_read_bytes: u64::MAX,
+        max_worklist: DURABLE_DIFFERENCE_WORKLIST_ENTRIES,
+        max_path_bytes: DURABLE_DIFFERENCE_PATH_BYTES,
+    },
+};
 
 #[derive(Clone)]
 pub struct LmdbEnvConfig {
@@ -312,12 +335,8 @@ impl KeyValueStoreManager for LmdbDirStoreManager {
                 .join(db_prefix)
                 .join(DURABLE_RSPACE_DIRECTORY_NAME);
             std::fs::create_dir_all(&directory)?;
-            let authority = RSpaceStateAuthority::durable(
-                directory,
-                DurableLimits::UNBOUNDED,
-                LogPackDecodeLimits::UNBOUNDED,
-                DurableAdmissionLimitsV1::UNBOUNDED,
-            );
+            let authority =
+                RSpaceStateAuthority::durable(directory, DURABLE_VIEW_CHECKPOINT_LIMITS);
             state
                 .authorities
                 .insert(db_prefix.to_owned(), Arc::clone(&authority));

@@ -59,7 +59,7 @@ fn node_like_mapping() -> HashMap<Db, LmdbEnvConfig> {
     mapping
 }
 
-fn manager_over(directory: &Path) -> impl KeyValueStoreManager {
+pub(super) fn manager_over(directory: &Path) -> impl KeyValueStoreManager {
     LmdbDirStoreManager::new(directory.to_path_buf(), node_like_mapping())
 }
 

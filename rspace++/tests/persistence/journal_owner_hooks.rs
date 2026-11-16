@@ -8,6 +8,7 @@ pub(crate) enum JournalOwnerHookPoint {
     AfterSuccessorPin,
     AfterAcknowledgement,
     AfterPublishedCoreLoad,
+    BeforeViewInstallation,
 }
 
 thread_local! {

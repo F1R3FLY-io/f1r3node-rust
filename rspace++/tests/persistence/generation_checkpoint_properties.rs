@@ -755,6 +755,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("transfer_export_binding.rs"),
         include_str!("../rho_path_v2_bridge.rs"),
         include_str!("durable_gc_cross_process.rs"),
+        include_str!("durable_rspace_checkpoint.rs"),
     ]
     .concat();
     for (id, target) in PROPERTY_BINDINGS {

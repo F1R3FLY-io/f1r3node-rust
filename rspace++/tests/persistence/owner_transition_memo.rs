@@ -119,6 +119,7 @@ fn checkpoint_at(
         .try_write_owned()
         .expect("the view gate is free");
     poll_once(owner.checkpoint_view_from_base(permit, base, gate, hot, limits))
+        .map(|(reached, _)| reached)
         .map_err(|refusal| format!("{refusal:?}"))
 }
 

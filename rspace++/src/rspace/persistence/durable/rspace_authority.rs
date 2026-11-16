@@ -793,6 +793,7 @@ where P::Channel: Clone + Hash + Eq
     ) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
         let (predecessor, captured) = self.capture_bound_journal(&permit, attachment, gate, hot)?;
         self.publish_bound_journal(permit, hot, predecessor, captured, limits, None)
+            .map(|(reached, _)| reached)
     }
 
     fn capture_bound_journal(
@@ -823,7 +824,7 @@ where P::Channel: Clone + Hash + Eq
         captured: CapturedHotJournalV1,
         limits: DurableRSpacePublicationLimitsV1,
         prebuilt: Option<RSpaceMutationBatchV1>,
-    ) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
+    ) -> Result<(StateVersionV1, OwnedRwLockWriteGuard<()>), DurableRSpaceTransactionError> {
         self.pending = Some(Box::new(PendingJournalPublicationV1 {
             permit,
             hot: Arc::clone(hot),
@@ -842,8 +843,10 @@ where P::Channel: Clone + Hash + Eq
             self.validate_base(hot)?;
             self.pending = None;
         }
-        publication?;
-        self.acknowledge_successor()
+        match publication? {
+            Some(permit) => Ok((self.quiescent_state()?, permit)),
+            None => self.acknowledge_successor(),
+        }
     }
 
     pub(crate) async fn checkpoint_view_from_base(
@@ -853,7 +856,8 @@ where P::Channel: Clone + Hash + Eq
         gate: &Arc<RwLock<()>>,
         hot: &OwnerHotStoreV1<P>,
         limits: ViewCheckpointLimitsV1,
-    ) -> Result<ResolvedDurableStateV1, DurableRSpaceTransactionError> {
+    ) -> Result<(ResolvedDurableStateV1, OwnedRwLockWriteGuard<()>), DurableRSpaceTransactionError>
+    {
         if !Arc::ptr_eq(OwnedRwLockWriteGuard::rwlock(&permit), gate) {
             return Err(DurableRSpaceTransactionError::ForeignPermit);
         }
@@ -889,9 +893,9 @@ where P::Channel: Clone + Hash + Eq
                 Err(_) => (None, None),
             };
             if let Some(memoised) = self.memoised_successor(key) {
-                return Ok(memoised);
+                return Ok((memoised, permit));
             }
-            let reached = self.publish_bound_journal(
+            let (reached, permit) = self.publish_bound_journal(
                 permit,
                 hot,
                 predecessor,
@@ -901,7 +905,7 @@ where P::Channel: Clone + Hash + Eq
             )?;
             let reached = self.resolve_state(reached)?;
             self.transitions.record(key, reached);
-            return Ok(reached);
+            return Ok((reached, permit));
         }
         let current = self.inheritable_current_manifest(&view.state)?;
         let captured =
@@ -909,12 +913,12 @@ where P::Channel: Clone + Hash + Eq
         let mut mutation =
             match mutation_batch_from_observation(predecessor.state(), captured.observation()) {
                 Ok(mutation) => mutation,
-                Err(MutationError::EmptyBatch) => return Ok(view.state),
+                Err(MutationError::EmptyBatch) => return Ok((view.state, permit)),
                 Err(error) => return Err(error.into()),
             };
         let key = ViewTransitionKeyV1::of(view.state.manifest(), &captured);
         if let Some(memoised) = self.memoised_successor(key) {
-            return Ok(memoised);
+            return Ok((memoised, permit));
         }
         visit_state_difference(
             self.source.verified_state().object_store(),
@@ -930,7 +934,7 @@ where P::Channel: Clone + Hash + Eq
         if mutation.is_empty() {
             let reached = self.resolve_state(predecessor.state())?;
             self.transitions.record(key, reached);
-            return Ok(reached);
+            return Ok((reached, permit));
         }
         self.pending = Some(Box::new(PendingJournalPublicationV1 {
             permit,
@@ -950,11 +954,13 @@ where P::Channel: Clone + Hash + Eq
             self.validate_unpublished(hot)?;
             self.pending = None;
         }
-        publication?;
-        let reached = self.acknowledge_successor()?;
+        let (reached, permit) = match publication? {
+            Some(permit) => (self.quiescent_state()?, permit),
+            None => self.acknowledge_successor()?,
+        };
         let reached = self.resolve_state(reached)?;
         self.transitions.record(key, reached);
-        Ok(reached)
+        Ok((reached, permit))
     }
 
     fn publish_captured(
@@ -962,7 +968,7 @@ where P::Channel: Clone + Hash + Eq
         hot: &OwnerHotStoreV1<P>,
         limits: DurableRSpacePublicationLimitsV1,
         prebuilt: Option<RSpaceMutationBatchV1>,
-    ) -> Result<(), DurableRSpaceTransactionError> {
+    ) -> Result<Option<OwnedRwLockWriteGuard<()>>, DurableRSpaceTransactionError> {
         let pending = self.pending.as_mut().expect("checkpoint owns its capture");
         hot.validate_pending_journal(&pending.captured)?;
         let observation = pending.captured.observation();
@@ -973,8 +979,9 @@ where P::Channel: Clone + Hash + Eq
             Ok(mutation) => mutation,
             Err(MutationError::EmptyBatch) => {
                 self.validate_base(hot)?;
-                self.pending = None;
-                return Ok(());
+                let PendingJournalPublicationV1 { permit, .. } =
+                    *self.pending.take().expect("checkpoint owns its capture");
+                return Ok(Some(permit));
             }
             Err(error) => return Err(error.into()),
         };
@@ -1027,7 +1034,7 @@ where P::Channel: Clone + Hash + Eq
             successor: Arc::new(successor),
             generation_lease: None,
         };
-        Ok(())
+        Ok(None)
     }
 
     pub(crate) fn reconcile(
@@ -1039,7 +1046,7 @@ where P::Channel: Clone + Hash + Eq
         };
         let hot = Arc::clone(&pending.hot);
         if let PendingJournalPhaseV1::AwaitingAck { .. } = pending.phase {
-            return self.acknowledge_successor();
+            return self.acknowledge_successor().map(|(reached, _)| reached);
         }
         self.validate_unpublished(&hot)?;
         let OwnerLifecycleV1::Live { lease, .. } = &mut self.lifecycle else {
@@ -1087,13 +1094,16 @@ where P::Channel: Clone + Hash + Eq
             successor,
             generation_lease: None,
         };
-        self.acknowledge_successor()
+        self.acknowledge_successor().map(|(reached, _)| reached)
     }
 
-    fn acknowledge_successor(&mut self) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
-        let Some(pending) = self.pending.as_mut() else {
-            return self.quiescent_state();
-        };
+    fn acknowledge_successor(
+        &mut self,
+    ) -> Result<(StateVersionV1, OwnedRwLockWriteGuard<()>), DurableRSpaceTransactionError> {
+        let pending = self
+            .pending
+            .as_mut()
+            .expect("acknowledgement follows an admitted publication");
         let hot = Arc::clone(&pending.hot);
         let observed = pending.phase.observed();
         let PendingJournalPhaseV1::AwaitingAck {
@@ -1148,8 +1158,7 @@ where P::Channel: Clone + Hash + Eq
         self.published.install(Arc::clone(&successor));
         self.source = successor;
         *current_pin = generation_lease.expect("successor pin precedes acknowledgement");
-        drop(permit);
-        self.state(&hot)
+        self.state(&hot).map(|reached| (reached, permit))
     }
 }
 

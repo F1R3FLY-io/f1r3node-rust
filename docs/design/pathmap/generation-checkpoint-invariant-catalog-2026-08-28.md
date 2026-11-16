@@ -7242,19 +7242,29 @@ refusal drops the permit when the call returns, so the caller's gate is free
 again, and nothing has been captured. Once every check passes, the capture
 moves the permit into the pending record, and from there:
 
-- an empty journal, or a refusal before publication begins, drops the record
-  and the permit with it, as before;
+- an empty journal drops the record and returns its permit together with
+  the owner's state;
+- a refusal before publication begins drops the record and the permit with
+  it, as before;
 - a publication whose outcome is unknown keeps the record in
   `RecoveryRequired`, and the permit inside it keeps the gate held until
   `reconcile` resolves the outcome, which is the base model's
   `GateHeldUntilResolution`;
 - a successful publication is acknowledged in the same call:
   `acknowledge_successor` adopts the successor and pins its generation, and
-  only then drops the permit.
+  only then returns the permit together with the successor's state.
 
-The permit is therefore held from the call until acknowledgement or refusal,
-and, when the outcome is unknown, until reconciliation. The caller protocol
-of this slice, and the owner's decisions:
+`checkpoint_view` drops a returned permit as it returns the state. For its
+caller the permit is therefore held from the call until acknowledgement or
+refusal, and, when the outcome is unknown, until reconciliation.
+`checkpoint_view_from_base`, the entry point of the
+[cross-base view checkpoint](#cross-base-view-checkpoint-through-the-durable-owner-2026-11-12),
+instead hands a returned permit to its caller together with the state, so
+that the caller can install the state before any other operation of the view
+runs. Leaf G15 of task 12424 made that change, and the
+[durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13)
+section describes it. The caller protocol of this slice, and the owner's
+decisions:
 
 ```text
 caller of view v
@@ -7273,11 +7283,14 @@ caller of view v
         ▼
      capture: the pending record takes the permit and the capturing store
         │
-        ├─ empty journal, or refused before publication ──▶ record dropped, gate free
+        ├─ empty journal ──▶ record dropped, permit returned (*) ──▶ Ok(state), gate free
+        ├─ refused before publication ──▶ record dropped with its permit, gate free
         ├─ outcome unknown ──▶ RecoveryRequired: record kept, gate held until reconcile
         ▼
      AwaitingAck ──▶ acknowledge_successor: successor adopted and pinned,
-                     then the permit dropped ──▶ Ok(state), gate free
+                     then the permit returned (*) ──▶ Ok(state), gate free
+
+     (*) checkpoint_view drops the returned permit as it returns
 ```
 
 **A pending publication.** The owner no longer reconciles inside a
@@ -7349,8 +7362,8 @@ mutex is held, which is `LockOrder`.
 | `CheckRequest` is enabled only when `pending = NoPending`; a view that holds the mutex over a pending record takes `ReconcileFirst` instead. | Check 5 refuses with `Unresolved(phase)`, and the caller reconciles first, as described above. |
 | The capture sets `pending.permit` to the request's permit and marks `viewGate[permit]` as `"pending"`, so `ReturnCall` does not free it. | The pending record owns the guard, so returning from the call does not release the gate. |
 | `PublishView(view, outcome)`: the outcome `new` enters `AwaitingAck` for the caller to acknowledge; any other outcome enters `RecoveryRequired` and reports `uncertain`, with the gate still marked. | `publish_captured`: a success enters `AwaitingAck`, and `checkpoint_view` acknowledges at once; an unknown outcome returns its error and keeps the record and its permit. |
-| `AcknowledgeView(view, completes)` frees `viewGate[pending.permit]` and sets the view's attachment base to the new root; an incomplete acknowledgement keeps the gate. | `acknowledge_successor` adopts the successor and drops the permit last; a failed acknowledgement keeps the record and the permit. The attachment is a value that the caller holds, so the caller attaches again to obtain the new base. |
-| `ReconcilePending`, with the mutex free, takes `Resolve`: a kept predecessor frees the gate and clears `pending`; a changed root enters `AwaitingAck`, whose resolution sets the attachment base and frees the gate. | `reconcile(limits)`, under the owner mutex alone: a kept predecessor drops the record and its permit; the retained terminal is acknowledged, which drops them once the successor is adopted. |
+| `AcknowledgeView(view, completes)` gives `viewGate[pending.permit]` back to the caller of the record's view and sets the view's attachment base to the new root; an incomplete acknowledgement keeps the gate marked. `ReturnCall` then leaves the gate with the acknowledged caller, and `InstallView`, the step in which that caller installs the owner's answer, frees it. | `acknowledge_successor` adopts the successor and returns the permit with the successor's state; a failed acknowledgement keeps the record and the permit. `checkpoint_view` drops the returned permit as it returns. `checkpoint_view_from_base` hands it to its caller, which installs the returned state in the view and only then drops the permit. |
+| `ReconcilePending`, with the mutex free, takes `Resolve`: a kept predecessor frees the gate and clears `pending`; a changed root enters `AwaitingAck`, whose resolution sets the attachment base and frees the gate. | `reconcile(limits)`, under the owner mutex alone: a kept predecessor drops the record and its permit; the retained terminal is acknowledged, which drops the record once the successor is adopted and returns its permit, and `reconcile` drops the permit as it returns. |
 | `ReconcileFirst(view)`: a view that holds the mutex resolves the pending record first, even one captured through another view's gate; the witness `NeverReconciledByOtherView` reaches that case. | Not taken. With one gate per owner, the only configuration before the view layer of task 7931, a pending record holds the caller's own gate, so no caller reaches `ReconcileFirst`, as in the model with one view. Whether a view may resolve a publication captured through another view's gate is decided with that view layer; until then `checkpoint_view` refuses it with `Unresolved(phase)`, which the unbound test below pins. |
 | `PermitProvenance`: a pending record holds its own view's permit. `ForeignPermitMutant` violates it. | Check 1 admits only a guard of `gate`, and the record keeps that guard. OG-09, and the red control without check 1. |
 | `NoViewMutationWhilePending`: while a record exists, its view's gate is marked pending. | The record owns the guard, so the gate stays held while the record exists. OG-09's second owner and the unbound test observe the gate still held after a refusal. |
@@ -7526,8 +7539,13 @@ gains a second specification, `ViewSpec`, beside `Spec`. Commit `7851c684e`
 (task 14345) changed its view part under ruling Q1 option A of 2026-11-12: a
 reset is local to the view and writes nothing, a spawn copies the spawning
 view's attachment, and a checkpoint publishes the successor of its own base
-whatever the owner's root is. This section describes the model after that
-change. Its vocabulary:
+whatever the owner's root is. Leaf G15 of task 12424 then added the step in
+which a caller whose checkpoint is acknowledged installs the owner's answer
+while it still holds its gate, `InstallView`, together with the invariant
+`NoViewOperationOnSupersededStore`, two faults and one witness; the
+[durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13)
+section gives the reason. This section describes the model after both
+changes. Its vocabulary:
 
 - A *view* is one RSpace object that shares the durable owner. The model has
   two views, a and b.
@@ -7579,7 +7597,7 @@ would complete without a publication.
 | Next-state relation | `Next` | `ViewNext` |
 | Fairness | None. | Weak fairness of `OwnerAction` and of `ReconcilePending`. |
 | Configuration and deadlock checking | RSpaceJournalPublicationOwner.cfg, off. | RSpaceJournalPublicationOwnerViews.cfg, on. |
-| Properties | Seventeen invariants. | Nine invariants, `ViewTypeInvariant` and the eight below; the step property `SpawnSharesOwner`; and the liveness property `PendingResolves`. |
+| Properties | Seventeen invariants. | Ten invariants, `ViewTypeInvariant` and the nine below; the step property `SpawnSharesOwner`; and the liveness property `PendingResolves`. |
 
 `Spec` keeps the single-checkpoint protocol. The view variables are constant
 under it, so its state graph, its seventeen invariants and its thirty red
@@ -7595,7 +7613,7 @@ most one acknowledgement.
 | *owner* | The owner's incarnation, its live flag, its current root and a ghost session counter (premise P3 below). Initially incarnation 0, live, root 0 and session 0. |
 | *attachment* | For each view, the incarnation and base that it holds and the ghost session that it attached in. Initially incarnation 0, base 0 and session 0. |
 | *viewGate* | For each view, "free", the view whose caller holds the gate, or "pending" when a pending record owns it. |
-| *caller* | For each view, the call in progress: its stage, its operation, which is "checkpoint" or "none", its permit and its result. The record also has a root field, which is always 0 and which no action reads. |
+| *caller* | For each view, the call in progress: its stage, its operation, which is "checkpoint" or "none", its permit and its result. The stage is one of eight: "idle", "wait", "retake", "run", "publish", "ack", "done" and "install". A caller is at "install" after an acknowledged call has returned and until it has installed the owner's answer. The record also has a root field, which is always 0 and which no action reads. |
 | *ownerMutex* | "free", or the view whose call holds the mutex. |
 | *pending* | The pending record's view, permit, base, predecessor (the owner's root at the capture), target, phase and acknowledgement count, or `NoPending`. |
 | *lastPublished* | A ghost: the target of the last publication, initially 0. Only `PublishView` changes it (premise P6 below). |
@@ -7604,21 +7622,24 @@ most one acknowledgement.
 calls the owner, and the owner mutex after the gate. The owner takes no gate
 while it holds the mutex. Before it captures, the owner reconciles any pending
 record and checks the permit and then the incarnation; it does not compare the
-view's base with its root. A reset and a spawn are single steps of the view:
+view's base with its root. A caller whose checkpoint is acknowledged keeps its
+gate when the call returns, and frees it only when it has installed the
+owner's answer. A reset and a spawn are single steps of the view:
 they take no gate and no mutex, and they leave *owner*, *ownerMutex*,
 *pending* and *lastPublished* unchanged. Close and reopen act on a quiescent
 owner.
 
-![One operation of each kind in the view-gate model, as three activity flows. The first flow is a checkpoint. In blue, the idle caller takes the free gate of its permit through CallCheckpoint, and then the owner mutex through TakeMutex. In amber, while a publication is pending the mutex holder can only resolve it through ReconcileFirst, and Resolve compares the owner's root with the record's predecessor: a RecoveryRequired record is dropped and frees its gate while the root is still its predecessor, a RecoveryRequired record enters AwaitingAck once the root has moved, and an AwaitingAck record sets its view's base to the root unless it was acknowledged once, frees the gate and is cleared. In purple, the decisions of CheckRequest, which has no base check: the permit must be the view's own gate, the attachment's incarnation must be the owner's, and then the question whether the target, the successor Succ(base, view) of the view's own base, is the owner's root. In red, the refusals refused-permit and refused-incarnation, before anything is captured. In green, a target equal to the root, possible only from another base, completes without a publication and sets the view's base to the target; any other target is captured with the view, the permit, the base, the owner's root as the predecessor and the target, and the gate is marked pending. A note tells the two kinds of checkpoint apart: from the current base the checkpoint always captures, with its base equal to the predecessor; from another base it captures with a base that differs from the predecessor, and its publication sets the root to the successor of a base that was not the root, the case that the witness NeverPublishedAcrossBases reaches. On the outcome new, PublishView sets the root and lastPublished to the target and enters AwaitingAck, and AcknowledgeView sets the view's base to the new root and, when complete, frees the gate and clears the record. In amber again, the outcome unknown-new sets the root and lastPublished to the target, the outcome unknown-old keeps them, and both enter RecoveryRequired and leave the gate held, as does an incomplete acknowledgement, each reporting uncertain. In grey, ReturnCall frees the mutex and the gates that the call holds, while a gate marked pending stays with its record. The second flow, in yellow, holds the view-local steps, which take no gate or mutex and leave the owner's state unchanged: ResetView, with the view's caller idle and its gate free, sets the view's base to its target while the owner's root stays equal to lastPublished, and CallSpawn, with both callers idle and both gates free, copies the spawning view's incarnation, base and session to the other view and reports spawned. The third flow, in teal, is close and reopen: CloseOwner makes a live, quiescent owner below its session bound not live and advances its incarnation by one, and ReopenOwner makes a closed, quiescent owner live with the next incarnation, advances the session and attaches the view at the owner's root.](figures/owner-view-gate-protocol.svg)
+![One operation of each kind in the view-gate model, as three activity flows. The first flow is a checkpoint. In blue, the idle caller takes the free gate of its permit through CallCheckpoint, and then the owner mutex through TakeMutex. In amber, while a publication is pending the mutex holder can only resolve it through ReconcileFirst, and Resolve compares the owner's root with the record's predecessor: a RecoveryRequired record is dropped and frees its gate while the root is still its predecessor, a RecoveryRequired record enters AwaitingAck once the root has moved, and an AwaitingAck record sets its view's base to the root unless it was acknowledged once, frees the gate and is cleared. In purple, the decisions of CheckRequest, which has no base check: the permit must be the view's own gate, the attachment's incarnation must be the owner's, and then the question whether the target, the successor Succ(base, view) of the view's own base, is the owner's root. In red, the refusals refused-permit and refused-incarnation, before anything is captured. In green, a target equal to the root, possible only from another base, completes without a publication and sets the view's base to the target; any other target is captured with the view, the permit, the base, the owner's root as the predecessor and the target, and the gate is marked pending. A note tells the two kinds of checkpoint apart: from the current base the checkpoint always captures, with its base equal to the predecessor; from another base it captures with a base that differs from the predecessor, and its publication sets the root to the successor of a base that was not the root, the case that the witness NeverPublishedAcrossBases reaches. On the outcome new, PublishView sets the root and lastPublished to the target and enters AwaitingAck, and AcknowledgeView sets the view's base to the new root and, when complete, gives the gate back to the caller and clears the record. In amber again, the outcome unknown-new sets the root and lastPublished to the target, the outcome unknown-old keeps them, and both enter RecoveryRequired and leave the gate held, as does an incomplete acknowledgement, each reporting uncertain. In grey, ReturnCall frees the mutex: a call that is not acknowledged becomes idle and frees every gate that it holds, an acknowledged call keeps its gate and enters the stage install, and a gate marked pending stays with its record. In green again, after a decision on whether the result is acknowledged, InstallView is the step of the acknowledged caller, which holds its gate and no mutex: it installs the answer, and only then is the gate freed and the caller idle. A note beside it states NoViewOperationOnSupersededStore: from the result acknowledged until InstallView the caller holds its own gate, so no operation of the view runs on the store that the answer supersedes. The note names the faults ack-releases-permit and release-before-install, which free the gate early and violate the invariant in the configurations AckReleasesPermitMutant and ReleaseBeforeInstallMutant, and the witness NeverInstalledAnswer, which reaches the stage install. The second flow, in yellow, holds the view-local steps, which take no gate or mutex and leave the owner's state unchanged: ResetView, with the view's caller idle and its gate free, sets the view's base to its target while the owner's root stays equal to lastPublished, and CallSpawn, with both callers idle and both gates free, copies the spawning view's incarnation, base and session to the other view and reports spawned. The third flow, in teal, is close and reopen: CloseOwner makes a live, quiescent owner below its session bound not live and advances its incarnation by one, and ReopenOwner makes a closed, quiescent owner live with the next incarnation, advances the session and attaches the view at the owner's root.](figures/owner-view-gate-protocol.svg)
 
 The figure's source is
 [`owner-view-gate-protocol.puml`](figures/owner-view-gate-protocol.puml).
 
 `ViewNext` has seven disjuncts. One of them, `OwnerAction`, is the disjunction
-of `TakeMutex` and the six steps of the mutex holder, and the weak fairness of
-`ViewSpec` is stated on it. With `OwnerAction` expanded, `ViewNext` has
-thirteen actions, one row each; the seven from `TakeMutex` to `ReturnCall` are
-those of `OwnerAction`.
+of `TakeMutex`, the six steps of the mutex holder and `InstallView`, the step
+of an acknowledged caller after its call has returned, and the weak fairness
+of `ViewSpec` is stated on it. With `OwnerAction` expanded, `ViewNext` has
+fourteen actions, one row each; the eight from `TakeMutex` to `InstallView`
+are those of `OwnerAction`.
 
 | Step | Action | Effect |
 |---|---|---|
@@ -7630,8 +7651,9 @@ those of `OwnerAction`.
 | Reconcile first | `ReconcileFirst(view)` | While a record is pending the holder can only resolve it through `Resolve`, even a record captured through the other view's gate. |
 | Check and capture | `CheckRequest(view)` | With no record pending, in this order: the permit must be the view's own gate, else "refused-permit"; the attachment's incarnation must be the owner's, else "refused-incarnation". There is no base check. The target is the successor $`\mathit{Succ}(\mathit{base}, \mathit{view})`$ of the view's own base. A target equal to the owner's root, which only a checkpoint from another base has, completes the call without a record: the view's base becomes the target and the result is "acknowledged". Any other target is captured: the record takes the view, the permit, the base, the owner's root as its predecessor and the target, in phase "Captured", and the permit's gate is marked "pending". |
 | Publish | `PublishView(view, outcome)` | "new" sets the owner's root and `lastPublished` to the target and enters "AwaitingAck". "unknown-new" sets them to the target as well, "unknown-old" keeps them, and both enter "RecoveryRequired" and report "uncertain". |
-| Acknowledge | `AcknowledgeView(view, completes)` | The view's base becomes the new root. A complete acknowledgement frees the gate and clears the record. An incomplete one keeps the record with one acknowledgement, and the gate stays "pending". |
-| Return | `ReturnCall(view)` | The mutex and the gates that this call holds are freed. A gate marked "pending" stays with its record. |
+| Acknowledge | `AcknowledgeView(view, completes)` | The view's base becomes the new root. A complete acknowledgement gives the gate back to the caller of the record's view and clears the record. An incomplete one keeps the record with one acknowledgement, and the gate stays "pending". |
+| Return | `ReturnCall(view)` | The mutex is freed. A call whose result is not "acknowledged" becomes idle and frees the gates that it holds. A call whose result is "acknowledged" keeps its gate and enters the stage "install". A gate marked "pending" stays with its record. |
+| Install the answer | `InstallView(view)` | A caller at the stage "install" holds its own view's gate and no mutex. The step stands for the installation of the owner's answer in the view: it frees the gate, and the caller becomes idle. |
 | Reconcile with the mutex free | `ReconcilePending` | With the mutex free, a "RecoveryRequired" or "AwaitingAck" record is resolved through `Resolve`. |
 | Close | `CloseOwner` | A live, `Quiescent` owner below its session bound becomes not live, and its incarnation advances by one. |
 | Reopen | `ReopenOwner(view, incarnation)` | A closed, `Quiescent` owner becomes live with the incarnation that `FreshIncarnation` allows and the next session, and the view attaches at the owner's root. |
@@ -7662,7 +7684,7 @@ such an attachment, because a spawn reads nothing of the owner and copies the
 old incarnation.
 
 **The invariants and properties.** RSpaceJournalPublicationOwnerViews.cfg
-checks nine invariants and two temporal properties, one row each.
+checks ten invariants and two temporal properties, one row each.
 
 | Check | Kind | Required behavior |
 |---|---|---|
@@ -7675,6 +7697,7 @@ checks nine invariants and two temporal properties, one row each.
 | `StaleIncarnationRefused` | Invariant | A view that holds the mutex at the publish or acknowledge stage has a live owner and an attachment from the owner's current session. |
 | `PermitProvenance` | Invariant | A pending record's permit is its own view's gate. |
 | `LockOrder` | Invariant | No view holds the mutex while it waits to take a gate again. |
+| `NoViewOperationOnSupersededStore` | Invariant | A view whose call has the result "acknowledged", at the stage "done" or "install", has its own gate held by its caller, so no operation of the view can run before the owner's answer is installed. |
 | `SpawnSharesOwner` | Step property | Every spawn step leaves the other view with the spawning view's incarnation, session and base. |
 | `PendingResolves` | Liveness property | A pending record is eventually cleared. |
 
@@ -7709,7 +7732,8 @@ $`\mathit{pending} \neq \mathit{NoPending} \leadsto \mathit{pending} = \mathit{N
 where $`P \leadsto Q`$ holds when every state that satisfies $`P`$ is followed,
 then or later, by a state that satisfies $`Q`$: a pending record is eventually
 cleared. It is checked under two weak-fairness conditions: `OwnerAction`,
-which is `TakeMutex` and the steps of the mutex holder, and `ReconcilePending`.
+which is `TakeMutex`, the steps of the mutex holder and `InstallView`, and
+`ReconcilePending`.
 Callers, resets, spawns, close and reopen have no fairness, so the property
 never relies on a client calling. The control runs with deadlock checking on.
 
@@ -7721,7 +7745,7 @@ faults concerns the protocol layer `Spec`, which has no fairness condition.
 abstract `Resolve` always succeeds, so permanent I/O faults stay out of its
 scope too.
 
-**Eight faults and three witnesses.** The constant *Fault* selects one defect
+**Ten faults and four witnesses.** The constant *Fault* selects one defect
 at a time. Each configuration named below is the cfg file with the module's
 name as its prefix. "States" counts the states of the counterexample that TLC
 prints with one worker, including the initial state; the measurement below
@@ -7737,6 +7761,8 @@ explains why one worker.
 | "foreign-permit" | `CheckRequest` accepts a permit of another view's gate. | ForeignPermitMutant | Invariant `PermitProvenance` is violated | 4 |
 | "close-no-bump" | `CloseOwner` keeps the incarnation, so old attachments still pass. | CloseNoBumpMutant | Invariant `StaleIncarnationRefused` is violated | 5 |
 | "reopen-reuses-incarnation" | `FreshIncarnation` asks only for inequality with the closed incarnation, so a reopen can reuse one that a retained attachment holds. | ReopenReusesIncarnationMutant | Invariant `StaleIncarnationRefused` is violated | 6 |
+| "release-before-install" | `ReturnCall` frees the gates of an acknowledged call as well, so its caller reaches the stage "install" without its gate. | ReleaseBeforeInstallMutant | Invariant `NoViewOperationOnSupersededStore` is violated | 6 |
+| "ack-releases-permit" | A complete `AcknowledgeView` frees the gate where it should give it back to the caller. The Rust owner did so until leaf G15 of task 12424: it dropped the permit when it acknowledged. | AckReleasesPermitMutant | Invariant `NoViewOperationOnSupersededStore` is violated | 6 |
 
 The counterexamples of the four faults that commit `7851c684e` added are
 these. The two base faults need a view whose base is not the owner's root:
@@ -7749,11 +7775,23 @@ while `lastPublished` stays 0. Under "spawn-copies-base" the steps
 `CloseOwner`, `ReopenOwner(a, 2)` and `CallSpawn(a)` leave view b at
 incarnation 0 and session 0 while view a holds incarnation 2 and session 1.
 
-The last fault is the model's negative control for the freshness premise of
-the [caller-authority contract](#exact-contract-and-realization-premises):
+The fault "reopen-reuses-incarnation" is the model's negative control for the
+freshness premise of the
+[caller-authority contract](#exact-contract-and-realization-premises):
 "inequality with only the previous incarnation is insufficient".
 
-Three witnesses are invariants whose violation shows that a case is reachable.
+The counterexamples of the two faults that leaf G15 of task 12424 added both
+end in a state in which the gate of an acknowledged caller is free. Under
+"release-before-install", after `ResetView(b, 1)`, `CallCheckpoint(b, b)` and
+`TakeMutex(b)`, the step `CheckRequest(b)` completes without a publication,
+because its target $`\mathit{Succ}(1, \mathrm{b}) = 0`$ is the owner's root,
+and `ReturnCall(b)` then frees the gate of view b while its caller is at the
+stage "install". Under "ack-releases-permit", after `CallCheckpoint(a, a)`,
+`TakeMutex(a)`, the capture by `CheckRequest(a)` and `PublishView(a, "new")`,
+the step `AcknowledgeView(a, TRUE)` frees the gate of view a while its caller
+is at the stage "done" with the result "acknowledged".
+
+Four witnesses are invariants whose violation shows that a case is reachable.
 Each runs with no fault, in the configuration that has its name.
 
 | Witness | The reachable case | States |
@@ -7761,26 +7799,30 @@ Each runs with no fault, in the configuration that has its name.
 | `NeverPublishedAcrossBases` | A checkpoint from another base publishes: a pending record whose base differs from its predecessor has its target as the owner's root. | 6 |
 | `NeverRefusedRetainedIncarnation` | A live owner refuses an attachment retained across a close and a reopen. | 6 |
 | `NeverReconciledByOtherView` | A view that holds the mutex finds the other view's record pending, the case that `ReconcileFirst` resolves. | 8 |
+| `NeverInstalledAnswer` | A caller whose call is acknowledged and has returned is at the stage "install", where it still holds its gate. | 6 |
 
 The counterexample to `NeverPublishedAcrossBases` takes the same three steps
 with no fault, `ResetView(a, 1)`, `CallCheckpoint(a, a)` and `TakeMutex(a)`;
 then `CheckRequest(a)` captures base 1, predecessor 0 and target 2, and
-`PublishView(a, "new")` sets the root and `lastPublished` to 2.
+`PublishView(a, "new")` sets the root and `lastPublished` to 2. The
+counterexample to `NeverInstalledAnswer` takes the five steps of the one under
+"release-before-install", with no fault: after `ReturnCall(b)` the caller of
+view b is at the stage "install" and still holds its gate.
 
-**What TLC measured on the model of commit `7851c684e`.** The runner
-`bash scripts/check-rspace-journal-owner-model.sh` makes 44 TLC runs: the two
-controls, the thirty red controls of `Spec`, and the twelve of `ViewSpec`,
-which are the nine configurations of the eight faults and the three witnesses,
+**What TLC measured on the model with the installation step.** The runner
+`bash scripts/check-rspace-journal-owner-model.sh` makes 47 TLC runs: the two
+controls, the thirty red controls of `Spec`, and the fifteen of `ViewSpec`,
+which are the eleven configurations of the ten faults and the four witnesses,
 each passing its designated check. It ends with the line "journal-owner:
-control, view-gate control with liveness, twenty-seven causal mutants
-(nineteen plus eight) and fourteen reachability witnesses (eleven plus three)
+control, view-gate control with liveness, twenty-nine causal mutants
+(nineteen plus ten) and fifteen reachability witnesses (eleven plus four)
 passed". With TLC 2.19 under the runner's own caps, two workers, the controls
 gave:
 
 | Specification | Initial states | States generated | Distinct states | Depth | Outcome |
 |---|---|---|---|---|---|
 | `Spec` | 4 | 1,716,908 | **64,080** | 21 | No error. The counts are those recorded before the view layer. |
-| `ViewSpec` | 1 | 98,821 | **27,378** | 22 | Nine invariants, `SpawnSharesOwner` and `PendingResolves` satisfied over the complete state space, with no deadlock. |
+| `ViewSpec` | 1 | 102,367 | **28,827** | 28 | Ten invariants, `SpawnSharesOwner` and `PendingResolves` satisfied over the complete state space, with no deadlock. |
 
 A complete search expands every distinct state once, so these counts do not
 depend on how TLC schedules its workers, and a run with one worker
@@ -7791,14 +7833,24 @@ counterexample vary from run to run. With one worker TLC searches breadth
 first, level by level, so it prints a shortest counterexample, the same one on
 every run. The "States" columns above are those of a one-worker run.
 
+On the model of commit `7851c684e`, which had no installation step, the
+runner made 44 runs, and `ViewSpec` had 98,821 states generated, 27,378
+distinct states and depth 22 under nine invariants. The counts of `Spec` are
+the same on both models, because `Spec` holds the view variables constant.
+
 **Bounded scope.** This is bounded evidence over two views (`Views`), roots 0,
 1 and 2 (`Roots`) and two close and reopen cycles (`MaxSession`). A root
 stands for a state and `Succ` for the state that a view's checkpoint publishes
 from a base; the model has no contents, so two checkpoints of one view from
 one base target the same root. Generations are abstracted, and no check
 compares bases. Read handles (CA-22) and soft-checkpoint restores, which task
-7931 forbids refusing by incarnation, are outside the model. The model is
-protocol evidence, not a proof of the Rust owner.
+7931 forbids refusing by incarnation, are outside the model. So are the
+operations of a view that read and write its store, such as a produce: a gate
+that a caller holds stands for their exclusion, and `InstallView` is a single
+step for all statements of an installation, which the
+[durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13)
+section justifies. The model is protocol evidence, not a proof of the Rust
+owner.
 
 **Design premises.** The model rests on six decisions.
 
@@ -7870,9 +7922,10 @@ that no test binds.
 | `StaleIncarnationRefused`, `NeverRefusedRetainedIncarnation` | OG-06 and OG-07 | G07, in [owner incarnations](#durable-owner-incarnations-and-close-2026-11-01) |
 | `PermitProvenance`, `NoViewMutationWhilePending` | OG-09 | G08, in [checkpoint views](#durable-owner-checkpoint-views-under-caller-held-permits-2026-11-01) |
 | `CapturedPredecessorIsOwnerRoot` | OG-10 | G08, in the same section |
-| `PublishedSuccessorIsOfViewBase`, `NeverPublishedAcrossBases` | XB-01, whose seeded scenarios must publish from another base | Task 14349, in [cross-base view checkpoint](#cross-base-view-checkpoint-through-the-durable-owner-2026-11-12); leaf G15, `rspace-hard-checkpoint-durable-wiring`, adds the regression on the hard checkpoint path when it routes that path through the owner |
+| `PublishedSuccessorIsOfViewBase`, `NeverPublishedAcrossBases` | XB-01, whose seeded scenarios must publish from another base, and OG-42 | Task 14349, in [cross-base view checkpoint](#cross-base-view-checkpoint-through-the-durable-owner-2026-11-12); leaf G15, `rspace-hard-checkpoint-durable-wiring` (task 12424), adds OG-42 on the hard checkpoint path, in [durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13) |
 | `OwnerRootIsLastPublication` | None yet | Leaf G17, `rspace-reset-durable-wiring`, adds its row when the durable reset becomes view-local |
-| `LockOrder` | OG-11 | G08, in the same section; leaf G15 adds the regression on the hard checkpoint path when it routes that path through the owner |
+| `LockOrder` | OG-11 and OG-31 | G08, in the same section; leaf G15 (task 12424) adds OG-31 on the hard checkpoint path, in [durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13) |
+| `NoViewOperationOnSupersededStore`, `NeverInstalledAnswer` | OG-47 | Leaf G15, `rspace-hard-checkpoint-durable-wiring` (task 12424), in [durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13) |
 | `AckOnce` | JO-13 | G08 migrated the owner's acknowledgement tests |
 | `SpawnSharesOwner` | None yet | Leaf G19, `rspace-spawn-durable-attachment`, adds its row when spawn attaches through the owner |
 | `PendingResolves`, `NeverReconciledByOtherView` | None yet | The owner's handling of another view's record is decided with the view layer, as the row for `ReconcileFirst` in the checkpoint views section records |
@@ -10301,12 +10354,12 @@ still refuses the owner of another directory. Until the bind,
 journal, as before. The eager bootstrap still creates a journal bound to its
 view's slot.
 
-Only unit tests build a lazily filled durable store until the reset,
-hard-checkpoint and soft-revert wiring installs it (tasks
-`rspace-reset-durable-wiring`, `rspace-hard-checkpoint-durable-wiring` and
-`rspace-soft-revert-durable-rebase`), so `create_from_durable_reader` carries
-`cfg_attr(not(test), expect(dead_code))` with a reason that names those
-tasks. The eager enumerations `data_entries`, `continuation_entries` and
+`create_history_repo` and `view_at` of the durable backend build a lazily
+filled durable store, and the hard checkpoint installs the one that
+`view_at` returns (task `rspace-hard-checkpoint-durable-wiring`); the reset
+and soft-revert wiring (tasks `rspace-reset-durable-wiring` and
+`rspace-soft-revert-durable-rebase`) install it on their paths. So
+`create_from_durable_reader` carries no dead-code expectation. The eager enumerations `data_entries`, `continuation_entries` and
 `join_entries` of
 [`mod.rs`](../../../rspace++/src/rspace/persistence/durable/mod.rs) and
 `set_channel_counts` of
@@ -10746,9 +10799,9 @@ legacy history repository over it. This slice, leaf G11 of the operation gate
 change: `create_history_repo` first asks the authority for its route, and the
 legacy route runs the same statements as before.
 
-`RSpaceStateAuthority::durable(directory, recovery, wal, admission)` builds
-the backend from a store directory and from the limits of recovery, of
-log-pack decoding and of admission. It does no I/O. No store manager selects
+`RSpaceStateAuthority::durable(directory, limits)` builds the backend from a
+store directory and from the limits of a view checkpoint, which contain the
+limits of recovery, of log-pack decoding and of admission. It does no I/O. No store manager selects
 the durable backend yet; that is task `rspace-select-durable-backend`. Until
 then only tests call the constructor, so it carries
 `cfg_attr(not(test), expect(dead_code))` with a reason that names that task.
@@ -10762,7 +10815,7 @@ later call takes the slot back with `Arc::downcast`:
 ```text
 RSpaceStateAuthority
  └─ AuthorityBackend::Durable(DurableBackendV1)
-     ├─ directory, and the recovery, log-pack and admission limits
+     ├─ directory, and limits: ViewCheckpointLimitsV1
      ├─ opening: std::sync::Mutex<()>     taken by a call that finds the slot empty
      └─ slot: OnceLock<Arc<dyn Any + Send + Sync>>
          └─ DurableOwnerSlotV1<RSpaceSemanticProfile<C, P, A, K>>
@@ -10770,8 +10823,12 @@ RSpaceStateAuthority
              │      holds the writer lease and the owner's incarnation
              ├─ published: DurablePublishedCoreV1<..>
              │      the cell of the owner's newest admitted core
-             └─ generation_leases: GenerationLeaseRegistryV1
-                    the lease registry of the store directory
+             ├─ generation_leases: GenerationLeaseRegistryV1
+             │      the lease registry of the store directory
+             ├─ incarnation: OwnerIncarnationV1
+             │      the owner's incarnation, named by every view's base
+             └─ checkpoint_limits: ViewCheckpointLimitsV1
+                    the backend's limits, passed to every view checkpoint
 
 create_history_repo
  ├─▶ DurableHistoryRepositoryV1::new(published)    pinned at the current state
@@ -10781,9 +10838,11 @@ create_history_repo
 
 | Part of the slot | What it is | Who uses it |
 |---|---|---|
-| `owner` | The durable owner, `DurableRSpaceAuthorityV1`, in a `tokio::sync::Mutex`. It holds the directory's writer lease and its incarnation. | The checkpoint paths of later leaves, through `owner()`. Only tests call `owner()` until task `rspace-hard-checkpoint-durable-wiring`, so it carries a dead-code expectation that names that task. |
+| `owner` | The durable owner, `DurableRSpaceAuthorityV1`, in a `tokio::sync::Mutex`. It holds the directory's writer lease and its incarnation. | The checkpoint paths of later leaves, through `owner()`. The hard checkpoint of a durable space calls `owner()` since task `rspace-hard-checkpoint-durable-wiring`, so it carries no dead-code expectation. |
 | `published` | The `DurablePublishedCoreV1` cell that the owner's `published_core()` returns. Every clone of it shares the owner's newest admitted core. | Every repository and hot store that `create_history_repo` builds. |
 | `generation_leases` | The generation-lease registry of the store directory, taken from the owner when the slot is built. | The base of each hot store's detached journal, which must name the directory's registry. Reading it from the owner would take the owner's mutex. |
+| `incarnation` | The owner's incarnation, read once when the slot is built: the first open attaches its probe hot store to the new owner and keeps the attachment's incarnation. | `view_at`, which puts it in every `ViewBaseV1` that it returns. Reading it from the owner would take the owner's mutex. |
+| `checkpoint_limits` | The backend's `ViewCheckpointLimitsV1`, copied when the slot is built. | Every view checkpoint: `checkpoint_from_base` passes it to the owner's `checkpoint_view_from_base`. |
 
 The slot therefore owns the owner for as long as the backend lives. No
 repository or hot store holds the owner or the slot, and `create_history_repo`
@@ -11189,8 +11248,8 @@ name is not opened beside the durable store.
 
 **`shutdown`.** No statement of `shutdown` changes. It already empties
 `StoreState::authorities`, so it drops the durable authority with the
-others, and once no caller holds that authority its owner slot is dropped
-and the writer lease is released. `backend_selections` is not emptied.
+others, and once no caller holds that authority or a durable space built
+from it, its owner slot is dropped and the writer lease is released. `backend_selections` is not emptied.
 
 **The dead-code expectation.** `RSpaceStateAuthority::durable` now has a
 production caller, so its `cfg_attr(not(test), expect(dead_code))` is
@@ -11207,8 +11266,9 @@ nor a prefix whose LMDB authority has been opened.
 
 - No production code selects `Durable`.
 - The constructor is called in the form it has in the previous section;
-  task `rspace-hard-checkpoint-durable-wiring` extends it to the limits of a
-  checkpoint publication.
+  task `rspace-hard-checkpoint-durable-wiring` later replaces its limits by
+  the limits of a view checkpoint (see
+  [durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13)).
 - The manager does not compare the durable directory with the LMDB
   environment directories of the mapping. A mapping with an environment
   named `<prefix>/durable` would share the directory of that prefix's
@@ -11351,7 +11411,11 @@ and until they land only the tests call it.
 - `checkpoint_view_from_base(permit, view, gate, hot, limits)` returns the
   `ResolvedDurableStateV1` of the state that the view reads afterwards. As
   for `checkpoint_view`, the caller holds the owner's mutex and passes the
-  write permit of the view's own gate.
+  write permit of the view's own gate. Since leaf G15 of task 12424 every
+  return of a state hands that permit back together with the state, as the
+  [durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13)
+  section describes. The algorithms of this section and of the memo section
+  write the returned state alone.
 - `DurableRSpaceTransactionError` gains three variants. `Root(RootError)` is
   the refusal of a base that the store does not retain.
   `Inheritance { current, base }` holds the schema epoch, the profile and the
@@ -11612,7 +11676,7 @@ the catalog.
 | XB-02 | One record pair and one compare-and-swap. A lazy view at a superseded base checkpoints a journal that takes one datum and puts another, while the current state differs from the base in two data, one continuation and its two joins. A walk limited to one object read is first refused with `Rebase`, with the store directory unchanged and the gate returned. The checkpoint then runs exactly the phases of one trusted incremental publication, with no cold admission and no index construction. It creates and removes no file. The active pack and its index are appended in place and end at the catalog's durable tails. The appended pack bytes are exactly one incremental prepare record and the incremental commit record that the successor's slot names; the commit verifies the prepare and the slot verifies the commit; the receipt runs from the previous current state to the returned successor; sequence, generation and catalog epoch advance by one; and the catalog image is the previous image with the successor written to its inactive slot. The recorded batch is exactly the rebased batch: every before is the previous current state's value, the journal's endpoints end at the journal's values and the other differing endpoints at the base's. The source of the restored continuation is not written again. The successor, the previous current state and the base each still read their own contents. With 96 shared data instead of one, the previous current state is larger and the appended pack and index bytes are equal. | `a_cross_base_checkpoint_appends_one_record_pair_and_swaps_the_catalog_once` |
 | XB-03 | No effect, no write. Four views are checkpointed, by an owner whose transition memo is disabled so that the second view takes the walk and the exit of a batch without effect in every round: an empty journal at a superseded base, a journal from the genesis state whose successor is the current state, an empty journal at the current state, and a journal at a superseded base whose steps cancel each other. They return the base, the current state, the current state and the base. Each of the 16 failpoints of the durable directory I/O layer is then armed in its own thread: the four outcomes are unchanged and the failpoint is still armed afterwards, so no write, length change, sync, replacement or directory sync of the store was attempted. The directory image, with the length and modification time of every entry, the catalog slot, the current state, the journals and the gate are as before. As the liveness control, a publishing view checkpoint with the physical-write failpoint armed trips and clears it; `reconcile` then returns the previous current state, and the retried checkpoint publishes the twin store's root one generation later. | `an_empty_journal_and_an_unchanged_current_state_write_and_sync_nothing` |
 | XB-04 | Refusals precede the first write. Each refusal of rows 1 to 5 and row 7 is observed twice, with the view's store and with a store of another lease registry, whose journal the owner cannot capture: a call that passes those rows is refused by that store's journal. The two refusals are equal, so the journal was not read, and both leave the directory image, the journal, the owner's root, generation key, pending terminal and phase unchanged, reach no capture and no publication phase, and return the permit. The cases are a permit of another gate; a base that the store does not retain, resolved in a second store; a pending record, left by a publication stopped after its catalog sync, which refuses another view's checkpoint as unresolved until `reconcile` reaches its terminal, after which that view publishes; a closed owner; an attachment of the closed owner's incarnation at the reopened owner, after which the same journal publishes the twin store's root under the new incarnation; a current manifest with a legacy-history root against a base without one; and a current manifest of one profile against a retained base of another profile. | `every_refusal_precedes_the_first_write_and_changes_nothing` |
-| XB-05 | Crash at every owner hook point. For each `JournalOwnerHookPoint`, a lazy view at a superseded base checkpoints a journal while a hook at that point copies the store files and stops the owner's task by a panic. A store recovered from the copy is at the previous current state, with files equal byte for byte to those before the call, for the points after the capture and after the preparation, and at the exact successor that the twin store returns, one generation later, for the points before and after the successor's pin and after the acknowledgement. The gate stays held by the pending record. `reconcile` then completes the record at that same state without writing, releases the gate, and leaves the journal intact before the write and acknowledged after it. A retry publishes the successor where the previous state was recovered. In every case the store settles on the successor, which reads the base's contents with the journal applied, with the view's store bound to it and every earlier state still readable. The hook point after the published-core load is not on the checkpoint's path: the checkpoint completes with the hook still armed, the next read handle stops there, and the copy recovers the successor. | `a_crash_at_every_owner_hook_point_recovers_the_old_state_or_the_successor` |
+| XB-05 | Crash at every owner hook point. For each `JournalOwnerHookPoint` that the owner runs, which is every point except `BeforeViewInstallation`, a lazy view at a superseded base checkpoints a journal while a hook at that point copies the store files and stops the owner's task by a panic. A store recovered from the copy is at the previous current state, with files equal byte for byte to those before the call, for the points after the capture and after the preparation, and at the exact successor that the twin store returns, one generation later, for the points before and after the successor's pin and after the acknowledgement. The gate stays held by the pending record. `reconcile` then completes the record at that same state without writing, releases the gate, and leaves the journal intact before the write and acknowledged after it. A retry publishes the successor where the previous state was recovered. In every case the store settles on the successor, which reads the base's contents with the journal applied, with the view's store bound to it and every earlier state still readable. The hook point after the published-core load is not on the checkpoint's path: the checkpoint completes with the hook still armed, the next read handle stops there, and the copy recovers the successor. | `a_crash_at_every_owner_hook_point_recovers_the_old_state_or_the_successor` |
 
 Two more tests bind no ID.
 `a_base_equal_to_the_current_state_publishes_through_the_same_base_path` is
@@ -12584,8 +12648,9 @@ nothing, and reads no object for a difference, because the walk is not
 started. On the cross-base path the two manifest loads of row 7 precede the
 capture and are the hit's only reads of the store; on the same-base path
 there is none. The catalog slot, the current state, the store directory and
-the memo are as before, and the permit is dropped with the return, so the
-view's gate is free.
+the memo are as before, and the permit is returned together with the state,
+as at every exit that answers a state, so the view's gate is free as soon as
+the caller drops the permit.
 
 The view's store keeps its journal, which is not acknowledged. On the
 cross-base path its binding is unchanged. On the same-base path the store is
@@ -13083,6 +13148,385 @@ against the integration target in debug and removed:
 |---|---|---|
 | KG-14 | Forced digest collisions never alias distinct images, and never replace a first representative: under a constant legacy digest the bridge keeps every distinct full image once in the bucket of that digest, in first-admission order, and the representative of each image is the first exact channel that admitted it. | `forced_digest_collisions_retain_distinct_full_images` |
 
+### Durable hard checkpoint through the owner (2026-11-13)
+
+Task 12424, leaf G15 `rspace-hard-checkpoint-durable-wiring`, routes the
+hard checkpoint of an RSpace whose store prefix selected the durable backend
+through the durable owner. Before it, such a space was built by
+`create_history_repo` and `apply`, and its `create_checkpoint` reached the
+durable history repository's `checkpoint`, which refuses with
+`HistoryError::BackendMismatch(History)` (the table of the
+[durable history repository](#durable-history-repository-2026-11-11)
+section): nothing was ever published through a runtime space. Now
+`ISpace::create_checkpoint` of such a space in
+[`rspace.rs`](../../../rspace++/src/rspace/rspace.rs) hands the space's
+journal to `DurableRSpaceAuthorityV1::checkpoint_view_from_base` and
+continues from the state that the owner returns. This section builds on the
+[checkpoint views](#durable-owner-checkpoint-views-under-caller-held-permits-2026-11-01),
+[cross-base view checkpoint](#cross-base-view-checkpoint-through-the-durable-owner-2026-11-12)
+and [memo](#memo-of-view-checkpoint-transitions-in-the-durable-owner-2026-11-13)
+sections and uses their terms: the view gate, the owner mutex, the base
+$`X`$, the journal $`J`$, the successor $`X + J`$, and the rows of the
+decision sequence.
+
+No persisted byte, record kind, root, identity or wire message changes, and
+the crate gains no dependency. A space whose prefix kept the LMDB backend,
+and the in-memory backend, run the same statements as before:
+`create_checkpoint` tests one `Option` field and then takes the legacy path.
+
+**Terms.**
+
+| Term | Meaning |
+|---|---|
+| Durable space | An `RSpace` that `RSpace::create` built from an `RSpaceStore` whose authority answers `route()` with `AuthorityRouteV1::Durable`. |
+| View | The part of a durable space that the owner checkpoints: its hot store, its history repository, its view gate (the space's `operation_gate`) and its base. |
+| Base | The `ViewBaseV1` that the space records: the owner incarnation and the resolved durable state from which the space's journal was recorded. |
+| Owner handle | `Arc<dyn DurableViewOwnerV1<C, P, A, K>>`, the type-erased handle of the backend's owner slot that a durable space holds. |
+| Hard checkpoint | `create_checkpoint` of the `ISpace` trait: publish the journal, return the new root with the event log, and continue from the new root. |
+
+**How a durable space is built.** `RSpace::create` asks the store's
+authority for its route. On the durable route it takes the backend's owner
+slot (`DurableBackendV1::owner_slot`, which opens the store on first use, as
+the [backend](#durable-state-authority-backend-2026-11-12) section describes),
+builds a `DurableHistoryRepositoryV1` over the slot's published core, and
+calls `view_at` with the repository's root. `view_at` resolves that state,
+opens a read handle that holds a lease on it, and returns the state's
+`ViewBaseV1` together with a lazily filled hot store over the handle. `create` then builds the space with `apply`, as
+before, and keeps a `DurableViewV1` beside it: the owner handle and the base,
+the latter in a `std::sync::Mutex` because a checkpoint replaces it.
+`create_history_repo` and `apply` do not change, so a durable space that
+they build directly, without `create`, holds no view and keeps the typed
+refusal `BackendMismatch(History)`.
+
+The handle is type-erased because the `ISpace` implementation of `RSpace`
+does not carry the bounds of the durable semantic profile (`RhoPathEncode` on
+the channel and the datum, `ColdStoreDecode` on all four types). The trait
+`DurableViewOwnerV1` names only the two calls that a view makes,
+`checkpoint_from_base` and `view_at`; its implementation for
+`DurableOwnerSlotV1<RSpaceSemanticProfile<C, P, A, K>>` lives in
+[`rspace_state_authority.rs`](../../../rspace++/src/rspace/state/rspace_state_authority.rs),
+where those bounds hold, and `create` coerces the slot into the handle.
+
+**The hard checkpoint.** `create_checkpoint` of a durable space runs
+`create_durable_checkpoint`:
+
+```text
+create_durable_checkpoint(view):
+  permit  ← write_owned(operation_gate)        -- the view gate, as an owned write permit
+  hot     ← the space's hot store
+  base    ← the base that the view recorded
+  owner   ← lock(owner mutex)                   -- second lock, after the view gate
+  outcome ← owner.checkpoint_view_from_base(permit, base, gate, hot, checkpoint_limits)
+  unlock(owner)
+  (root, permit) ← the root and the permit of outcome,
+                   or return the refusal (nothing below runs)
+  (base′, store′) ← view_at(root)               -- the reached state, pinned, as a new base and store
+  history ← history.reset(root)
+  log     ← take the event log; clear the produce counters
+  install store′; clear the cache of retained-set automata
+  record base′ as the view's base
+  restore the installed continuations
+  release(permit)                               -- the view gate is free only now
+  return Checkpoint { root, log }
+```
+
+The locks are taken in the order of `LockOrder`: the view gate, then the
+owner's `tokio::sync::Mutex`, and neither is taken again while the other is
+held. `checkpoint_view_from_base` decides the route by its decision sequence
+and hands the permit back with its answer. Every exit of the owner that is
+not a refusal returns a state, and the view continues from it: the base
+itself for an empty journal, the current state when the journal turns the
+base into it, the memoised successor of a repeated transition, and otherwise
+the successor that the owner publishes, on the same-base or the cross-base
+path. The steps after the owner call are those of the legacy hard
+checkpoint after its history checkpoint: the event log is taken, the produce
+counters are cleared, a new hot store over the reached state is installed
+with the automata cache cleared, and the installed continuations are
+restored. Only the source of the new store differs: it comes from `view_at`,
+and the repository is reset to the reached root.
+
+**Installation under the permit.** The steps after the owner call install
+the owner's answer in the space: the reset repository, the taken event log,
+the cleared produce counters, the new hot store, the recorded base and the
+restored continuations. The view gate has to stay held until the last of
+them, or an operation of the same space could run on a space that is only
+partly installed. The owner therefore hands the caller's own permit back with
+every state that it answers, and `create_durable_checkpoint` keeps it, bound
+as `_operation_guard` like the guard of the legacy hard checkpoint, until it
+returns. The outcome of the owner call decides what becomes of the permit:
+
+| Outcome of `checkpoint_view_from_base` | The permit |
+|---|---|
+| A state: the base of an empty journal, a memoised successor, the current state that the journal turns the base into, or a published successor, on the same-base or the cross-base path. | Returned to the caller with the state. The caller holds it until the installation is complete. |
+| A refusal, or any other error that leaves no pending record. | Dropped when the call returns, so the gate is free. Nothing is installed. |
+| An error that leaves a pending record, as a publication whose outcome is unknown does. | Kept in the pending record until the publication is reconciled, so the gate stays held. The call returns its error. |
+
+The return type of the call carries the permit,
+`Result<(ResolvedDurableStateV1, OwnedRwLockWriteGuard<()>), _>`, so an exit
+that answers a state without the permit does not compile. The only permit
+that the owner can return is the one that it was given: its first check
+refuses a permit of another gate, and a pending record owns the guard that it
+was built with. The change adds no lock, no allocation and no check to any
+operation. The owner mutex is held exactly as long as before, and the view
+gate is held longer only by the installation steps, which enumerate no
+state. The lock order is unchanged: the view gate, then the owner mutex,
+which is released before the installation, then only the standard-library
+locks of the space's own fields while the gate is still held. No installation
+step takes the gate or the owner mutex: `view_at` and the repository reset
+read the owner's published core. The only await points of
+`create_durable_checkpoint` are its two lock acquisitions, so the owner call
+and the installation run in one poll of the future, and a hard checkpoint is
+cancelled before the owner call or not at all.
+
+This resolves a race in the first form of this wiring, which the campaign's
+owner ruled unacceptable on 2026-11-16. In that form the owner released the
+permit at each exit that answers a state, and the installation ran with the
+gate free. On one thread nothing could run in between, because no await
+point follows the owner call. On a multi-thread runtime an operation of the
+same space could take the gate after the owner's answer and before the new
+hot store was installed. It then wrote to the store that the answer
+supersedes, and the installation discarded its effect, while its event
+stayed in an event log, of this checkpoint or of the next, with its effect
+in no published state. A write after the new store was installed and before
+the installed continuations were restored would store a datum where it
+should have fired an installed continuation. OG-47 reproduces the first case
+at six exits of the owner, and fails at each of them on that first form.
+
+**Why one model step stands for the installation.** In the model of the
+[view gates](#view-gates-owner-mutex-and-incarnations-2026-11-01) section, an
+acknowledged checkpoint ends with three steps of its view: `AcknowledgeView`,
+or the `CheckRequest` that completes without a publication; `ReturnCall`,
+which frees the owner mutex; and `InstallView`, a single step that frees the
+gate. In the code the installation is a sequence of statements, from
+`view_at` to the restoring of the installed continuations, and another thread
+could run between any two of them. The single step is justified by reduction
+(Lipton, 1975,
+[doi:10.1145/361227.361234](https://doi.org/10.1145/361227.361234)). Two
+statements commute when executing them in either order from the same state
+leads to the same state. If every statement of a sequence that one thread
+executes commutes with every statement that another thread can execute while
+the sequence is under way, then every execution has the same result as one in
+which the sequence runs without interruption, so the sequence may be treated
+as one atomic step; this is the case of Lipton's theorem in which every
+statement of the sequence is both a left and a right mover. The statements
+of an installation meet the condition, for three reasons.
+
+1. *They run under the caller's exclusive permit.* The owner returns the
+   permit with its answer, and the caller holds it until after the last
+   statement of the installation. From the owner's answer on, no other
+   holder of the view gate exists.
+2. *Every other operation that writes the space's state takes the view
+   gate first, with the one exception named below.* `produce`, `consume`,
+   `install`, `remove_all_data` and `remove_all_continuations` take a read
+   permit, and `reset`, `create_soft_checkpoint`, `take_event_log`,
+   `revert_to_soft_checkpoint` and the hard checkpoint take a write permit,
+   before they read or write the space's repository, hot store, event log,
+   produce counters, automata cache, base or installed continuations. While
+   the installation holds the write permit, none of them executes a
+   statement on that state.
+3. *What the installation reads outside the space does not change.*
+   `view_at` and the repository reset read the reached state through the
+   owner's published core. A state is named by its root, the contents of a
+   retained state never change, and the read handle that `view_at` opens
+   holds a lease on the state. The steps of other views, and of the owner on
+   their behalf, write the fields of those views and the owner's own state,
+   of which the installation reads nothing else.
+
+An installation statement therefore commutes with every statement that can
+run beside it, and the model's sequence of `AcknowledgeView`, `ReturnCall`
+and `InstallView` under the held gate refines the code. The argument has
+three limits.
+
+- The operations that take no gate are outside it, on the durable route as
+  on the legacy path: five readers, which can observe an installation that
+  is under way, and `update_produce`, which rewrites produce events of the
+  event log in place. *Not covered* below names them.
+- `view_at` or the repository reset can fail, and the installation then
+  stops with a typed error; the model's step has no counterpart of that.
+  Whether a step of the owner for another view can retire the reached state
+  between the owner's answer and the lease that `view_at` takes has not been
+  established. If it can, the failure is such a typed error, not a lost
+  update.
+- The model has a counterpart of three of the owner's exits that answer a
+  state: the publication, from the current state and from a superseded
+  base, and the completion without a publication when the journal turns a
+  superseded base into the current state. It has none of the two exits of
+  an empty journal, because `Succ` has no fixed point, so a model checkpoint
+  never answers its own base, and none of the memo hits, because the model
+  keeps no memo. Those exits return the permit through the same type as the
+  others, and OG-47 drives the two exits of an empty journal and the memo
+  hit from a superseded base.
+
+**Limits.** `RSpaceStateAuthority::durable(directory, limits)` takes one
+`ViewCheckpointLimitsV1`: the publication limits of the owner (transaction,
+recovery, log-pack decoding, admission and trusted successor) and the
+`StateDifferenceLimits` of the walk that a cross-base checkpoint runs. The
+owner slot copies the value when it is built and passes it to every view
+checkpoint. The store manager passes the constant
+`DURABLE_VIEW_CHECKPOINT_LIMITS` of
+[`lmdb_dir_store_manager.rs`](../../../rspace++/src/rspace/shared/lmdb_dir_store_manager.rs):
+unbounded publication limits and read counts, and $`2^{20}`$ worklist entries
+and $`2^{26}`$ path bytes for the walk. Those two cannot be unbounded,
+because the walk reserves its worklist and its path buffer in full before it
+starts. A walk that needs more is refused with a typed resource-limit error.
+
+**Lifetime of the owner.** The owner handle holds the owner slot strongly.
+The owner and the writer lease of the store directory therefore live until
+the authority and every durable space built from it are dropped. A second
+authority over the same directory is refused at its first open, with
+`Recovery` holding `WriterLockContended`, while such a space lives. Once
+that space is dropped, the second authority opens the store at the last
+root that the space published.
+
+**Refusals.** A refusal of the owner becomes
+`DurableBackendErrorV1::Checkpoint` and is converted into `RSpaceError` as
+the durable history repository converts its refusals: a journal refusal
+stays the journal's error, a root refusal becomes `HistoryError::RootError`,
+and every other refusal becomes `HistoryError::ActionError` with the
+refusal's text, for example `the durable owner refused the view checkpoint:
+Closed` for a closed owner. A refused hard checkpoint returns before any
+step after the owner call, so the space keeps its repository, hot store,
+contents, base and event log. What the owner itself leaves behind on a
+refusal is stated in the checkpoint-views and cross-base sections; a refusal
+before capture, such as that of a closed owner, publishes nothing and writes
+no store file.
+
+**Cost.** Above the owner's own work, a durable hard checkpoint costs one
+lock of the base, one `view_at` (one resolution of the reached root and one
+lazy hot store with an empty cache) and the steps of the legacy hard
+checkpoint after its history checkpoint. No state is enumerated: the new hot
+store reads the durable state on demand.
+
+| ID | Required property | Test |
+|---|---|---|
+| OG-30 | Hard checkpoints of choice-free traces. Three seeded traces and then 24 generated ones run on a durable space. A generated trace has one to four segments of zero to six produces and consumes over three channels, two values, two bodies and five join groups, and every segment ends with a hard checkpoint. A model of the contents admits each operation that has no choice and does not store an identical continuation twice; the others are left out and counted, and the seeded traces leave out none. For every checkpoint, each admitted operation has the model's effect on the space, and the event log holds one event per operation and one per COMM. The contents read at the returned root, and the space's contents afterwards, equal the model's. The returned root is the published root and the root of the space's repository. A replay of the event log on a twin store from the same start uses every COMM of the log, and publishing the replay's journal through the twin's owner reaches the returned root. A third store runs the segment in reverse order when that order is admissible and reaches the same contents, and in the given order otherwise; its hard checkpoint returns the same root. Over each trace, two of the states reached, the start included, have equal roots exactly when their modelled contents are equal. The seeded traces cover each counted case: a COMM by a produce and by a consume, a COMM on contents of an earlier checkpoint, a checkpoint that holds both orders of one channel pair, a checkpoint of an empty journal, one of a journal without effect, a segment run in another order, and a replayed COMM. | `hard_checkpoints_of_choice_free_traces_return_the_expected_contents_and_replayable_roots` |
+| OG-31 | Hard checkpoint under the held view gate and owner mutex. On a current-thread runtime, a durable space holding one datum runs `create_checkpoint`. At capture the view gate refuses a reader: a produce of the same space started there is pending. At the same point the owner mutex is locked. The checkpoint completes within 30 seconds and publishes the space's contents, and the owner mutex is free afterwards. The produce that waited then completes and stores its datum on the space, and the next hard checkpoint publishes it. | `a_hard_checkpoint_under_the_held_view_gate_and_owner_mutex_completes` |
+| OG-42 | Successor of the view's own base on the hard checkpoint path. Three durable spaces share one store. The first publishes a common state, and the other two are opened at it. One of the two publishes its journal. The other, now behind the current state, then publishes its own journal. Its returned root equals the root that the same operations reach from the common state while that state is current, differs from the root that the other view published, and reads the common contents with its journal applied. The state that the other view published still reads its own contents, and the behind view's state becomes the published state. The view that was overtaken then publishes again. Its root is again the root of its operations from its own base, the state it published before, and becomes the published state. | `a_view_behind_the_current_state_publishes_the_successor_of_its_own_base` |
+| OG-47 | Installation under the held view gate at every owner exit. On a runtime with two worker threads, six scenarios each take a durable space through one exit of the owner that answers a state: an empty journal at the current state, a publication from the current state, an empty journal at a superseded base, a journal that turns a superseded base into the current state, the memoised successor of a transition repeated from a superseded base, and a publication from a superseded base. In each scenario, after the owner has answered and before the space installs the answer, a produce of the same space is started on a worker thread and polled once. That poll is pending at every exit: the produce waits for the view gate. The exit that a scenario took is identified by comparing the answered root with the view's base, with the state that was current before the call and with the published state after it, and it is the exit that the scenario names. After the hard checkpoint has returned, the produce completes without a COMM, and the space reads the journal's contents with the produce's datum; the event log of the space's next hard checkpoint holds the produce's event and nothing else; and the state that this checkpoint publishes reads the same contents. The six scenarios complete within 30 seconds. A memoised successor at the current state, the owner's seventh exit that answers a state, has no scenario; it returns the permit through the same type. | `a_concurrent_operation_waits_until_every_owner_exit_is_installed` |
+
+Four more tests bind no ID.
+`a_view_continues_from_the_state_every_owner_exit_returns` takes a durable
+space through each exit of the owner. An empty journal at the current state
+returns that state, writes no store file and keeps a continuation installed
+on the space. An empty journal at a superseded base returns that base. A
+journal that turns a superseded base into the current state returns the
+current state. A completed transition repeated from its base returns its
+memoised successor without moving the published state or writing a store
+file. After each exit the space's next checkpoint publishes the successor of
+the state it was answered with, and an installed continuation is never
+published to another space.
+`the_store_managers_limits_admit_a_same_base_and_a_cross_base_checkpoint`
+selects the durable backend for the prefix `rspace` of a store manager,
+builds two spaces with `RSpace::create`, and publishes a same-base and then a
+cross-base checkpoint under the manager's limits, each reaching the root
+that its operations reach from the genesis state.
+`a_refused_durable_checkpoint_is_a_typed_error_and_changes_nothing` closes
+the owner and shows that the next hard checkpoint returns the typed error
+above, writes no store file, keeps the published state, the repository's
+root, the space's contents and its event log. It also shows that a durable
+space built by `create_history_repo` and `apply` keeps the refusal
+`BackendMismatch(History)`.
+`a_view_built_by_create_keeps_the_owner_slot_until_it_is_dropped` drops the
+authority while a space built from it lives. The space still checkpoints, a
+second authority over the same directory is refused with
+`WriterLockContended`, and once the space is dropped the second authority
+opens the store at the last root that the space published, with the space's
+contents.
+
+**Not covered.**
+
+- The reset and the spawn of a durable space, and the soft-checkpoint
+  revert: tasks `rspace-reset-durable-wiring`,
+  `rspace-spawn-durable-attachment` and `rspace-soft-revert-durable-rebase`.
+  The replay space's hard checkpoint is not routed through the owner either
+  (task `rspace-replay-checkpoint-durable-wiring`): OG-30 publishes the
+  replay's journal through the twin's owner directly. Each of these, when
+  it is routed through the owner, has to install the owner's answer under
+  the permit that the owner hands back, as the hard checkpoint does.
+- The operations that take no gate. `get_data`, `get_waiting_continuations`,
+  `get_joins`, `get_root` and `to_map` do not wait for a hard checkpoint, on
+  the durable route as on the legacy path. They can therefore read a space
+  whose installation is under way, for example the reached root together
+  with the superseded store. They write nothing. `update_produce` takes no
+  gate either. It rewrites the matching produce events of the event log in
+  place, so it reaches the log that a hard checkpoint returns only when it
+  runs before the checkpoint takes the log, again as on the legacy path.
+- A failure of `view_at` or of the repository reset after the owner has
+  published leaves the space on its old store and base.
+- The difference walk's limits are finite: a reachable state whose walk
+  needs more than $`2^{20}`$ worklist entries or $`2^{26}`$ path bytes is
+  refused, never corrupted.
+- The owner's fsyncs run on the runtime thread; no `block_in_place` wraps
+  them.
+
+**Red controls.** A red control puts one fault into the wiring. The tests
+that state the faulted property must then fail, and every other test of the
+run must pass. Four faults were each applied to a copy of the candidate
+tree, run once in debug against the 23 tests of the focused list, with
+`PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`, and removed. The 23 tests are the
+eight tests above, the seven tests of the backend selection
+(`durable_authority_backend`), the seven of the cross-base checkpoint
+(`owner_cross_base_checkpoint`) and the manifest test.
+
+| # | Fault | Tests that failed | Failure text |
+|---|---|---|---|
+| 1 | `create_durable_checkpoint` takes the view gate again with `write().await` after it holds the owned permit. | The eight tests above. | OG-31 and OG-47: `a durable hard checkpoint under its held view gate did not complete within 30 s`. The six others: `an operation of an uncontended durable view completes on its first poll`. |
+| 2 | The owner is handed the published state as the view's base, so every view takes the same-base route of `checkpoint_view_from_base`. | OG-42, OG-47, `a_view_continues_from_the_state_every_owner_exit_returns`, `the_store_managers_limits_admit_a_same_base_and_a_cross_base_checkpoint`. | `JournalConflict("catalog slot names another state than the durable journal's base")`. |
+| 3 | `create_durable_checkpoint` does not record the state it returns as the view's base. | OG-30, OG-31, OG-42, OG-47, `a_view_continues_from_the_state_every_owner_exit_returns`, `a_view_built_by_create_keeps_the_owner_slot_until_it_is_dropped`. | `JournalConflict("durable journal was recorded against another state than the capture's origin")`. |
+| 4 | `create_durable_checkpoint` drops the permit that the owner hands back as soon as the owner call has returned: it binds the permit to `_`, not to `_operation_guard`. | OG-47. | `a produce that arrives while a hard checkpoint installs the owner's answer must wait for the view gate at every owner exit, run on the installed store, be logged for the next checkpoint and be published by it`. |
+
+In each run the failed tests were exactly those of its row, and the other
+tests of the focused list passed: 15 under fault 1, 19 under fault 2, 17
+under fault 3 and 22 under fault 4. Fault 1 shows the lock order: tokio's
+`RwLock` is not reentrant, so the second `write().await` waits for the
+permit that the same task holds and the checkpoint never completes. The
+watchdog of OG-31 and of OG-47 reports it after 30 seconds, and the six
+other tests, which poll the hard checkpoint of an uncontended view once,
+find it pending. Fault 2 shows that the view's own base, not the published
+state, is what the owner checks the journal against: the journal of a view
+whose base is not the published state names another state than the slot,
+and the owner refuses it. The tests whose views stay at the published state
+pass. Fault 3 shows the base record: without it a space's next hard
+checkpoint names the base it had before the last one, while its journal was
+recorded against the state that the last one reached, and the owner refuses
+it. The six tests that fail are those in which one space takes a further
+hard checkpoint after a successful one; in the store manager's test each
+space checkpoints once, and the refusal test has no successful checkpoint.
+Fault 4 shows the installation under the permit. With the permit dropped at
+the owner's return, the produce that OG-47 starts before the installation
+completes on its first poll at each of the six exits, on the store that the
+answer supersedes: its datum is not on the space afterwards, and the event
+log of the next hard checkpoint is empty. The seven other tests of this
+section pass under fault 4, because each of them runs its space on one
+thread, where nothing can run between the owner's answer and the
+installation. OG-47 was also run once on the first form of this wiring, in
+which the owner released the permit itself, and failed there in the same
+way at all six exits. After each run the faulted file was restored and
+compared byte for byte with its content before the fault.
+
+**Verification record.** Each command ran once on the candidate tree, with
+`PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`:
+
+- the focused list above together with the tests of the owner functions
+  that the installation under the permit changes, `cargo test --locked
+  --offline -j 8 -p rspace_plus_plus --lib` with the filters
+  `durable_authority_backend::`, `owner_cross_base_checkpoint::`, the
+  manifest test, `durable_rspace_checkpoint::`, `owner_transition_memo::`,
+  `owner_checkpoint_view::` and `durable_rspace_authority::`: 54 tests, 53
+  passed, 0 failed, 1 ignored, in debug and in release;
+- the whole library target of `rspace_plus_plus`: 1092 tests listed, 1079
+  passed, 0 failed, 13 ignored, in debug and in release;
+- `cargo clippy --locked --offline -j 8 -p rspace_plus_plus --all-targets`:
+  exit status 0 and no diagnostic in a file that this task changes;
+- `cargo test --locked --offline -j 8 -p rspace_plus_plus --test
+  concurrent_rspace_architecture_repro_tests`: 6 passed;
+- `bash scripts/check-rspace-journal-owner-model.sh`, once with one TLC
+  worker and once with two: exit status 0 after 47 TLC runs, with the
+  closing line and the counts of the
+  [view gates](#view-gates-owner-mutex-and-incarnations-2026-11-01) section;
+- the property registry: 313 bindings in 37 families, each ID bound once,
+  each with a row of this catalog and a row of the derivation matrix.
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -13392,12 +13836,16 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | XB-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14349): the bytes of a cross-base publication: one incremental prepare and commit pair whose batch is the rebased batch, one catalog compare-and-swap, and an append that does not grow with the endpoints that the two states share. The owner model gives a pending record a base and a predecessor, but it has no batch, no record bytes and no catalog image. |
 | XB-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14349): a view checkpoint whose journal is empty, or whose rebased batch is empty, attempts no directory write and no sync. In the owner model `CheckRequest` captures no record for a target equal to the owner's root, but the model has no empty journal, since `Succ` never returns its base, and no directory I/O to count. |
 | XB-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14349): each refusal of the cross-base entry point is decided before the journal is read and changes nothing. The owner model refuses a foreign permit and a stale incarnation in `CheckRequest`, but it has no journal read, no first write, no unretained base and no manifest fields; the order of the refusals is a property of the Rust entry point. |
-| XB-05 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14349): an owner task that stops at each `JournalOwnerHookPoint` of a cross-base checkpoint leaves store files that recover the previous current state or the exact successor, and `reconcile` completes the record. The owner model resolves a pending record in `ReconcilePending` by comparing the owner's root with the record's predecessor, as `reconcile` compares the recovered slot with it, but the model has no store files, no hook points and no recovery of a copy. |
+| XB-05 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14349): an owner task that stops at each `JournalOwnerHookPoint` that the owner runs in a cross-base checkpoint leaves store files that recover the previous current state or the exact successor, and `reconcile` completes the record. The owner model resolves a pending record in `ReconcilePending` by comparing the owner's root with the record's predecessor, as `reconcile` compares the recovered slot with it, but the model has no store files, no hook points and no recovery of a copy. |
 | KG-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14393): the V1 implementation of the RhoPath grammar traits returns the bytes, views and errors of the `RhoPathV1` functions that it delegates to. This matrix cites no model of RhoPathV1 keys, as DF-03 notes for its group prefixes, and no model states a property of Rust trait dispatch. |
 | TM-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14350): a view checkpoint that repeats a completed transition is answered from the owner's memo without a directory write, a sync or a difference walk, and leaves the catalog slot, the current state and the journal as they were. In the owner model `CheckRequest` captures a record for every target that differs from the owner's root; the model keeps no completed transitions and has no directory I/O, no difference walk and no read budget to count. |
 | TM-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14350): the state that `checkpoint_view_from_base` returns is the same with and without the memo, over sequences of checkpoints from repeated and distinct bases. In the owner model the target `Succ(base, view)` is a function of the record's base and view by definition. That the memo's key determines the successor rests on the netting of the journal, on the anchoring of both captures at the base and on the injective encoding of the after values, which are properties of the Rust hot store and owner; XB-01 carries the obligation that the returned state is a function of the base and the journal alone. |
 | TM-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14350): the memo holds at most its capacity, which is 4,096 for an owner built by the production constructor, displaces the key that it recorded first, and is empty after `close` and in a reopened owner. Capacity, eviction order and the lifetime of a process-local memo are properties of the Rust owner; the owner model keeps no completed transitions. |
 | KG-14 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14408): under forced legacy-digest collisions the image bridge keeps every distinct RCI2 image, each answered by the first exact channel that admitted it, and an equal image never replaces that representative. RhoPathV2Lifecycle states the bucket half as `FullImageCollisionSafety` and `DistinctCollisionRepresentativesPreserved`, with the mutants DigestOnly and Overwrite, but the TLA+ sources of this matrix do not include that model, and the model has no preimage of an image. |
+| OG-30 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12424): a hard checkpoint of a durable space returns one event per operation and one per COMM, publishes the state whose contents are the model's, and continues the space from it; a replay of its event log from the same start reaches the same root, and two states reached have equal roots exactly when their contents are equal. The owner model abstracts the journal and the contents; the space's event log, its replay and the semantics of produce and consume are properties of the Rust runtime. |
+| OG-31 | `LockOrder` | `EXEC_ONLY` | P | Partially entailed (task 12424): `LockOrder` forbids a view that holds the owner mutex from waiting to take its gate again; `create_durable_checkpoint` takes the view gate as an owned permit, then the owner mutex, and neither again. That a tokio caller of `create_checkpoint` completes with both locks held at capture, and that an operation which waited at the gate then runs on the new state, are the executable refinement obligation. |
+| OG-42 | `PublishedSuccessorIsOfViewBase` | `EXEC_ONLY` | P | Partially entailed (task 12424): the invariant requires the target of a pending record to be `Succ(base, view)`, a function of the record's own base and view; on the hard checkpoint path the base is the one that the space recorded at `create` or at its previous hard checkpoint. That the root a space behind the current state returns equals the root of the same operations from its base while that base is current, and that the state the other space published is unchanged, are the executable refinement obligation. |
+| OG-47 | `NoViewOperationOnSupersededStore` | `EXEC_ONLY` | P | Partially entailed (task 12424): `NoViewOperationOnSupersededStore` requires a view whose checkpoint is acknowledged to hold its own gate until `InstallView`; `checkpoint_view_from_base` returns the caller's permit with every state that it answers, and `create_durable_checkpoint` holds it until the answer is installed. The model takes the installation as one step; that its statements commute with every concurrent step is argued by reduction in the durable hard checkpoint section, not checked. That a produce of the same space, started on a worker thread after the owner has answered and before the installation, waits for the view gate at each of six owner exits, then runs on the installed store, and is published by the next hard checkpoint, is the executable refinement obligation. The model has no counterpart of the two exits of an empty journal and of the memo hits. |
 
 ## Generator discipline
 
