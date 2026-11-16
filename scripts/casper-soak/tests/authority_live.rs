@@ -374,7 +374,7 @@ mod linux {
                     "oracle_decision":available(json!(true),'c'),
                     "oracle_witness":available(json!({"decision":true,"total_stake":"3","agreeing_stake":"3","clique_weight":"2","early_return":null}),'c'),
                     "original_fault_tolerance":available(json!((1.0f32/3.0).to_bits()),'c'),
-                    "display_projection":absent("equivocation_snapshot_unavailable",'c'),
+                    "display_projection":absent("display_not_requested",'c'),
                     "persisted_fault_tolerance":absent("not_finalized",'a'),
                     "reference_comparison":{"availability":"not_requested"}}],
                 "floor_result":available(json!({"outcome":"advance","hash":"e".repeat(64),"block_number":7}),'f'),

@@ -447,6 +447,7 @@ pub fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
     block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
         history: None,
         view_sequence: u64::MAX,
+        pruning_cutoff: 0,
         view_max_height: None,
         dag_set: imbl::HashSet::new(),
         latest_messages_map: imbl::HashMap::new(),
@@ -455,7 +456,6 @@ pub fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
         block_number_map: imbl::HashMap::new(),
         main_parent_map: imbl::HashMap::new(),
         self_justification_map: imbl::HashMap::new(),
-        invalid_blocks_set: imbl::HashSet::new(),
         last_finalized_block_hash: BlockHash::new(),
         finalized_blocks_set: imbl::HashSet::new(),
         block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(block_metadata_store))),
@@ -490,5 +490,6 @@ pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
             bonds_map: HashMap::new(),
             active_validators: Vec::new(),
         },
+        chain_id: Bytes::new(),
     }
 }

@@ -200,7 +200,7 @@ async fn api_over_a_finalized_chain(
             .insert(block.block_hash.clone());
         dag.block_metadata_index
             .write()
-            .add(BlockMetadata::from_block(&block, false, None, None))
+            .add(BlockMetadata::from_block(&block, None, None, None))
             .unwrap();
         chain.push(block);
     }

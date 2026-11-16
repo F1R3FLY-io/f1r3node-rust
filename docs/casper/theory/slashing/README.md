@@ -1,5 +1,16 @@
 # Slashing — Formal Specification and Verification
 
+> **Describes the model before self-contained evidence.** The specification,
+> design chapters, diagrams, Rocq theories, TLA+ models and the model-based
+> tests under `casper/tests/slashing/` describe equivocation records, the
+> equivocation tracker, activation epochs and evidence judged by the
+> receiver's invalid flags. The node no longer works that way: an
+> equivocation is two signed blocks at one sequence number, stored as the
+> invalid block naming its sibling, and a slash carries both blocks'
+> commitments bound to the shard and chain. See
+> [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 9 for the current
+> rules. This corpus is to be rewritten with the formal layer.
+
 This directory contains the **complete formal specification and machine-checked
 verification of the slashing logic** in the F1r3fly CBC Casper consensus
 implementation. The work establishes observational bisimilarity at the process

@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
+use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -99,6 +100,28 @@ pub trait Casper {
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError>;
 
+    /// Current effective anchor height: blocks at or below this height are
+    /// treated as settled history, so walks are not expected to reach them
+    /// and `BlockNotHeld` below the anchor defers rather than judging. On
+    /// a sync-rooted node this is the restore anchor; on a genesis-rooted
+    /// node it starts at zero and advances as block-store GC prunes past
+    /// the citation horizon. Default reads the approved block's height so
+    /// effect mocks inherit "genesis-rooted at approved-block height".
+    fn effective_anchor_number(&self) -> i64 {
+        self.get_approved_block()
+            .ok()
+            .map(crate::rust::util::proto_util::block_number)
+            .unwrap_or(0)
+    }
+
+    /// Shared handle on the effective-anchor height. Used by block ingest
+    /// to admit below-anchor settled history live and by GC to advance the
+    /// anchor after a successful prune. Defaulted to a fresh atomic seeded
+    /// with the current anchor so effect mocks need no shared state.
+    fn effective_anchor_handle(&self) -> Arc<AtomicI64> {
+        Arc::new(AtomicI64::new(self.effective_anchor_number()))
+    }
+
     fn deploy(
         &self,
         deploy: Signed<DeployData>,
@@ -119,8 +142,8 @@ pub trait Casper {
 
     /// Validate a self-created block, skipping the expensive checkpoint replay and bonds_cache
     /// steps since both were already computed during `block_creator::create`.
-    /// All other validation steps (block_summary, neglected_invalid_block, phlo_price,
-    /// equivocation checks, block-index computation) still run.
+    /// All other validation steps (shard and chain identity, equivocation, block_summary,
+    /// neglect, phlo_price, block-index computation) still run.
     async fn validate_self_created(
         &self,
         block: &BlockMessage,
@@ -355,6 +378,19 @@ pub async fn hash_set_casper(
 
     let finalized_bond_cache =
         FinalizedBondCache::from_storage(&block_dag_storage, validator_id.as_ref())?;
+    // Effective anchor: whichever is higher — the approved block's height
+    // (startup baseline) or the persisted GC pruning cutoff (survives
+    // restart). Block-store GC only advances this, so the max is monotone.
+    // Test fixtures build the storage without persistence; skip the
+    // persisted read there — GC is unreachable on such storages anyway.
+    let anchor_from_approved = crate::rust::util::proto_util::block_number(&approved_block);
+    let anchor_persisted = match block_dag_storage.try_gc_store() {
+        Some(gc) => gc.effective_anchor()?.unwrap_or(anchor_from_approved),
+        None => anchor_from_approved,
+    };
+    let effective_anchor = Arc::new(std::sync::atomic::AtomicI64::new(
+        anchor_from_approved.max(anchor_persisted),
+    ));
     let finalization = crate::rust::engine::multi_parent_casper::FinalizationContext {
         observer: Arc::new(std::sync::OnceLock::new()),
         finalized_bond_cache: finalized_bond_cache.clone(),
@@ -383,10 +419,14 @@ pub async fn hash_set_casper(
         finalized_bond_cache,
         casper_shard_conf: finalization.shard_conf.clone(),
         approved_block,
+        effective_anchor,
         finalizer: crate::rust::engine::multi_parent_casper::Finalizer::start(finalization),
         heartbeat_signal_ref,
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        judged_twins: Arc::new(crate::rust::util::bounded_cache::BoundedCache::new(
+            MultiParentCasperImpl::MAX_JUDGED_TWINS,
+        )),
     })
 }
 
@@ -425,6 +465,9 @@ pub struct CasperSnapshot {
     pub max_block_num: i64,
     pub max_seq_nums: HashMap<Validator, u64>,
     pub on_chain_state: OnChainCasperState,
+    /// The genesis block hash: the chain every block of this node's shard
+    /// names in its header.
+    pub chain_id: BlockHash,
 }
 
 impl CasperSnapshot {
@@ -439,8 +482,9 @@ impl CasperSnapshot {
             .is_some_and(|stake| !stake.is_zero()))
     }
 
-    pub fn new(dag: KeyValueDagRepresentation) -> Self {
+    pub fn new(dag: KeyValueDagRepresentation, chain_id: BlockHash) -> Self {
         Self {
+            chain_id,
             dag,
             last_finalized_block: BlockHash::default(),
             parents: vec![],
@@ -534,6 +578,10 @@ pub struct CasperShardConf {
     /// Depth buffer for mergeable channels garbage collection.
     /// Additional safety margin beyond max-parent-depth before deleting data.
     pub mergeable_channels_gc_depth_buffer: i32,
+    /// Delete finalized block bodies from the block store once no honest
+    /// validator can still cite them. Shares the mergeable-channel GC
+    /// horizon and predicate; requires `enable_mergeable_channel_gc = true`.
+    pub enable_block_store_gc: bool,
     pub synchrony_recovery_stall_window: Duration,
     pub synchrony_recovery_cooldown: Duration,
     pub synchrony_recovery_max_bypasses: u32,
@@ -579,6 +627,7 @@ impl CasperShardConf {
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_depth_buffer: 10,
+            enable_block_store_gc: false,
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),
             synchrony_recovery_max_bypasses: 2,
@@ -669,6 +718,7 @@ pub mod test_helpers {
             let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
                 history: None,
                 view_sequence: u64::MAX,
+            pruning_cutoff: 0,
                 view_max_height: None,
                 dag_set: imbl::HashSet::new(),
                 latest_messages_map: imbl::HashMap::new(),
@@ -677,7 +727,6 @@ pub mod test_helpers {
                 block_number_map: imbl::HashMap::new(),
                 main_parent_map: imbl::HashMap::new(),
                 self_justification_map: imbl::HashMap::new(),
-                invalid_blocks_set: imbl::HashSet::new(),
                 last_finalized_block_hash: BlockHash::new(),
                 finalized_blocks_set: imbl::HashSet::new(),
                 block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(
@@ -693,7 +742,7 @@ pub mod test_helpers {
                 )),
             }.build();
 
-            CasperSnapshot::new(dag)
+            CasperSnapshot::new(dag, BlockHash::from(vec![0xC1; 32]))
         }
 
         pub fn bond_validator_in_snapshot(

@@ -197,5 +197,5 @@ async fn production_transport_delivers_exact_blocks_and_rejects_a_foreign_networ
     request["inputs"]["fixture"] = save(root.path(), "changed.json", &encoded(&fixture).unwrap());
     assert!(p2p::prepare(&request).is_err());
     assert_eq!(received.lock().await.len(), 2);
-    handle.abort();
+    handle.stop().await;
 }

@@ -165,13 +165,14 @@ async fn rebuild(fx: &Fixture) -> Rebuilt {
         .collect();
 
     let mk = |number: i64,
+              seq_num: i32,
               sender: Validator,
               parents: Vec<BlockHash>,
               justifications: Vec<Justification>,
               bonds: Vec<Bond>| {
         block_implicits::get_random_block(
             Some(number),
-            Some(number as i32),
+            Some(seq_num),
             None,
             None,
             Some(sender),
@@ -193,6 +194,7 @@ async fn rebuild(fx: &Fixture) -> Rebuilt {
 
     let genesis = mk(
         0,
+        0,
         filler.clone(),
         Vec::new(),
         Vec::new(),
@@ -207,6 +209,7 @@ async fn rebuild(fx: &Fixture) -> Rebuilt {
     for h in 1..=fx.max_height {
         let block = mk(
             h,
+            h as i32,
             filler.clone(),
             vec![filler_at[(h - 1) as usize].clone()],
             Vec::new(),
@@ -216,8 +219,17 @@ async fn rebuild(fx: &Fixture) -> Rebuilt {
         filler_at.push(block.block_hash);
     }
 
+    // A sender's blocks are numbered in insertion order: two blocks of one
+    // sender at one height would otherwise share a sequence number and be
+    // stored as an equivocation.
     let mut hash_of: HashMap<String, BlockHash> = HashMap::new();
+    let mut seq_of_sender: HashMap<&str, i32> = HashMap::new();
     for b in &fx.blocks {
+        let seq_num = seq_of_sender
+            .entry(b.sender.as_str())
+            .and_modify(|seq| *seq += 1)
+            .or_insert(1);
+        let seq_num = *seq_num;
         let mut parents: Vec<BlockHash> = Vec::with_capacity(2);
         match &b.main_parent {
             Some(mp) => parents.push(hash_of[mp].clone()),
@@ -237,6 +249,7 @@ async fn rebuild(fx: &Fixture) -> Rebuilt {
             .collect();
         let block = mk(
             b.height,
+            seq_num,
             validator_of[&b.sender].clone(),
             parents,
             justifications,

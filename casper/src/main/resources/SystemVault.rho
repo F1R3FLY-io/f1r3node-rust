@@ -21,8 +21,7 @@ new
   _newVault,
   _create,
   _systemVault,
-  _transferTemplate,
-  _depositTemplate
+  _transferTemplate
 in {
   rl!(`rho:system:makeMint`, *MakeMintCh) |
   rl!(`rho:system:authKey`, *AuthKeyCh) |
@@ -222,57 +221,52 @@ in {
                   }
                 }
               } |
-              // Internal SystemVault method for making deposits between purses.
-              contract @{ownVaultAddress | bundle0{*_systemVault}}(@"_deposit", depositPurse, retCh) = {
-                _depositTemplate!(*purse, *depositPurse, *retCh)
+              // Internal SystemVault method for depositing directly into this
+              // vault's purse. The source purse and the amount are passed in,
+              // so the transfer does not need a temporary sprout purse.
+              // MakeMint's `deposit` is atomic with rollback, so either the
+              // amount moves from srcPurse into `purse` or neither side changes.
+              contract @{ownVaultAddress | bundle0{*_systemVault}}(@"_deposit", @amount, srcPurse, retCh) = {
+                new depositSuccessCh in {
+                  purse!("deposit", amount, *srcPurse, *depositSuccessCh) |
+                  @Either!("fromBoolean <-", *depositSuccessCh, "Insufficient funds", *retCh)
+                }
               }
             }
           } |
           // Checks all necessary validation and authentication prerequisites. If everything checks out,
           // amount is transferred from purse (ownVaultAddress) to vault at targetAddress.
+          // The source purse and the amount are handed to the target's `_deposit`
+          // listener directly, so the transfer never creates a temporary sprout
+          // purse. If the target vault has not been created yet, the `_deposit`
+          // message waits on its unforgeable channel until a `findOrCreate` for
+          // that address installs the listener; the source balance is not moved
+          // until that listener fires, so no funds sit in an escrow purse.
+          // The source balance is checked upfront so a transfer with
+          // insufficient funds fails immediately, even if the target vault
+          // does not exist yet.
           contract _transferTemplate(@ownVaultAddress, purse, @targetAddress, @amount, authKey, ret) = {
             new vaultAddressValid, vaultAddressValidEither, amountNonNegative,
                 authKeyValidCh, authKeyValidEitherCh,
-                parametersOkCh, parametersAndAuthOkCh,
-                split, eitherPurseCh, doDeposit
+                balanceCh, sufficientFundsCh,
+                parametersOkCh, parametersAndAuthOkCh, allChecksOkCh,
+                doDeposit
             in {
               VaultAddress!("validate", targetAddress, *vaultAddressValid) |
               @Either!("fromNillableError <-", *vaultAddressValid, *vaultAddressValidEither) |
               @Either!("fromBoolean", amount.toBigInt() > 0n, "Amount must be positive value", *amountNonNegative) |
               @AuthKey!("check", *authKey, (*_systemVault, ownVaultAddress), *authKeyValidCh) |
               @Either!("fromBoolean <-", *authKeyValidCh, "Invalid AuthKey", *authKeyValidEitherCh) |
+              purse!("getBalance", *balanceCh) |
+              for (@balance <- balanceCh) {
+                @Either!("fromBoolean", balance >= amount.toBigInt(), "Insufficient funds", *sufficientFundsCh)
+              } |
               @Either!("productR <-", *vaultAddressValidEither, *amountNonNegative, *parametersOkCh) |
               @Either!("productR <-", *parametersOkCh, *authKeyValidEitherCh, *parametersAndAuthOkCh) |
-              @Either!("flatMap <-", *parametersAndAuthOkCh, *split, *eitherPurseCh) |
-              for (_, retCh <- split) {
-                new destPurseCh, depositSuccessCh in {
-                  purse!("sprout", *destPurseCh) |
-                  for (@destPurse <- destPurseCh) {
-                    @destPurse!("deposit", amount, *purse, *depositSuccessCh) |
-                    for (@depositSuccess <- depositSuccessCh) {
-                      if (depositSuccess) {
-                        retCh!((true, destPurse))
-                      } else {
-                        retCh!((false, "Insufficient funds"))
-                      }
-                    }
-                  }
-                }
-              } |
-              @Either!("flatMap <-", *eitherPurseCh, *doDeposit, *ret) |
-              for (@p, retCh <- doDeposit) {
-                @{targetAddress | bundle0{*_systemVault}}!("_deposit", p, *retCh)
-              }
-            }
-          } |
-          // Deposits the entire balance in the fromPurse to the toPurse.
-          contract _depositTemplate(fromPurse, toPurse, retCh) = {
-            new amountCh, depositSuccessCh in {
-              toPurse!("getBalance", *amountCh) |
-              for (@amount <- amountCh) {
-                // Calls purse deposit method in MakeMint contract; adds amount to toPurse and subtracts from fromPurse.
-                fromPurse!("deposit", amount, *toPurse, *depositSuccessCh) |
-                @Either!("fromBoolean <-", *depositSuccessCh, "BUG FOUND: purse deposit failed", *retCh)
+              @Either!("productR <-", *parametersAndAuthOkCh, *sufficientFundsCh, *allChecksOkCh) |
+              @Either!("flatMap <-", *allChecksOkCh, *doDeposit, *ret) |
+              for (_, retCh <- doDeposit) {
+                @{targetAddress | bundle0{*_systemVault}}!("_deposit", amount, *purse, *retCh)
               }
             }
           } |
