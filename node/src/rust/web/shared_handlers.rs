@@ -11,9 +11,10 @@ use axum::http::request::Parts;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
-    BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
-    ExploratoryDeployRejection, InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError,
-    NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError,
+    BlockNotFoundError, DeployExpiredError, DeployNotFoundError, DeployValidationError,
+    ExploratoryDeployReadOnlyError, ExploratoryDeployRejection, InvalidHashError,
+    InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
+    ProposeRefusal, ProposeRefusedError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::casper::DeployError;
@@ -290,6 +291,14 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         }
         if let Some(DeployError::DuplicateDeploy(_)) = cause.downcast_ref::<DeployError>() {
             return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
+        }
+        if cause.downcast_ref::<DeployExpiredError>().is_some()
+            || matches!(
+                cause.downcast_ref::<DeployError>(),
+                Some(DeployError::Expired)
+            )
+        {
+            return (StatusCode::BAD_REQUEST, "deploy_expired", cause.to_string());
         }
         if let Some(DeployError::InvalidFreshness) = cause.downcast_ref::<DeployError>() {
             return (
@@ -573,7 +582,7 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
     request_body = DeployRequest,
     responses(
         (status = 200, description = "Deploy accepted; returns the deploy ID (hex)", body = String),
-        (status = 400, description = "Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, unbonded validator, shard ID mismatch, forbidden key, phlo price below minimum, or expired deploy.", body = ApiErrorResponse),
+        (status = 400, description = "Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, unbonded validator, shard ID mismatch, forbidden key, or phlo price below minimum. A closed validity window or a past expiration timestamp causes `deploy_expired`. A validity height beyond the admission horizon causes `invalid_deploy_window`.", body = ApiErrorResponse),
         (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
         (status = 503, description = "Deploy queue is full or admission state changed during retries (`deploy_pool_busy`, `deploy_admission_busy`)", body = ApiErrorResponse),
         (status = 413, description = "Deploy record exceeds the configured pool byte limit (`deploy_too_large`)", body = ApiErrorResponse),
@@ -810,7 +819,7 @@ mod tests {
         use axum::http::StatusCode;
         use axum::response::IntoResponse;
         use casper::rust::api::block_api::{
-            BlockNotFoundError, DeployNotFoundError, DeployValidationError,
+            BlockNotFoundError, DeployExpiredError, DeployNotFoundError, DeployValidationError,
             ExploratoryDeployReadOnlyError, InvalidHashError, InvalidPublicKeyError,
             LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal,
             ProposeRefusedError,
@@ -903,6 +912,20 @@ mod tests {
             assert_eq!(
                 classify(DeployError::InvalidFreshness),
                 (StatusCode::BAD_REQUEST, "invalid_deploy_window".to_string())
+            );
+        }
+
+        #[test]
+        fn expired_deploys_share_one_error_kind_for_api_and_admission_refusals() {
+            assert_eq!(
+                classify(DeployError::Expired),
+                (StatusCode::BAD_REQUEST, "deploy_expired".to_string())
+            );
+            assert_eq!(
+                classify(DeployExpiredError {
+                    message: "expired".to_string()
+                }),
+                (StatusCode::BAD_REQUEST, "deploy_expired".to_string())
             );
         }
 

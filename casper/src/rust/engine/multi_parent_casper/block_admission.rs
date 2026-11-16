@@ -179,7 +179,7 @@ fn reserve_deploy(
         };
         let metadata = prepared.metadata().clone();
         if !window.allows_arrival(&metadata, dag.latest_block_number()) {
-            return Ok(Either::Left(DeployError::InvalidFreshness));
+            return Ok(Either::Left(window_refusal(window, &metadata)));
         }
         let revision = AdmissionRevision {
             pool: pool.generation,
@@ -293,14 +293,16 @@ fn reserve_deploy(
         };
         let expected = match expected {
             Ok(revision) => revision,
-            Err(ReserveError::NeedsRefresh) => {
-                *changed_component = Some("reservations");
-                continue;
-            }
             Err(error) => {
+                if discard_invalid_reservations(&mut cache)
+                    || matches!(error, ReserveError::NeedsRefresh)
+                {
+                    *changed_component = Some("reservations");
+                    continue;
+                }
                 return Err(CasperError::RuntimeError(format!(
                     "Admission reservation refresh failed: {error:?}"
-                )))
+                )));
             }
         };
         cache.revision = Some(revision);
@@ -337,7 +339,9 @@ fn reserve_deploy(
             Err(ReserveError::Duplicate) => {
                 return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)))
             }
-            Err(ReserveError::NotFresh) => return Ok(Either::Left(DeployError::InvalidFreshness)),
+            Err(ReserveError::NotFresh) => {
+                return Ok(Either::Left(window_refusal(window, &metadata)))
+            }
             Err(ReserveError::RecordTooLarge {
                 record_bytes,
                 limit,
@@ -348,6 +352,7 @@ fn reserve_deploy(
                 }));
             }
             Err(ReserveError::NeedsRefresh) => {
+                discard_invalid_reservations(&mut cache);
                 *changed_component = Some("reservations");
                 continue;
             }
@@ -389,9 +394,13 @@ fn reserve_deploy(
                 }));
             }
             Err(error) => {
+                if discard_invalid_reservations(&mut cache) {
+                    *changed_component = Some("reservations");
+                    continue;
+                }
                 return Err(CasperError::RuntimeError(format!(
                     "Deploy reservation failed: {error:?}"
-                )))
+                )));
             }
         };
         drop(cache);
@@ -420,7 +429,7 @@ fn reserve_deploy(
             && !commit_window.contains(&metadata)
         {
             deploy_storage.remove_by_sig(&deploy_id)?;
-            return Ok(Either::Left(DeployError::InvalidFreshness));
+            return Ok(Either::Left(window_refusal(commit_window, &metadata)));
         }
         metrics::counter!(DEPLOY_ADMISSION_ACCEPTED_METRIC, "source" => CASPER_METRICS_SOURCE)
             .increment(1);
@@ -432,6 +441,27 @@ fn reserve_deploy(
         "Deploy admission snapshot refresh exhausted"
     );
     Ok(Either::Left(DeployError::AdmissionBusy))
+}
+
+fn window_refusal(window: FreshWindow, deploy: &PendingDeploy) -> DeployError {
+    if window.has_closed_for(deploy) {
+        DeployError::Expired
+    } else {
+        DeployError::InvalidFreshness
+    }
+}
+
+fn discard_invalid_reservations(
+    cache: &mut crate::rust::deploy_admission::ReservationCache,
+) -> bool {
+    let discarded = cache.discard_invalid_book();
+    if discarded {
+        tracing::warn!(
+            target: "f1r3fly.casper.deploy_admission",
+            "Deploy admission accounting failed an invariant check; rebuilding it from storage"
+        );
+    }
+    discarded
 }
 
 fn queue_bounds(

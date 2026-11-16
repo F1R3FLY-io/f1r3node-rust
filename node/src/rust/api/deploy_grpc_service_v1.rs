@@ -179,9 +179,12 @@ impl DeployGrpcServiceV1Impl {
                                 | DeployError::PoolResourceBusy { .. }
                                 | DeployError::AdmissionBusy
                                 | DeployError::InvalidFreshness
+                                | DeployError::Expired
                                 | DeployError::RecordTooLarge { .. }
                         )
-                    )
+                    ) || cause
+                        .downcast_ref::<casper::rust::api::block_api::DeployExpiredError>()
+                        .is_some()
                 });
                 if is_expected_refusal {
                     tracing::debug!("Deploy admission refused: {}", e);
@@ -1685,6 +1688,35 @@ mod tests {
         };
         assert!(error.messages[0].starts_with("deploy_too_large:"));
         assert!(!error.messages[0].starts_with("deploy_pool_busy:"));
+    }
+
+    #[test]
+    fn window_refusals_have_distinct_prefixes_in_the_service_envelope() {
+        let expired_api = casper::rust::api::block_api::DeployExpiredError {
+            message: "deploy_expired: validAfterBlockNumber 0 has expired".to_string(),
+        };
+        for (error, prefix) in [
+            (eyre::Report::new(DeployError::Expired), "deploy_expired:"),
+            (eyre::Report::new(expired_api), "deploy_expired:"),
+            (
+                eyre::Report::new(DeployError::InvalidFreshness),
+                "invalid_deploy_window:",
+            ),
+        ] {
+            let response =
+                DeployGrpcServiceV1Impl::create_error_deploy_response(error.into_service_error())
+                    .unwrap();
+            let Some(models::casper::v1::deploy_response::Message::Error(error)) =
+                response.into_inner().message
+            else {
+                panic!("expected a deploy service error");
+            };
+            assert!(
+                error.messages[0].starts_with(prefix),
+                "{:?}",
+                error.messages
+            );
+        }
     }
 
     #[test]

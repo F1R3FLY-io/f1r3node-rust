@@ -52,9 +52,9 @@ acceptance:
 id: TASK-012-33
 epic_id: EPIC-012
 status: in_progress
-claimed_by: codex-session-a39fd0da
-claimed_at: 2026-11-16
-branch: admission-resource-capacity-review
+claimed_by: semyon-dev
+claimed_at: 2026-11-16T19:54:28Z
+branch: fix/710-bounded-deploy-admission
 pr_base_branch: dev
 pull_request: 789
 acceptance:
@@ -64,9 +64,13 @@ acceptance:
   - "Configuration defaults to retained limits; only an explicit null selects the previous comparison policy."
   - "An independent HTTP and gRPC submission limit applies before decoding and survives cancellation until blocking work completes."
   - "Never-included expiry cleanup releases retained capacity and permits a replacement."
+  - "An accounting invariant failure rebuilds the reservation ledger from storage instead of blocking intake until restart."
+  - "API validation and admission use the same next block number as the proposer."
+  - "Test nodes use the retained defaults unless a test selects the comparison policy."
   - "Focused tests, build, formatting, and Clippy pass on the final transferred revision."
 notes:
-  - "Default calibration, current-dev transfer, and joint queue validation remain separate steps."
+  - "Default calibration and joint queue validation remain separate steps."
+  - "The expiry error kind waits for agreement with the external queue in #990."
 ```
 
 ### TASK-031-1: Complete unsigned 256-bit token amount support

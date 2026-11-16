@@ -160,7 +160,24 @@ pub(crate) struct ReservationCache {
     pub window: Option<FreshWindow>,
 }
 
+impl ReservationCache {
+    pub(crate) fn discard_invalid_book(&mut self) -> bool {
+        if self.book.as_ref().is_none_or(|book| book.is_valid()) {
+            return false;
+        }
+        *self = Self::default();
+        true
+    }
+}
+
 impl DeployAdmission {
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn invalidate_reservations(&self) {
+        if let Some(book) = self.reservations.lock().book.as_ref() {
+            book.invalidate();
+        }
+    }
+
     pub(crate) fn log_pool_busy(&self, capacity: usize, pending_ahead: usize, occupied: usize) {
         if !tracing::enabled!(target: "f1r3fly.casper.deploy_admission", tracing::Level::DEBUG) {
             return;
@@ -259,6 +276,13 @@ impl FreshWindow {
         const MAX_FUTURE_HEIGHTS: i64 = 3;
         self.contains(deploy)
             && deploy.valid_after_block_number <= next_block.saturating_add(MAX_FUTURE_HEIGHTS)
+    }
+
+    pub(crate) fn has_closed_for(self, deploy: &PendingDeploy) -> bool {
+        deploy.valid_after_block_number <= self.earliest_valid_after
+            || deploy
+                .expiration_timestamp
+                .is_some_and(|expires| self.now_millis > expires)
     }
 
     pub(crate) fn contains(self, deploy: &PendingDeploy) -> bool {
@@ -773,8 +797,10 @@ impl AdmissionReservations {
         Ok(true)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn invalidate(&self) { self.state.lock().valid = false; }
+
+    pub(crate) fn is_valid(&self) -> bool { self.state.lock().valid }
 
     fn expire_entries(&self, state: &mut State, window: FreshWindow) {
         if self.retained {

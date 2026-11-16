@@ -9,6 +9,7 @@ Do not derive the profile from transport message limits, proposer block limits, 
 Express the retained byte budget as integer bytes.
 Apply the existing three-height arrival horizon to both policies.
 For a nonempty DAG, calculate the next height as the highest stored block number plus one, without another increment.
+Use the same next height for the API expiry check, admission, and the proposer's expiry filter.
 Accept a new validity height only through that next height plus three, subject to the other freshness checks.
 Configuration can override each field through the embedded default object.
 Require `max-records` and `max-bytes` in `casper.deploy-admission`. Reject unknown fields in this object.
@@ -34,6 +35,7 @@ Lower limits preserve accepted records and stop new admission until sufficient r
 Reject a candidate that exceeds the entire byte budget, including in an empty pool.
 Return HTTP 413 with `deploy_too_large` for this refusal.
 Start the gRPC service error with `deploy_too_large:` for the same permanent refusal.
+Start gRPC service errors with `deploy_expired:` for a closed validity window or expiration timestamp, and with `invalid_deploy_window:` for a height beyond the admission horizon.
 Return HTTP 503 with `deploy_pool_busy` when the aggregate count or byte budget is exhausted.
 Keep duplicate detection ahead of both resource refusals.
 An expired write remains charged until the storage removal succeeds and metadata reconciliation observes the removal.
@@ -51,7 +53,8 @@ Release the permit after rejection, completion, or unwinding. Do not charge othe
 When ingress limiting is disabled, preserve the previous transport decoding execution placement.
 Publish retained record and byte occupancy, their limits, and current submission concurrency.
 Mark `pending_ahead` as unavailable in retained mode through `pending-ahead-measured = 0` and reset its value to zero.
-Use checked resource arithmetic. Block new intake after an accounting invariant failure without deleting stored records.
+Use checked resource arithmetic. After an accounting invariant failure, rebuild the reservation ledger from stored records on the next attempt.
+Do not delete stored records because of the failure.
 Validation against the current dev and external queue remains a later step.
 
 ## Existing comparison policy
@@ -117,9 +120,10 @@ Return `DeployError::PoolBusy` for overload.
 Save no deploy and send no heartbeat or proposal signal after refusal.
 HTTP returns status 503 with `deploy_pool_busy` or `deploy_admission_busy`.
 HTTP returns status 409 with `duplicate_deploy` for a known signature.
-HTTP returns status 400 with `invalid_deploy_window` for an invalid validity height or an expired admission window.
+HTTP returns status 400 with `deploy_expired` when the validity window or expiration timestamp has closed.
+HTTP returns status 400 with `invalid_deploy_window` when the validity height is beyond the admission horizon.
 gRPC retains the existing `DeployResponse` service error envelope.
-gRPC treats `InvalidFreshness` as an expected refusal and logs it at debug level.
+gRPC treats expiry and admission-horizon refusals as expected refusals and logs them at debug level.
 Clients must resubmit refused requests.
 Unrelated storage errors propagate as errors.
 

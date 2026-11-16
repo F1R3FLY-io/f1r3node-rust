@@ -36,6 +36,7 @@ Use integer bytes for `casper.deploy-admission.max-bytes` to avoid differences b
 
 Both policies share a three-height admission horizon beyond the next block height.
 For a nonempty DAG, use the highest stored block number plus one as the next height.
+API validation, admission, and the proposer's expiry filter use this same next height.
 The horizon does not remove previously stored future deploys from queue accounting.
 Three heights are an inherited policy choice, not a measured optimum or a conversion from local inclusion capacity.
 
@@ -121,7 +122,9 @@ The `deploy.admission.inflight` and `deploy.admission.inflight-limit` gauges rep
 The `pending-ahead-measured` gauge is zero in retained mode and one in comparison mode.
 The existing `pending_ahead` gauge is reset to zero when its measurement is unavailable.
 That zero does not assert that no pending work exists.
-Checked resource arithmetic blocks new intake if accounting invariants fail.
-It does not wrap counters, panic during cleanup, or authorize deletion of stored deploys.
+Checked resource arithmetic marks the reservation ledger invalid if accounting invariants fail.
+The next admission attempt discards that ledger and rebuilds it from the stored pool records.
+Reservations that are still writing are counted again after their records reach storage.
+The failure does not wrap counters, panic during cleanup, or authorize deletion of stored deploys.
 
 See the [specification](../specs/deploy-admission.md) and [correctness claims](../claims/deploy-admission.md).

@@ -57,6 +57,7 @@ pub enum DeployError {
     SignatureVerificationFailed,
     DuplicateDeploy(DeployId),
     InvalidFreshness,
+    Expired,
     RecordTooLarge {
         record_bytes: usize,
         limit: u128,
@@ -91,7 +92,8 @@ impl Display for DeployError {
         match self {
             DeployError::ParsingError(details) => write!(f, "Parsing error: {}", details),
             DeployError::MissingUser => write!(f, "Missing user"),
-            DeployError::InvalidFreshness => write!(f, "Deploy is outside the admission validity window"),
+            DeployError::InvalidFreshness => write!(f, "invalid_deploy_window: deploy validity height is beyond the admission horizon. Retry the same deploy after the chain advances."),
+            DeployError::Expired => write!(f, "deploy_expired: deploy validity window or expiration timestamp has closed"),
             DeployError::RecordTooLarge { record_bytes, limit } => write!(
                 f,
                 "deploy_too_large: deploy record size {} exceeds the configured pool byte limit {}",

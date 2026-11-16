@@ -71,6 +71,7 @@ pub struct ShardOverrides {
     pub deploy_lifespan: Option<i64>,
     pub finalization_rate: Option<i32>,
     pub deploy_admission: Option<casper::rust::deploy_admission::RetainedPoolLimits>,
+    pub comparison_admission: bool,
     /// Each node keeps its own RSpace, seeded with the genesis state, so it
     /// holds only the state roots it computed itself. Otherwise the nodes
     /// share one RSpace.
@@ -947,7 +948,13 @@ impl TestNode {
         let max_parent_depth = overrides.max_parent_depth;
         let deploy_lifespan = overrides.deploy_lifespan;
         let finalization_rate = overrides.finalization_rate;
-        let deploy_admission = overrides.deploy_admission;
+        let deploy_admission = if overrides.comparison_admission {
+            None
+        } else {
+            overrides
+                .deploy_admission
+                .or_else(casper::rust::deploy_admission::default_retained_pool_limits)
+        };
 
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =

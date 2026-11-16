@@ -34,6 +34,37 @@ fn queued_deploy(
     .unwrap()
 }
 
+async fn comparison_standalone(
+    genesis: crate::util::genesis_builder::GenesisContext,
+) -> Result<TestNode, casper::rust::errors::CasperError> {
+    Ok(comparison_network(genesis, 1, None, None, None, None)
+        .await?
+        .remove(0))
+}
+
+async fn comparison_network(
+    genesis: crate::util::genesis_builder::GenesisContext,
+    network_size: usize,
+    synchrony_constraint_threshold: Option<f64>,
+    max_number_of_parents: Option<i32>,
+    max_parent_depth: Option<i32>,
+    with_read_only_size: Option<usize>,
+) -> Result<Vec<TestNode>, casper::rust::errors::CasperError> {
+    TestNode::create_network_with_overrides(
+        genesis,
+        network_size,
+        crate::helper::test_node::ShardOverrides {
+            synchrony_constraint_threshold,
+            max_number_of_parents,
+            max_parent_depth,
+            with_read_only_size,
+            comparison_admission: true,
+            ..Default::default()
+        },
+    )
+    .await
+}
+
 mod retained_admission_regressions {
     use std::sync::Arc;
 
@@ -62,6 +93,7 @@ mod retained_admission_regressions {
             .unwrap();
         TestNode::create_network_with_overrides(genesis, 1, ShardOverrides {
             finalization_rate: Some(0),
+            comparison_admission: limits.is_none(),
             deploy_admission: limits,
             ..Default::default()
         })
@@ -162,6 +194,32 @@ mod retained_admission_regressions {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn an_invalid_accounting_ledger_is_rebuilt_from_storage() {
+        let node = node_with_limits(2, 1024 * 1024).await;
+        let shard = &node.genesis.shard_id;
+        assert!(matches!(
+            node.casper.deploy(queued_deploy(90, shard)).unwrap(),
+            Either::Right(_)
+        ));
+        node.casper.deploy_admission.invalidate_reservations();
+        assert!(matches!(
+            node.casper.deploy(queued_deploy(91, shard)).unwrap(),
+            Either::Right(_)
+        ));
+        node.casper.deploy_admission.invalidate_reservations();
+        let refused = queued_deploy(92, shard);
+        assert!(matches!(
+            node.casper.deploy(refused.clone()).unwrap(),
+            Either::Left(DeployError::PoolResourceBusy {
+                resource: "records",
+                required: 3,
+                limit: 2,
+            })
+        ));
+        assert!(!node.deploy_storage.contains_sig(&refused.sig).unwrap());
     }
 
     #[tokio::test]
@@ -507,7 +565,7 @@ async fn admission_refuses_position_twenty_five_without_a_proposal_and_recovers_
         .build_genesis_with_parameters(None)
         .await
         .unwrap();
-    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let node = comparison_standalone(genesis.clone()).await.unwrap();
     let mut admitted = Vec::new();
     for timestamp in 0..24 {
         let deploy = queued_deploy(timestamp, &genesis.genesis_block.shard_id);
@@ -562,7 +620,7 @@ async fn parallel_reservations_preserve_the_last_position_and_duplicate_priority
         .build_genesis_with_parameters(None)
         .await
         .unwrap();
-    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let node = comparison_standalone(genesis.clone()).await.unwrap();
     for timestamp in 0..23 {
         let deploy = queued_deploy(timestamp, &genesis.genesis_block.shard_id);
         assert!(matches!(
@@ -614,7 +672,7 @@ async fn included_pool_copies_do_not_block_fresh_admission() {
         .build_genesis_with_parameters(None)
         .await
         .unwrap();
-    let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let mut node = comparison_standalone(genesis.clone()).await.unwrap();
     let mut included = Vec::new();
     for timestamp in 0..8 {
         let deploy = queued_deploy(timestamp, &genesis.genesis_block.shard_id);
@@ -658,6 +716,7 @@ async fn measure_admission_retention_across_finality() {
     let shard = genesis.genesis_block.shard_id.clone();
     let mut node = TestNode::create_network_with_overrides(genesis, 1, ShardOverrides {
         finalization_rate: Some(0),
+        comparison_admission: true,
         ..Default::default()
     })
     .await
@@ -836,7 +895,7 @@ async fn future_entries_reserve_capacity_before_ready_work() {
         .build_genesis_with_parameters(None)
         .await
         .unwrap();
-    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let node = comparison_standalone(genesis.clone()).await.unwrap();
     for timestamp in 0..25 {
         let deploy = construct_deploy::source_deploy(
             "Nil".to_string(),
@@ -895,10 +954,15 @@ async fn out_of_window_deploys_are_refused_without_persistence_or_slot_consumpti
         )
         .unwrap();
         let signature = candidate.sig.clone();
-        assert!(matches!(
-            node.casper.deploy(candidate).unwrap(),
-            Either::Left(DeployError::InvalidFreshness)
-        ));
+        let refusal = node.casper.deploy(candidate).unwrap();
+        if index % 2 == 0 {
+            assert!(matches!(
+                refusal,
+                Either::Left(DeployError::InvalidFreshness)
+            ));
+        } else {
+            assert!(matches!(refusal, Either::Left(DeployError::Expired)));
+        }
         assert!(!node.deploy_storage.contains_sig(&signature).unwrap());
     }
     for index in 100..124 {
@@ -948,12 +1012,106 @@ async fn arrival_horizon_accepts_its_boundary_and_refuses_the_next_height() {
 }
 
 #[tokio::test]
-async fn previously_stored_future_deploys_keep_their_slots_outside_the_arrival_horizon() {
+async fn api_window_check_uses_the_next_block_number_that_the_proposer_builds() {
+    use crate::helper::test_node::ShardOverrides;
+
+    let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    let shard = genesis.genesis_block.shard_id.clone();
+    let mut node = TestNode::create_network_with_overrides(genesis, 1, ShardOverrides {
+        deploy_lifespan: Some(2),
+        ..Default::default()
+    })
+    .await
+    .unwrap()
+    .remove(0);
+    let next = node
+        .block_dag_storage
+        .get_representation()
+        .unwrap()
+        .latest_block_number();
+    let deploy = |timestamp, valid_after| {
+        construct_deploy::source_deploy(
+            "Nil".to_owned(),
+            timestamp,
+            None,
+            None,
+            None,
+            Some(valid_after),
+            Some(shard.clone()),
+        )
+        .unwrap()
+    };
+    let boundary = deploy(1, next - 1);
+    let expired = deploy(2, next - 2);
+    assert!(
+        BlockAPI::deploy(&node.engine_cell, boundary.clone(), &None, false, &shard)
+            .await
+            .is_ok()
+    );
+    let error = BlockAPI::deploy(&node.engine_cell, expired.clone(), &None, false, &shard)
+        .await
+        .unwrap_err();
+    assert!(error
+        .downcast_ref::<casper::rust::api::block_api::DeployExpiredError>()
+        .is_some());
+    assert!(!node.deploy_storage.contains_sig(&expired.sig).unwrap());
+    let BlockCreatorResult::Created(block, ..) = node.create_block(&[]).await.unwrap() else {
+        panic!("expected a block for the boundary deploy");
+    };
+    assert_eq!(block.body.state.block_number, next);
+    assert!(block
+        .body
+        .deploys
+        .iter()
+        .any(|processed| processed.deploy.sig == boundary.sig));
+}
+
+#[tokio::test]
+async fn admission_reports_a_closed_expiration_timestamp_as_expired() {
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signed::Signed;
+
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)
         .await
         .unwrap();
     let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let mut data = construct_deploy::source_deploy(
+        "Nil".to_owned(),
+        1,
+        None,
+        None,
+        None,
+        None,
+        Some(genesis.genesis_block.shard_id.clone()),
+    )
+    .unwrap()
+    .data;
+    data.expiration_timestamp = Some(1);
+    let deploy = Signed::create(
+        data,
+        Box::new(Secp256k1),
+        construct_deploy::DEFAULT_SEC.clone(),
+    )
+    .unwrap();
+    assert!(matches!(
+        node.casper.deploy(deploy.clone()).unwrap(),
+        Either::Left(DeployError::Expired)
+    ));
+    assert!(!node.deploy_storage.contains_sig(&deploy.sig).unwrap());
+}
+
+#[tokio::test]
+async fn previously_stored_future_deploys_keep_their_slots_outside_the_arrival_horizon() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = comparison_standalone(genesis.clone()).await.unwrap();
     let next = node
         .block_dag_storage
         .get_representation()
@@ -994,7 +1152,7 @@ async fn draining_a_setup_deploy_does_not_lower_capacity_even_with_future_entrie
         .await
         .unwrap();
     for with_future in [false, true] {
-        let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+        let mut node = comparison_standalone(genesis.clone()).await.unwrap();
         let setup = queued_deploy(0, &genesis.genesis_block.shard_id);
         let block = match node.create_block(&[setup]).await.unwrap() {
             BlockCreatorResult::Created(block, ..) => block,
@@ -1040,7 +1198,7 @@ async fn peer_blocks_do_not_reduce_local_admission_capacity() {
         .build_genesis_with_parameters(None)
         .await
         .unwrap();
-    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+    let mut nodes = comparison_network(genesis.clone(), 2, None, None, None, None)
         .await
         .unwrap();
     let peer_deploy = queued_deploy(0, &genesis.genesis_block.shard_id);
@@ -1252,7 +1410,7 @@ async fn a_drained_initial_queue_recovers_one_estimated_block_of_capacity() {
         .build_genesis_with_parameters(None)
         .await
         .unwrap();
-    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let node = comparison_standalone(genesis.clone()).await.unwrap();
     let shard = &genesis.genesis_block.shard_id;
     let batch: Vec<_> = (0..24).map(|index| queued_deploy(index, shard)).collect();
     for deploy in &batch {
@@ -1300,7 +1458,7 @@ async fn admission_recovers_gradually_after_a_restricted_block() {
         .build_genesis_with_parameters(None)
         .await
         .unwrap();
-    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let node = comparison_standalone(genesis.clone()).await.unwrap();
     let shard = &genesis.genesis_block.shard_id;
     let batch: Vec<_> = (0..3).map(|index| queued_deploy(index, shard)).collect();
     for deploy in &batch {
@@ -1380,7 +1538,7 @@ async fn service_samples_use_the_proposal_selection_before_late_arrivals() {
         .await
         .unwrap();
     for (seeded, block_cap, expected_capacity) in [(0, 128, 24), (1, 128, 24), (3, 1, 3)] {
-        let node = TestNode::standalone(genesis.clone()).await.unwrap();
+        let node = comparison_standalone(genesis.clone()).await.unwrap();
         for index in 0..seeded {
             assert!(matches!(
                 node.casper
@@ -2143,7 +2301,7 @@ mod admission_regressions {
             random.swap(index, (state % (index + 1) as u64) as usize);
         }
         for order in [ascending, descending, random] {
-            let node = TestNode::standalone(genesis.clone()).await.unwrap();
+            let node = super::comparison_standalone(genesis.clone()).await.unwrap();
             let initial_height = height(&node);
             for (arrival, index) in order.iter().enumerate() {
                 let deploy = &deploys[*index];
@@ -2181,7 +2339,7 @@ mod admission_regressions {
             .build_genesis_with_parameters(None)
             .await
             .unwrap();
-        let node = TestNode::standalone(genesis.clone()).await.unwrap();
+        let node = super::comparison_standalone(genesis.clone()).await.unwrap();
         let initial_height = height(&node);
         let seed: Vec<_> = (0..23)
             .map(|timestamp| signed_deploy(timestamp, &genesis.genesis_block.shard_id))
@@ -2285,7 +2443,7 @@ mod admission_regressions {
             .build_genesis_with_parameters(None)
             .await
             .unwrap();
-        let node = TestNode::standalone(genesis.clone()).await.unwrap();
+        let node = super::comparison_standalone(genesis.clone()).await.unwrap();
         for timestamp in 0..CAPACITY as i64 {
             let deploy = construct_deploy::source_deploy(
                 "Nil".to_owned(),
@@ -2343,7 +2501,7 @@ mod admission_regressions {
             .build_genesis_with_parameters(None)
             .await
             .unwrap();
-        let node = TestNode::standalone(genesis.clone()).await.unwrap();
+        let node = super::comparison_standalone(genesis.clone()).await.unwrap();
         let included = signed_deploy(0, &genesis.genesis_block.shard_id);
         assert!(matches!(
             node.casper.deploy(included.clone()).unwrap(),
@@ -2407,7 +2565,7 @@ mod admission_regressions {
             .build_genesis_with_parameters(None)
             .await
             .unwrap();
-        let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+        let mut node = super::comparison_standalone(genesis.clone()).await.unwrap();
         node.allow_empty_blocks = true;
         let empty = node.create_block_unsafe(&[]).await.unwrap();
         let waiting = signed_deploy(100, &genesis.genesis_block.shard_id);
@@ -2460,7 +2618,7 @@ mod admission_regressions {
             .build_genesis_with_parameters(None)
             .await
             .unwrap();
-        let node = TestNode::standalone(genesis.clone()).await.unwrap();
+        let node = super::comparison_standalone(genesis.clone()).await.unwrap();
         let shard = &genesis.genesis_block.shard_id;
         let seeded: Vec<_> = (0..24).map(|i| signed_deploy(i, shard)).collect();
         for deploy in &seeded {
@@ -2540,7 +2698,7 @@ mod admission_regressions {
             .build_genesis_with_parameters(None)
             .await
             .unwrap();
-        let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+        let mut node = super::comparison_standalone(genesis.clone()).await.unwrap();
         let shard = &genesis.genesis_block.shard_id;
         for timestamp in 0..23 {
             assert!(matches!(
@@ -2600,8 +2758,8 @@ mod admission_regressions {
             .build_genesis_with_parameters(None)
             .await
             .unwrap();
-        let mut first = TestNode::standalone(genesis.clone()).await.unwrap();
-        let mut second = TestNode::standalone(genesis.clone()).await.unwrap();
+        let mut first = super::comparison_standalone(genesis.clone()).await.unwrap();
+        let mut second = super::comparison_standalone(genesis.clone()).await.unwrap();
         first.engine_cell.set(Arc::new(noop())).await;
         second.engine_cell.set(Arc::new(noop())).await;
         let original = first.deploy_storage.clone();
@@ -2903,7 +3061,7 @@ mod admission_regressions {
         let dag = BlockDagKeyValueStorage::new(&mut stores).await.unwrap();
         dag.insert(&genesis.genesis_block, InsertMode::Approved)
             .unwrap();
-        let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+        let mut node = super::comparison_standalone(genesis.clone()).await.unwrap();
         node.engine_cell.set(Arc::new(noop())).await;
         Arc::get_mut(&mut node.casper)
             .expect("Admission fixture must own its Casper instance")

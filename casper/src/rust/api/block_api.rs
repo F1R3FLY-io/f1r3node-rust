@@ -382,6 +382,19 @@ impl std::fmt::Display for DeployValidationError {
 impl std::error::Error for DeployValidationError {}
 
 #[derive(Debug)]
+pub struct DeployExpiredError {
+    pub message: String,
+}
+
+impl std::fmt::Display for DeployExpiredError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for DeployExpiredError {}
+
+#[derive(Debug)]
 pub struct ProposeReadOnlyError;
 
 impl std::fmt::Display for ProposeReadOnlyError {
@@ -685,26 +698,23 @@ impl BlockAPI {
                 } else {
                     Ok(())
                 }
-            })
-            .and_then(|_| {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                if d.data.is_expired_at(now) {
-                    Err(DeployValidationError {
-                        message: format!(
-                            "Deploy has expired: expirationTimestamp={:?} is in the past.",
-                            d.data.expiration_timestamp
-                        ),
-                    })
-                } else {
-                    Ok(())
-                }
             });
 
         // Return early if validation fails
         validation_result.map_err(|e| eyre::Report::new(e))?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        if d.data.is_expired_at(now) {
+            return Err(eyre::Report::new(DeployExpiredError {
+                message: format!(
+                    "deploy_expired: expirationTimestamp={:?} is in the past.",
+                    d.data.expiration_timestamp
+                ),
+            }));
+        }
 
         let log_error_message =
             "Error: Could not deploy, casper instance was not available yet.".to_string();
@@ -736,26 +746,19 @@ impl BlockAPI {
                         .to_string(),
                 }));
             }
-            // A deploy admitted now can only ever land in a block that doesn't
-            // exist yet — the next one, at `latest_block_number + 1` — never
-            // in the current tip, which is already built. block_creator.rs's
-            // own expiry filter checks against exactly that next block's
-            // number (`earliest_block_number = block_number - deploy_lifespan`
-            // for the block being assembled). Checking admission against
-            // `latest_block_number` instead of `latest_block_number + 1` is
-            // off by one: a deploy admitted "just inside" the window at the
-            // current tip is then found expired by the very next block's
-            // filter, so it can never actually be included.
-            let next_block_number = dag.latest_block_number() + 1;
+            // `latest_block_number` is the highest stored block number plus
+            // one, which is the number of the next block that block_creator.rs
+            // assembles and checks with its own expiry filter.
+            let next_block_number = dag.latest_block_number();
             let deploy_lifespan = casper.casper_shard_conf().deploy_lifespan;
             if deploy_is_block_expired(
                 d.data.valid_after_block_number,
                 next_block_number,
                 deploy_lifespan,
             )? {
-                return Err(eyre::Report::new(DeployValidationError {
+                return Err(eyre::Report::new(DeployExpiredError {
                     message: format!(
-                        "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
+                        "deploy_expired: validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
                         d.data.valid_after_block_number, next_block_number, deploy_lifespan
                     ),
                 }));

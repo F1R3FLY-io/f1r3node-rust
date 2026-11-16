@@ -31,7 +31,7 @@ All HTTP endpoints return errors as structured JSON. Every non-2xx response body
 
 | Code | Meaning | Common `error` values |
 |------|---------|----------------------|
-| `400` | Client sent invalid input | `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`, `invalid_hash`, `illegal_argument`, `rholang_bad_term`, `readonly_node_required`, `validator_node_required`, `invalid_deploy_window`|
+| `400` | Client sent invalid input | `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`, `invalid_hash`, `illegal_argument`, `rholang_bad_term`, `readonly_node_required`, `validator_node_required`, `deploy_expired`, `invalid_deploy_window`|
 | `404` | Requested resource not found | `block_not_found`, `deploy_not_found`, `endpoint_not_found` |
 | `405` | HTTP method not allowed for this path | `method_not_allowed` |
 | `415` | Unsupported JSON content type | `invalid_request_body` |
@@ -322,7 +322,7 @@ curl -X POST http://localhost:40413/api/deploy \
 | Status | Condition |
 |--------|-----------|
 | `200` | Deploy accepted; body is the deploy ID (hex string) |
-| `400` | Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, unbonded validator, shard ID mismatch, forbidden key, or phlo price below minimum. An expired deploy or a validity height outside the admission window causes `invalid_deploy_window`. |
+| `400` | Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, unbonded validator, shard ID mismatch, forbidden key, or phlo price below minimum. A closed validity window or a past expiration timestamp causes `deploy_expired`. A validity height beyond the admission horizon causes `invalid_deploy_window`. |
 | `415` | Unsupported content type (`invalid_request_body`) |
 | `422` | Invalid JSON field type or value, including deploy parameter names and values, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`) |
