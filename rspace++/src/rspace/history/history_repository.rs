@@ -64,6 +64,14 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
     /// Companion to `record_root` for joiner-side LFS sync to check whether
     /// a root has already been imported before fetching from peers.
     fn contains_root(&self, root: &Blake2b256Hash) -> Result<bool, HistoryError>;
+
+    /// Raw access to the LMDB-backed trie-node store. Used by rspace-history
+    /// pruning (issue #923, Option D) to walk every node hash in the env
+    /// via `scan_page` + `delete`, after a mark walk from each retained
+    /// root has built the reachable-hash set. Exposes trie nodes only —
+    /// cold-store datums/continuations and the roots store are separate
+    /// environments and not accessible here.
+    fn history_store(&self) -> Arc<dyn KeyValueStore>;
 }
 
 pub struct HistoryRepositoryInstances<C, P, A, K> {
@@ -124,10 +132,11 @@ where
             current_history: Arc::new(Mutex::new(Box::new(history))),
             roots_repository: Arc::new(Mutex::new(roots_repository)),
             checkpoint_writer: Arc::new(KvCheckpointWriter {
-                history: history_key_value_store,
+                history: history_key_value_store.clone(),
                 roots: roots_key_value_store,
             }),
             leaf_store: cold_key_value_store,
+            history_kv_store: history_key_value_store,
             rspace_exporter: Arc::new(exporter),
             rspace_importer: Arc::new(importer),
             _marker: PhantomData,

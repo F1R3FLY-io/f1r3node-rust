@@ -51,6 +51,13 @@ pub struct HistoryRepositoryImpl<C, P, A, K> {
     pub roots_repository: Arc<Mutex<RootRepository>>,
     pub checkpoint_writer: Arc<dyn CheckpointWriter>,
     pub leaf_store: Arc<dyn KeyValueStore>,
+    /// The LMDB-backed trie-node store (`rspace/history`). Carried here so
+    /// `HistoryRepository::history_store` can hand it out to the
+    /// rspace-history pruner without reaching through `current_history`'s
+    /// mutex. Shared by reference across checkpoints — a fresh
+    /// `HistoryRepositoryImpl` from `checkpoint` / `do_checkpoint` / `reset`
+    /// keeps the same underlying store.
+    pub history_kv_store: Arc<dyn KeyValueStore>,
     pub rspace_exporter: Arc<dyn RSpaceExporter>,
     pub rspace_importer: Arc<dyn RSpaceImporter>,
     pub _marker: PhantomData<(C, P, A, K)>,
@@ -157,6 +164,7 @@ where
             roots_repository: self.roots_repository.clone(),
             checkpoint_writer: self.checkpoint_writer.clone(),
             leaf_store: self.leaf_store.clone(),
+            history_kv_store: self.history_kv_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
             _marker: PhantomData,
@@ -533,6 +541,7 @@ where
             roots_repository: self.roots_repository.clone(),
             checkpoint_writer: self.checkpoint_writer.clone(),
             leaf_store: self.leaf_store.clone(),
+            history_kv_store: self.history_kv_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
             _marker: PhantomData,
@@ -562,6 +571,7 @@ where
             roots_repository: self.roots_repository.clone(),
             checkpoint_writer: self.checkpoint_writer.clone(),
             leaf_store: self.leaf_store.clone(),
+            history_kv_store: self.history_kv_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
             _marker: PhantomData,
@@ -608,6 +618,8 @@ where
             lock_roots_repository(&self.roots_repository, &ROOTS_LOCK_CONTAINS_ROOT_SITE);
         roots_repo.contains_root(root).map_err(HistoryError::from)
     }
+
+    fn history_store(&self) -> Arc<dyn KeyValueStore> { self.history_kv_store.clone() }
 }
 
 pub fn prepend_bytes(element: u8, bytes: &[u8]) -> Vec<u8> {
