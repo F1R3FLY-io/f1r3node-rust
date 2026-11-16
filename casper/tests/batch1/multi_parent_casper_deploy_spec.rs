@@ -47,6 +47,14 @@ mod retained_admission_regressions {
     use crate::helper::test_node::ShardOverrides;
 
     async fn node_with_limits(max_records: usize, max_bytes: u64) -> TestNode {
+        node_with_policy(Some(RetainedPoolLimits {
+            max_records,
+            max_bytes,
+        }))
+        .await
+    }
+
+    async fn node_with_policy(limits: Option<RetainedPoolLimits>) -> TestNode {
         let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
         let genesis = GenesisBuilder::new()
             .build_genesis_with_parameters(Some(parameters))
@@ -54,16 +62,106 @@ mod retained_admission_regressions {
             .unwrap();
         TestNode::create_network_with_overrides(genesis, 1, ShardOverrides {
             finalization_rate: Some(0),
-            deploy_admission: Some(RetainedPoolLimits {
-                max_records,
-                max_bytes,
-                max_inflight: 2,
-            }),
+            deploy_admission: limits,
             ..Default::default()
         })
         .await
         .unwrap()
         .remove(0)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn measure_retained_admission_cost_with_real_lmdb() {
+        use std::time::Instant;
+
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signed::Signed;
+        use models::rust::deploy_parameters::{DeployParameter, RholangValue};
+
+        fn quantile(samples: &mut [u128], percent: usize) -> u128 {
+            samples.sort_unstable();
+            samples[(samples.len() * percent).div_ceil(100).saturating_sub(1)]
+        }
+
+        println!("RETAINED_COST,mode,limit,payload_bytes,stored_records,stored_bytes,first_us,p50_us,p95_us,accepted,refused");
+        for payload_bytes in [0, 32 * 1024] {
+            for limit in [24, 128, 512, 2048] {
+                for requested_stored in [0, limit / 2, limit] {
+                    let limits = (limit != 24).then_some(RetainedPoolLimits {
+                        max_records: limit,
+                        ..RetainedPoolLimits::default()
+                    });
+                    let node = node_with_policy(limits).await;
+                    let deploy = |timestamp| {
+                        let mut data = queued_deploy(timestamp, &node.genesis.shard_id).data;
+                        if payload_bytes != 0 {
+                            data.parameters = vec![DeployParameter {
+                                name: "payload".into(),
+                                value: RholangValue::Bytes(vec![1; payload_bytes]),
+                            }];
+                        }
+                        Signed::create(
+                            data,
+                            Box::new(Secp256k1),
+                            construct_deploy::DEFAULT_SEC.clone(),
+                        )
+                        .unwrap()
+                    };
+                    let stored: Vec<_> = (0..requested_stored)
+                        .map(|index| deploy(index as i64 + 20_000))
+                        .collect();
+                    node.deploy_storage.add(stored).unwrap();
+                    let snapshot = node.deploy_storage.metadata_snapshot().unwrap();
+                    let stored_bytes: usize =
+                        snapshot.entries.values().map(|row| row.record_bytes).sum();
+                    let mut samples = Vec::new();
+                    let (mut accepted, mut refused, mut first_us) = (0, 0, 0);
+                    for sample in 0..41 {
+                        let candidate = deploy(40_000 + sample);
+                        let signature = candidate.sig.clone();
+                        let started = Instant::now();
+                        let result = node.casper.deploy(candidate).unwrap();
+                        let elapsed = started.elapsed().as_micros();
+                        if sample == 0 {
+                            first_us = elapsed;
+                        } else {
+                            samples.push(elapsed);
+                        }
+                        match result {
+                            Either::Right(_) => {
+                                accepted += 1;
+                                assert!(node.deploy_storage.remove_by_sig(&signature).unwrap());
+                            }
+                            Either::Left(
+                                DeployError::PoolBusy { .. } | DeployError::PoolResourceBusy { .. },
+                            ) => {
+                                refused += 1;
+                                assert!(!node.deploy_storage.contains_sig(&signature).unwrap());
+                            }
+                            other => panic!("unexpected measured outcome: {other:?}"),
+                        }
+                    }
+                    assert_eq!(accepted + refused, 41);
+                    assert_eq!(
+                        node.deploy_storage
+                            .metadata_snapshot()
+                            .unwrap()
+                            .entries
+                            .len(),
+                        requested_stored
+                    );
+                    let p50 = quantile(&mut samples, 50);
+                    let p95 = quantile(&mut samples, 95);
+                    let mode = if limits.is_some() {
+                        "retained"
+                    } else {
+                        "comparison"
+                    };
+                    println!("RETAINED_COST,{mode},{limit},{payload_bytes},{requested_stored},{stored_bytes},{first_us},{p50},{p95},{accepted},{refused}");
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -200,6 +298,112 @@ mod retained_admission_regressions {
     }
 
     #[tokio::test]
+    async fn a_never_included_expired_deploy_is_cleaned_up_and_frees_retained_capacity() {
+        use block_storage::rust::dag::deploy_lifecycle_types::TerminalState;
+        use casper::rust::blocks::proposer::block_creator;
+        use casper::rust::blocks::proposer::proposer::DeploySelection;
+
+        let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+        let genesis = GenesisBuilder::new()
+            .build_genesis_with_parameters(Some(parameters))
+            .await
+            .unwrap();
+        let mut node = TestNode::create_network_with_overrides(genesis, 1, ShardOverrides {
+            max_parent_depth: Some(2),
+            deploy_lifespan: Some(2),
+            finalization_rate: Some(0),
+            deploy_admission: Some(RetainedPoolLimits {
+                max_records: 1,
+                max_bytes: 1024 * 1024,
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .remove(0);
+        let expiring = queued_deploy(80_000, &node.genesis.shard_id);
+        assert!(matches!(
+            node.casper.deploy(expiring.clone()).unwrap(),
+            Either::Right(_)
+        ));
+        assert!(matches!(
+            node.casper
+                .deploy(queued_deploy(80_001, &node.genesis.shard_id))
+                .unwrap(),
+            Either::Left(DeployError::PoolResourceBusy {
+                resource: "records",
+                ..
+            })
+        ));
+
+        for block_index in 0..12 {
+            let mut snapshot = node.casper.get_snapshot().await.unwrap();
+            if block_index == 0 {
+                snapshot
+                    .on_chain_state
+                    .shard_conf
+                    .max_user_deploys_per_block = 0;
+            }
+            let validator = node.casper.get_validator().unwrap();
+            let mut store = node.block_store.clone();
+            let created = block_creator::create(
+                &snapshot,
+                &validator,
+                None,
+                node.deploy_storage.clone(),
+                node.rejected_deploy_buffer.clone(),
+                &node.runtime_manager,
+                &mut store,
+                DeploySelection::StandardAllowEmpty,
+            )
+            .await
+            .unwrap();
+            let BlockCreatorResult::Created(block, ..) = created else {
+                panic!("expected an empty heartbeat block");
+            };
+            assert!(block.body.deploys.is_empty());
+            assert!(matches!(
+                node.process_block(block).await.unwrap(),
+                Either::Right(_)
+            ));
+            node.casper.finalize().await.unwrap();
+        }
+
+        let dag = node.block_dag_storage.get_representation().unwrap();
+        assert!(dag
+            .deploy_canonical_appearance(&expiring.sig)
+            .unwrap()
+            .is_none());
+        let finalized = node.casper.finalize().await.unwrap();
+        assert_eq!(
+            dag.deploy_terminal(&expiring.sig)
+                .unwrap()
+                .map(|record| record.state),
+            Some(TerminalState::Expired),
+            "next_height={}, finalized_height={}, stored={}, open_rows={:?}",
+            dag.latest_block_number(),
+            finalized.body.state.block_number,
+            node.deploy_storage.contains_sig(&expiring.sig).unwrap(),
+            dag.open_lifecycle_rows().unwrap(),
+        );
+        assert!(!node.deploy_storage.contains_sig(&expiring.sig).unwrap());
+        let replacement = construct_deploy::source_deploy(
+            "@0!(1)".into(),
+            80_002,
+            None,
+            None,
+            None,
+            Some(dag.latest_block_number()),
+            Some(node.genesis.shard_id.clone()),
+        )
+        .unwrap();
+        assert!(matches!(
+            node.casper.deploy(replacement).unwrap(),
+            Either::Right(_)
+        ));
+    }
+
+    #[tokio::test]
     async fn byte_exhaustion_and_an_oversized_record_have_different_refusals() {
         let node = node_with_limits(128, 1024).await;
         let deploy = |timestamp, payload_bytes| {
@@ -227,7 +431,7 @@ mod retained_admission_regressions {
         ));
         assert!(matches!(node.casper.deploy(second.clone()).unwrap(),
             Either::Left(DeployError::PoolResourceBusy {
-                resource: "record_bytes", required, limit: 1024,
+                resource: "bytes", required, limit: 1024,
             }) if required == first_bytes + second_bytes));
         assert!(matches!(
             node.casper.deploy(oversized.clone()).unwrap(),
@@ -714,12 +918,7 @@ async fn arrival_horizon_accepts_its_boundary_and_refuses_the_next_height() {
         .await
         .unwrap();
     let node = TestNode::standalone(genesis.clone()).await.unwrap();
-    let next = node
-        .block_dag_storage
-        .get_representation()
-        .unwrap()
-        .latest_block_number()
-        + 1;
+    let next = genesis.genesis_block.body.state.block_number + 1;
     for (index, height) in [next, next + 3, next + 4].into_iter().enumerate() {
         let candidate = construct_deploy::source_deploy(
             "Nil".to_owned(),
@@ -962,7 +1161,7 @@ async fn propose_with_capacity(
 }
 
 #[tokio::test]
-async fn resource_capacity_learns_heavier_deploys_after_a_probe_without_losing_refused_work() {
+async fn comparison_capacity_does_not_learn_byte_or_declared_phlo_limits() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)
         .await
@@ -1010,15 +1209,10 @@ async fn resource_capacity_learns_heavier_deploys_after_a_probe_without_losing_r
         .unwrap();
         assert!(matches!(
             node.casper.deploy(heavy.clone()).unwrap(),
-            Either::Left(DeployError::PoolBusy { capacity: 24, .. })
-        ));
-        assert!(!node.deploy_storage.contains_sig(&heavy.sig).unwrap());
-        assert!(node.deploy_storage.contains_sig(&light.sig).unwrap());
-        node.deploy_storage.remove(vec![light]).unwrap();
-        assert!(matches!(
-            node.casper.deploy(heavy.clone()).unwrap(),
             Either::Right(_)
         ));
+        assert!(node.deploy_storage.contains_sig(&heavy.sig).unwrap());
+        assert!(node.deploy_storage.contains_sig(&light.sig).unwrap());
         let block = propose_with_capacity(&node, 128, None).await;
         assert!(block
             .body

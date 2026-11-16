@@ -14,11 +14,32 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 #[derive(Clone, Default)]
 pub(crate) struct DeployRequestLimiter {
     slots: Option<Arc<Semaphore>>,
+    limit: usize,
 }
 
 #[derive(Clone)]
 pub(crate) struct DeployRequestPermit {
-    _slot: Option<Arc<OwnedSemaphorePermit>>,
+    _slot: Option<Arc<DeployRequestSlot>>,
+}
+
+struct DeployRequestSlot {
+    permit: Option<OwnedSemaphorePermit>,
+    slots: Arc<Semaphore>,
+    limit: usize,
+}
+
+fn publish_inflight(slots: &Semaphore, limit: usize) {
+    metrics::gauge!("deploy.admission.inflight", "source" => "f1r3fly.casper")
+        .set(limit.saturating_sub(slots.available_permits()) as f64);
+    metrics::gauge!("deploy.admission.inflight-limit", "source" => "f1r3fly.casper")
+        .set(limit as f64);
+}
+
+impl Drop for DeployRequestSlot {
+    fn drop(&mut self) {
+        drop(self.permit.take());
+        publish_inflight(&self.slots, self.limit);
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -29,25 +50,33 @@ impl DeployRequestLimiter {
     pub(crate) fn new(limit: Option<usize>) -> eyre::Result<Self> {
         if limit.is_some_and(|limit| limit == 0 || limit > Semaphore::MAX_PERMITS) {
             eyre::bail!(
-                "casper.deploy-admission.max-inflight must be between 1 and {}",
+                "deploy submission max-inflight must be between 1 and {}",
                 Semaphore::MAX_PERMITS
             );
         }
         Ok(Self {
             slots: limit.map(|limit| Arc::new(Semaphore::new(limit))),
+            limit: limit.unwrap_or(0),
         })
     }
+
+    pub(crate) fn is_limited(&self) -> bool { self.slots.is_some() }
 
     pub(crate) fn try_acquire(&self) -> Result<DeployRequestPermit, DeployIngressBusy> {
         let slot = self
             .slots
             .as_ref()
             .map(|slots| {
-                slots
+                let permit = slots
                     .clone()
                     .try_acquire_owned()
-                    .map(Arc::new)
-                    .map_err(|_| DeployIngressBusy)
+                    .map_err(|_| DeployIngressBusy)?;
+                publish_inflight(slots, self.limit);
+                Ok::<_, DeployIngressBusy>(Arc::new(DeployRequestSlot {
+                    permit: Some(permit),
+                    slots: slots.clone(),
+                    limit: self.limit,
+                }))
             })
             .transpose()?;
         Ok(DeployRequestPermit { _slot: slot })
@@ -78,7 +107,43 @@ mod deploy_ingress_tests {
     }
 
     #[test]
-    fn absent_configuration_preserves_unlimited_submission() {
+    fn inflight_metrics_follow_the_last_permit_owner() {
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        let recorder = DebuggingRecorder::new();
+        metrics::with_local_recorder(&recorder, || {
+            let limiter = DeployRequestLimiter::new(Some(2)).unwrap();
+            let first = limiter.try_acquire().unwrap();
+            let owner = first.clone();
+            let second = limiter.try_acquire().unwrap();
+            let occupancy = || {
+                recorder
+                    .snapshotter()
+                    .snapshot()
+                    .into_vec()
+                    .into_iter()
+                    .find_map(|(key, _, _, value)| match value {
+                        DebugValue::Gauge(value)
+                            if key.key().name() == "deploy.admission.inflight" =>
+                        {
+                            Some(value.into_inner())
+                        }
+                        _ => None,
+                    })
+                    .unwrap()
+            };
+            assert_eq!(occupancy(), 2.0);
+            drop(first);
+            assert_eq!(occupancy(), 2.0);
+            drop(owner);
+            assert_eq!(occupancy(), 1.0);
+            drop(second);
+            assert_eq!(occupancy(), 0.0);
+        });
+    }
+
+    #[test]
+    fn explicit_comparison_preserves_unlimited_submission() {
         let limiter = DeployRequestLimiter::new(None).unwrap();
         let permits: Vec<_> = (0..1024).map(|_| limiter.try_acquire().unwrap()).collect();
         assert_eq!(permits.len(), 1024);

@@ -111,7 +111,10 @@ pub struct CasperConf {
     )]
     pub max_user_deploys_per_block: u32,
 
-    #[serde(rename = "deploy-admission", default)]
+    #[serde(
+        rename = "deploy-admission",
+        default = "crate::rust::deploy_admission::default_retained_pool_limits"
+    )]
     pub deploy_admission: Option<crate::rust::deploy_admission::RetainedPoolLimits>,
 
     /// Enable background garbage collection for mergeable channels.

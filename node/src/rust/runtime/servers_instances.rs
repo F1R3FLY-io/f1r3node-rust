@@ -125,12 +125,8 @@ impl ServersInstances {
         startup_events: shared::rust::shared::f1r3fly_events::StartupBuffer,
         kademlia_store: Arc<KademliaStore<T>>,
     ) -> eyre::Result<Self> {
-        let deploy_limiter = crate::rust::api::DeployRequestLimiter::new(
-            node_conf
-                .casper
-                .deploy_admission
-                .map(|limits| limits.max_inflight),
-        )?;
+        let deploy_limiter =
+            crate::rust::api::DeployRequestLimiter::new(node_conf.api_server.deploy_max_inflight)?;
         let deploy_service = api_servers
             .deploy
             .clone()

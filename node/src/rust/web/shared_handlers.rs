@@ -182,6 +182,11 @@ impl FromRequest<AppState> for DeployJson {
             .deploy_limiter
             .try_acquire()
             .map_err(|error| AppError(error.into()).into_response())?;
+        if !state.deploy_limiter.is_limited() {
+            return AppJson::<DeployRequest>::from_request(request, &())
+                .await
+                .map(|AppJson(value)| Self(value, permit));
+        }
         offload(move || async move {
             let parsed = AppJson::<DeployRequest>::from_request(request, &()).await;
             Ok(parsed.map(|AppJson(value)| Self(value, permit)))
@@ -906,7 +911,7 @@ mod tests {
         async fn aggregate_retained_resource_exhaustion_keeps_the_busy_contract() {
             let response = AppError(
                 DeployError::PoolResourceBusy {
-                    resource: "record_bytes",
+                    resource: "bytes",
                     required: 250,
                     limit: 200,
                 }

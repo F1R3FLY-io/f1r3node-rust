@@ -13,13 +13,18 @@ mechanization: none
 ```
 
 Explicit limits cover retained pool records and unwritten reservations once per signature.
+Retained accounting is enabled by default with provisional limits of 512 records and 16 MiB.
+Only an explicit null configuration selects the previous comparison policy.
+These defaults are resource-budget candidates, not measured service or memory guarantees.
 Only confirmed storage removal or rollback of an unwritten reservation releases their resource charge.
 Inclusion, expiry, and terminal verdicts do not independently authorize release.
 Reconciliation preserves a signature persisted by another handle when an overlapping reservation rolls back.
 Restored occupancy can exceed a configured limit without deleting accepted records.
 Single-record overflow and temporary aggregate exhaustion have distinct HTTP refusals.
-Focused reservation, storage, admission, HTTP, and configuration checks passed for this patch.
-Node build, CLI help, formatting, and Clippy with warnings denied also passed.
+Focused checks passed: 329 distinct configuration, ingress, admission, lifecycle, HTTP, and gRPC tests, with two ignored integration cases.
+After removing the numeric concurrency default, 164 configuration, ingress, and diagnostics tests passed again.
+Node build, CLI help, formatting, Clippy with warnings denied, and source hash checks also passed.
+Workload calibration and validation of the combined external queue remain separate work.
 The claim remains pending review and validation on the transferred revision.
 
 The following claims describe the existing comparison policy and expiry bookkeeping.
@@ -53,10 +58,8 @@ A new sample with remaining eligible demand resets recovery. Idle blocks and sma
 New arrivals have a three-height horizon beyond the next block. Previously accepted future entries retain their queue positions.
 Verified-record reuse preserves consistent metadata and the existing quarantine rules.
 
-Fresh entries and active reservations account for encoded record bytes and declared phlo limits.
-Learned resource budgets follow successful local inclusions and retain a single-probe path for an empty fresh queue.
-Rollback and deferred exclusion release these resources with the signature slot.
-These budgets do not measure allocator memory, LMDB page overhead, or CPU time.
+The comparison policy imposes no byte or declared-phlo budget.
+Its sample-based regulation applies only to fresh signature count.
 
 ```yaml
 claim_id: CLAIM-DEPLOY-EXPIRY-001
@@ -80,8 +83,8 @@ Storage errors cannot authorize deletion without a lifecycle row.
 The [specification](../specs/deploy-admission.md) defines the bounds and test scenarios.
 The claims remain pending until review accepts the test evidence.
 
-The retained mode requires an explicit positive submission concurrency limit.
-HTTP and both gRPC services share this limit before decoding deploy bodies.
+The independent API submission limit is disabled by default and requires an explicit positive value.
+When enabled, HTTP and both gRPC services share this limit before decoding deploy bodies.
 Excess submissions receive the existing admission-busy response without waiting for a permit.
 The gRPC response retains the existing service error envelope.
 Blocking submission work retains its permit after client cancellation until completion or unwinding.

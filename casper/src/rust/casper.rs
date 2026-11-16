@@ -95,7 +95,7 @@ impl Display for DeployError {
             DeployError::InvalidFreshness => write!(f, "Deploy is outside the admission validity window"),
             DeployError::RecordTooLarge { record_bytes, limit } => write!(
                 f,
-                "Deploy record size {} exceeds the configured pool byte limit {}",
+                "deploy_too_large: deploy record size {} exceeds the configured pool byte limit {}",
                 record_bytes, limit
             ),
             DeployError::UnknownSignatureAlgorithm(alg) => {
@@ -643,7 +643,7 @@ impl CasperShardConf {
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
             max_user_deploys_per_block: 128,
-            deploy_admission: None,
+            deploy_admission: crate::rust::deploy_admission::default_retained_pool_limits(),
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,

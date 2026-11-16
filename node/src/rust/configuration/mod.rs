@@ -835,7 +835,7 @@ mod embedded_defaults_tests {
     }
 
     #[test]
-    fn retained_deploy_limits_require_an_explicit_complete_hocon_object() {
+    fn retained_deploy_limits_default_and_allow_explicit_overrides_or_comparison() {
         let load = |overrides: &str| {
             hocon::HoconLoader::new()
                 .load_str(EMBEDDED_DEFAULTS)
@@ -844,27 +844,56 @@ mod embedded_defaults_tests {
                 .unwrap()
                 .resolve::<NodeConf>()
         };
-        assert_eq!(load("").unwrap().casper.deploy_admission, None);
-        let configured = load(
-            "casper.deploy-admission { max-records = 128, max-bytes = 4096, max-inflight = 2 }",
-        )
-        .unwrap();
+        let defaults = casper::rust::deploy_admission::RetainedPoolLimits::default();
+        let base = load("").unwrap();
+        assert_eq!(base.casper.deploy_admission, Some(defaults));
+        assert_eq!(base.api_server.deploy_max_inflight, None);
+        let resolved = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .unwrap()
+            .hocon()
+            .unwrap();
+        let hocon::Hocon::Hash(mut missing) = resolved["casper"].clone() else {
+            panic!("expected a casper configuration object");
+        };
+        missing.remove("deploy-admission");
+        let parsed: casper::rust::casper_conf::CasperConf =
+            hocon::Hocon::Hash(missing).resolve().unwrap();
+        assert_eq!(parsed.deploy_admission, Some(defaults));
+        assert_eq!(
+            load("casper.deploy-admission = null")
+                .unwrap()
+                .casper
+                .deploy_admission,
+            None
+        );
+        let independent =
+            load("casper.deploy-admission = null\napi-server.deploy-max-inflight = 2").unwrap();
+        assert_eq!(independent.casper.deploy_admission, None);
+        assert_eq!(independent.api_server.deploy_max_inflight, Some(2));
+        let no_inflight = load("api-server.deploy-max-inflight = null").unwrap();
+        assert_eq!(no_inflight.casper.deploy_admission, Some(defaults));
+        assert_eq!(no_inflight.api_server.deploy_max_inflight, None);
+        let configured =
+            load("casper.deploy-admission { max-records = 128, max-bytes = 4096 }").unwrap();
         assert_eq!(
             configured.casper.deploy_admission,
             Some(casper::rust::deploy_admission::RetainedPoolLimits {
                 max_records: 128,
                 max_bytes: 4096,
-                max_inflight: 2,
             })
         );
-        for incomplete in [
-            "casper.deploy-admission { max-records = 128 }",
-            "casper.deploy-admission { max-bytes = 4096 }",
-            "casper.deploy-admission { max-records = 128, max-bytes = 4096 }",
-            "casper.deploy-admission { max-records = 128, max-bytes = 4096, max-byte = 4096 }",
-        ] {
-            assert!(load(incomplete).is_err());
-        }
+        assert_eq!(
+            load("casper.deploy-admission.max-records = 128")
+                .unwrap()
+                .casper
+                .deploy_admission,
+            Some(casper::rust::deploy_admission::RetainedPoolLimits {
+                max_records: 128,
+                ..defaults
+            })
+        );
+        assert!(load("casper.deploy-admission.max-byte = 4096").is_err());
     }
 
     #[test]

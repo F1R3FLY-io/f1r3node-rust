@@ -210,12 +210,11 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
             earliest_valid_after,
             latest_valid_after: dag
                 .latest_block_number()
-                .saturating_add(1)
                 .saturating_add(this.casper_shard_conf.deploy_lifespan),
             now_millis,
         };
         let metadata = prepared.metadata().clone();
-        if !window.allows_arrival(&metadata, dag.latest_block_number().saturating_add(1)) {
+        if !window.allows_arrival(&metadata, dag.latest_block_number()) {
             return Ok(Either::Left(DeployError::InvalidFreshness));
         }
         let revision = AdmissionRevision {
@@ -353,8 +352,15 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
                 .set(ahead as f64);
             ahead
         } else {
+            metrics::gauge!(DEPLOY_ADMISSION_PENDING_AHEAD_METRIC, "source" => CASPER_METRICS_SOURCE).set(0.0);
             0
         };
+        metrics::gauge!("deploy.admission.pending-ahead-measured", "source" => CASPER_METRICS_SOURCE)
+            .set(if retained_limits.is_none() { 1.0 } else { 0.0 });
+        if retained_limits.is_some() {
+            metrics::gauge!("deploy.admission.retained.records-limit", "source" => CASPER_METRICS_SOURCE).set(limits.count as f64);
+            metrics::gauge!("deploy.admission.retained.bytes-limit", "source" => CASPER_METRICS_SOURCE).set(limits.record_bytes as f64);
+        }
         metrics::gauge!(DEPLOY_ADMISSION_CAPACITY_METRIC, "source" => CASPER_METRICS_SOURCE)
             .set(capacity as f64);
         let reservation = match book.try_reserve_with_limits(
@@ -468,9 +474,7 @@ fn queue_bounds(
     dag: &KeyValueDagRepresentation,
     deploy_lifespan: i64,
 ) -> Result<(i64, i64), CasperError> {
-    let next_block = dag.latest_block_number().checked_add(1).ok_or_else(|| {
-        CasperError::RuntimeError("Next block height exceeds the supported range".to_string())
-    })?;
+    let next_block = dag.latest_block_number();
     let earliest =
         crate::rust::util::deploy_window::earliest_valid_after(next_block, deploy_lifespan)?;
     let now = std::time::SystemTime::now()

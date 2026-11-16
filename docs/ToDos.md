@@ -41,11 +41,12 @@ acceptance:
   - "Explicit count and byte limits include retained pool records and unwritten reservations without duplicate charges."
   - "Expiry and inclusion do not release stored bytes before successful deletion."
   - "Rollback, concurrent reservations, and storage reconciliation preserve exact resource accounting."
-  - "Configuration requires explicit limits and preserves the existing comparison policy when absent."
-  - "One HTTP and gRPC submission limit applies before decoding and survives cancellation until blocking work completes."
+  - "Configuration defaults to retained limits; only an explicit null selects the previous comparison policy."
+  - "An independent HTTP and gRPC submission limit applies before decoding and survives cancellation until blocking work completes."
+  - "Never-included expiry cleanup releases retained capacity and permits a replacement."
   - "Focused tests, build, formatting, and Clippy pass on the final transferred revision."
 notes:
-  - "Numeric defaults, current-dev transfer, and joint queue validation remain separate steps."
+  - "Default calibration, current-dev transfer, and joint queue validation remain separate steps."
 ```
 
 ### TASK-031-1: Complete unsigned 256-bit token amount support

@@ -324,6 +324,9 @@ impl DeployService for DeployGrpcServiceV1Impl {
                 }
             },
         };
+        if !self.deploy_limiter.is_limited() {
+            return self.submit_deploy(request.into_inner()).await;
+        }
         let service = self.clone();
         crate::rust::web::shared_handlers::offload(move || async move {
             let _permit = permit;
@@ -1656,6 +1659,24 @@ mod tests {
             }
             other => panic!("expected Error, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn oversized_record_has_a_permanent_error_prefix_in_the_service_envelope() {
+        let error = eyre::Report::new(DeployError::RecordTooLarge {
+            record_bytes: 100,
+            limit: 99,
+        });
+        let response =
+            DeployGrpcServiceV1Impl::create_error_deploy_response(error.into_service_error())
+                .unwrap();
+        let Some(models::casper::v1::deploy_response::Message::Error(error)) =
+            response.into_inner().message
+        else {
+            panic!("expected a deploy service error");
+        };
+        assert!(error.messages[0].starts_with("deploy_too_large:"));
+        assert!(!error.messages[0].starts_with("deploy_pool_busy:"));
     }
 
     #[test]

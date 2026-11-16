@@ -14,7 +14,6 @@ const INITIAL_DEPLOYS_PER_BLOCK: usize = 8;
 #[derive(Default)]
 struct ServiceSamples {
     inclusions: VecDeque<usize>,
-    resources: VecDeque<LocalServiceSample>,
     last_sequence: Option<i32>,
     recovery_budget: usize,
 }
@@ -32,34 +31,10 @@ impl ServiceSamples {
     }
 
     fn resource_limits(&self, capacity: usize) -> ResourceLimits {
-        let byte_ceiling =
-            (crate::rust::blocks::proposer::block_creator::USER_DEPLOY_BYTE_PROPOSAL_BUDGET
-                as u128)
-                .saturating_mul(DEPLOY_QUEUE_BLOCKS as u128);
-        let (count, bytes, phlo) =
-            self.resources
-                .iter()
-                .fold((0u128, 0u128, 0u128), |(count, bytes, phlo), sample| {
-                    (
-                        count.saturating_add(sample.included as u128),
-                        bytes.saturating_add(sample.record_bytes),
-                        phlo.saturating_add(sample.phlo_limit),
-                    )
-                });
-        if count == 0 {
-            return ResourceLimits {
-                count: capacity,
-                record_bytes: byte_ceiling,
-                phlo_limit: None,
-            };
-        }
         ResourceLimits {
             count: capacity,
-            record_bytes: bytes
-                .saturating_mul(capacity as u128 + u128::from(capacity != 0))
-                .div_ceil(count)
-                .min(byte_ceiling),
-            phlo_limit: Some(phlo.saturating_mul(capacity as u128).div_ceil(count)),
+            record_bytes: u128::MAX,
+            phlo_limit: None,
         }
     }
 }
@@ -92,7 +67,19 @@ pub(crate) struct ResourceLimits {
 pub struct RetainedPoolLimits {
     pub max_records: usize,
     pub max_bytes: u64,
-    pub max_inflight: usize,
+}
+
+impl Default for RetainedPoolLimits {
+    fn default() -> Self {
+        Self {
+            max_records: 512,
+            max_bytes: 16 * 1024 * 1024,
+        }
+    }
+}
+
+pub fn default_retained_pool_limits() -> Option<RetainedPoolLimits> {
+    Some(RetainedPoolLimits::default())
 }
 
 impl From<RetainedPoolLimits> for ResourceLimits {
@@ -112,14 +99,43 @@ struct ResourceUsage {
 }
 
 impl ResourceUsage {
-    fn add(&mut self, deploy: &PendingDeploy) {
-        self.record_bytes += deploy.record_bytes as u128;
-        self.phlo_limit += deploy.phlo_limit as u128;
+    fn add(&mut self, deploy: &PendingDeploy) -> Result<(), ReserveError> {
+        let record_bytes = self
+            .record_bytes
+            .checked_add(deploy.record_bytes as u128)
+            .ok_or(ReserveError::CounterOverflow)?;
+        let phlo_limit = self
+            .phlo_limit
+            .checked_add(deploy.phlo_limit as u128)
+            .ok_or(ReserveError::CounterOverflow)?;
+        *self = Self {
+            record_bytes,
+            phlo_limit,
+        };
+        Ok(())
     }
 
-    fn remove(&mut self, deploy: &PendingDeploy) {
-        self.record_bytes -= deploy.record_bytes as u128;
-        self.phlo_limit -= deploy.phlo_limit as u128;
+    fn subtract(&mut self, released: Self) -> Result<(), ReserveError> {
+        let record_bytes = self
+            .record_bytes
+            .checked_sub(released.record_bytes)
+            .ok_or(ReserveError::CounterOverflow)?;
+        let phlo_limit = self
+            .phlo_limit
+            .checked_sub(released.phlo_limit)
+            .ok_or(ReserveError::CounterOverflow)?;
+        *self = Self {
+            record_bytes,
+            phlo_limit,
+        };
+        Ok(())
+    }
+
+    fn remove(&mut self, deploy: &PendingDeploy) -> Result<(), ReserveError> {
+        self.subtract(Self {
+            record_bytes: deploy.record_bytes as u128,
+            phlo_limit: deploy.phlo_limit as u128,
+        })
     }
 }
 
@@ -183,12 +199,6 @@ impl DeployAdmission {
             has_remaining_demand,
             ..
         } = sample;
-        if included > 0 && sample.record_bytes > 0 {
-            if samples.resources.len() == SERVICE_SAMPLE_BLOCKS {
-                samples.resources.pop_front();
-            }
-            samples.resources.push_back(sample);
-        }
         if !has_remaining_demand {
             let budget = samples.queue_budget();
             let supported_budget = included.saturating_mul(DEPLOY_QUEUE_BLOCKS);
@@ -279,8 +289,12 @@ struct State {
 
 impl State {
     fn remove(&mut self, signature: &[u8]) {
-        if let Some(entry) = self.entries.remove(signature) {
-            self.resources.remove(&entry.deploy);
+        let Some(entry) = self.entries.remove(signature) else {
+            return;
+        };
+        if self.resources.remove(&entry.deploy).is_err() {
+            self.valid = false;
+            tracing::error!("Deploy resource accounting invariant failed; admission is blocked");
         }
     }
 }
@@ -370,7 +384,7 @@ impl AdmissionReservations {
             if entries.contains_key(&deploy.signature) {
                 return Err(ReserveError::Duplicate);
             }
-            resources.add(&deploy);
+            resources.add(&deploy)?;
             entries.insert(deploy.signature.clone(), Entry {
                 deploy,
                 marker: Marker::Pending,
@@ -403,6 +417,9 @@ impl AdmissionReservations {
             return Err(ReserveError::NeedsRefresh);
         }
         self.expire_entries(&mut state, window);
+        if !state.valid {
+            return Err(ReserveError::CounterOverflow);
+        }
         Ok(self.revision())
     }
 
@@ -428,6 +445,15 @@ impl AdmissionReservations {
 
     pub fn occupied(&self) -> usize { self.occupied.load(AtomicOrdering::Acquire) }
 
+    fn publish_resources(&self, state: &State) {
+        if self.retained {
+            metrics::gauge!("deploy.admission.retained.records", "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE)
+                .set(state.entries.len() as f64);
+            metrics::gauge!("deploy.admission.retained.bytes", "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE)
+                .set(state.resources.record_bytes as f64);
+        }
+    }
+
     pub(crate) fn revision(&self) -> u64 { self.revision.load(AtomicOrdering::Acquire) }
 
     fn advance_revision(&self) { self.revision.fetch_add(1, AtomicOrdering::AcqRel); }
@@ -446,6 +472,7 @@ impl AdmissionReservations {
         let fresh = match update {
             ReservationUpdate::Full(fresh) => {
                 let mut released = ResourceUsage::default();
+                let mut overflow = false;
                 state.entries.retain(|signature, entry| {
                     if self.retained {
                         let persisted = fresh.contains_key(signature);
@@ -456,12 +483,14 @@ impl AdmissionReservations {
                         || fresh.contains_key(signature);
                     changed |= !keep;
                     if !keep {
-                        released.add(&entry.deploy);
+                        overflow |= released.add(&entry.deploy).is_err();
                     }
                     keep
                 });
-                state.resources.record_bytes -= released.record_bytes;
-                state.resources.phlo_limit -= released.phlo_limit;
+                if overflow || state.resources.subtract(released).is_err() {
+                    state.valid = false;
+                    return Err(ReserveError::CounterOverflow);
+                }
                 fresh
             }
             ReservationUpdate::Delta { fresh, removals } => {
@@ -513,14 +542,35 @@ impl AdmissionReservations {
                     let next_bytes = deploy.record_bytes as u128;
                     let next_phlo = deploy.phlo_limit as u128;
                     entry.deploy = deploy;
-                    state.resources.record_bytes =
-                        state.resources.record_bytes - previous_bytes + next_bytes;
-                    state.resources.phlo_limit =
-                        state.resources.phlo_limit - previous_phlo + next_phlo;
+                    let next = state
+                        .resources
+                        .record_bytes
+                        .checked_sub(previous_bytes)
+                        .and_then(|value| value.checked_add(next_bytes));
+                    let next_phlo = state
+                        .resources
+                        .phlo_limit
+                        .checked_sub(previous_phlo)
+                        .and_then(|value| value.checked_add(next_phlo));
+                    match (next, next_phlo) {
+                        (Some(record_bytes), Some(phlo_limit)) => {
+                            state.resources = ResourceUsage {
+                                record_bytes,
+                                phlo_limit,
+                            }
+                        }
+                        _ => {
+                            state.valid = false;
+                            return Err(ReserveError::CounterOverflow);
+                        }
+                    }
                 }
                 None => {
                     changed = true;
-                    state.resources.add(&deploy);
+                    if let Err(error) = state.resources.add(&deploy) {
+                        state.valid = false;
+                        return Err(error);
+                    }
                     state.entries.insert(signature, Entry {
                         deploy,
                         marker: Marker::Pending,
@@ -532,6 +582,10 @@ impl AdmissionReservations {
         self.occupied
             .store(state.entries.len(), AtomicOrdering::Release);
         self.expire_entries(&mut state, window);
+        if !state.valid {
+            return Err(ReserveError::CounterOverflow);
+        }
+        self.publish_resources(&state);
         if changed {
             self.advance_revision();
         }
@@ -590,19 +644,31 @@ impl AdmissionReservations {
             });
         }
         self.expire_entries(&mut state, window);
+        if !state.valid {
+            return Err(ReserveError::CounterOverflow);
+        }
+        self.publish_resources(&state);
         let occupied = self.occupied();
         let capacity = limits.count;
         if occupied >= capacity {
             return Err(ReserveError::Full { occupied, capacity });
         }
-        let next_bytes = state.resources.record_bytes + deploy.record_bytes as u128;
-        let next_phlo = state.resources.phlo_limit + deploy.phlo_limit as u128;
+        let next_bytes = state
+            .resources
+            .record_bytes
+            .checked_add(deploy.record_bytes as u128)
+            .ok_or(ReserveError::CounterOverflow)?;
+        let next_phlo = state
+            .resources
+            .phlo_limit
+            .checked_add(deploy.phlo_limit as u128)
+            .ok_or(ReserveError::CounterOverflow)?;
         if self.retained || occupied != 0 {
             if next_bytes > limits.record_bytes {
                 return Err(ReserveError::ResourceFull {
                     occupied,
                     capacity,
-                    resource: "record_bytes",
+                    resource: "bytes",
                     used: next_bytes,
                     limit: limits.record_bytes,
                 });
@@ -619,14 +685,18 @@ impl AdmissionReservations {
                 }
             }
         }
-        self.occupied.store(occupied + 1, AtomicOrdering::Release);
-        state.resources.add(&deploy);
+        let count = occupied
+            .checked_add(1)
+            .ok_or(ReserveError::CounterOverflow)?;
+        state.resources.add(&deploy)?;
+        self.occupied.store(count, AtomicOrdering::Release);
         let signature = deploy.signature.clone();
         state.entries.insert(signature.clone(), Entry {
             deploy,
             marker: Marker::Reserved { excluded: false },
             persisted: false,
         });
+        self.publish_resources(&state);
         Ok(Reservation {
             book: self.clone(),
             signature,
@@ -653,7 +723,8 @@ impl AdmissionReservations {
             }
             Some(_) => {
                 state.remove(signature);
-                self.release(1);
+                self.release(&mut state, 1);
+                self.publish_resources(&state);
                 self.advance_revision();
                 Exclusion::Released
             }
@@ -690,13 +761,14 @@ impl AdmissionReservations {
             .occupied()
             .checked_add(1)
             .ok_or(ReserveError::CounterOverflow)?;
+        state.resources.add(&deploy)?;
         self.occupied.store(count, AtomicOrdering::Release);
-        state.resources.add(&deploy);
         state.entries.insert(deploy.signature.clone(), Entry {
             deploy,
             marker: Marker::Pending,
             persisted: true,
         });
+        self.publish_resources(&state);
         self.advance_revision();
         Ok(true)
     }
@@ -710,6 +782,7 @@ impl AdmissionReservations {
         }
         let mut removed = 0;
         let mut released = ResourceUsage::default();
+        let mut overflow = false;
         let mut changed = false;
         state.entries.retain(|_, entry| {
             if window.contains(&entry.deploy) {
@@ -723,26 +796,34 @@ impl AdmissionReservations {
                 }
                 Marker::Pending => {
                     removed += 1;
-                    released.add(&entry.deploy);
+                    overflow |= released.add(&entry.deploy).is_err();
                     false
                 }
             }
         });
-        state.resources.record_bytes -= released.record_bytes;
-        state.resources.phlo_limit -= released.phlo_limit;
-        self.release(removed);
+        if overflow || state.resources.subtract(released).is_err() {
+            state.valid = false;
+            tracing::error!(
+                "Deploy resource accounting invariant failed during expiry; admission is blocked"
+            );
+        }
+        self.release(state, removed);
         if changed || removed != 0 {
             self.advance_revision();
         }
     }
 
-    fn release(&self, count: usize) {
+    fn release(&self, state: &mut State, count: usize) {
         if count != 0 {
-            let count = self
-                .occupied()
-                .checked_sub(count)
-                .expect("Admission reservation count is inconsistent");
-            self.occupied.store(count, AtomicOrdering::Release);
+            match self.occupied().checked_sub(count) {
+                Some(remaining) => self.occupied.store(remaining, AtomicOrdering::Release),
+                None => {
+                    state.valid = false;
+                    tracing::error!(
+                        "Deploy reservation count invariant failed; admission is blocked"
+                    );
+                }
+            }
         }
     }
 }
@@ -770,12 +851,13 @@ impl Reservation {
                 }
             } else if stale {
                 state.remove(&self.signature);
-                self.book.release(1);
+                self.book.release(&mut state, 1);
                 CommitResult::Excluded
             } else {
                 entry.marker = Marker::Pending;
                 CommitResult::Pending
             };
+            self.book.publish_resources(&state);
             self.book.advance_revision();
             result
         };
@@ -800,8 +882,9 @@ impl Drop for Reservation {
             entry.marker = Marker::Pending;
         } else {
             state.remove(&self.signature);
-            self.book.release(1);
+            self.book.release(&mut state, 1);
         }
+        self.book.publish_resources(&state);
         self.book.advance_revision();
     }
 }
@@ -846,73 +929,40 @@ mod resource_tests {
     }
 
     #[test]
-    fn learned_resource_budgets_use_the_included_work_and_current_count_budget() {
+    fn comparison_samples_do_not_create_byte_or_declared_phlo_budgets() {
         let admission = DeployAdmission::default();
-        assert_eq!(admission.limits(128).count, 24);
-        assert_eq!(admission.limits(128).record_bytes, 6 * 1024 * 1024);
-        assert_eq!(admission.limits(128).phlo_limit, None);
-        admission.observe_sample(1, LocalServiceSample {
-            included: 8,
-            has_remaining_demand: true,
-            record_bytes: 800,
-            phlo_limit: 80,
-        });
-        let budget = admission.limits(128);
-        assert_eq!(
-            (budget.count, budget.record_bytes, budget.phlo_limit),
-            (24, 2500, Some(240))
-        );
-        admission.observe_sample(2, LocalServiceSample {
-            included: 1,
-            has_remaining_demand: false,
-            record_bytes: 1000,
-            phlo_limit: 1000,
-        });
-        let budget = admission.limits(128);
-        assert_eq!(
-            (budget.count, budget.record_bytes, budget.phlo_limit),
-            (24, 5000, Some(2880))
-        );
+        for (sequence, bytes, phlo) in [(1, 800, 80), (2, u128::MAX, u128::MAX)] {
+            admission.observe_sample(sequence, LocalServiceSample {
+                included: 8,
+                has_remaining_demand: true,
+                record_bytes: bytes,
+                phlo_limit: phlo,
+            });
+            let budget = admission.limits(128);
+            assert_eq!(
+                (budget.count, budget.record_bytes, budget.phlo_limit),
+                (24, u128::MAX, None)
+            );
+        }
         assert_eq!(admission.limits(0).count, 0);
-        assert_eq!(admission.limits(0).record_bytes, 0);
     }
 
     #[test]
-    fn resource_history_ignores_repeated_and_idle_observations_and_evicts_old_work() {
+    fn comparison_capacity_depends_only_on_count_observations() {
         let admission = DeployAdmission::default();
-        let sample = LocalServiceSample {
-            included: 8,
-            has_remaining_demand: true,
-            record_bytes: 800,
-            phlo_limit: 80,
-        };
-        admission.observe_sample(2, sample);
-        admission.observe_sample(1, LocalServiceSample {
-            record_bytes: u128::MAX,
-            ..sample
-        });
-        admission.observe_sample(2, LocalServiceSample {
-            phlo_limit: u128::MAX,
-            ..sample
-        });
-        admission.observe_sample(3, LocalServiceSample {
-            included: 0,
-            has_remaining_demand: false,
-            record_bytes: 0,
-            phlo_limit: 0,
-        });
-        assert_eq!(admission.samples.lock().resources.len(), 1);
-        assert_eq!(admission.limits(128).record_bytes, 2500);
-        for sequence in 4..12 {
+        for sequence in 1..=9 {
             admission.observe_sample(sequence, LocalServiceSample {
-                record_bytes: 1600,
-                phlo_limit: 160,
-                ..sample
+                included: 4,
+                has_remaining_demand: true,
+                record_bytes: u128::MAX,
+                phlo_limit: u128::MAX,
             });
         }
-        assert_eq!(admission.samples.lock().resources.len(), 8);
-        assert_eq!(admission.limits(128).record_bytes, 5000);
-        assert_eq!(admission.limits(128).phlo_limit, Some(480));
+        let budget = admission.limits(128);
+        assert_eq!(budget.count, 12);
+        assert_eq!(budget.record_bytes, u128::MAX);
+        assert_eq!(budget.phlo_limit, None);
+        assert_eq!(admission.samples.lock().inclusions.len(), 8);
     }
 
     #[test]
@@ -940,7 +990,7 @@ mod resource_tests {
     #[test]
     fn byte_and_phlo_refusals_release_the_unwritten_work_on_drop() {
         for (budget, second, resource) in [
-            (limits(150, 1000), deploy(2, 100, 10), "record_bytes"),
+            (limits(150, 1000), deploy(2, 100, 10), "bytes"),
             (limits(1000, 15), deploy(2, 100, 10), "phlo_limit"),
         ] {
             let book = AdmissionReservations::from_fresh([], window()).unwrap();
@@ -1721,7 +1771,6 @@ mod retained_resource_tests {
         RetainedPoolLimits {
             max_records: count,
             max_bytes: bytes,
-            max_inflight: 2,
         }
         .into()
     }
@@ -1737,20 +1786,106 @@ mod retained_resource_tests {
 
     #[test]
     fn retained_limits_require_both_fields_and_reject_typographical_errors() {
-        let explicit =
-            serde_json::json!({"max-records": 128, "max-bytes": 4096, "max-inflight": 2});
+        let explicit = serde_json::json!({"max-records": 128, "max-bytes": 4096});
         let configured: RetainedPoolLimits = serde_json::from_value(explicit).unwrap();
         assert_eq!(configured.max_records, 128);
         assert_eq!(configured.max_bytes, 4096);
-        assert_eq!(configured.max_inflight, 2);
         for invalid in [
             serde_json::json!({"max-records": 128}),
             serde_json::json!({"max-bytes": 4096}),
-            serde_json::json!({"max-records": 128, "max-bytes": 4096}),
             serde_json::json!({"max-records": 128, "max-bytes": 4096, "max-record-byte": 4096}),
         ] {
             assert!(serde_json::from_value::<RetainedPoolLimits>(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn the_default_shard_uses_retained_limits_without_a_service_sample() {
+        let limits = RetainedPoolLimits::default();
+        assert_eq!(limits.max_records, 512);
+        assert_eq!(limits.max_bytes, 16 * 1024 * 1024);
+        assert_eq!(
+            crate::rust::casper::CasperShardConf::new().deploy_admission,
+            Some(limits)
+        );
+        let resources: ResourceLimits = limits.into();
+        assert_eq!(resources.count, limits.max_records);
+        assert_eq!(resources.phlo_limit, None);
+    }
+
+    #[test]
+    fn resource_arithmetic_errors_preserve_the_previous_totals() {
+        let mut totals = ResourceUsage {
+            record_bytes: 4,
+            phlo_limit: 3,
+        };
+        let before = totals;
+        assert_eq!(
+            totals.remove(&deploy(1, 5)),
+            Err(ReserveError::CounterOverflow)
+        );
+        assert_eq!(totals, before);
+        let mut totals = ResourceUsage {
+            record_bytes: u128::MAX,
+            phlo_limit: u128::MAX,
+        };
+        let before = totals;
+        assert_eq!(
+            totals.add(&deploy(1, 1)),
+            Err(ReserveError::CounterOverflow)
+        );
+        assert_eq!(totals, before);
+    }
+
+    #[test]
+    fn an_inconsistent_ledger_blocks_admission_without_panicking_on_removal() {
+        let book = AdmissionReservations::from_retained([deploy(1, 10)]).unwrap();
+        book.state.lock().resources = ResourceUsage::default();
+        assert_eq!(book.exclude(&[1]), Exclusion::Released);
+        assert!(matches!(
+            book.try_reserve_with_limits(deploy(2, 1), limits(2, 100), window(), None),
+            Err(ReserveError::NeedsRefresh)
+        ));
+    }
+
+    #[test]
+    fn retained_metrics_include_reservations_and_confirmed_removals() {
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        let recorder = DebuggingRecorder::new();
+        metrics::with_local_recorder(&recorder, || {
+            let book = AdmissionReservations::from_retained([deploy(1, 100)]).unwrap();
+            let gauge = |name: &str| {
+                recorder
+                    .snapshotter()
+                    .snapshot()
+                    .into_vec()
+                    .into_iter()
+                    .find_map(|(key, _, _, value)| match value {
+                        DebugValue::Gauge(value) if key.key().name() == name => {
+                            Some(value.into_inner())
+                        }
+                        _ => None,
+                    })
+                    .unwrap()
+            };
+            assert!(matches!(
+                book.try_reserve_with_limits(deploy(2, 50), limits(1, 200), window(), None),
+                Err(ReserveError::Full { .. })
+            ));
+            assert_eq!(gauge("deploy.admission.retained.records"), 1.0);
+            assert_eq!(gauge("deploy.admission.retained.bytes"), 100.0);
+            let reservation = book
+                .try_reserve_with_limits(deploy(2, 50), limits(2, 200), window(), None)
+                .unwrap();
+            assert_eq!(gauge("deploy.admission.retained.records"), 2.0);
+            assert_eq!(gauge("deploy.admission.retained.bytes"), 150.0);
+            drop(reservation);
+            assert_eq!(gauge("deploy.admission.retained.bytes"), 100.0);
+            reconcile(&book, vec![]);
+            assert_eq!(gauge("deploy.admission.retained.records"), 0.0);
+            assert_eq!(gauge("deploy.admission.retained.bytes"), 0.0);
+        });
     }
 
     #[test]
@@ -1812,7 +1947,7 @@ mod retained_resource_tests {
         assert!(matches!(
             book.try_reserve_with_limits(deploy(3, 60), limits(4, 250), window(), None),
             Err(ReserveError::ResourceFull {
-                resource: "record_bytes",
+                resource: "bytes",
                 used: 260,
                 limit: 250,
                 ..
