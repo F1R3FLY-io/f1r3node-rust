@@ -1,6 +1,7 @@
 // Integration tests for the identity registry.
 // Requires:
-//   - A running F1R3FLY cluster on 127.0.0.1:40422 (gRPC internal)
+//   - A running F1R3FLY cluster on 127.0.0.1:40422 (gRPC internal), or on
+//     the port in F1R3FLY_GRPC_PORT
 //   - F1R3FLY_SIGNING_KEY env var set to a 32-byte hex secp256k1 key with
 //     REV balance on that cluster. It signs the deploys only.
 //   - The genesis identity registry admin set of docker/quorum.conf: 2 of
@@ -24,10 +25,17 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 const NODE_HOST: &str = "127.0.0.1";
-const GRPC_PORT: u16 = 40422;
+const DEFAULT_GRPC_PORT: u16 = 40422;
 const REGISTRY_URI: &str = "rho:system:identityRegistry";
 
 // --- Harness -----------------------------------------------------------------
+
+/// F1R3FLY_GRPC_PORT overrides the port, for CI's remapped host ports.
+fn grpc_port() -> u16 {
+    env::var("F1R3FLY_GRPC_PORT")
+        .map(|p| p.parse().expect("F1R3FLY_GRPC_PORT must be a port number"))
+        .unwrap_or(DEFAULT_GRPC_PORT)
+}
 
 fn signing_key() -> &'static str {
     static SK: OnceLock<String> = OnceLock::new();
@@ -46,7 +54,7 @@ const POST_DEPLOY_WAIT: Duration = Duration::from_secs(5);
 /// keypair/name so they do not interfere.
 async fn test_client() -> IdentityRegistryClient {
     let mut client =
-        IdentityRegistryClient::new(signing_key(), NODE_HOST, GRPC_PORT, Some(REGISTRY_URI.into()))
+        IdentityRegistryClient::new(signing_key(), NODE_HOST, grpc_port(), Some(REGISTRY_URI.into()))
             .expect("init client");
     client.post_deploy_wait = POST_DEPLOY_WAIT;
     client
