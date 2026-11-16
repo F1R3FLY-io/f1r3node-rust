@@ -382,7 +382,14 @@ env:
   #   (#178) and repairs standalone recreation log ownership (#182). Verified:
   #   descends from 4373258; unit tests, test_deployment and test_token_metadata
   #   pass locally against the dev image on docker.
-  SYSTEM_INTEGRATION_REF: ba59ca583abfbff54787d743abee4242f5dd0600
+  # 2026-11-16: ba59ca5 -> a119eef (system-integration PR #187 head, on dev).
+  #   test_prepare_deploy and test_preview_private_names send the valid-after
+  #   block number, and pyf1r3fly is pinned to #13 (distinct per-key deploy
+  #   timestamps, valid-after block in previewPrivateNames). Verified: dev
+  #   ef84178 has ba59ca5's tree, and a119eef differs from it only in those
+  #   tests, node.py, the test catalog, pyproject.toml and poetry.lock;
+  #   unit tests pass.
+  SYSTEM_INTEGRATION_REF: a119eef2ccf2c5ad0f6c9979baea32636185e5ed
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
