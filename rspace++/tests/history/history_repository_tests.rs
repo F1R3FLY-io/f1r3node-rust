@@ -856,6 +856,7 @@ fn empty_repository_over(
         roots_repository: Arc::new(Mutex::new(past_roots)),
         checkpoint_writer,
         leaf_store: create_inmem_cold_store(),
+        history_kv_store: history_store,
         rspace_exporter: Arc::new(EmptyExporter),
         rspace_importer: Arc::new(EmptyImporter),
         _marker: std::marker::PhantomData,
