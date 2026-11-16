@@ -46,8 +46,9 @@ ahead, not every deploy held.
 
 A deploy that does not fit gets `deploy_queue_full` with a retry-after, the time until a deploy signed now would
 fit, and a cause: the shard when the node is holding its validator back for finality or the queue holds release
-for finality (see Release), the validator otherwise
-(it takes fewer deploys than arrive, or it has created no block over a citable depth while the shard moved on).
+for finality (see Release), the idle validator when it has created no block over a citable depth while the shard
+moved on (the queue then takes no deploy until it creates blocks again), the validator otherwise (it takes fewer
+deploys than arrive).
 
 One deployer may hold at most an equal share of the queue's capacity that keeps room for one more deployer:
 `capacity / (other deployers + 2)`, and never less than one deploy. The capacity is what the validator takes in

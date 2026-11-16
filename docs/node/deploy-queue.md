@@ -35,10 +35,12 @@ Read `latestBlockNumber`, `deployLifespan` and `maxParentDepth` from
 | `deploy_queue_stopped` | 503 | `UNAVAILABLE` | The queue is shutting down | Send again later |
 | `queue_store_error` | 500 | `INTERNAL` | The queue could not store the deploy | Send again later |
 
-A refused deploy is not held. The message of `deploy_queue_full` names its cause: the validator (it takes fewer
-deploys than arrive, or it has stopped creating blocks while the shard moves on) or the shard (the node is holding
-its validator back because finality trails the tip, or finality trails the tip by more than `maxParentDepth` and the
-queue holds every deploy until it catches up).
+A refused deploy is not held. The message of `deploy_queue_full` names its cause: the validator takes fewer
+deploys than arrive; the validator has created no block over a citable depth while the shard moved on; or the
+shard (the node is holding its validator back because finality trails the tip, or finality trails the tip by more
+than `maxParentDepth` and the queue holds every deploy until it catches up). While its validator creates no block,
+the queue takes no deploy, and its `Retry-After` is one citable depth at the shard's pace; a client that cannot
+wait sends the deploy to another validator's queue.
 
 ## Deploy status
 

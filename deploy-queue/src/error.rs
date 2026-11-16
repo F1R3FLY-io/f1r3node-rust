@@ -5,9 +5,11 @@ use crate::record::Sig;
 /// What holds deploys back when the queue cannot fit one more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Congestion {
-    /// The validator takes fewer deploys than arrive, or has stopped
-    /// creating blocks while the shard moves on.
+    /// The validator takes fewer deploys than arrive.
     Validator,
+    /// The validator created no block over a citable depth while the shard
+    /// moved on: it takes no deploys until it creates blocks again.
+    ValidatorIdle,
     /// The shard's finality trails the tip or has stalled: the node holds its
     /// validator back, or the queue holds release.
     Shard,
@@ -17,6 +19,9 @@ impl std::fmt::Display for Congestion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Congestion::Validator => "the validator is taking fewer deploys than arrive",
+            Congestion::ValidatorIdle => {
+                "the validator has created no block while the shard moved on"
+            }
             Congestion::Shard => "the shard's finality is holding the validator back",
         })
     }

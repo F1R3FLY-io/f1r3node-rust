@@ -277,13 +277,14 @@ async fn a_refusal_names_the_validator_or_the_shard() {
     );
 
     // Then it creates no block while its peers carry the shard through a
-    // full citable depth: the validator, not the shard, holds deploys back.
+    // full citable depth: the idle validator, not the shard, holds deploys
+    // back, and the queue takes none until it creates blocks again.
     advance(&node, 13, 41);
     reaches_tip(&queue, 41).await;
     assert!(matches!(
         accept(&queue.handle, numbered_deploy(41, 2)).await,
         Err(IntakeError::QueueFull {
-            cause: Congestion::Validator,
+            cause: Congestion::ValidatorIdle,
             ..
         })
     ));

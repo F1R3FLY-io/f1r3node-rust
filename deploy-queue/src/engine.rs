@@ -495,6 +495,12 @@ impl Engine {
                 cause: Congestion::Shard,
             }));
         }
+        if health.validator_idle() {
+            return Ok(Err(IntakeError::QueueFull {
+                retry_after_secs: health.seconds_for(depth).unwrap_or(UNTIMED_RETRY_SECS),
+                cause: Congestion::ValidatorIdle,
+            }));
+        }
 
         // The rate is what the validator takes into its blocks. The depth
         // covers an intake that falls after a deploy was accepted.

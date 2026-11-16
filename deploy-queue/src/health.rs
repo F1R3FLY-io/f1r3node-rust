@@ -235,8 +235,11 @@ impl Health {
     /// Why deploys wait: the shard when the node is holding its validator
     /// back for finality, the validator otherwise.
     pub fn congestion(&self) -> Congestion {
+        if self.validator_idle() {
+            return Congestion::ValidatorIdle;
+        }
         match &self.measured {
-            Some(m) if m.admission.backpressure && !self.validator_idle() => Congestion::Shard,
+            Some(m) if m.admission.backpressure => Congestion::Shard,
             _ => Congestion::Validator,
         }
     }
@@ -396,7 +399,7 @@ mod tests {
         }
         assert!(health.validator_idle());
         assert_eq!(health.intake_per_height(), 0.0);
-        assert_eq!(health.congestion(), Congestion::Validator);
+        assert_eq!(health.congestion(), Congestion::ValidatorIdle);
     }
 
     #[test]
