@@ -651,10 +651,24 @@ impl DeployService for DeployGrpcServiceV1Impl {
         request: tonic::Request<PrivateNamePreviewQuery>,
     ) -> Result<tonic::Response<PrivateNamePreviewResponse>, tonic::Status> {
         let request = request.into_inner();
+        let Some(valid_after_block_number) = request.valid_after_block_number else {
+            return Ok(tonic::Response::new(PrivateNamePreviewResponse {
+                message: Some(
+                    models::casper::v1::private_name_preview_response::Message::Error(
+                        ServiceError {
+                            messages: vec![
+                                "validAfterBlockNumber is required: a deploy's names derive from it"
+                                    .to_string(),
+                            ],
+                        },
+                    ),
+                ),
+            }));
+        };
         match BlockAPI::preview_private_names(
             &request.user.to_vec(),
             request.timestamp,
-            request.valid_after_block_number,
+            valid_after_block_number,
             request.name_qty,
         ) {
             Ok(ids) => {
@@ -1486,7 +1500,7 @@ mod tests {
                 user: vec![1u8; 32].into(),
                 timestamp: 1,
                 name_qty: 2,
-                valid_after_block_number: 9,
+                valid_after_block_number: Some(9),
             }))
             .await
             .unwrap();
@@ -1498,6 +1512,23 @@ mod tests {
             }
             other => panic!("expected Payload, got {:?}", other),
         }
+
+        let missing = service()
+            .preview_private_names(tonic::Request::new(PrivateNamePreviewQuery {
+                user: vec![1u8; 32].into(),
+                timestamp: 1,
+                name_qty: 2,
+                valid_after_block_number: None,
+            }))
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                missing.into_inner().message.unwrap(),
+                models::casper::v1::private_name_preview_response::Message::Error(_)
+            ),
+            "a query without validAfterBlockNumber is refused"
+        );
     }
 
     #[tokio::test]
