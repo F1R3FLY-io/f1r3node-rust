@@ -269,7 +269,12 @@ where
                 record_propose_steps(constraints_ms, create_ms, 0, 0);
                 Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None))
             }
-            BlockCreatorResult::Created(block, pre_state_hash, post_state_hash, deploy_admission) => {
+            BlockCreatorResult::Created(
+                block,
+                pre_state_hash,
+                post_state_hash,
+                deploy_admission,
+            ) => {
                 // Publish BlockCreated event immediately after block is created (before validation)
                 self.propose_effect_handler
                     .publish_block_created(&block, deploy_admission)?;

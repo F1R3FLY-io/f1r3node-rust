@@ -211,10 +211,8 @@ async fn premature_retry_is_rejected_by_every_validator() {
         .create_block(&[])
         .await
         .expect("owner attempts a proposal");
-    if let casper::rust::blocks::proposer::propose_result::BlockCreatorResult::Created(
-        block,
-        ..
-    ) = &owner_attempt
+    if let casper::rust::blocks::proposer::propose_result::BlockCreatorResult::Created(block, ..) =
+        &owner_attempt
     {
         assert!(
             !block
