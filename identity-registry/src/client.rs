@@ -1,22 +1,24 @@
 // Thin wrapper over F1r3flyApi for invoking the identity registry contract
 // operations.
 
+use std::time::Duration;
+
+use node_cli::{DeployOptions, Endpoint, F1r3flyApi, ProposeResult, SigningKey};
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
 use crate::error::IdentityRegistryError;
 use crate::payload::{
-    NAME_LEN, NONCE_LEN, PK_LEN, admin_relink_payload, register_payload, rotate_payload,
+    admin_relink_payload, register_payload, rotate_payload, NAME_LEN, NONCE_LEN, PK_LEN,
 };
 use crate::reply::{
-    extract_elist, extract_emap, extract_gbytearray, extract_gint, extract_gstring,
-    fetch_reply, parse_tagged_reply,
+    extract_elist, extract_emap, extract_gbytearray, extract_gint, extract_gstring, fetch_reply,
+    parse_tagged_reply,
 };
-use crate::signing::{admin_sign, signature_der, sign_payload, uncompressed_pk_bytes};
+use crate::signing::{admin_sign, sign_payload, signature_der, uncompressed_pk_bytes};
 use crate::term::{
     admin_relink_term, new_reply_slot, register_term, resolve_current_term, resolve_history_term,
     rotate_term,
 };
-use node_cli::{DeployOptions, Endpoint, F1r3flyApi, ProposeResult, SigningKey};
-use secp256k1::{PublicKey, Secp256k1, SecretKey};
-use std::time::Duration;
 
 /// What `resolve_current` returns on success.
 #[derive(Debug, Clone)]
@@ -61,8 +63,8 @@ impl IdentityRegistryClient {
         registry_uri: Option<String>,
     ) -> Result<Self, IdentityRegistryError> {
         let url = format!("http://{node_host}:{grpc_port}");
-        let endpoint = Endpoint::parse(&url)
-            .map_err(|e| IdentityRegistryError::Node(format!("{e:?}")))?;
+        let endpoint =
+            Endpoint::parse(&url).map_err(|e| IdentityRegistryError::Node(format!("{e:?}")))?;
         let key = SigningKey::from_hex(signing_key)
             .map_err(|e| IdentityRegistryError::Node(format!("{e:?}")))?;
         let api = F1r3flyApi::new(endpoint)
@@ -273,10 +275,7 @@ fn bytes_to_array<const N: usize>(
     Ok(arr)
 }
 
-fn gint_as_u64(
-    par: &models::rhoapi::Par,
-    label: &str,
-) -> Result<u64, IdentityRegistryError> {
+fn gint_as_u64(par: &models::rhoapi::Par, label: &str) -> Result<u64, IdentityRegistryError> {
     let n = extract_gint(par)?;
     if n < 0 {
         return Err(IdentityRegistryError::ResponseParse(format!(
@@ -299,9 +298,10 @@ fn decode_resolve_current(
             .as_ref()
             .ok_or_else(|| IdentityRegistryError::ResponseParse("map key missing".into()))?;
         let key = extract_gstring(key_par)?;
-        let value = kv.value.as_ref().ok_or_else(|| {
-            IdentityRegistryError::ResponseParse("map value missing".into())
-        })?;
+        let value = kv
+            .value
+            .as_ref()
+            .ok_or_else(|| IdentityRegistryError::ResponseParse("map value missing".into()))?;
         match key.as_str() {
             "pk" => pk = Some(extract_gbytearray(value)?),
             "seq" => seq = Some(extract_gint(value)?),
@@ -331,16 +331,12 @@ fn decode_resolve_current(
     })
 }
 
-fn decode_history(
-    value: models::rhoapi::Par,
-) -> Result<Vec<HistoryEntry>, IdentityRegistryError> {
+fn decode_history(value: models::rhoapi::Par) -> Result<Vec<HistoryEntry>, IdentityRegistryError> {
     let list = extract_elist(&value)?;
     list.ps.iter().map(decode_history_entry).collect()
 }
 
-fn decode_history_entry(
-    par: &models::rhoapi::Par,
-) -> Result<HistoryEntry, IdentityRegistryError> {
+fn decode_history_entry(par: &models::rhoapi::Par) -> Result<HistoryEntry, IdentityRegistryError> {
     let map = extract_emap(par)?;
     let mut pk: Option<Vec<u8>> = None;
     let mut op: Option<String> = None;
@@ -354,9 +350,10 @@ fn decode_history_entry(
             .as_ref()
             .ok_or_else(|| IdentityRegistryError::ResponseParse("map key missing".into()))?;
         let key = extract_gstring(key_par)?;
-        let value = kv.value.as_ref().ok_or_else(|| {
-            IdentityRegistryError::ResponseParse("map value missing".into())
-        })?;
+        let value = kv
+            .value
+            .as_ref()
+            .ok_or_else(|| IdentityRegistryError::ResponseParse("map value missing".into()))?;
         match key.as_str() {
             "pk" => pk = Some(extract_gbytearray(value)?),
             "op" => op = Some(extract_gstring(value)?),

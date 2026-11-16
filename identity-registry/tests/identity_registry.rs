@@ -10,18 +10,17 @@
 
 #![cfg(feature = "integration_tests")]
 
-use rand::RngCore;
-use secp256k1::{PublicKey, Secp256k1, SecretKey};
-use identity_registry::{IdentityRegistryClient, IdentityRegistryError};
-use identity_registry::payload::{
-    NAME_LEN, NONCE_LEN, derive_name, register_payload,
-};
-use identity_registry::reply::{fetch_reply, parse_tagged_reply};
-use identity_registry::signing::{admin_sign, sign_payload, signature_der, uncompressed_pk_bytes};
-use identity_registry::term::{new_reply_slot, register_term};
 use std::env;
 use std::sync::OnceLock;
 use std::time::Duration;
+
+use identity_registry::payload::{derive_name, register_payload, NAME_LEN, NONCE_LEN};
+use identity_registry::reply::{fetch_reply, parse_tagged_reply};
+use identity_registry::signing::{admin_sign, sign_payload, signature_der, uncompressed_pk_bytes};
+use identity_registry::term::{new_reply_slot, register_term};
+use identity_registry::{IdentityRegistryClient, IdentityRegistryError};
+use rand::RngCore;
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 const NODE_HOST: &str = "127.0.0.1";
 const GRPC_PORT: u16 = 40422;
@@ -31,10 +30,8 @@ const REGISTRY_URI: &str = "rho:system:identityRegistry";
 
 fn signing_key() -> &'static str {
     static SK: OnceLock<String> = OnceLock::new();
-    SK.get_or_init(|| {
-        env::var("F1R3FLY_SIGNING_KEY").expect("F1R3FLY_SIGNING_KEY must be set")
-    })
-    .as_str()
+    SK.get_or_init(|| env::var("F1R3FLY_SIGNING_KEY").expect("F1R3FLY_SIGNING_KEY must be set"))
+        .as_str()
 }
 
 /// 5s between deploys so each test op lands in its own block. Avoids the
@@ -45,16 +42,18 @@ const POST_DEPLOY_WAIT: Duration = Duration::from_secs(5);
 /// Every test shares the genesis registry but operates on its own fresh
 /// keypair/name so they do not interfere.
 async fn test_client() -> IdentityRegistryClient {
-    let mut client =
-        IdentityRegistryClient::new(signing_key(), NODE_HOST, GRPC_PORT, Some(REGISTRY_URI.into()))
-            .expect("init client");
+    let mut client = IdentityRegistryClient::new(
+        signing_key(),
+        NODE_HOST,
+        GRPC_PORT,
+        Some(REGISTRY_URI.into()),
+    )
+    .expect("init client");
     client.post_deploy_wait = POST_DEPLOY_WAIT;
     client
 }
 
-fn fresh_keypair() -> (SecretKey, PublicKey) {
-    Secp256k1::new().generate_keypair(&mut rand::rng())
-}
+fn fresh_keypair() -> (SecretKey, PublicKey) { Secp256k1::new().generate_keypair(&mut rand::rng()) }
 
 fn fresh_nonce() -> [u8; NONCE_LEN] {
     let mut buf = [0u8; NONCE_LEN];
@@ -183,10 +182,7 @@ async fn rotate_accepts_new_rejects_old_name_stable() {
     let name = client.register(&sk1, &nonce).await.expect("register");
 
     let (sk2, pk2) = fresh_keypair();
-    let new_seq = client
-        .rotate(&sk1, &name, &sk2, 0)
-        .await
-        .expect("rotate");
+    let new_seq = client.rotate(&sk1, &name, &sk2, 0).await.expect("rotate");
     assert_eq!(new_seq, 1);
 
     // The name is unchanged, and resolve now returns pk2.
@@ -228,10 +224,7 @@ async fn rotation_adds_key_not_identity() {
     assert_eq!(history_before.len(), 1);
 
     let (sk2, _pk2) = fresh_keypair();
-    client
-        .rotate(&sk1, &name, &sk2, 0)
-        .await
-        .expect("rotate");
+    client.rotate(&sk1, &name, &sk2, 0).await.expect("rotate");
 
     let history_after = client.resolve_history(&name).await.expect("history after");
     // Same name throughout. Key count grew by exactly one.
@@ -240,9 +233,7 @@ async fn rotation_adds_key_not_identity() {
     // A rotation not signed by the current key is rejected.
     let (sk_stranger, _) = fresh_keypair();
     let (sk3, _pk3) = fresh_keypair();
-    let result = client
-        .rotate(&sk_stranger, &name, &sk3, 1)
-        .await;
+    let result = client.rotate(&sk_stranger, &name, &sk3, 1).await;
     assert!(
         matches!(result, Err(IdentityRegistryError::Rejected(ref r)) if r == "bad_signature"),
         "expected bad_signature when rotating with a stranger key, got {result:?}"
@@ -294,15 +285,9 @@ async fn record_is_append_only() {
     let name = client.register(&sk1, &nonce).await.expect("register");
 
     let (sk2, pk2) = fresh_keypair();
-    client
-        .rotate(&sk1, &name, &sk2, 0)
-        .await
-        .expect("rotate 1");
+    client.rotate(&sk1, &name, &sk2, 0).await.expect("rotate 1");
     let (sk3, pk3) = fresh_keypair();
-    client
-        .rotate(&sk2, &name, &sk3, 1)
-        .await
-        .expect("rotate 2");
+    client.rotate(&sk2, &name, &sk3, 1).await.expect("rotate 2");
 
     let history = client.resolve_history(&name).await.expect("history");
     assert_eq!(history.len(), 3);
@@ -364,7 +349,15 @@ async fn admin_relink_works_and_is_bounded() {
     let (sk_newer, pk_newer) = fresh_keypair();
     let pairs: Vec<_> = admins
         .iter()
-        .map(|sk| admin_sign(sk, &name, &uncompressed_pk_bytes(&pk_newer), 1, b"evidence2"))
+        .map(|sk| {
+            admin_sign(
+                sk,
+                &name,
+                &uncompressed_pk_bytes(&pk_newer),
+                1,
+                b"evidence2",
+            )
+        })
         .collect();
     let new_seq = client
         .admin_relink_with_sigs(&pairs, &name, &sk_newer, 1, b"evidence2")
@@ -383,7 +376,13 @@ async fn admin_relink_works_and_is_bounded() {
         (
             "admin and stranger key",
             client
-                .admin_relink(&[admins[0], sk_stranger], &name, &sk_newest, 2, b"evidence3")
+                .admin_relink(
+                    &[admins[0], sk_stranger],
+                    &name,
+                    &sk_newest,
+                    2,
+                    b"evidence3",
+                )
                 .await,
         ),
         (
@@ -418,8 +417,13 @@ async fn admin_relink_below_quorum_is_rejected() {
 
     let admin = admin_sk(0);
     let (sk_new, _) = fresh_keypair();
-    for (label, admin_sks) in [("one admin", vec![admin]), ("one admin twice", vec![admin, admin])] {
-        let result = client.admin_relink(&admin_sks, &name, &sk_new, 0, b"evidence").await;
+    for (label, admin_sks) in [
+        ("one admin", vec![admin]),
+        ("one admin twice", vec![admin, admin]),
+    ] {
+        let result = client
+            .admin_relink(&admin_sks, &name, &sk_new, 0, b"evidence")
+            .await;
         assert!(
             matches!(result, Err(IdentityRegistryError::Rejected(ref r)) if r == "bad_signature"),
             "expected bad_signature for {label}, got {result:?}"

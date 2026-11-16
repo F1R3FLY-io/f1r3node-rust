@@ -15,8 +15,9 @@ const ADMIN_QUORUM: u32 = 2;
 
 #[tokio::test]
 async fn identity_registry_spec() {
-    let test_object = crate::util::rholang::test_rho_loader::load_test_rho("IdentityRegistryTest.rho")
-        .expect("Failed to load IdentityRegistryTest.rho");
+    let test_object =
+        crate::util::rholang::test_rho_loader::load_test_rho("IdentityRegistryTest.rho")
+            .expect("Failed to load IdentityRegistryTest.rho");
 
     let compiled = CompiledRholangSource::new(
         test_object,
@@ -26,12 +27,10 @@ async fn identity_registry_spec() {
     .expect("Failed to compile IdentityRegistryTest.rho");
 
     let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
-    params.2.identity_registry_admin_public_keys =
-        ADMIN_PUBLIC_KEYS.map(String::from).to_vec();
+    params.2.identity_registry_admin_public_keys = ADMIN_PUBLIC_KEYS.map(String::from).to_vec();
     params.2.identity_registry_admin_quorum = ADMIN_QUORUM;
 
-    let spec =
-        RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
 
     spec.run_tests()
         .await

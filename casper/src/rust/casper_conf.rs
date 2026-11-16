@@ -653,7 +653,10 @@ mod native_token_validation_tests {
             );
         }
         g.identity_registry_admin_public_keys[1] = first.to_uppercase();
-        assert!(g.validate_identity_registry_admin().is_err(), "accepted duplicate");
+        assert!(
+            g.validate_identity_registry_admin().is_err(),
+            "accepted duplicate"
+        );
         for quorum in [0, 4] {
             let mut g = two_of_three_admins();
             g.identity_registry_admin_quorum = quorum;

@@ -10,8 +10,7 @@ use uuid::Uuid;
 
 const REGISTER_TEMPLATE: &str = include_str!("../rholang/identity_registry/register.rho");
 const ROTATE_TEMPLATE: &str = include_str!("../rholang/identity_registry/rotate.rho");
-const ADMIN_RELINK_TEMPLATE: &str =
-    include_str!("../rholang/identity_registry/admin_relink.rho");
+const ADMIN_RELINK_TEMPLATE: &str = include_str!("../rholang/identity_registry/admin_relink.rho");
 const RESOLVE_CURRENT_TEMPLATE: &str =
     include_str!("../rholang/identity_registry/resolve_current.rho");
 const RESOLVE_HISTORY_TEMPLATE: &str =
@@ -64,7 +63,11 @@ pub fn admin_relink_term(
     let admin_sigs = admin_sigs
         .iter()
         .map(|(pk, sig)| {
-            format!("(\"{}\".hexToBytes(), \"{}\".hexToBytes())", hex::encode(pk), hex::encode(sig))
+            format!(
+                "(\"{}\".hexToBytes(), \"{}\".hexToBytes())",
+                hex::encode(pk),
+                hex::encode(sig)
+            )
         })
         .collect::<Vec<_>>()
         .join(", ");

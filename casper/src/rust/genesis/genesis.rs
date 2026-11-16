@@ -137,8 +137,7 @@ impl Genesis {
             native_token_decimals,
             shard_id,
         );
-        let identity_registry =
-            standard_deploys::identity_registry(
+        let identity_registry = standard_deploys::identity_registry(
             identity_registry_admin_public_keys,
             identity_registry_admin_quorum,
             shard_id,
