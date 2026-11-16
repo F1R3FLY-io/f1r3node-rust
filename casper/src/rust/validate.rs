@@ -1011,7 +1011,7 @@ impl Validate {
             return Either::Right(ValidBlock::Valid);
         }
 
-        let block_metadata = BlockMetadata::from_block(block, false, None, None);
+        let block_metadata = BlockMetadata::from_block(block, None, None, None);
         let parents = match proto_util::get_parents_metadata(&s.dag, &block_metadata) {
             Ok(parents) => parents,
             Err(e) => return Either::Left(BlockError::from_validation_error(e)),
