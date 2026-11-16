@@ -1457,6 +1457,16 @@ impl BlockDagKeyValueStorage {
             .map(BlockHash::from))
     }
 
+    /// Seed carrier index: the sig of an indexed carrier of another deploy
+    /// with this seed. A hit is proof at any height; a miss proves nothing.
+    pub fn carrier_index_other_seed_carrier(
+        &self,
+        seed: &[u8],
+        sig: &[u8],
+    ) -> Result<Option<DeployId>, KvStoreError> {
+        self.carrier_index.read().other_seed_carrier(seed, sig)
+    }
+
     /// Startup carrier-index initialization (next to the LFB-migration
     /// precedent). On a database that already holds blocks, coverage starts at
     /// the next insert: max height + 1. Blocks below W are never claimed — the

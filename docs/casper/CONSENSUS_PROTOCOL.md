@@ -254,6 +254,7 @@ The node limits these checks. It runs at most 2 checks at a time, and one at a t
   - Deploys share a seed only if they share a valid-after block, so the scan starts at `max(lowest_valid_after + 1, floor - deploy_lifespan + 2)`; a deploy below that start fails the expiry check
   - The seed carrier index (see the glossary) skips the scan for a seed no other signature carries, under the same watermark and prune-cutoff rule as the signature index
   - A merge keeps one deploy per seed: the deploy the merge base already holds, otherwise the smallest signature; a chain carrying another is rejected as collateral
+  - Admission refuses a deploy whose seed another signature holds in this node's pool, rejected buffer, or seed carrier index (`SeedReuse`, HTTP 409 `seed_reuse`). This is node-local: two nodes can each admit one deploy of a seed, and the rules above decide
 - Phlogiston price meets minimum
 - Invalid block tracking applied
 

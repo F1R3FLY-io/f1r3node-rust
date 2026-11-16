@@ -18,6 +18,8 @@ pub const DEPLOY_STORAGE_DB: &str = "deploy_storage";
 pub const DEPLOY_STORAGE_QUARANTINE_DB: &str = "deploy_storage_quarantine";
 pub const REJECTED_DEPLOY_BUFFER_DB: &str = "rejected_deploy_buffer";
 pub const REJECTED_DEPLOY_BUFFER_QUARANTINE_DB: &str = "rejected_deploy_buffer_quarantine";
+pub const DEPLOY_STORAGE_SEEDS_DB: &str = "deploy_storage_seeds";
+pub const REJECTED_DEPLOY_BUFFER_SEEDS_DB: &str = "rejected_deploy_buffer_seeds";
 
 const DEPLOY_STORE_SIZE_METRIC: &str = "deploy.store.size";
 const DEPLOY_STORE_READ_ALL_DECODED_METRIC: &str = "deploy-store.read-all.decoded";
@@ -25,6 +27,7 @@ const DEPLOY_STORE_READ_ALL_DECODED_METRIC: &str = "deploy-store.read-all.decode
 pub trait DeployStoreName {
     const NAME: &'static str;
     const QUARANTINE_NAME: &'static str;
+    const SEEDS_NAME: &'static str;
     const SIZE_WARNING_THRESHOLD: Option<usize> = None;
 }
 
@@ -34,6 +37,7 @@ pub struct DeployStorageName;
 impl DeployStoreName for DeployStorageName {
     const NAME: &'static str = DEPLOY_STORAGE_DB;
     const QUARANTINE_NAME: &'static str = DEPLOY_STORAGE_QUARANTINE_DB;
+    const SEEDS_NAME: &'static str = DEPLOY_STORAGE_SEEDS_DB;
 }
 
 #[derive(Clone)]
@@ -42,19 +46,30 @@ pub struct RejectedDeployBufferName;
 impl DeployStoreName for RejectedDeployBufferName {
     const NAME: &'static str = REJECTED_DEPLOY_BUFFER_DB;
     const QUARANTINE_NAME: &'static str = REJECTED_DEPLOY_BUFFER_QUARANTINE_DB;
+    const SEEDS_NAME: &'static str = REJECTED_DEPLOY_BUFFER_SEEDS_DB;
     const SIZE_WARNING_THRESHOLD: Option<usize> = Some(1_000);
 }
 
+/// Deploys sharing a name seed create the same unforgeable names, so a store
+/// admits at most one of them through its checked insert. `seeds` maps each
+/// claimed seed to the sig holding it, and that sig back to the seed, so a
+/// removal by sig releases the claim without reading the record. A claim is
+/// written before its record and released after its record is deleted, so a
+/// claim may briefly name a sig with no record yet; claims whose record never
+/// arrived are dropped when the store opens.
 #[derive(Clone)]
 pub struct KeyValueDeployStore<N: DeployStoreName> {
     pub store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
     quarantine: DeployRecordQuarantine,
+    seeds: Arc<dyn KeyValueStore>,
     _name: PhantomData<N>,
 }
 
 pub struct PreparedDeploy {
     key: BitVector,
     value: BitVector,
+    sig: ByteString,
+    seed: ByteString,
 }
 
 pub struct DeployRecordSnapshot {
@@ -72,6 +87,8 @@ pub enum PreparedInsertResult {
     Inserted,
     AlreadyPresent,
     Changed,
+    /// Another deploy holds this deploy's name seed.
+    SeedHeld(ByteString),
 }
 
 #[derive(Debug)]
@@ -108,12 +125,14 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
         let kv_store = kvm.store(N::NAME.to_string()).await?;
         let quarantine_kv_store = kvm.store(N::QUARANTINE_NAME.to_string()).await?;
-        Self::from_stores(kv_store, quarantine_kv_store)
+        let seeds_kv_store = kvm.store(N::SEEDS_NAME.to_string()).await?;
+        Self::from_stores(kv_store, quarantine_kv_store, seeds_kv_store)
     }
 
     pub fn from_stores(
         store: Arc<dyn KeyValueStore>,
         quarantine: Arc<dyn KeyValueStore>,
+        seeds: Arc<dyn KeyValueStore>,
     ) -> Result<Self, KvStoreError> {
         let quarantine = DeployRecordQuarantine::new(N::NAME, quarantine);
         let storage = Self {
@@ -123,10 +142,77 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
                 super::deploy_codec::decode,
             ),
             quarantine,
+            seeds,
             _name: PhantomData,
         };
         storage.quarantine.restore_readable(&storage.store)?;
+        storage.drop_claims_without_records()?;
         Ok(storage)
+    }
+
+    const SEED_HOLDER: u8 = 0;
+    const SIG_SEED: u8 = 1;
+
+    fn tagged(tag: u8, bytes: &[u8]) -> ByteString {
+        let mut key = Vec::with_capacity(bytes.len() + 1);
+        key.push(tag);
+        key.extend_from_slice(bytes);
+        key
+    }
+
+    fn drop_claims_without_records(&self) -> Result<(), KvStoreError> {
+        for (key, value) in self.seeds.to_map()? {
+            let sig = match key.split_first() {
+                Some((&Self::SEED_HOLDER, _)) => value.clone(),
+                Some((&Self::SIG_SEED, sig)) => sig.to_vec(),
+                _ => {
+                    return Err(KvStoreError::InvalidArgument(format!(
+                        "{} holds a seed claim key with no known tag",
+                        N::SEEDS_NAME
+                    )))
+                }
+            };
+            if !self.contains_sig(&sig)? {
+                self.seeds.delete_if_value(&key, &value)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The sig holding `seed` here, if any. A holder may be mid-insert, so
+    /// its record is not yet guaranteed to exist.
+    pub fn seed_holder(&self, seed: &[u8]) -> Result<Option<ByteString>, KvStoreError> {
+        self.seeds.get_one(&Self::tagged(Self::SEED_HOLDER, seed))
+    }
+
+    /// Claims `seed` for `sig`, returning the other sig holding it, if any.
+    fn claim_seed(&self, seed: &[u8], sig: &[u8]) -> Result<Option<ByteString>, KvStoreError> {
+        let holder_key = Self::tagged(Self::SEED_HOLDER, seed);
+        loop {
+            let held = self
+                .seeds
+                .put_one_if_absent(holder_key.clone(), sig.to_vec())?;
+            if !held {
+                match self.seeds.get_one(&holder_key)? {
+                    Some(holder) if holder == sig => {}
+                    Some(holder) => return Ok(Some(holder)),
+                    None => continue,
+                }
+            }
+            self.seeds
+                .put_one(Self::tagged(Self::SIG_SEED, sig), seed.to_vec())?;
+            return Ok(None);
+        }
+    }
+
+    fn release_seed_of(&self, sig: &[u8]) -> Result<(), KvStoreError> {
+        let sig_key = Self::tagged(Self::SIG_SEED, sig);
+        if let Some(seed) = self.seeds.get_one(&sig_key)? {
+            self.seeds
+                .delete_if_value(&Self::tagged(Self::SEED_HOLDER, &seed), &sig.to_vec())?;
+            self.seeds.delete_if_value(&sig_key, &seed)?;
+        }
+        Ok(())
     }
 
     pub fn add(&self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
@@ -159,10 +245,17 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         Ok(PreparedDeploy {
             key: self.store.encode_key(&deploy.sig.to_vec())?,
             value,
+            sig: deploy.sig.to_vec(),
+            seed: models::rust::deploy_seed::deploy_name_seed(deploy),
         })
     }
 
+    /// Stores every deploy, including one whose seed another deploy holds:
+    /// these are deploys the node already carries, not new submissions.
     pub fn add_prepared(&self, deploys: Vec<PreparedDeploy>) -> Result<(), KvStoreError> {
+        for deploy in &deploys {
+            self.claim_seed(&deploy.seed, &deploy.sig)?;
+        }
         let records = deploys
             .into_iter()
             .map(|deploy| (deploy.key, deploy.value))
@@ -174,6 +267,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         if self.quarantine.contains(&self.store, &deploy.key)? {
             return Ok(false);
         }
+        self.claim_seed(&deploy.seed, &deploy.sig)?;
         let inserted = self
             .store
             .raw_store()
@@ -232,6 +326,9 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
                 "Deploy insertion was blocked by an invalid record".to_string(),
             ));
         }
+        if let Some(holder) = self.claim_seed(&deploy.seed, &deploy.sig)? {
+            return Ok(PreparedInsertResult::SeedHeld(holder));
+        }
         let inserted = self
             .store
             .raw_store()
@@ -255,6 +352,9 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
             .map(|deploy| self.store.encode_key(&deploy.sig.to_vec()))
             .collect::<Result<Vec<_>, _>>()?;
         self.store.raw_store().delete(keys.clone())?;
+        for deploy in &deploys {
+            self.release_seed_of(&deploy.sig)?;
+        }
         Ok(())
     }
 
@@ -262,6 +362,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         let key: ByteString = sig.to_vec();
         let key = self.store.encode_key(&key)?;
         let removed = self.store.raw_store().delete(vec![key.clone()])? > 0;
+        self.release_seed_of(sig)?;
         Ok(removed)
     }
 
@@ -324,6 +425,22 @@ mod tests {
         .unwrap()
     }
 
+    /// A distinct deploy with `deploy(time_stamp)`'s name seed.
+    fn seed_twin(time_stamp: i64) -> Signed<DeployData> {
+        let mut twin = deploy(time_stamp);
+        twin.data.phlo_limit += 1;
+        Signed::create(
+            twin.data,
+            Box::new(Secp256k1),
+            PrivateKey::from_bytes(&[1; 32]),
+        )
+        .unwrap()
+    }
+
+    fn seed(deploy: &Signed<DeployData>) -> ByteString {
+        models::rust::deploy_seed::deploy_name_seed(deploy)
+    }
+
     #[tokio::test]
     async fn storage_round_trips_add_contains_read_and_remove() {
         let mut kvm = InMemoryStoreManager::new();
@@ -340,16 +457,26 @@ mod tests {
             storage.read_all().unwrap(),
             HashSet::from([d1.clone(), d2.clone()])
         );
+        assert_eq!(
+            storage.seed_holder(&seed(&d1)).unwrap(),
+            Some(d1.sig.to_vec())
+        );
+        assert_eq!(
+            storage.seed_holder(&seed(&d2)).unwrap(),
+            Some(d2.sig.to_vec())
+        );
 
         assert!(storage.any(|d| Ok(d.data.time_stamp == 2)).unwrap());
         assert!(!storage.any(|d| Ok(d.data.time_stamp == 99)).unwrap());
 
-        storage.remove(vec![d2]).unwrap();
+        storage.remove(vec![d2.clone()]).unwrap();
         assert_eq!(storage.read_all().unwrap(), HashSet::from([d1.clone()]));
+        assert_eq!(storage.seed_holder(&seed(&d2)).unwrap(), None);
 
         assert!(storage.remove_by_sig(&d1.sig).unwrap());
         assert!(!storage.remove_by_sig(&d1.sig).unwrap());
         assert!(!storage.non_empty().unwrap());
+        assert_eq!(storage.seed_holder(&seed(&d1)).unwrap(), None);
     }
 
     async fn buffer() -> KeyValueRejectedDeployBuffer {
@@ -394,6 +521,7 @@ mod tests {
     #[test]
     fn concurrent_signature_removals_report_one_actual_delete() {
         let storage = KeyValueDeployStorage::from_stores(
+            Arc::new(InMemoryKeyValueStore::new()),
             Arc::new(InMemoryKeyValueStore::new()),
             Arc::new(InMemoryKeyValueStore::new()),
         )
@@ -514,6 +642,7 @@ mod tests {
         let storage = KeyValueDeployStorage::from_stores(
             Arc::new(InMemoryKeyValueStore::new()),
             Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
         )
         .unwrap();
         let mut source = deploy(1);
@@ -528,12 +657,13 @@ mod tests {
     }
 
     #[test]
-    fn checked_insertion_rejects_an_outdated_absence_snapshot() {
-        let storage = KeyValueDeployStorage::from_stores(
-            Arc::new(InMemoryKeyValueStore::new()),
-            Arc::new(InMemoryKeyValueStore::new()),
-        )
-        .unwrap();
+    fn checked_insertion_rejects_an_outdated_absence_snapshot_and_a_seed_twin() {
+        let live: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let quarantine: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let seeds: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let storage =
+            KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone(), seeds.clone())
+                .unwrap();
         let candidate = deploy(1);
         let absent = storage.inspect_sig(&candidate.sig).unwrap();
         assert!(!absent.is_present());
@@ -552,13 +682,69 @@ mod tests {
                 .unwrap(),
             PreparedInsertResult::AlreadyPresent
         );
+
+        let twin = seed_twin(1);
+        assert_ne!(twin.sig, candidate.sig);
+        let twin_absent = storage.inspect_sig(&twin.sig).unwrap();
+        assert_eq!(
+            storage
+                .add_prepared_if_unchanged(&storage.prepare(&twin).unwrap(), &twin_absent)
+                .unwrap(),
+            PreparedInsertResult::SeedHeld(candidate.sig.to_vec())
+        );
+        assert!(!storage.contains_sig(&twin.sig).unwrap());
+
+        storage.remove(vec![candidate.clone()]).unwrap();
+        assert_eq!(
+            storage
+                .add_prepared_if_unchanged(&storage.prepare(&twin).unwrap(), &twin_absent)
+                .unwrap(),
+            PreparedInsertResult::Inserted
+        );
+
+        let unrecorded = deploy(2);
+        seeds
+            .put_one(
+                KeyValueDeployStorage::tagged(
+                    KeyValueDeployStorage::SEED_HOLDER,
+                    &seed(&unrecorded),
+                ),
+                unrecorded.sig.to_vec(),
+            )
+            .unwrap();
+        seeds
+            .put_one(
+                KeyValueDeployStorage::tagged(KeyValueDeployStorage::SIG_SEED, &unrecorded.sig),
+                seed(&unrecorded),
+            )
+            .unwrap();
+        let reopened = KeyValueDeployStorage::from_stores(live, quarantine, seeds.clone()).unwrap();
+        assert_eq!(reopened.seed_holder(&seed(&unrecorded)).unwrap(), None);
+        assert_eq!(
+            seeds
+                .get_one(&KeyValueDeployStorage::tagged(
+                    KeyValueDeployStorage::SIG_SEED,
+                    &unrecorded.sig
+                ))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            reopened.seed_holder(&seed(&twin)).unwrap(),
+            Some(twin.sig.to_vec())
+        );
     }
 
     #[test]
     fn checked_insertion_requires_a_fresh_snapshot_after_quarantining() {
         let live: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
         let quarantine: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
-        let storage = KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
+        let storage = KeyValueDeployStorage::from_stores(
+            live.clone(),
+            quarantine.clone(),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+        .unwrap();
         let candidate = deploy(1);
         let key = storage.store.encode_key(&candidate.sig.to_vec()).unwrap();
         live.put_one(key.clone(), vec![0xff]).unwrap();
@@ -584,6 +770,7 @@ mod tests {
     #[test]
     fn checked_insertion_does_not_decode_an_already_inspected_duplicate() {
         let mut storage = KeyValueDeployStorage::from_stores(
+            Arc::new(InMemoryKeyValueStore::new()),
             Arc::new(InMemoryKeyValueStore::new()),
             Arc::new(InMemoryKeyValueStore::new()),
         )
@@ -616,6 +803,7 @@ mod tests {
         }
 
         let mut storage = KeyValueDeployStorage::from_stores(
+            Arc::new(InMemoryKeyValueStore::new()),
             Arc::new(InMemoryKeyValueStore::new()),
             Arc::new(InMemoryKeyValueStore::new()),
         )
@@ -666,9 +854,12 @@ mod tests {
     #[test]
     fn add_if_absent_is_atomic_across_storage_handles() {
         let store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
-        let storage =
-            KeyValueDeployStorage::from_stores(store, Arc::new(InMemoryKeyValueStore::new()))
-                .unwrap();
+        let storage = KeyValueDeployStorage::from_stores(
+            store,
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+        .unwrap();
         let deploy = Signed::create(
             DeployData {
                 term: "Nil".to_string(),

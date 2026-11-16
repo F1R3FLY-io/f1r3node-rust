@@ -349,11 +349,13 @@ pub async fn key_value_deploy_storage_from_dyn(
 > {
     use block_storage::rust::deploy::key_value_deploy_storage::{
         KeyValueDeployStorage, DEPLOY_STORAGE_DB, DEPLOY_STORAGE_QUARANTINE_DB,
+        DEPLOY_STORAGE_SEEDS_DB,
     };
 
     let deploy_storage_kv_store = store_from_dyn(kvm, DEPLOY_STORAGE_DB).await?;
     let quarantine_kv_store = store_from_dyn(kvm, DEPLOY_STORAGE_QUARANTINE_DB).await?;
-    KeyValueDeployStorage::from_stores(deploy_storage_kv_store, quarantine_kv_store)
+    let seeds_kv_store = store_from_dyn(kvm, DEPLOY_STORAGE_SEEDS_DB).await?;
+    KeyValueDeployStorage::from_stores(deploy_storage_kv_store, quarantine_kv_store, seeds_kv_store)
 }
 
 pub async fn key_value_rejected_deploy_buffer_from_dyn(
@@ -364,12 +366,13 @@ pub async fn key_value_rejected_deploy_buffer_from_dyn(
 > {
     use block_storage::rust::deploy::key_value_deploy_storage::{
         KeyValueRejectedDeployBuffer, REJECTED_DEPLOY_BUFFER_DB,
-        REJECTED_DEPLOY_BUFFER_QUARANTINE_DB,
+        REJECTED_DEPLOY_BUFFER_QUARANTINE_DB, REJECTED_DEPLOY_BUFFER_SEEDS_DB,
     };
 
     let buffer_kv_store = store_from_dyn(kvm, REJECTED_DEPLOY_BUFFER_DB).await?;
     let quarantine_kv_store = store_from_dyn(kvm, REJECTED_DEPLOY_BUFFER_QUARANTINE_DB).await?;
-    KeyValueRejectedDeployBuffer::from_stores(buffer_kv_store, quarantine_kv_store)
+    let seeds_kv_store = store_from_dyn(kvm, REJECTED_DEPLOY_BUFFER_SEEDS_DB).await?;
+    KeyValueRejectedDeployBuffer::from_stores(buffer_kv_store, quarantine_kv_store, seeds_kv_store)
 }
 
 async fn store_from_dyn(

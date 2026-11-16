@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use block_storage::rust::deploy::key_value_deploy_storage::{
-    DEPLOY_STORAGE_QUARANTINE_DB, REJECTED_DEPLOY_BUFFER_QUARANTINE_DB,
+    DEPLOY_STORAGE_QUARANTINE_DB, DEPLOY_STORAGE_SEEDS_DB, REJECTED_DEPLOY_BUFFER_QUARANTINE_DB,
+    REJECTED_DEPLOY_BUFFER_SEEDS_DB,
 };
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
@@ -160,6 +161,15 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
         ),
         (
             Db::new(REJECTED_DEPLOY_BUFFER_QUARANTINE_DB.to_string(), None),
+            deploy_storage_env_config(),
+        ),
+        // Name-seed claims of deploy_storage and rejected_deploy_buffer.
+        (
+            Db::new(DEPLOY_STORAGE_SEEDS_DB.to_string(), None),
+            deploy_storage_env_config(),
+        ),
+        (
+            Db::new(REJECTED_DEPLOY_BUFFER_SEEDS_DB.to_string(), None),
             deploy_storage_env_config(),
         ),
         // Reporting (trace) cache

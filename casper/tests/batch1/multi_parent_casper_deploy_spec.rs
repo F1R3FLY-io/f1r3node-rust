@@ -16,6 +16,26 @@ use rspace_plus_plus::rspace::history::Either;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
+/// A distinct deploy signed by the same key with `deploy`'s name seed.
+fn seed_twin(
+    deploy: &crypto::rust::signatures::signed::Signed<
+        models::rust::casper::protocol::casper_message::DeployData,
+    >,
+) -> crypto::rust::signatures::signed::Signed<
+    models::rust::casper::protocol::casper_message::DeployData,
+> {
+    construct_deploy::source_deploy(
+        deploy.data.term.clone(),
+        deploy.data.time_stamp,
+        Some(deploy.data.phlo_limit + 1),
+        Some(deploy.data.phlo_price.clone()),
+        None,
+        Some(deploy.data.valid_after_block_number),
+        Some(deploy.data.shard_id.clone()),
+    )
+    .unwrap()
+}
+
 #[tokio::test]
 async fn direct_deploy_refuses_invalid_signatures_without_persisting_them() {
     let genesis = GenesisBuilder::new()
@@ -367,7 +387,7 @@ async fn multi_parent_casper_should_accept_a_deploy_and_return_its_id() {
 }
 
 #[tokio::test]
-async fn multi_parent_casper_should_reject_concurrent_identical_deploys() {
+async fn multi_parent_casper_should_accept_one_of_concurrent_deploys_sharing_a_seed() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)
         .await
@@ -376,13 +396,18 @@ async fn multi_parent_casper_should_reject_concurrent_identical_deploys() {
     let deploy =
         construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
             .unwrap();
-    let expected_id = deploy.sig.to_vec();
+    let twin = seed_twin(&deploy);
+    assert_ne!(deploy.sig, twin.sig);
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(32));
 
     let handles = (0..32)
-        .map(|_| {
+        .map(|i| {
             let casper = node.casper.clone();
-            let deploy = deploy.clone();
+            let deploy = if i % 2 == 0 {
+                deploy.clone()
+            } else {
+                twin.clone()
+            };
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 barrier.wait();
@@ -397,18 +422,35 @@ async fn multi_parent_casper_should_reject_concurrent_identical_deploys() {
         .collect::<Vec<_>>();
     let accepted = results
         .iter()
-        .filter(|result| matches!(result, Either::Right(id) if id == &expected_id))
-        .count();
+        .filter_map(|result| match result {
+            Either::Right(id) => Some(id.clone()),
+            Either::Left(_) => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(accepted.len(), 1);
+    let winner = &accepted[0];
+    let loser = if winner == &deploy.sig.to_vec() {
+        twin.sig.to_vec()
+    } else {
+        deploy.sig.to_vec()
+    };
     let duplicates = results
         .iter()
         .filter(|result| {
-            matches!(result, Either::Left(DeployError::DuplicateDeploy(id)) if id == &expected_id)
+            matches!(result, Either::Left(DeployError::DuplicateDeploy(id)) if id == winner)
+        })
+        .count();
+    let seed_reuses = results
+        .iter()
+        .filter(|result| {
+            matches!(result, Either::Left(DeployError::SeedReuse(holder)) if holder == winner)
         })
         .count();
 
-    assert_eq!(accepted, 1);
-    assert_eq!(duplicates, 31);
-    assert!(node.deploy_storage.contains_sig(&expected_id).unwrap());
+    assert_eq!(duplicates, 15);
+    assert_eq!(seed_reuses, 16);
+    assert!(node.deploy_storage.contains_sig(winner).unwrap());
+    assert!(!node.deploy_storage.contains_sig(&loser).unwrap());
 }
 
 #[tokio::test]
@@ -474,9 +516,14 @@ async fn multi_parent_casper_should_reject_a_deploy_already_in_the_dag() {
         .deploy_canonical_appearance(&expected_id)
         .unwrap()
         .is_some());
+    let twin = seed_twin(&deploy);
     assert!(matches!(
         node.casper.deploy(deploy).unwrap(),
         Either::Left(DeployError::DuplicateDeploy(id)) if id == expected_id
+    ));
+    assert!(matches!(
+        node.casper.deploy(twin).unwrap(),
+        Either::Left(DeployError::SeedReuse(holder)) if holder == expected_id
     ));
 }
 
@@ -498,9 +545,14 @@ async fn multi_parent_casper_should_reject_a_deploy_in_the_rejected_buffer() {
         .add(vec![deploy.clone()])
         .unwrap();
 
+    let twin = seed_twin(&deploy);
     assert!(matches!(
         node.casper.deploy(deploy).unwrap(),
         Either::Left(DeployError::DuplicateDeploy(id)) if id == expected_id
+    ));
+    assert!(matches!(
+        node.casper.deploy(twin).unwrap(),
+        Either::Left(DeployError::SeedReuse(holder)) if holder == expected_id
     ));
 }
 

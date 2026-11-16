@@ -109,11 +109,13 @@ async fn network() -> (Vec<TestNode>, String, String) {
     (nodes, shard_id, payer)
 }
 
-/// The validator must survive deploys whose seeds collide. Offered together
-/// with an unrelated deploy, then followed by further proposals, no
-/// proposal fails, the unrelated deploy lands, every block replays as
-/// valid, and no two deploys sharing a seed (nor one sharing a seed with a
-/// deploy already in state) are ever included.
+/// The validator must survive deploys whose seeds collide. Admission refuses
+/// a second deploy with a seed, so the colliding deploys go into the pool
+/// directly, as recovery can put them there. Offered an unrelated deploy,
+/// then followed by further proposals, no proposal fails, the unrelated
+/// deploy lands, every block replays as valid, and no two deploys sharing a
+/// seed (nor one sharing a seed with a deploy already in state) are ever
+/// included.
 async fn must_survive(
     nodes: &mut [TestNode],
     colliding: &[Signed<DeployData>],
@@ -127,8 +129,11 @@ async fn must_survive(
             .expect("unrelated deploy")
     };
     let unrelated = marker(0);
-    let mut offered = colliding.to_vec();
-    offered.push(unrelated.clone());
+    nodes[0]
+        .deploy_storage
+        .add(colliding.to_vec())
+        .expect("colliding deploys in the pool");
+    let mut offered = vec![unrelated.clone()];
 
     let mut included = Vec::new();
     for round in 1..=ROUNDS {

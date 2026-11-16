@@ -398,11 +398,20 @@ mod tests {
         ) -> Self {
             match name {
                 DEPLOY_STORAGE_DB => Pool::Storage(
-                    KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap(),
+                    KeyValueDeployStorage::from_stores(
+                        live.clone(),
+                        quarantine.clone(),
+                        in_memory(),
+                    )
+                    .unwrap(),
                 ),
                 _ => Pool::Buffer(
-                    KeyValueRejectedDeployBuffer::from_stores(live.clone(), quarantine.clone())
-                        .unwrap(),
+                    KeyValueRejectedDeployBuffer::from_stores(
+                        live.clone(),
+                        quarantine.clone(),
+                        in_memory(),
+                    )
+                    .unwrap(),
                 ),
             }
         }
@@ -589,7 +598,8 @@ mod tests {
         let live = InterleavingStore::new(inner.clone(), Some(Arc::new(Barrier::new(2))));
         let quarantine = in_memory();
         let mut storage =
-            KeyValueDeployStorage::from_stores(inner.clone(), quarantine.clone()).unwrap();
+            KeyValueDeployStorage::from_stores(inner.clone(), quarantine.clone(), in_memory())
+                .unwrap();
         storage.store = DeployTypedStore::with_value_codec(
             live,
             super::super::deploy_codec::encode,
@@ -647,7 +657,7 @@ mod tests {
                 .put_one(replacement_key, MALFORMED_VALUE.to_vec())
                 .unwrap();
         }));
-        KeyValueDeployStorage::from_stores(live.clone(), quarantine).unwrap();
+        KeyValueDeployStorage::from_stores(live.clone(), quarantine, in_memory()).unwrap();
         assert_eq!(live.get_one(&key).unwrap(), Some(encoded));
         assert_eq!(inner.get_one(&key).unwrap(), Some(MALFORMED_VALUE.to_vec()));
     }
@@ -655,7 +665,8 @@ mod tests {
     #[test]
     fn signature_removal_uses_one_delete_without_a_presence_read() {
         let live = InterleavingStore::new(in_memory(), None);
-        let storage = KeyValueDeployStorage::from_stores(live.clone(), in_memory()).unwrap();
+        let storage =
+            KeyValueDeployStorage::from_stores(live.clone(), in_memory(), in_memory()).unwrap();
         let valid = deploy(1);
         storage.add(vec![valid.clone()]).unwrap();
         assert!(storage.remove_by_sig(&valid.sig).unwrap());
@@ -753,7 +764,9 @@ mod tests {
     #[test]
     fn any_skips_damaged_records_and_still_finds_matches() {
         let (live, quarantine) = (in_memory(), in_memory());
-        let storage = KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
+        let storage =
+            KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone(), in_memory())
+                .unwrap();
         storage.add(vec![deploy(1), deploy(2)]).unwrap();
         seed_damaged(&live);
 
@@ -839,8 +852,12 @@ mod tests {
                     .put_one(stored_key.clone(), stored_bytes())
                     .unwrap();
 
-                let reopened =
-                    KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
+                let reopened = KeyValueDeployStorage::from_stores(
+                    live.clone(),
+                    quarantine.clone(),
+                    in_memory(),
+                )
+                .unwrap();
                 reopened.read_all().unwrap();
 
                 assert_eq!(live.get_one(&stored_key).unwrap(), live_before);
@@ -869,7 +886,8 @@ mod tests {
                 .put_one(stored_key.clone(), stored_bytes())
                 .unwrap();
 
-            KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
+            KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone(), in_memory())
+                .unwrap();
 
             let bytes = live.get_one(&stored_key).unwrap().unwrap();
             assert!(super::super::deploy_codec::is_current(&bytes));
@@ -933,7 +951,8 @@ mod tests {
         let live_dyn: Arc<dyn KeyValueStore> = live.clone();
         let quarantine = in_memory();
         let storage =
-            KeyValueDeployStorage::from_stores(live_dyn.clone(), quarantine.clone()).unwrap();
+            KeyValueDeployStorage::from_stores(live_dyn.clone(), quarantine.clone(), in_memory())
+                .unwrap();
         let valid = deploy(1);
         storage.add(vec![valid.clone()]).unwrap();
         let malformed_key = key_for(&[0; 64]);
@@ -1078,7 +1097,8 @@ mod tests {
         let quarantine = in_memory();
         let live_dyn: Arc<dyn KeyValueStore> = live.clone();
         let storage =
-            KeyValueDeployStorage::from_stores(live_dyn.clone(), quarantine.clone()).unwrap();
+            KeyValueDeployStorage::from_stores(live_dyn.clone(), quarantine.clone(), in_memory())
+                .unwrap();
         seed_damaged(&live_dyn);
         live.fail_scans.store(true, Ordering::SeqCst);
 
@@ -1095,7 +1115,9 @@ mod tests {
     fn quarantine_write_failures_fail_the_scan_and_keep_the_record() {
         let live = in_memory();
         let quarantine = FailingStore::new(false, true);
-        let storage = KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
+        let storage =
+            KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone(), in_memory())
+                .unwrap();
         storage
             .store
             .put_one(deploy(1).sig.to_vec(), deploy(1))
@@ -1113,7 +1135,9 @@ mod tests {
     fn conditional_delete_failures_preserve_both_copies_until_retry() {
         let live = FailingStore::new(false, false);
         let quarantine = in_memory();
-        let storage = KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
+        let storage =
+            KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone(), in_memory())
+                .unwrap();
         let key = key_for(&deploy(1).sig);
         live.inner
             .put_one(key.clone(), MALFORMED_VALUE.to_vec())
@@ -1160,7 +1184,8 @@ mod tests {
         for name in POOLS {
             let directory = tempfile::tempdir().unwrap();
             let quarantine = format!("{name}_quarantine");
-            let mapping = [name, quarantine.as_str()]
+            let seeds = format!("{name}_seeds");
+            let mapping = [name, quarantine.as_str(), seeds.as_str()]
                 .into_iter()
                 .map(|name| {
                     (
@@ -1243,7 +1268,8 @@ mod tests {
     #[test]
     fn a_failed_prepared_write_propagates_the_error_and_can_be_retried() {
         let live = FailingStore::new(false, false);
-        let storage = KeyValueDeployStorage::from_stores(live.clone(), in_memory()).unwrap();
+        let storage =
+            KeyValueDeployStorage::from_stores(live.clone(), in_memory(), in_memory()).unwrap();
         let candidate = deploy(1);
         let prepared = storage.prepare(&candidate).unwrap();
         live.fail_writes.store(true, Ordering::SeqCst);
@@ -1264,7 +1290,9 @@ mod tests {
         let inner = in_memory();
         let live = InterleavingStore::new(inner.clone(), None);
         let quarantine = in_memory();
-        let storage = KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
+        let storage =
+            KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone(), in_memory())
+                .unwrap();
         let earlier = deploy(1);
         let key = key_for(&earlier.sig);
         let replacement = earlier_format_bytes(&earlier);
@@ -1294,7 +1322,8 @@ mod tests {
         let snapshotter = recorder.snapshotter();
         metrics::with_local_recorder(&recorder, || {
             let (live, quarantine) = (in_memory(), in_memory());
-            let storage = KeyValueDeployStorage::from_stores(live.clone(), quarantine).unwrap();
+            let storage =
+                KeyValueDeployStorage::from_stores(live.clone(), quarantine, in_memory()).unwrap();
             let corrupted = deploy(1);
             let mut bytes = super::super::deploy_codec::encode(&corrupted).unwrap();
             bytes[b"F1R3DEP\x02".len()] ^= 1;
@@ -1450,7 +1479,9 @@ mod tests {
         inner
             .put_one(key.clone(), MALFORMED_VALUE.to_vec())
             .unwrap();
-        let storage = KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
+        let storage =
+            KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone(), in_memory())
+                .unwrap();
         let writer = inner.clone();
         let replacement_key = key.clone();
         let replacement = super::super::deploy_codec::encode(&candidate).unwrap();
@@ -1475,11 +1506,15 @@ mod tests {
     ) -> Result<Pool, KvStoreError> {
         match name {
             DEPLOY_STORAGE_DB => {
-                KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone())
+                KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone(), in_memory())
                     .map(Pool::Storage)
             }
-            _ => KeyValueRejectedDeployBuffer::from_stores(live.clone(), quarantine.clone())
-                .map(Pool::Buffer),
+            _ => KeyValueRejectedDeployBuffer::from_stores(
+                live.clone(),
+                quarantine.clone(),
+                in_memory(),
+            )
+            .map(Pool::Buffer),
         }
     }
 

@@ -107,6 +107,7 @@ fn reserve_deploy(
     deploy: &Signed<DeployData>,
 ) -> Result<Option<DeployError>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
+    let seed = models::rust::deploy_seed::deploy_name_seed(deploy);
     let preparation = this.deploy_storage.prepare_checked(deploy);
     loop {
         let rejected_store = this.rejected_deploy_buffer.lock()?.clone();
@@ -132,6 +133,18 @@ fn reserve_deploy(
             }
             Err(DeployPreparationError::Serialization(error)) => return Err(error.into()),
         };
+        if let Some(holder) = this
+            .block_dag_storage
+            .carrier_index_other_seed_carrier(&seed, &deploy_id)?
+        {
+            return Ok(Some(DeployError::seed_reuse(holder)));
+        }
+        if let Some(holder) = rejected_store
+            .seed_holder(&seed)?
+            .filter(|holder| *holder != deploy_id)
+        {
+            return Ok(Some(DeployError::seed_reuse(holder)));
+        }
         let rejected_guard = this.rejected_deploy_buffer.lock()?;
         if !rejected_guard.matches_snapshot(&rejected)? {
             continue;
@@ -145,6 +158,9 @@ fn reserve_deploy(
                 return Ok(Some(DeployError::duplicate_deploy(deploy_id)));
             }
             PreparedInsertResult::Changed => continue,
+            PreparedInsertResult::SeedHeld(holder) => {
+                return Ok(Some(DeployError::seed_reuse(holder)));
+            }
         }
     }
 }

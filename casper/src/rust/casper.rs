@@ -56,6 +56,8 @@ pub enum DeployError {
     UnknownSignatureAlgorithm(String),
     SignatureVerificationFailed,
     DuplicateDeploy(DeployId),
+    /// Another deploy, named by its sig, already has this deploy's name seed.
+    SeedReuse(DeployId),
 }
 
 impl DeployError {
@@ -69,6 +71,7 @@ impl DeployError {
 
     pub fn signature_verification_failed() -> Self { DeployError::SignatureVerificationFailed }
     pub fn duplicate_deploy(deploy_id: DeployId) -> Self { DeployError::DuplicateDeploy(deploy_id) }
+    pub fn seed_reuse(holder: DeployId) -> Self { DeployError::SeedReuse(holder) }
 }
 
 impl Display for DeployError {
@@ -83,6 +86,12 @@ impl Display for DeployError {
             DeployError::DuplicateDeploy(deploy_id) => {
                 write!(f, "Deploy already known: {}", hex::encode(deploy_id))
             }
+            DeployError::SeedReuse(holder) => write!(
+                f,
+                "Deploy {} has the same deployer, timestamp and valid-after block, so it would \
+                 create the same names; sign this deploy with a different timestamp",
+                hex::encode(holder)
+            ),
         }
     }
 }

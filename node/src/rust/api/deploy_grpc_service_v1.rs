@@ -284,7 +284,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
                 let is_duplicate = e.chain().any(|cause| {
                     matches!(
                         cause.downcast_ref::<DeployError>(),
-                        Some(DeployError::DuplicateDeploy(_))
+                        Some(DeployError::DuplicateDeploy(_) | DeployError::SeedReuse(_))
                     )
                 });
                 if is_duplicate {

@@ -118,10 +118,19 @@ impl CarrierIndex {
     /// Sound as an absence proof only when the caller's window starts at or
     /// above both the seed watermark and the prune cutoff.
     pub fn seed_proves_unshared(&self, seed: &[u8], sig: &[u8]) -> Result<bool, KvStoreError> {
+        Ok(self.other_seed_carrier(seed, sig)?.is_none())
+    }
+
+    /// The sig of an indexed carrier with this seed other than `sig`.
+    pub fn other_seed_carrier(
+        &self,
+        seed: &[u8],
+        sig: &[u8],
+    ) -> Result<Option<ByteString>, KvStoreError> {
         Ok(self
             .seed_carriers
             .get_one(&seed.to_vec())?
-            .is_none_or(|row| row.iter().all(|e| e.sig == sig)))
+            .and_then(|row| row.into_iter().find(|e| e.sig != sig).map(|e| e.sig)))
     }
 
     pub fn seed_watermark(&self) -> Result<Option<i64>, KvStoreError> {
