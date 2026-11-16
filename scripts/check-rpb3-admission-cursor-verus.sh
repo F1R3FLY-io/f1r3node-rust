@@ -2017,6 +2017,10 @@ proofs_rpb3_observable_simulation=(
   lemma_internal_prefix_preserves_projection
   lemma_epm_push_child_contained
   lemma_scored_root_keeps_slot_count
+  lemma_push_step_refines
+  lemma_root_step_refines
+  lemma_visible_step_refines
+  theorem_forward_simulation
 )
 proofs_rpb3_path_parser_refinement=(
   initial_parser_source_snapshot_has_witness
@@ -5307,7 +5311,7 @@ if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
   echo "rpb3-admission-cursor: observable simulation module failed" >&2
   exit 1
 fi
-if ! rg -q '^verification results:: 102 verified, 0 errors' "$observable_simulation_log"; then
+if ! rg -q '^verification results:: 106 verified, 0 errors' "$observable_simulation_log"; then
   cat "$observable_simulation_log"
   echo "rpb3-admission-cursor: observable simulation module did not verify" >&2
   exit 1

@@ -4925,7 +4925,7 @@ fn rpb3_admission_observable_spec_is_gated_and_defined_once() {
 }
 
 const RPB3_OBSERVABLE_SIMULATION_PIN_LINE: &str =
-    "if ! rg -q '^verification results:: 102 verified, 0 errors' \"$observable_simulation_log\"; then";
+    "if ! rg -q '^verification results:: 106 verified, 0 errors' \"$observable_simulation_log\"; then";
 
 const RPB3_OBSERVABLE_SIMULATION_DECLARATIONS: &[&str] = &[
     "pub proof fn lemma_project_frame_congruence(",
@@ -4935,6 +4935,7 @@ const RPB3_OBSERVABLE_SIMULATION_DECLARATIONS: &[&str] = &[
     "pub proof fn lemma_project_snapshot(",
     "pub proof fn lemma_backward_structural(",
     "pub proof fn lemma_structural_coverage(",
+    "pub proof fn theorem_forward_simulation(",
 ];
 
 #[test]

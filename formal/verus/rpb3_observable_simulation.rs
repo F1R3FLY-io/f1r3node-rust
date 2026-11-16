@@ -4415,6 +4415,48 @@ pub proof fn lemma_field_step_refines(
     }
 }
 
+pub proof fn lemma_push_step_refines(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        arm_is_push(action_arm(action)),
+    ensures visible_step_refines(before, after, action),
+{
+    hide(dispatcher::integrated_step);
+    let arm = action_arm(action);
+    let frames = state_frames(before);
+    let pushed = state_frames(after);
+    let score_len = state_score_len(before);
+    if arm is LiveMessagePush {
+        lemma_message_push_extract(before, after, action);
+    } else if arm is LiveMessageEpmPush {
+        lemma_message_epm_push_extract(before, after, action);
+    } else if arm is LiveMapValuePush {
+        lemma_map_value_push_extract(before, after, action);
+    } else if arm is LiveEpmPush {
+        lemma_epm_push_extract(before, after, action);
+        lemma_epm_push_child_contained(before, after, action);
+    } else {
+        lemma_canonical_path_push_extract(before, after, action);
+    }
+    assert(push_core_step(before, after));
+    assert(push_transition(frames, pushed));
+    assert(before is Active) by {
+        reveal(dispatcher::integrated_step);
+    }
+    let top_kind = frames.last().frame_kind;
+    if top_kind == 1 {
+        lemma_message_parent_push_refines(frames, pushed, score_len);
+    } else if top_kind == 2 {
+        lemma_map_parent_push_refines(frames, pushed, score_len);
+    } else {
+        lemma_plain_parent_push_refines(frames, pushed, score_len);
+    }
+}
+
 pub proof fn lemma_accept_step_shape(
     before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
     action: dispatcher::IntegratedAction,
@@ -4512,6 +4554,61 @@ pub proof fn lemma_accept_step_refines(
     );
 }
 
+pub proof fn lemma_root_step_refines(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        arm_is_root(action_arm(action)),
+    ensures visible_step_refines(before, after, action),
+{
+    hide(dispatcher::integrated_step);
+    let arm = action_arm(action);
+    let frames = state_frames(before);
+    let accepted = state_frames(after);
+    if arm is LiveRootComplete {
+        lemma_live_root_complete_extract(before, after, action);
+        lemma_scored_root_keeps_slot_count(before, after, action);
+    } else if arm is LiveRootCompleteNoScore {
+        lemma_live_root_noscore_extract(before, after, action);
+    } else {
+        lemma_canonical_path_root_complete_extract(before, after, action);
+    }
+    assert(root_core_step(before, after));
+    assert(root_transition(frames, accepted));
+    assert(before is Active) by {
+        reveal(dispatcher::integrated_step);
+    }
+    lemma_root_accept_refines(frames, accepted, state_score_len(before), state_score_len(after));
+    assert(visible_class(before, action) == Some(accept_class(frames[0].frame_kind)));
+}
+
+pub proof fn lemma_visible_step_refines(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        visible_class(before, action) is Some,
+    ensures visible_step_refines(before, after, action),
+{
+    hide(dispatcher::integrated_step);
+    let arm = action_arm(action);
+    if arm_is_field(arm) {
+        lemma_field_step_refines(before, after, action);
+    } else if arm_is_push(arm) {
+        lemma_push_step_refines(before, after, action);
+    } else if arm_is_accept(arm) {
+        lemma_accept_step_refines(before, after, action);
+    } else {
+        assert(arm_is_root(arm));
+        lemma_root_step_refines(before, after, action);
+    }
+}
+
 pub proof fn lemma_scored_step_refines(
     before: dispatcher::IntegratedState, middle: dispatcher::IntegratedState,
     after: dispatcher::IntegratedState, score_action: dispatcher::IntegratedAction,
@@ -4579,6 +4676,66 @@ pub proof fn lemma_internal_prefix_preserves_projection(
         assert(states[count] is Active) by {
             reveal(dispatcher::integrated_step);
         }
+    }
+}
+
+pub proof fn theorem_forward_simulation(
+    states: Seq<dispatcher::IntegratedState>, actions: Seq<dispatcher::IntegratedAction>,
+)
+    requires integrated_segment(states, actions),
+    ensures
+        observable::observable_next(project(states[0]), segment_image_event(states, actions))
+            == Some(project(states.last())),
+{
+    hide(dispatcher::integrated_step);
+    let count = actions.len() as int;
+    let visible = segment_visible_index(actions);
+    let next = visible + 1;
+    let class = segment_class(states, actions);
+    assert(dispatcher::integrated_trace(states, actions));
+    assert(0 <= visible < count);
+    assert(dispatcher::integrated_step(states[visible], states[visible + 1], actions[visible]));
+    dispatcher::integrated_trace_wf(states, actions, visible);
+    assert(project(states.last()) == project(states[next])) by {
+        if next < count {
+            let last = count - 1;
+            assert(last == next);
+            assert(action_arm(actions[last]) is EpmHandoff);
+            dispatcher::integrated_trace_wf(states, actions, last);
+            assert(dispatcher::integrated_step(states[last], states[last + 1], actions[last]));
+            lemma_internal_step_preserves_projection(states[last], states[last + 1], actions[last]);
+            assert(states[last + 1] == states.last());
+            assert(states[last] == states[next]);
+        } else {
+            assert(states.last() == states[next]);
+        }
+    }
+    if internal_prefix(actions, count) {
+        assert(segment_internal_arm(action_arm(actions[visible])));
+        lemma_internal_prefix_preserves_projection(states, actions, visible);
+        lemma_internal_step_preserves_projection(
+            states[visible], states[visible + 1], actions[visible],
+        );
+        let frames = state_frames(states[next]);
+        let score_len = state_score_len(states[next]);
+        assert(stutter_step(states[visible], states[next]));
+        lemma_internal_iteration_refines(frames, score_len);
+        assert(project(states[next]) == project_active(frames, score_len));
+        assert(class == observable::ObservableClass::OtherContinue);
+    } else if internal_prefix(actions, visible) {
+        lemma_internal_prefix_preserves_projection(states, actions, visible);
+        lemma_visible_step_refines(states[visible], states[visible + 1], actions[visible]);
+        assert(step_refines(states[visible], states[next], class));
+    } else {
+        let scored = visible - 1;
+        lemma_internal_prefix_preserves_projection(states, actions, scored);
+        dispatcher::integrated_trace_wf(states, actions, scored);
+        assert(dispatcher::integrated_step(states[scored], states[scored + 1], actions[scored]));
+        assert(states[scored + 1] == states[visible]);
+        lemma_scored_step_refines(
+            states[scored], states[visible], states[next], actions[scored], actions[visible],
+        );
+        assert(step_refines(states[scored], states[next], class));
     }
 }
 
