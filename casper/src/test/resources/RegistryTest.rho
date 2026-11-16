@@ -198,18 +198,15 @@ match (
       new hashCh,
           signCh,
           deployData(`rho:deploy:data`),
-          deployDataCh,
-          deployerIdOps(`rho:system:deployerId:ops`),
-          deployerPubKeyCh
+          deployDataCh
       in {
         deployData!(*deployDataCh) |
 
-        for(@timestamp, @deployerId, _ <- deployDataCh) {
-          deployerIdOps!("pubKeyBytes", deployerId, *deployerPubKeyCh) |
-
-          for(@deployerPubKey <- deployerPubKeyCh) {
-            blake2b256!((timestamp, deployerPubKey, nonce).toByteArray(), *hashCh)
-          }
+        // `rho:deploy:data`'s middle slot is the pubkey bytes directly
+        // (ByteArray), so no `deployerIdOps.pubKeyBytes` unwrap is
+        // needed. Mirrors `Registry.rho::insertSigned`.
+        for(@timestamp, @deployerPubKey, _ <- deployDataCh) {
+          blake2b256!((timestamp, deployerPubKey, nonce).toByteArray(), *hashCh)
         } |
 
         for (@hash <- hashCh) {

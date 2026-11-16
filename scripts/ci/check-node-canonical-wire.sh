@@ -37,10 +37,10 @@ verify)
     shasum -a 256 -c "$output/rust-inputs.sha256" > "$output/verify-input-check.log"
     (cd "$output" && shasum -a 256 -c cases.sha256 > cases-check.log)
     grep -q 'test result: ok. 2 passed; 0 failed' "$output/rust.log"
-    test "$(wc -l < "$output/cases/cases.tsv" | tr -d ' ')" = 75
-    test "$(cut -f1 "$output/cases/cases.tsv" | sort -u | wc -l | tr -d ' ')" = 75
-    test "$(cut -f2 "$output/cases/cases.tsv" | sort -u | wc -l | tr -d ' ')" = 75
-    test "$(find "$output/cases" -name 'Case*.v' | wc -l | tr -d ' ')" = 75
+    test "$(wc -l < "$output/cases/cases.tsv" | tr -d ' ')" = 76
+    test "$(cut -f1 "$output/cases/cases.tsv" | sort -u | wc -l | tr -d ' ')" = 76
+    test "$(cut -f2 "$output/cases/cases.tsv" | sort -u | wc -l | tr -d ' ')" = 76
+    test "$(find "$output/cases" -name 'Case*.v' | wc -l | tr -d ' ')" = 76
     test "$(grep -c '^Example reject_' "$output/cases/Case000.v")" = 6
     mkdir -p "$output/proof"
     cp "$project"/theories/*.v "$output/proof/"
@@ -67,7 +67,7 @@ verify)
     shasum -a 256 -c "$output/proof-inputs.sha256" > "$output/proof-input-check.log"
     shasum -a 256 -c "$output/rust-inputs.sha256" > "$output/final-input-check.log"
     (cd "$output" && shasum -a 256 -c cases.sha256 > final-cases-check.log)
-    printf 'B11 PASS: 8 closed theorems, 75 production cases, 6 rejection controls.\n' | tee "$output/result.txt"
+    printf 'B11 PASS: 8 closed theorems, 76 production cases, 6 rejection controls.\n' | tee "$output/result.txt"
     ;;
 *) printf 'Unknown mode: %s\n' "$mode" >&2; exit 2 ;;
 esac

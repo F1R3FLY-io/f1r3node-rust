@@ -1,5 +1,10 @@
 # Block admission — byte-bounded inbound pipeline
 
+> **Superseded.** [Block ingest](../../../docs/casper/BLOCK_INGEST.md)
+> replaced the processing queue, `block_processor_instance.rs` and
+> `block_retriever.rs`. The "Model ↔ code" table names code that no longer
+> exists. The model stays as a record of the earlier design.
+
 TLA+ model of byte-bounded admission for the block-processing pipeline,
 written for the 2026-08-04 daily-soak breach (run 30880995655): after the
 replay-cache runaway fix, per-node attribution showed the readonly observer

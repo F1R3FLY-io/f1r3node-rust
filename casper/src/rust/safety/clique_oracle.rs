@@ -247,7 +247,7 @@ impl CliqueOracle {
         let mut participating = WeightMap::with_capacity(weight_map.len());
         for (validator, weight) in weight_map {
             let counts = match latest_messages.get(&validator) {
-                Some(latest) if dag.block_number_map.get(latest) == Some(&0) => {
+                Some(latest) if dag.block_number(latest)? == Some(0) => {
                     dag.lookup(latest)?.is_none_or(|block| {
                         block.sender == validator || block.weight_map.contains_key(&validator)
                     })
@@ -739,7 +739,7 @@ impl CliqueOracle {
         strict: bool,
     ) -> Result<ExactOracleResult, KvStoreError> {
         // Non-existing message: MIN ⇒ not finalized (mirrors ft_witnessed).
-        if !dag.contains(target_msg) {
+        if !dag.contains(target_msg)? {
             tracing::warn!(
                 ?target_msg,
                 "Exact fault tolerance for non existing message requested."
@@ -859,7 +859,7 @@ impl CliqueOracle {
         // Using tracing events for async - Span[F].traceI("normalized-fault-tolerance") from Scala
         tracing::debug!(target: "f1r3fly.casper.safety.clique_oracle", "normalized-fault-tolerance-started");
 
-        if dag.contains(target_msg) {
+        if dag.contains(target_msg)? {
             tracing::debug!("Calculating fault tolerance for {:?}.", target_msg);
             let committee =
                 CliqueOracle::get_corresponding_weight_map_metered(meter, target_msg, dag).await?;

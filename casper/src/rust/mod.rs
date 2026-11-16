@@ -5,7 +5,6 @@ pub mod casper;
 pub mod casper_conf;
 pub mod deploy_admission;
 pub mod engine;
-pub mod epoch;
 pub mod equivocation_detector;
 pub mod errors;
 pub mod estimator;

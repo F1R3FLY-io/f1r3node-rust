@@ -184,7 +184,7 @@ async fn a_validator_bonded_later_that_never_runs_does_not_stall_finalization() 
     );
     let dag = nodes[0].block_dag_storage.get_representation().unwrap();
     assert!(
-        dag.is_finalized(&carrier.block_hash),
+        dag.is_finalized(&carrier.block_hash).unwrap(),
         "the block that carries the user deploy (#{}) must finalize; LFB is #{}",
         carrier.body.state.block_number,
         after.body.state.block_number
@@ -240,8 +240,8 @@ async fn a_newcomer_that_starts_its_node_is_accepted_and_then_counts() {
     for node in &nodes[..3] {
         let dag = node.block_dag_storage.get_representation().unwrap();
         assert_eq!(
-            dag.latest_messages_map.get(&DEFAULT_PUB.bytes),
-            Some(&first.block_hash),
+            dag.latest_message_hash(&DEFAULT_PUB.bytes),
+            Some(first.block_hash.clone()),
             "{} must accept the newcomer's first block",
             node.name
         );

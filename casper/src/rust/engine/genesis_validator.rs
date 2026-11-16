@@ -6,7 +6,6 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
@@ -24,12 +23,10 @@ use models::rust::casper::protocol::casper_message::{
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use tokio::sync::mpsc;
 
-use crate::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
+use crate::rust::blocks::ingest::block_ingest::IngestHandle;
 use crate::rust::casper::CasperShardConf;
 use crate::rust::engine::block_approver_protocol::BlockApproverProtocol;
-use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine::{
     log_no_approved_block_available, send_no_approved_block_available, transition_to_initializing,
     Engine,
@@ -41,8 +38,7 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
 pub struct GenesisValidator<T: TransportLayer + Send + Sync + Clone + 'static> {
-    block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
-    blocks_in_processing: Arc<InFlightBlocks>,
+    ingest: IngestHandle,
     casper_shard_conf: CasperShardConf,
     validator_id: ValidatorIdentity,
     block_approver: BlockApproverProtocol<T>,
@@ -52,14 +48,12 @@ pub struct GenesisValidator<T: TransportLayer + Send + Sync + Clone + 'static> {
     connections_cell: ConnectionsCell,
     last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
     event_publisher: F1r3flyEvents,
-    block_retriever: BlockRetriever<T>,
     engine_cell: Arc<EngineCell>,
 
     block_store: KeyValueBlockStore,
     block_dag_storage: BlockDagKeyValueStorage,
     deploy_storage: KeyValueDeployStorage,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    casper_buffer_storage: CasperBufferKeyValueStorage,
     rspace_state_manager: RSpaceStateManager,
 
     runtime_manager: Arc<RuntimeManager>,
@@ -121,8 +115,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
     /// to enable cloning from TestFixture and proper ownership transfer to Initializing.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
-        blocks_in_processing: Arc<InFlightBlocks>,
+        ingest: IngestHandle,
         casper_shard_conf: CasperShardConf,
         validator_id: ValidatorIdentity,
         block_approver: BlockApproverProtocol<T>,
@@ -131,13 +124,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
         connections_cell: ConnectionsCell,
         last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
         event_publisher: F1r3flyEvents,
-        block_retriever: BlockRetriever<T>,
         engine_cell: Arc<EngineCell>,
         block_store: KeyValueBlockStore,
         block_dag_storage: BlockDagKeyValueStorage,
         deploy_storage: KeyValueDeployStorage,
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-        casper_buffer_storage: CasperBufferKeyValueStorage,
         rspace_state_manager: RSpaceStateManager,
         runtime_manager: Arc<RuntimeManager>,
         estimator: Estimator,
@@ -149,8 +140,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
         >,
     ) -> Self {
         Self {
-            block_processing_queue_tx,
-            blocks_in_processing,
+            ingest,
             casper_shard_conf,
             validator_id,
             block_approver,
@@ -159,13 +149,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
             connections_cell,
             last_approved_block,
             event_publisher,
-            block_retriever,
             engine_cell,
             block_store,
             block_dag_storage,
             deploy_storage,
             rejected_deploy_buffer,
-            casper_buffer_storage,
             rspace_state_manager,
             runtime_manager,
             estimator,
@@ -223,8 +211,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
         let validator_id_opt = Some(self.validator_id.clone());
 
         transition_to_initializing(
-            &self.block_processing_queue_tx,
-            &self.blocks_in_processing,
+            &self.ingest,
             &self.casper_shard_conf,
             &validator_id_opt,
             init,
@@ -238,10 +225,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
             &self.block_dag_storage,
             &self.deploy_storage,
             &self.rejected_deploy_buffer,
-            &self.casper_buffer_storage,
             &self.rspace_state_manager,
             self.event_publisher.clone(),
-            self.block_retriever.clone(),
             &self.engine_cell,
             &self.runtime_manager,
             &self.estimator,
@@ -284,8 +269,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
         let validator_id_opt = Some(self.validator_id.clone());
 
         transition_to_initializing(
-            &self.block_processing_queue_tx,
-            &self.blocks_in_processing,
+            &self.ingest,
             &self.casper_shard_conf,
             &validator_id_opt,
             init,
@@ -299,10 +283,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
             &self.block_dag_storage,
             &self.deploy_storage,
             &self.rejected_deploy_buffer,
-            &self.casper_buffer_storage,
             &self.rspace_state_manager,
             self.event_publisher.clone(),
-            self.block_retriever.clone(),
             &self.engine_cell,
             &self.runtime_manager,
             &self.estimator,

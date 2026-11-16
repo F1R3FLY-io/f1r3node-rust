@@ -28,13 +28,8 @@ metrics = { workspace = true }
 
 [features]
 default = []
-# P2-16: gates the three lock-free RMW bypass helpers on
-# `BlockDagKeyValueStorage` (`equivocation_records`,
-# `insert_equivocation_record`, `update_equivocation_record`).
-# Production builds MUST NOT enable this feature. Test crates that
-# need the helpers enable `test-internals` via their dev-dependency on
-# `block-storage`. See
-# `docs/casper/theory/slashing/slashing-verification.md` §9.2 (Bug #2).
+# Gates the test-only constructor and index accessors on
+# `BlockDagKeyValueStorage`. Production builds MUST NOT enable it.
 test-internals = []
 
 [lints.rust]
@@ -44,21 +39,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 metrics-util = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }
-# Exhaustive thread-interleaving model checker for the
-# `access_equivocations_tracker` non-reentrancy contract (P2-13).
-# See block-storage/tests/loom_equivocations_tracker.rs.
+# Exhaustive thread-interleaving model checker.
+# See block-storage/tests/loom_frontier_floor_cache.rs.
 loom = "=0.7.2"
-
-# P2-16: these targets used to carry `required-features = ["test-internals"]`
-# because two equivocation tests called the gated lock-bypass helpers. A crate
-# cannot dev-depend on itself, so that feature could only be reached by passing
-# `--features` on the command line — and a target whose required features are
-# unmet is SKIPPED, not failed, so CI (`cargo nextest run -p block-storage`,
-# no `--features`) silently ran none of these tests. The two tests now go
-# through `access_equivocations_tracker`, the same locked path production uses,
-# so nothing here needs the feature and every test is visible by default.
-[[test]]
-name = "loom_equivocations_tracker"
 
 # C10: exhaustive thread-interleaving model check that the finalized-floor
 # floor_index/frontier_index memoization (a write-once, node-identical pure

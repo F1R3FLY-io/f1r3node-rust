@@ -39,7 +39,7 @@ pub struct BufferedGrpcStreamChannel {
         >,
     >,
     /// Buffer implementing some kind of overflow policy
-    pub buffer: StreamObservable,
+    pub buffer: Arc<StreamObservable>,
     /// Buffer subscriber handle
     pub buffer_subscriber: tokio::task::JoinHandle<()>,
     /// Max message size (to be applied to individual service clients)
@@ -53,7 +53,7 @@ impl BufferedGrpcStreamChannel {
         transport_client: TransportLayerClient<
             InterceptedService<Channel, SslSessionClientInterceptor>,
         >,
-        buffer: StreamObservable,
+        buffer: Arc<StreamObservable>,
         buffer_subscriber: tokio::task::JoinHandle<()>,
         max_message_size: i32,
     ) -> Self {
@@ -310,21 +310,22 @@ impl GrpcTransportClient {
             self.cache.clone(),
         );
 
+        let mut subscription = buffer.subscribe().ok_or_else(|| {
+            CommError::InternalCommunicationError(
+                "Failed to create stream subscription".to_string(),
+            )
+        })?;
+
         // Create buffer subscriber
+        let buffer = Arc::new(buffer);
         let buffer_subscriber = {
             let peer_clone = peer.clone();
+            let buffer_for_task = buffer.clone();
             let cache_clone = self.cache.clone();
             let network_id = self.network_id.clone();
             let chain_id = self.chain_id.clone();
             let default_send_timeout = self.default_send_timeout;
             let packet_chunk_size = self.packet_chunk_size;
-
-            // Get subscription from buffer
-            let mut subscription = buffer.subscribe().ok_or_else(|| {
-                CommError::InternalCommunicationError(
-                    "Failed to create stream subscription".to_string(),
-                )
-            })?;
 
             // Clone the transport client for use in spawned task
             let client_for_task = Arc::new(tokio::sync::Mutex::new(transport_client.clone()));
@@ -335,7 +336,7 @@ impl GrpcTransportClient {
 
                 while let Some(stream_msg) = subscription.next().await {
                     // Call static stream_blob_file_with_client method with pre-created client
-                    let result = Self::stream_blob_file_with_client(
+                    let timed_out = Self::stream_blob_file_with_client(
                         &stream_msg.key,
                         &peer_clone,
                         &stream_msg.sender,
@@ -348,18 +349,14 @@ impl GrpcTransportClient {
                     )
                     .await;
 
-                    // Log any errors but continue processing
-                    if let Err(e) = result {
-                        tracing::debug!(
-                            "Error in stream_blob_file for key {}: {}",
-                            stream_msg.key,
-                            e
-                        );
-                    }
-
                     // Clean up cache
                     // This happens regardless of success/failure
                     cache_clone.remove(&stream_msg.key);
+                    if timed_out {
+                        let dropped = buffer_for_task.close_and_discard();
+                        tracing::warn!(peer = %peer_clone.to_address(), dropped, "Stopped outgoing stream queue after timeout");
+                        break;
+                    }
                 }
             })
         };
@@ -408,6 +405,7 @@ impl GrpcTransportClient {
                             if let Some(victim_channel_cell) = channels_map.remove(&victim) {
                                 if let Some(victim_channel) = victim_channel_cell.get() {
                                     victim_channel.buffer_subscriber.abort();
+                                    victim_channel.buffer.close_and_discard();
                                 }
                                 evicted_peer_ids.push(victim.id);
                             }
@@ -453,10 +451,16 @@ impl GrpcTransportClient {
 
                 // Clean up: cancel subscriber and remove from map
                 channel.buffer_subscriber.abort();
+                channel.buffer.close_and_discard();
 
                 {
                     let mut channels_map = self.channels_map.lock().await;
-                    channels_map.remove(peer);
+                    if channels_map
+                        .get(peer)
+                        .is_some_and(|current| Arc::ptr_eq(current, &once_cell))
+                    {
+                        channels_map.remove(peer);
+                    }
                 }
                 self.clear_dns_failure(peer).await;
 
@@ -524,6 +528,9 @@ impl GrpcTransportClient {
     ///
     /// This method uses a pre-created transport client, eliminating the need for
     /// complex connection management in spawned tasks.
+    ///
+    /// Returns true when the stream hit a deadline, so the caller stops this
+    /// peer's queue.
     async fn stream_blob_file_with_client(
         key: &str,
         peer: &PeerNode,
@@ -538,7 +545,7 @@ impl GrpcTransportClient {
                 TransportLayerClient<InterceptedService<Channel, SslSessionClientInterceptor>>,
             >,
         >,
-    ) -> Result<(), CommError> {
+    ) -> bool {
         let mut client_guard = client.lock().await;
         let attempt = send_cached_stream(
             key,
@@ -554,6 +561,13 @@ impl GrpcTransportClient {
         .await;
         drop(client_guard);
 
+        let timed_out = matches!(
+            &attempt,
+            Ok(StreamAttempt {
+                outcome: StreamOutcome::TimedOut | StreamOutcome::Failed(CommError::TimeOut),
+                ..
+            })
+        );
         match attempt {
             Ok(StreamAttempt {
                 packet_size,
@@ -606,11 +620,14 @@ impl GrpcTransportClient {
                 tracing::error!(key = %key, peer = %peer.to_address(), error = %error, "packet streaming failed");
             }
         }
-        Ok(())
+        timed_out
     }
 
     /// Check if a channel is terminated
     async fn is_channel_terminated(channel: &BufferedGrpcStreamChannel) -> bool {
+        if channel.buffer.is_complete() {
+            return true;
+        }
         // 1. First check: Is the buffer subscriber task finished?
         // This indicates the streaming mechanism is broken
         if channel.buffer_subscriber.is_finished() {
@@ -679,8 +696,13 @@ impl TransportLayer for GrpcTransportClient {
 
     /// Stream a blob to a peer by enqueueing it in the buffer
     async fn stream(&self, peer: &PeerNode, blob: &Blob) -> Result<(), CommError> {
-        let channel = self.get_channel(peer).await?;
-        channel.buffer.enque(blob).await
+        loop {
+            let channel = self.get_channel(peer).await?;
+            match channel.buffer.enque(blob).await {
+                Err(CommError::PeerUnavailable(_)) if channel.buffer.is_complete() => continue,
+                result => return result,
+            }
+        }
     }
 
     /// Stream a blob to multiple peers in parallel
@@ -707,6 +729,7 @@ impl TransportLayer for GrpcTransportClient {
             // If the channel was initialized, abort its buffer subscriber
             if let Some(channel) = channel_cell.get() {
                 channel.buffer_subscriber.abort();
+                channel.buffer.close_and_discard();
             }
             // The channel itself will be dropped when removed from the map
         }

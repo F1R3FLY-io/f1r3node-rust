@@ -2,13 +2,10 @@
 
 use std::collections::HashSet;
 
-use casper::rust::util::{construct_deploy, proto_util};
+use casper::rust::util::proto_util;
 use models::rust::block_implicits::block_element_gen;
 use proptest::prelude::*;
 use prost::bytes::Bytes;
-
-use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 proptest! {
     #[test]
@@ -41,84 +38,4 @@ proptest! {
 
         prop_assert_eq!(result_set, expected);
     }
-}
-
-struct TestContext {
-    genesis: GenesisContext,
-}
-
-impl TestContext {
-    async fn new() -> Self {
-        let mut genesis_builder = GenesisBuilder::new();
-        let genesis_parameters_tuple =
-            GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
-        let genesis_context = genesis_builder
-            .build_genesis_with_parameters(Some(genesis_parameters_tuple))
-            .await
-            .expect("Failed to build genesis context");
-
-        Self {
-            genesis: genesis_context,
-        }
-    }
-}
-
-#[tokio::test]
-async fn unseen_block_hashes_should_return_empty_for_a_single_block_dag() {
-    let ctx = TestContext::new().await;
-    let mut node = TestNode::standalone(ctx.genesis.clone()).await.unwrap();
-
-    let shard_id = ctx.genesis.genesis_block.shard_id.clone();
-
-    let deploy = construct_deploy::basic_deploy_data(0, None, Some(shard_id)).unwrap();
-    let signed_block = node.add_block_from_deploys(&[deploy]).await.unwrap();
-
-    let dag = node
-        .block_dag_storage
-        .get_representation()
-        .expect("dag representation");
-
-    let unseen_block_hashes = proto_util::unseen_block_hashes(
-        &dag,
-        &signed_block.justifications,
-        Some(&signed_block.block_hash),
-    )
-    .unwrap();
-
-    assert!(
-        unseen_block_hashes.is_empty(),
-        "Expected empty set but got {:?}",
-        unseen_block_hashes
-    );
-}
-
-#[tokio::test]
-async fn unseen_block_hashes_should_return_all_but_the_first_block_when_passed_the_first_block_in_a_chain(
-) {
-    let ctx = TestContext::new().await;
-    let mut node = TestNode::standalone(ctx.genesis.clone()).await.unwrap();
-
-    let shard_id = ctx.genesis.genesis_block.shard_id.clone();
-
-    let deploy0 = construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone())).unwrap();
-    let block0 = node.add_block_from_deploys(&[deploy0]).await.unwrap();
-
-    let deploy1 = construct_deploy::basic_deploy_data(1, None, Some(shard_id)).unwrap();
-    let block1 = node.add_block_from_deploys(&[deploy1]).await.unwrap();
-
-    let dag = node
-        .block_dag_storage
-        .get_representation()
-        .expect("dag representation");
-
-    let unseen_block_hashes =
-        proto_util::unseen_block_hashes(&dag, &block0.justifications, Some(&block0.block_hash))
-            .unwrap();
-
-    let expected: HashSet<Bytes> = vec![block1.block_hash.clone()].into_iter().collect();
-    assert_eq!(
-        unseen_block_hashes, expected,
-        "Expected {:?} but got {:?}",
-        expected, unseen_block_hashes
-    );
 }

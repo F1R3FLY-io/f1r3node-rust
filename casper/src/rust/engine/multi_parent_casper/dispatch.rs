@@ -9,12 +9,12 @@
 //! ("how the casper engine binds into its public protocol surface").
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
@@ -29,44 +29,32 @@ use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::casper::{
     Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
 };
-use crate::rust::engine::block_retriever::AdmitHashReason;
 use crate::rust::errors::CasperError;
 use crate::rust::safety::initial_fault;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
 #[async_trait]
-impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
+impl Casper for MultiParentCasperImpl {
     async fn request_block_from_peers(&self, hash: BlockHash) -> Result<(), CasperError> {
-        self.block_retriever
-            .admit_hash(hash, None, AdmitHashReason::MissingDependencyRequested)
-            .await
-            .map(|_| ())
+        self.ingest.need(hash).await
     }
 
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         super::snapshot::compute_snapshot(self).await
     }
 
-    fn contains(&self, hash: &BlockHash) -> bool {
-        super::block_admission::admit_contains(self, hash)
-    }
-
-    fn dag_contains(&self, hash: &BlockHash) -> bool {
+    fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError> {
         super::block_admission::admit_dag_contains(self, hash)
-    }
-
-    fn buffer_contains(&self, hash: &BlockHash) -> bool {
-        super::block_admission::admit_buffer_contains(self, hash)
-    }
-
-    fn buffer_waits_on_dependency(&self, hash: &BlockHash) -> bool {
-        super::block_admission::admit_buffer_waits_on_dependency(self, hash)
     }
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
         super::block_admission::admit_get_approved_block(self)
     }
+
+    fn effective_anchor_number(&self) -> i64 { self.effective_anchor.load(Ordering::Acquire) }
+
+    fn effective_anchor_handle(&self) -> Arc<AtomicI64> { self.effective_anchor.clone() }
 
     fn deploy(
         &self,
@@ -130,7 +118,10 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             .validator_id
             .as_ref()
             .is_some_and(|id| id.public_key.bytes == block.sender)
-            && super::block_admission::admit_dag_contains(self, &block.block_hash)
+            && matches!(
+                super::block_admission::admit_dag_contains(self, &block.block_hash),
+                Ok(true)
+            )
         {
             self.deploy_admission.observe_sample(block.seq_num, sample);
         }
@@ -144,18 +135,10 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
     ) -> Result<KeyValueDagRepresentation, CasperError> {
         super::validation_dispatcher::dispatch_handle_invalid_block(self, block, status, dag)
     }
-
-    fn get_dependency_free_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
-        super::buffer_resolver::buffer_get_dependency_free_from_buffer(self)
-    }
-
-    fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
-        super::buffer_resolver::buffer_get_all_from_buffer(self)
-    }
 }
 
 #[async_trait]
-impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImpl<T> {
+impl MultiParentCasper for MultiParentCasperImpl {
     fn attach_observer(
         &self,
         binding: crate::rust::soak_observer::ObserverBinding,
@@ -174,58 +157,20 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
         ))
     }
 
-    async fn fetch_dependencies(&self) -> Result<(), CasperError> {
-        // Get pendants from CasperBuffer
-        let pendants = self.casper_buffer_storage.get_pendants();
-
-        // Filter to get unseen pendants (not in block store)
-        let mut pendants_unseen = Vec::new();
-        for pendant_serde in pendants.iter() {
-            let pendant_hash = BlockHash::from(pendant_serde.0.clone());
-            if self.block_store.get(&pendant_hash)?.is_none() {
-                pendants_unseen.push(pendant_hash);
-            }
-        }
-
-        tracing::debug!(
-            "Requesting CasperBuffer pendant hashes, {} items.",
-            pendants_unseen.len()
-        );
-
-        for dependency in pendants_unseen {
-            tracing::debug!(
-                "Sending dependency {} to BlockRetriever",
-                PrettyPrinter::build_string_bytes(&dependency)
-            );
-
-            self.block_retriever
-                .admit_hash(
-                    dependency,
-                    None,
-                    AdmitHashReason::MissingDependencyRequested,
-                )
-                .await?;
-        }
-
-        Ok(())
-    }
-
     fn normalized_initial_fault(
         &self,
         weights: HashMap<Validator, num_bigint::BigInt>,
     ) -> Result<f32, CasperError> {
-        let equivocating_weight =
-            self.block_dag_storage
-                .access_equivocations_tracker(|tracker| {
-                    let equivocation_records = tracker.data()?;
-                    let equivocating_weight = initial_fault::equivocating_weight(
-                        &weights,
-                        equivocation_records
-                            .iter()
-                            .map(|record| &record.equivocator),
-                    );
-                    Ok(equivocating_weight)
-                })?;
+        let dag = self.block_dag_storage.get_representation()?;
+        let mut held = Vec::new();
+        for validator in weights.keys() {
+            held.extend(dag.equivocations_of(validator)?);
+        }
+        let equivocations = initial_fault::equivocations(&held);
+        let equivocating_weight = initial_fault::equivocating_weight(
+            &weights,
+            equivocations.iter().map(|(sender, _)| sender),
+        );
 
         let total_weight = initial_fault::total_weight(&weights);
         Ok(initial_fault::normalized_initial_fault(

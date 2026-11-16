@@ -193,8 +193,7 @@ fn running(
     items_tx: mpsc::Sender<StoreItemsMessage>,
 ) -> Running<TransportLayerStub> {
     Running::new(
-        fixture.block_processing_queue_tx.clone(),
-        fixture.blocks_in_processing.clone(),
+        fixture.ingest.clone(),
         Arc::new(fixture.casper.clone()) as Arc<dyn MultiParentCasper + Send + Sync>,
         ApprovedBlock {
             candidate: ApprovedBlockCandidate {
@@ -211,7 +210,6 @@ fn running(
         false,
         fixture.transport_layer.clone(),
         fixture.rp_conf_ask.clone(),
-        fixture.block_retriever.clone(),
         Some(items_tx),
     )
 }

@@ -134,6 +134,9 @@ impl StreamObservable {
 
     /// Enqueue a blob for streaming
     pub async fn enque(&self, blob: &Blob) -> Result<(), CommError> {
+        if self.subject.is_complete() {
+            return Err(CommError::PeerUnavailable(self.peer.to_address()));
+        }
         // Log stream information
         tracing::debug!(
             "Pushing message to {} stream message queue.",
@@ -158,6 +161,12 @@ impl StreamObservable {
 
                 // Try to push to buffer
                 let push_succeed = self.subject.push_next(stream_msg);
+
+                if !push_succeed && self.subject.is_complete() {
+                    self.cache.remove(&key);
+                    self.update_stream_cache_metrics();
+                    return Err(CommError::PeerUnavailable(self.peer.to_address()));
+                }
 
                 if !push_succeed {
                     // Buffer is full
@@ -185,10 +194,15 @@ impl StreamObservable {
         Ok(())
     }
 
-    /// Complete the stream
-    pub fn complete(&self) {
-        self.subject.complete();
-        tracing::debug!("Stream for {} marked as complete", self.peer.endpoint.host);
+    /// Close the queue and remove the cache entries of every packet not yet
+    /// taken by the subscriber. Returns the number of packets discarded.
+    pub fn close_and_discard(&self) -> usize {
+        let discarded = self.subject.close_and_drain();
+        for stream_msg in &discarded {
+            self.cache.remove(&stream_msg.key);
+        }
+        self.update_stream_cache_metrics();
+        discarded.len()
     }
 
     /// Check if the stream is complete
@@ -204,9 +218,6 @@ impl StreamObservable {
 
     /// Get the buffer size
     pub fn buffer_size(&self) -> usize { self.subject.buffer_size() }
-
-    /// Check if the stream is still active (not closed)
-    pub fn is_active(&self) -> bool { self.subject.is_active() }
 }
 
 #[cfg(test)]
@@ -252,7 +263,6 @@ mod tests {
 
         assert_eq!(observable.peer().id.key, peer.id.key);
         assert_eq!(observable.buffer_size(), buffer_size);
-        assert!(observable.is_active());
         assert!(!observable.is_complete());
     }
 
@@ -293,15 +303,40 @@ mod tests {
         // Initially not complete
         assert!(!observable.is_complete());
 
-        // Complete the stream
-        observable.complete();
+        assert_eq!(observable.close_and_discard(), 0);
         assert!(observable.is_complete());
 
-        // Try to enqueue after completion - should still succeed but be dropped
         let sender = create_test_peer();
         let blob = create_test_blob(sender, vec![1, 2, 3]);
         let result = observable.enque(&blob).await;
-        assert!(result.is_ok());
+        assert!(matches!(result, Err(CommError::PeerUnavailable(_))));
+    }
+
+    #[tokio::test]
+    async fn close_and_discard_removes_only_undelivered_packets() {
+        let cache = create_test_cache();
+        let mut observable = StreamObservable::new(create_test_peer(), 4, cache.clone());
+        let mut subscription = observable.subscribe().expect("Should get subscription");
+        let sender = create_test_peer();
+
+        for i in 0..3u8 {
+            observable
+                .enque(&create_test_blob(sender.clone(), vec![i; 8]))
+                .await
+                .unwrap();
+        }
+        let delivered = subscription.next().await.expect("first packet");
+
+        assert_eq!(observable.close_and_discard(), 2);
+        assert_eq!(cache.len(), 1);
+        assert!(cache.contains_key(&delivered.key));
+        assert!(subscription.next().await.is_none());
+
+        let refused = observable
+            .enque(&create_test_blob(sender, vec![9; 8]))
+            .await;
+        assert!(matches!(refused, Err(CommError::PeerUnavailable(_))));
+        assert_eq!(cache.len(), 1);
     }
 
     #[tokio::test]

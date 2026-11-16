@@ -64,8 +64,12 @@ For a block `B` with non-empty parent set `P₁…Pₖ` and frozen justification
   `≥ num(floor)` and MUST NOT cut above the floor.
 - **R-BACKSTOP.** When the floor distance `Δ = num(maxParent) − num(floor)` exceeds
   the cap, the merge MUST fail with a deterministic error keyed on `Δ` alone (on
-  propose it parks the round; on validate the block is invalid). It MUST NOT
-  substitute a lossy single-parent post-state. Any non-node-deterministic quantity
+  validate the block is invalid). It MUST NOT substitute a lossy single-parent
+  post-state. On propose, a proposal that may be empty MAY instead be a
+  single-parent witness block: one declared parent (fork choice's main parent),
+  every latest message cited, no user deploys. It builds no merge, so it is not a
+  substitution. A proposal that must carry deploys is held until finality
+  advances. Any non-node-deterministic quantity
   (e.g. branch-width scope size) MUST NOT gate admission (demote to a metric).
 
 ## 5. Merge write-algebra (normative)

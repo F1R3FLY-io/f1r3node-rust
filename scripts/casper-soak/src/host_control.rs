@@ -267,6 +267,22 @@ mod linux {
         confirmed
     }
 
+    // Issue 1021. A pid scanned by owned()/residual() can die mid-scan.
+    // /proc/<pid>/{status,environ,cmdline,comm} then returns ENOENT or
+    // ESRCH to report that the kernel has dropped the task. On loaded
+    // SMP PREEMPT hosts the pidfd POLLIN wakeup lags behind that procfs
+    // invalidation by hundreds of milliseconds, so a 0-timeout poll on
+    // the pidfd we opened earlier reports "no event" for a task /proc
+    // has already released. Trust the procfs evidence for those errno
+    // values; otherwise give the pidfd a bounded window to catch up.
+    const EXIT_CATCHUP_MS: i32 = 500;
+    fn confirm_gone(error: &eyre::Report, process: &File) -> Result<bool> {
+        let gone_from_proc = error
+            .downcast_ref::<io::Error>()
+            .is_some_and(|err| matches!(err.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)));
+        Ok(gone_from_proc || exited(process, EXIT_CATCHUP_MS)?)
+    }
+
     fn owned(owner: &str) -> Result<(Vec<Owned>, Vec<i32>, bool)> {
         ensure!(
             !owner.is_empty() && owner.len() <= 256 && !owner.chars().any(char::is_control),
@@ -320,8 +336,8 @@ mod linux {
             match scan {
                 Ok(Some(value)) => result.push(value),
                 Ok(None) => (),
-                Err(_) => {
-                    if !exited(&process, 0)? {
+                Err(error) => {
+                    if !confirm_gone(&error, &process)? {
                         failed = true;
                     }
                 }
@@ -480,8 +496,8 @@ mod linux {
             match scan {
                 Ok(Some(value)) => result.push(value),
                 Ok(None) => (),
-                Err(_) => {
-                    if !exited(&process, 0)? {
+                Err(error) => {
+                    if !confirm_gone(&error, &process)? {
                         failed = true;
                     }
                 }

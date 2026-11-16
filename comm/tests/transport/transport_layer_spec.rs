@@ -3,12 +3,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use comm::rust::errors::CommError;
+use comm::rust::peer_node::PeerNode;
 use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use models::routing::Packet;
 use prost::bytes::Bytes;
 
 use crate::transport::transport_layer_runtime::{
-    broadcast_heartbeat, get_free_port, send_heartbeat, TestProtocolDispatcher,
+    broadcast_heartbeat, get_free_port, send_heartbeat, DispatcherCallback, TestProtocolDispatcher,
     TestStreamDispatcher, TransportLayerTestRuntime,
 };
 
@@ -824,10 +826,12 @@ async fn stream_with_spoofed_sender_should_close_the_connection() {
     init_logger();
 
     let runtime = TransportLayerTestRuntime::new("test".to_string());
-    let local_port = get_free_port().await.unwrap();
-    let remote_port = get_free_port().await.unwrap();
-    let local = runtime.create_environment(local_port).await.unwrap();
-    let remote = runtime.create_environment(remote_port).await.unwrap();
+    let local = runtime
+        .create_environment(get_free_port().await.unwrap())
+        .await
+        .unwrap();
+    let remote = runtime.create_bound_environment().await.unwrap();
+    let remote_port = remote.port;
 
     let server = runtime.create_transport_layer_server(&remote);
     let stream_dispatcher = TestStreamDispatcher::new();
@@ -894,4 +898,112 @@ async fn stream_with_spoofed_sender_should_close_the_connection() {
 
     assert!(matches!(after_spoofed_stream, Ok(Err(_))));
     assert!(stream_dispatcher.received().is_empty());
+}
+
+/// Sends a heartbeat to `remote` from a fresh peer, bounded by `timeout`.
+async fn heartbeat_from_a_new_peer(
+    runtime: &TransportLayerTestRuntime,
+    remote: &PeerNode,
+    timeout: Duration,
+) -> Result<Result<(), CommError>, tokio::time::error::Elapsed> {
+    let local = runtime
+        .create_environment(get_free_port().await.unwrap())
+        .await
+        .unwrap();
+    let transport = runtime.create_transport_layer(&local).unwrap();
+    tokio::time::timeout(
+        timeout,
+        send_heartbeat(Arc::new(transport), &local.peer, remote, "test"),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_stopped_server_dispatches_nothing() {
+    init_logger();
+
+    let runtime = TransportLayerTestRuntime::new("test".to_string());
+    let remote = runtime
+        .create_environment(get_free_port().await.unwrap())
+        .await
+        .unwrap();
+    let server = runtime.create_transport_layer_server(&remote);
+    let dispatcher = TestProtocolDispatcher::new();
+    let callback = DispatcherCallback::new();
+    server
+        .start(
+            dispatcher.to_handler(remote.peer.clone(), Some(callback.clone())),
+            TestStreamDispatcher::new().to_handler(remote.peer.clone(), None),
+        )
+        .await
+        .unwrap();
+    let connected = runtime
+        .create_environment(get_free_port().await.unwrap())
+        .await
+        .unwrap();
+    let connected_transport: Arc<dyn TransportLayer> =
+        Arc::new(runtime.create_transport_layer(&connected).unwrap());
+    send_heartbeat(
+        connected_transport.clone(),
+        &connected.peer,
+        &remote.peer,
+        "test",
+    )
+    .await
+    .expect("heartbeat before the stop");
+    tokio::time::timeout(Duration::from_secs(5), callback.wait_until_dispatched())
+        .await
+        .expect("the running server dispatches the heartbeat");
+    server.stop().await.unwrap();
+
+    let on_open_connection = tokio::time::timeout(
+        Duration::from_secs(3),
+        send_heartbeat(connected_transport, &connected.peer, &remote.peer, "test"),
+    )
+    .await;
+    let from_new_peer =
+        heartbeat_from_a_new_peer(&runtime, &remote.peer, Duration::from_secs(3)).await;
+    assert_eq!(
+        dispatcher.received().len(),
+        1,
+        "a stopped server dispatched a heartbeat (open connection {on_open_connection:?}, \
+         new peer {from_new_peer:?})"
+    );
+}
+
+#[tokio::test]
+async fn a_server_restarts_on_its_port_after_a_stop() {
+    init_logger();
+
+    let runtime = TransportLayerTestRuntime::new("test".to_string());
+    let remote = runtime
+        .create_environment(get_free_port().await.unwrap())
+        .await
+        .unwrap();
+    let server = runtime.create_transport_layer_server(&remote);
+    let start = |dispatcher: &TestProtocolDispatcher, callback: &DispatcherCallback| {
+        server.start(
+            dispatcher.to_handler(remote.peer.clone(), Some(callback.clone())),
+            TestStreamDispatcher::new().to_handler(remote.peer.clone(), None),
+        )
+    };
+    start(&TestProtocolDispatcher::new(), &DispatcherCallback::new())
+        .await
+        .unwrap();
+    server.stop().await.unwrap();
+
+    let dispatcher = TestProtocolDispatcher::new();
+    let callback = DispatcherCallback::new();
+    start(&dispatcher, &callback)
+        .await
+        .expect("the stopped server released its port");
+    heartbeat_from_a_new_peer(&runtime, &remote.peer, Duration::from_secs(5))
+        .await
+        .expect("heartbeat within the timeout")
+        .expect("heartbeat");
+    tokio::time::timeout(Duration::from_secs(5), callback.wait_until_dispatched())
+        .await
+        .expect("the restarted server dispatches the heartbeat");
+    assert_eq!(dispatcher.received().len(), 1);
+    server.stop().await.unwrap();
 }

@@ -48,8 +48,7 @@ impl GenesisValidatorSpec {
 
         let test = async {
             let genesis_validator = GenesisValidator::new(
-                fixture.block_processing_queue_tx.clone(),
-                fixture.blocks_in_processing.clone(),
+                fixture.ingest.clone(),
                 fixture.casper_shard_conf.clone(),
                 fixture.validator_id.clone(),
                 fixture.bap.clone(),
@@ -58,13 +57,11 @@ impl GenesisValidatorSpec {
                 fixture.connections_cell.clone(),
                 fixture.last_approved_block.clone(),
                 fixture.event_publisher.clone(),
-                fixture.block_retriever.clone(),
                 fixture.engine_cell.clone(), // use fixture.engine_cell instead of new one
                 fixture.block_store.clone(),
                 fixture.block_dag_storage.clone(),
                 fixture.deploy_storage.clone(),
                 fixture.rejected_deploy_buffer.clone(),
-                fixture.casper_buffer_storage.clone(),
                 fixture.rspace_state_manager.clone(),
                 fixture.runtime_manager.clone(),
                 fixture.estimator.clone(),
@@ -144,8 +141,7 @@ impl GenesisValidatorSpec {
         let fixture = TestFixture::new().await;
 
         let genesis_validator = GenesisValidator::new(
-            fixture.block_processing_queue_tx.clone(),
-            fixture.blocks_in_processing.clone(),
+            fixture.ingest.clone(),
             fixture.casper_shard_conf.clone(),
             fixture.validator_id.clone(),
             fixture.bap.clone(),
@@ -154,13 +150,11 @@ impl GenesisValidatorSpec {
             fixture.connections_cell.clone(),
             fixture.last_approved_block.clone(),
             fixture.event_publisher.clone(),
-            fixture.block_retriever.clone(),
             fixture.engine_cell.clone(),
             fixture.block_store.clone(),
             fixture.block_dag_storage.clone(),
             fixture.deploy_storage.clone(),
             fixture.rejected_deploy_buffer.clone(),
-            fixture.casper_buffer_storage.clone(),
             fixture.rspace_state_manager.clone(),
             fixture.runtime_manager.clone(),
             fixture.estimator.clone(),
@@ -219,8 +213,7 @@ impl GenesisValidatorSpec {
         });
 
         let genesis_validator = GenesisValidator::new(
-            fixture.block_processing_queue_tx.clone(),
-            fixture.blocks_in_processing.clone(),
+            fixture.ingest.clone(),
             fixture.casper_shard_conf.clone(),
             fixture.validator_id.clone(),
             fixture.bap.clone(),
@@ -229,13 +222,11 @@ impl GenesisValidatorSpec {
             fixture.connections_cell.clone(),
             fixture.last_approved_block.clone(),
             fixture.event_publisher.clone(),
-            fixture.block_retriever.clone(),
             fixture.engine_cell.clone(),
             fixture.block_store.clone(),
             fixture.block_dag_storage.clone(),
             fixture.deploy_storage.clone(),
             fixture.rejected_deploy_buffer.clone(),
-            fixture.casper_buffer_storage.clone(),
             fixture.rspace_state_manager.clone(),
             fixture.runtime_manager.clone(),
             fixture.estimator.clone(),
@@ -294,8 +285,7 @@ impl GenesisValidatorSpec {
 
         let test = async {
             let genesis_validator = GenesisValidator::new(
-                fixture.block_processing_queue_tx.clone(),
-                fixture.blocks_in_processing.clone(),
+                fixture.ingest.clone(),
                 fixture.casper_shard_conf.clone(),
                 fixture.validator_id.clone(),
                 fixture.bap.clone(),
@@ -304,13 +294,11 @@ impl GenesisValidatorSpec {
                 fixture.connections_cell.clone(),
                 fixture.last_approved_block.clone(),
                 fixture.event_publisher.clone(),
-                fixture.block_retriever.clone(),
                 fixture.engine_cell.clone(),
                 fixture.block_store.clone(),
                 fixture.block_dag_storage.clone(),
                 fixture.deploy_storage.clone(),
                 fixture.rejected_deploy_buffer.clone(),
-                fixture.casper_buffer_storage.clone(),
                 fixture.rspace_state_manager.clone(),
                 fixture.runtime_manager.clone(),
                 fixture.estimator.clone(),
@@ -386,8 +374,7 @@ impl GenesisValidatorSpec {
         let test = async {
             // Scala: engineCell.set(new GenesisValidator(...))
             let genesis_validator = GenesisValidator::new(
-                fixture.block_processing_queue_tx.clone(),
-                fixture.blocks_in_processing.clone(),
+                fixture.ingest.clone(),
                 fixture.casper_shard_conf.clone(),
                 fixture.validator_id.clone(),
                 fixture.bap.clone(),
@@ -396,13 +383,11 @@ impl GenesisValidatorSpec {
                 fixture.connections_cell.clone(),
                 fixture.last_approved_block.clone(),
                 fixture.event_publisher.clone(),
-                fixture.block_retriever.clone(),
                 fixture.engine_cell.clone(),
                 fixture.block_store.clone(),
                 fixture.block_dag_storage.clone(),
                 fixture.deploy_storage.clone(),
                 fixture.rejected_deploy_buffer.clone(),
-                fixture.casper_buffer_storage.clone(),
                 fixture.rspace_state_manager.clone(),
                 fixture.runtime_manager.clone(),
                 fixture.estimator.clone(),

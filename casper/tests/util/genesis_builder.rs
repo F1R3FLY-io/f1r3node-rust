@@ -77,6 +77,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static CACHE_ACCESSES: AtomicU64 = AtomicU64::new(0);
 static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Default)]
 pub struct GenesisBuilder {
     vaults: Option<Vec<Vault>>,
 }
@@ -137,6 +138,7 @@ impl GenesisBuilder {
             timestamp: 0, // Using 0 like in GenesisBuilder
             version: 1,
             extra_bytes: bytes::Bytes::new(),
+            chain_id: bytes::Bytes::new(),
         };
 
         BlockMessage {

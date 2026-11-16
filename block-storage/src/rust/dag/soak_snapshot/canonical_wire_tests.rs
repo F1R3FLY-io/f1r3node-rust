@@ -35,7 +35,7 @@ fn availability(value: &Availability<BlockHash>) -> String {
 
 fn metadata(value: &BlockMetadata) -> String {
     format!(
-        "{{| metadata_block_hash := {}; metadata_parents := {}; metadata_sender := {}; metadata_justifications := {}; metadata_weights := {}; metadata_block_number := {}; metadata_sequence_number := {}; metadata_invalid := {}; metadata_directly_finalized := {}; metadata_finalized := {}; metadata_fault_tolerance_bits := {}; metadata_merge_base := {} |}}",
+        "{{| metadata_block_hash := {}; metadata_parents := {}; metadata_sender := {}; metadata_justifications := {}; metadata_weights := {}; metadata_block_number := {}; metadata_sequence_number := {}; metadata_equivocates := {}; metadata_directly_finalized := {}; metadata_finalized := {}; metadata_fault_tolerance_bits := {}; metadata_merge_base := {} |}}",
         bytes(&value.block_hash),
         list(&value.parents, |v| bytes(v)),
         bytes(&value.sender),
@@ -43,7 +43,7 @@ fn metadata(value: &BlockMetadata) -> String {
         list(&value.weight_map, |(key, n)| format!("({}, {})", bytes(key), bytes(&n.as_bigint().to_signed_bytes_be()))),
         value.block_number as u64,
         value.sequence_number as u32,
-        value.invalid,
+        option(value.equivocates.as_ref(), |sibling| bytes(sibling)),
         value.directly_finalized,
         value.finalized,
         value.fault_tolerance_value.to_bits(),
@@ -104,6 +104,7 @@ fn model(value: &SnapshotData) -> String {
         ),
     );
     field("generation", value.insertion_generation.to_string());
+    field("view_sequence", value.view_sequence.to_string());
     field(
         "transactions",
         list(&value.transactions, |t| {
@@ -215,7 +216,7 @@ fn fixture() -> SnapshotData {
         .collect(),
         block_number: -1,
         sequence_number: i32::MIN,
-        invalid: true,
+        equivocates: Some(hash(4)),
         directly_finalized: false,
         finalized: true,
         fault_tolerance_value: f32::from_bits(0x7fc0_1234),
@@ -248,6 +249,7 @@ fn fixture() -> SnapshotData {
             requested_bodies: 3,
         },
         insertion_generation: u64::MAX,
+        view_sequence: 42,
         transactions: vec![
             TransactionIdentity {
                 environment: "a\0é".to_owned(),
@@ -324,6 +326,8 @@ fn cases() -> Vec<(String, SnapshotData, usize)> {
         }};
     }
     case!("schema", |v: &mut SnapshotData| v.schema_version = u32::MAX);
+    case!("view_sequence", |v: &mut SnapshotData| v.view_sequence =
+        u64::MAX);
     case!("scope", |v: &mut SnapshotData| v.scope = "");
     macro_rules! limit {
         ($($member:ident).+) => {
@@ -466,7 +470,7 @@ fn cases() -> Vec<(String, SnapshotData, usize)> {
     meta!("sequence_number", |m: &mut BlockMetadata| m
         .sequence_number =
         i32::MAX);
-    meta!("invalid", |m: &mut BlockMetadata| m.invalid = false);
+    meta!("invalid", |m: &mut BlockMetadata| m.equivocates = None);
     meta!("directly_finalized", |m: &mut BlockMetadata| m
         .directly_finalized =
         true);

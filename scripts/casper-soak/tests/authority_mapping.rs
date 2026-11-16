@@ -27,7 +27,7 @@ fn response() -> Value {
             "oracle_witness":available(json!({"decision":true,"total_stake":"3",
                 "agreeing_stake":"3","clique_weight":"2","early_return":null}), 'c'),
             "original_fault_tolerance":available(json!((1.0f32/3.0).to_bits()), 'c'),
-            "display_projection":missing("equivocation_snapshot_unavailable", 'c'),
+            "display_projection":missing("display_not_requested", 'c'),
             "persisted_fault_tolerance":missing("not_finalized", 'a'),
             "reference_comparison":{"availability":"not_requested"}
         }],
@@ -275,7 +275,7 @@ fn unavailable_failed_and_persisted_values_keep_their_distinct_meanings() {
 
 fn display_response() -> Value {
     let mut value = response();
-    value["result"]["value"]["request"]["display"] = json!({"max_equivocation_records":16});
+    value["result"]["value"]["request"]["display"] = json!({});
     let target = &mut value["result"]["value"]["targets"][0];
     target["display_projection"] = available(json!(0.25f32.to_bits()), 'e');
     target["display_inputs"] = available(
@@ -283,7 +283,7 @@ fn display_response() -> Value {
             "base_source":"original_oracle","base_bits":0.5f32.to_bits(),
             "initial_fault_bits":0.25f32.to_bits(),"equivocating_weight":"1","total_weight":"4",
             "matched_records":1,"distinct_equivocators":1,"finalized_set_member":false,
-            "metadata_finalized":false,"equivocation_digest":"f".repeat(64)
+            "metadata_finalized":false
         }),
         'e',
     );
@@ -344,8 +344,8 @@ fn display_mapping_rejects_cross_capture_inputs_and_availability_mismatch() {
             json!(4294967296u64),
         ),
         (
-            "/result/value/targets/0/display_inputs/value/equivocation_digest",
-            json!("invalid"),
+            "/result/value/targets/0/display_inputs/value/matched_records",
+            json!("one"),
         ),
     ] {
         let mut value = display_response();

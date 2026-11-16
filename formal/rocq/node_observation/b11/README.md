@@ -18,6 +18,7 @@ Rocq checks their equality with an independent encoder. Each case also proves va
 | Read usage | `read usage` tag, then three eight-byte integers |
 | Coverage | `coverage` tag, eight-byte count, one-byte Boolean, eight-byte count |
 | Generation | `generation` tag, then eight-byte integer |
+| Published view | `view_sequence` tag, then eight-byte publication sequence |
 | Transactions | `transactions` tag, count, then environment bytes, reference count, transaction identifier, and optional validation identifier |
 | DAG set | `dag_set` tag, count, then length-prefixed hashes |
 | Child map | `child_map` tag, count, then hash and counted child hashes |
@@ -71,7 +72,7 @@ SHA-256 remains outside the injectivity theorem. The Rust tests check the digest
 
 ## Rust correspondence checks
 
-The fixture suite includes 75 cases. These cases cover all snapshot fields and every metadata field in both metadata locations.
+The fixture suite includes 76 cases. These cases cover all snapshot fields, including the captured publication sequence, and every metadata field in both metadata locations.
 
 The cases include signed extremes, a NaN payload, signed zero, UTF-8, embedded zero bytes, empty values, availability states, and ordered vectors.
 

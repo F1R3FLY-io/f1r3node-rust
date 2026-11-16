@@ -2,11 +2,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
+use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
 };
@@ -14,7 +14,6 @@ use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
 use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
@@ -28,7 +27,7 @@ use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use shared::rust::token_amount::TokenAmount;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use crate::rust::engine::block_retriever::BlockRetriever;
+use crate::rust::blocks::ingest::block_ingest::IngestHandle;
 use crate::rust::engine::multi_parent_casper::{FinalizedBondCache, MultiParentCasperImpl};
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
@@ -129,18 +128,34 @@ pub trait Casper {
 
     /// Ask peers for one named block, honoring `BlockNotHeld`'s contract
     /// ("naming the missing block lets the caller fetch it and retry").
-    /// Defaulted to a no-op so effect mocks need no retriever wiring.
+    /// Defaulted to a no-op so effect mocks need no block ingest.
     async fn request_block_from_peers(&self, _hash: BlockHash) -> Result<(), CasperError> { Ok(()) }
 
-    fn contains(&self, hash: &BlockHash) -> bool;
-
-    fn dag_contains(&self, hash: &BlockHash) -> bool;
-
-    fn buffer_contains(&self, hash: &BlockHash) -> bool;
-
-    fn buffer_waits_on_dependency(&self, hash: &BlockHash) -> bool { self.buffer_contains(hash) }
+    fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError>;
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError>;
+
+    /// Current effective anchor height: blocks at or below this height are
+    /// treated as settled history, so walks are not expected to reach them
+    /// and `BlockNotHeld` below the anchor defers rather than judging. On
+    /// a sync-rooted node this is the restore anchor; on a genesis-rooted
+    /// node it starts at zero and advances as block-store GC prunes past
+    /// the citation horizon. Default reads the approved block's height so
+    /// effect mocks inherit "genesis-rooted at approved-block height".
+    fn effective_anchor_number(&self) -> i64 {
+        self.get_approved_block()
+            .ok()
+            .map(crate::rust::util::proto_util::block_number)
+            .unwrap_or(0)
+    }
+
+    /// Shared handle on the effective-anchor height. Used by block ingest
+    /// to admit below-anchor settled history live and by GC to advance the
+    /// anchor after a successful prune. Defaulted to a fresh atomic seeded
+    /// with the current anchor so effect mocks need no shared state.
+    fn effective_anchor_handle(&self) -> Arc<AtomicI64> {
+        Arc::new(AtomicI64::new(self.effective_anchor_number()))
+    }
 
     fn deploy(
         &self,
@@ -162,8 +177,8 @@ pub trait Casper {
 
     /// Validate a self-created block, skipping the expensive checkpoint replay and bonds_cache
     /// steps since both were already computed during `block_creator::create`.
-    /// All other validation steps (block_summary, neglected_invalid_block, phlo_price,
-    /// equivocation checks, block-index computation) still run.
+    /// All other validation steps (shard and chain identity, equivocation, block_summary,
+    /// neglect, phlo_price, block-index computation) still run.
     async fn validate_self_created(
         &self,
         block: &BlockMessage,
@@ -190,10 +205,6 @@ pub trait Casper {
         status: &InvalidBlock,
         dag: &KeyValueDagRepresentation,
     ) -> Result<KeyValueDagRepresentation, CasperError>;
-
-    fn get_dependency_free_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError>;
-
-    fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError>;
 }
 
 #[async_trait]
@@ -207,8 +218,6 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     > {
         Err(crate::rust::soak_observer::AttachmentError::Unsupported)
     }
-
-    async fn fetch_dependencies(&self) -> Result<(), CasperError>;
 
     // This is the weight of faults that have been accumulated so far.
     // We want the clique oracle to give us a fault tolerance that is greater than
@@ -277,8 +286,8 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     }
 }
 
-pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
-    block_retriever: BlockRetriever<T>,
+pub async fn hash_set_casper(
+    ingest: IngestHandle,
     event_publisher: F1r3flyEvents,
     runtime_manager: Arc<RuntimeManager>,
     estimator: Estimator,
@@ -286,12 +295,11 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     block_dag_storage: BlockDagKeyValueStorage,
     deploy_storage: KeyValueDeployStorage,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    casper_buffer_storage: CasperBufferKeyValueStorage,
     validator_id: Option<ValidatorIdentity>,
     mut casper_shard_conf: CasperShardConf,
     approved_block: BlockMessage,
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
-) -> Result<MultiParentCasperImpl<T>, CasperError> {
+) -> Result<MultiParentCasperImpl, CasperError> {
     // SINGLE ADOPTION POINT for the protocol fault-tolerance threshold.
     //
     // θ is a CONSENSUS value: the finalized-floor oracle runs on it, and the
@@ -330,36 +338,33 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
 
     // Same adoption, same reasoning, for the parameters the VALIDITY rules
     // fork on: parent spread (max-parent-depth), expiry and repeat-deploy
-    // windows (deploy-lifespan), and the phlo floor (min-phlo-price). The
+    // windows (deploy-lifespan), the phlo floor (min-phlo-price), and the
+    // epoch slash authorization and neglect are judged in (epoch-length). The
     // assignment is unconditional — `reconcile(local, onchain) = onchain` —
     // and absent/out-of-range fails the node (see
     // `read_on_chain_consensus_parameters`).
-    let (onchain_mpd, onchain_lifespan, onchain_min_phlo) =
-        crate::rust::util::token_metadata_check::read_on_chain_consensus_parameters(
-            &runtime_manager,
-            &approved_block.body.state.post_state_hash,
-        )
-        .await?;
-    if (onchain_mpd, onchain_lifespan, &onchain_min_phlo)
-        != (
-            casper_shard_conf.max_parent_depth,
-            casper_shard_conf.deploy_lifespan,
-            &casper_shard_conf.min_phlo_price,
-        )
-    {
+    let onchain = crate::rust::util::token_metadata_check::read_on_chain_consensus_parameters(
+        &runtime_manager,
+        &approved_block.body.state.post_state_hash,
+    )
+    .await?;
+    let local = crate::rust::rholang::runtime::ConsensusParameters {
+        max_parent_depth: casper_shard_conf.max_parent_depth,
+        deploy_lifespan: casper_shard_conf.deploy_lifespan,
+        min_phlo_price: casper_shard_conf.min_phlo_price.clone(),
+        epoch_length: casper_shard_conf.epoch_length,
+    };
+    if onchain != local {
         tracing::info!(
-            onchain_max_parent_depth = onchain_mpd,
-            onchain_deploy_lifespan = onchain_lifespan,
-            onchain_min_phlo_price = %onchain_min_phlo,
-            local_max_parent_depth = casper_shard_conf.max_parent_depth,
-            local_deploy_lifespan = casper_shard_conf.deploy_lifespan,
-            local_min_phlo_price = %casper_shard_conf.min_phlo_price,
+            ?onchain,
+            ?local,
             "Adopting on-chain consensus parameters over local configuration"
         );
     }
-    casper_shard_conf.max_parent_depth = onchain_mpd;
-    casper_shard_conf.deploy_lifespan = onchain_lifespan;
-    casper_shard_conf.min_phlo_price = onchain_min_phlo;
+    casper_shard_conf.max_parent_depth = onchain.max_parent_depth;
+    casper_shard_conf.deploy_lifespan = onchain.deploy_lifespan;
+    casper_shard_conf.min_phlo_price = onchain.min_phlo_price;
+    casper_shard_conf.epoch_length = onchain.epoch_length;
 
     // Startup validation ran on the LOCAL values; everything derived from or
     // judged against max-parent-depth is finished HERE, on the adopted one.
@@ -400,7 +405,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
             }
         }
         let recovery_span = std::time::Duration::from_millis(
-            crate::rust::engine::block_retriever::total_unresolved_rerequest_span_ms(),
+            crate::rust::blocks::ingest::fetch_scheduler::total_unresolved_rerequest_span_ms(),
         );
         if citability_window < recovery_span {
             tracing::warn!(
@@ -415,6 +420,19 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
 
     let finalized_bond_cache =
         FinalizedBondCache::from_storage(&block_dag_storage, validator_id.as_ref())?;
+    // Effective anchor: whichever is higher — the approved block's height
+    // (startup baseline) or the persisted GC pruning cutoff (survives
+    // restart). Block-store GC only advances this, so the max is monotone.
+    // Test fixtures build the storage without persistence; skip the
+    // persisted read there — GC is unreachable on such storages anyway.
+    let anchor_from_approved = crate::rust::util::proto_util::block_number(&approved_block);
+    let anchor_persisted = match block_dag_storage.try_gc_store() {
+        Some(gc) => gc.effective_anchor()?.unwrap_or(anchor_from_approved),
+        None => anchor_from_approved,
+    };
+    let effective_anchor = Arc::new(std::sync::atomic::AtomicI64::new(
+        anchor_from_approved.max(anchor_persisted),
+    ));
     let finalization = crate::rust::engine::multi_parent_casper::FinalizationContext {
         observer: Arc::new(std::sync::OnceLock::new()),
         finalized_bond_cache: finalized_bond_cache.clone(),
@@ -431,7 +449,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     Ok(MultiParentCasperImpl {
         observer: finalization.observer.clone(),
         divergence_monitor: finalization.divergence_monitor.clone(),
-        block_retriever,
+        ingest,
         event_publisher: finalization.event_publisher.clone(),
         runtime_manager: finalization.runtime_manager.clone(),
         estimator,
@@ -440,15 +458,18 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         deploy_storage: finalization.deploy_storage.clone(),
         deploy_admission: Arc::new(crate::rust::deploy_admission::DeployAdmission::default()),
         rejected_deploy_buffer,
-        casper_buffer_storage,
         validator_id,
         finalized_bond_cache,
         casper_shard_conf: finalization.shard_conf.clone(),
         approved_block,
+        effective_anchor,
         finalizer: crate::rust::engine::multi_parent_casper::Finalizer::start(finalization),
         heartbeat_signal_ref,
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        judged_twins: Arc::new(crate::rust::util::bounded_cache::BoundedCache::new(
+            MultiParentCasperImpl::MAX_JUDGED_TWINS,
+        )),
     })
 }
 
@@ -483,6 +504,9 @@ pub struct CasperSnapshot {
     pub max_block_num: i64,
     pub max_seq_nums: HashMap<Validator, u64>,
     pub on_chain_state: OnChainCasperState,
+    /// The genesis block hash: the chain every block of this node's shard
+    /// names in its header.
+    pub chain_id: BlockHash,
 }
 
 impl CasperSnapshot {
@@ -497,8 +521,9 @@ impl CasperSnapshot {
             .is_some_and(|stake| !stake.is_zero()))
     }
 
-    pub fn new(dag: KeyValueDagRepresentation) -> Self {
+    pub fn new(dag: KeyValueDagRepresentation, chain_id: BlockHash) -> Self {
         Self {
+            chain_id,
             dag,
             last_finalized_block: BlockHash::default(),
             parents: vec![],
@@ -591,6 +616,10 @@ pub struct CasperShardConf {
     /// Depth buffer for mergeable channels garbage collection.
     /// Additional safety margin beyond max-parent-depth before deleting data.
     pub mergeable_channels_gc_depth_buffer: i32,
+    /// Delete finalized block bodies from the block store once no honest
+    /// validator can still cite them. Shares the mergeable-channel GC
+    /// horizon and predicate; requires `enable_mergeable_channel_gc = true`.
+    pub enable_block_store_gc: bool,
     pub synchrony_recovery_stall_window: Duration,
     pub synchrony_recovery_cooldown: Duration,
     pub synchrony_recovery_max_bypasses: u32,
@@ -637,6 +666,7 @@ impl CasperShardConf {
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_depth_buffer: 10,
+            enable_block_store_gc: false,
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),
             synchrony_recovery_max_bypasses: 2,
@@ -652,9 +682,8 @@ impl CasperShardConf {
     }
 }
 
-// TODO(#325): Move test_helpers to a #[cfg(test)] module or separate test-utils crate
-// to avoid including test code in production binaries.
 /// Test helpers for creating mock Casper implementations.
+#[cfg(any(test, feature = "test-utils"))]
 pub mod test_helpers {
     use async_trait::async_trait;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
@@ -719,7 +748,6 @@ pub mod test_helpers {
         pub fn create_empty_snapshot() -> CasperSnapshot {
             use std::sync::Arc;
 
-            use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
             use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
             use parking_lot::RwLock;
             use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
@@ -727,7 +755,11 @@ pub mod test_helpers {
 
             let block_metadata_store =
                 KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-            let dag = KeyValueDagRepresentation {
+            let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+                history: None,
+                view_sequence: u64::MAX,
+            pruning_cutoff: 0,
+                view_max_height: None,
                 dag_set: imbl::HashSet::new(),
                 latest_messages_map: imbl::HashMap::new(),
                 child_map: imbl::HashMap::new(),
@@ -735,7 +767,6 @@ pub mod test_helpers {
                 block_number_map: imbl::HashMap::new(),
                 main_parent_map: imbl::HashMap::new(),
                 self_justification_map: imbl::HashMap::new(),
-                invalid_blocks_set: imbl::HashSet::new(),
                 last_finalized_block_hash: BlockHash::new(),
                 finalized_blocks_set: imbl::HashSet::new(),
                 block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(
@@ -749,9 +780,9 @@ pub mod test_helpers {
                 carrier_index: Arc::new(RwLock::new(
                     block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
                 )),
-            };
+            }.build();
 
-            CasperSnapshot::new(dag)
+            CasperSnapshot::new(dag, BlockHash::from(vec![0xC1; 32]))
         }
 
         pub fn bond_validator_in_snapshot(
@@ -787,11 +818,7 @@ pub mod test_helpers {
             Ok(self.snapshot.clone())
         }
 
-        fn contains(&self, _hash: &BlockHash) -> bool { false }
-
-        fn dag_contains(&self, _hash: &BlockHash) -> bool { false }
-
-        fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }
+        fn dag_contains(&self, _hash: &BlockHash) -> Result<bool, CasperError> { Ok(false) }
 
         fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
             Err(CasperError::RuntimeError(
@@ -848,18 +875,10 @@ pub mod test_helpers {
         ) -> Result<KeyValueDagRepresentation, CasperError> {
             Ok(dag.clone())
         }
-
-        fn get_dependency_free_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
-            Ok(Vec::new())
-        }
-
-        fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> { Ok(Vec::new()) }
     }
 
     #[async_trait]
     impl MultiParentCasper for TestCasperWithSnapshot {
-        async fn fetch_dependencies(&self) -> Result<(), CasperError> { Ok(()) }
-
         fn normalized_initial_fault(
             &self,
             _weights: HashMap<Validator, num_bigint::BigInt>,

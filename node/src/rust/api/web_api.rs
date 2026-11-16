@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use casper::rust::api::block_api::{
-    BlockAPI, DeployNotFoundError, InvalidHashError, InvalidPublicKeyError,
+    BlockAPI, DeployNotFoundError, DeployValidationError, InvalidHashError, InvalidPublicKeyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
@@ -467,12 +467,15 @@ impl WebApi for WebApiImpl {
 
         // Advertise the floor admission and validity actually enforce — the
         // chain-adopted value; local conf only until casper is up.
-        let min_phlo_price = match self.engine_cell.get().await.with_casper() {
-            Some(casper) => casper.casper_shard_conf().min_phlo_price.clone(),
-            None => self.min_phlo_price.clone(),
+        let (min_phlo_price, epoch_length) = match self.engine_cell.get().await.with_casper() {
+            Some(casper) => (
+                casper.casper_shard_conf().min_phlo_price.clone(),
+                casper.casper_shard_conf().epoch_length,
+            ),
+            None => (self.min_phlo_price.clone(), self.epoch_length),
         };
-        let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
-            lfb_number / self.epoch_length as i64
+        let current_epoch = if epoch_length > 0 && lfb_number >= 0 {
+            lfb_number / epoch_length as i64
         } else {
             0
         };
@@ -497,7 +500,7 @@ impl WebApi for WebApiImpl {
             is_read_only: self.is_node_read_only,
             is_ready,
             current_epoch,
-            epoch_length: self.epoch_length,
+            epoch_length,
         })
     }
 
@@ -981,7 +984,10 @@ impl WebApi for WebApiImpl {
     async fn get_epoch(&self, block_hash: Option<String>) -> Result<EpochResponse> {
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
-        let epoch_length = self.epoch_length as i64;
+        let epoch_length = match self.engine_cell.get().await.with_casper() {
+            Some(casper) => casper.casper_shard_conf().epoch_length,
+            None => self.epoch_length,
+        } as i64;
         let quarantine_length = self.quarantine_length as i64;
 
         let current_epoch = if epoch_length > 0 {
@@ -1736,34 +1742,48 @@ fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
     request
         .data
         .validate_amounts()
-        .map_err(|error| eyre!("Invalid deploy amount: {error}"))?;
-    models::rust::deploy_parameters::validate_parameters(&request.data.parameters)
-        .map_err(|error| eyre!("Invalid deploy parameters: {}", error))?;
+        .map_err(|error| DeployValidationError {
+            message: format!("Invalid deploy amount: {error}"),
+        })?;
+    models::rust::deploy_parameters::validate_parameters(&request.data.parameters).map_err(
+        |error| DeployValidationError {
+            message: format!("Invalid deploy parameters: {error}"),
+        },
+    )?;
     // Decode hex strings
-    let pk_bytes = hex::decode(&request.deployer)
-        .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
+    let pk_bytes = hex::decode(&request.deployer).map_err(|e| DeployValidationError {
+        message: format!("Public key is not valid base16 format: {e}"),
+    })?;
 
-    let sig_bytes = hex::decode(&request.signature)
-        .map_err(|e| eyre!("Signature is not valid base16 format: {}", e))?;
+    let sig_bytes = hex::decode(&request.signature).map_err(|e| DeployValidationError {
+        message: format!("Signature is not valid base16 format: {e}"),
+    })?;
 
     // Create public key
     let pk = PublicKey::from_bytes(&pk_bytes);
 
     // Look up signature algorithm by name
     let sig_alg = SignaturesAlgFactory::apply(&request.sig_algorithm).ok_or_else(|| {
-        eyre!(
-            "Signature algorithm not supported: {}",
-            request.sig_algorithm
-        )
+        DeployValidationError {
+            message: format!(
+                "Signature algorithm not supported: {}",
+                request.sig_algorithm
+            ),
+        }
     })?;
 
     // Create DeployData (use the data from request)
     let deploy_data = request.data.clone();
 
     // Create signed deploy
-    Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
-        .map_err(|e| eyre!("Invalid signature: {}", e))?
-        .ok_or_else(|| eyre!("Failed to create signed deploy"))
+    Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg).ok_or_else(|| {
+        DeployValidationError {
+            message:
+                "Invalid signature: the signature does not verify for this deployer and deploy data"
+                    .to_string(),
+        }
+        .into()
+    })
 }
 
 // Conversion functions for protobuf generated types

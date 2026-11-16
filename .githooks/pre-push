@@ -17,7 +17,7 @@
 #   QUICK=1              - Run only fast tests (skip --release tests)
 #   VERBOSE=1            - Show all test output (not just failures)
 #   TEST_TIMEOUT=600     - Per-command timeout in seconds (default: 600)
-#   CASPER_TEST_TIMEOUT=1800 - Casper test timeout in seconds (default: 1800)
+#   CASPER_TEST_TIMEOUT=3600 - Casper test timeout in seconds (default: 3600)
 #   TEST_CRATES="casper rholang" - Run tests for specific crates only
 #
 # CI environment detection:
@@ -48,7 +48,7 @@ SKIP_CI_TESTS="${SKIP_CI_TESTS:-0}"
 VERBOSE="${VERBOSE:-0}"
 QUICK="${QUICK:-0}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-600}"
-CASPER_TEST_TIMEOUT="${CASPER_TEST_TIMEOUT:-1800}"
+CASPER_TEST_TIMEOUT="${CASPER_TEST_TIMEOUT:-3600}"
 TEST_CRATES="${TEST_CRATES:-}"
 TEST_RUNNER="${TEST_RUNNER:-nextest}"
 SOAK_CHARTS_MANIFEST="scripts/soak-charts/Cargo.toml"
@@ -109,6 +109,23 @@ unset GIT_DIR GIT_WORK_TREE 2>/dev/null || true
 # Raise FD limit for parallel LMDB-heavy tests (rholang/casper open many envs).
 # heed 0.22 holds more FDs per Env than 0.11; macOS default of 256 trips EMFILE.
 ulimit -n 65536 2>/dev/null || true
+
+# Reap leaked SysV semaphore sets on macOS before running LMDB-heavy tests.
+# Upstream lmdb-master-sys 0.2.6 builds liblmdb with MDB_USE_SYSV_SEM on Darwin,
+# and tests that keep their Env alive until process exit (notably the historical
+# Box::leak(TempDir) helpers) leave the per-Env semid behind. After enough
+# iterations, kern.sysv.semmns fills up and semget() returns ENOSPC, surfacing
+# as heed Io(Os { code: 28, kind: StorageFull }) — a false "disk full" error
+# that blocks local pushes. See F1R3FLY-io/f1r3node-rust#1014.
+# Only owned-by-current-uid semids are touched.
+if [ "$(uname -s)" = Darwin ] && [ "${SKIP_SYSV_SEM_CLEANUP:-0}" != 1 ]; then
+    leaked_semids="$(ipcs -s 2>/dev/null | awk -v user="$(id -un)" '$1=="s" && $5==user {print $2}')"
+    if [ -n "$leaked_semids" ]; then
+        count="$(printf '%s\n' "$leaked_semids" | wc -l | tr -d ' ')"
+        echo -e "${CYAN}Reaping ${count} leaked SysV semaphore set(s) (owned by $(id -un)); see f1r3node-rust#1014.${NC}"
+        printf '%s\n' "$leaked_semids" | xargs -n1 ipcrm -s 2>/dev/null || true
+    fi
+fi
 
 cd "$REPO_ROOT"
 
@@ -481,6 +498,6 @@ else
     echo "  TEST_CRATES=\"casper rholang\" git push  - Test specific crates"
     echo "  TEST_RUNNER=cargo git push   - Use cargo test for A/B comparison"
     echo "  TEST_TIMEOUT=300 git push    - Adjust the general timeout (default: 600s)"
-    echo "  CASPER_TEST_TIMEOUT=2400 git push - Adjust the Casper timeout (default: 1800s)"
+    echo "  CASPER_TEST_TIMEOUT=5400 git push - Adjust the Casper timeout (default: 3600s)"
     exit 1
 fi

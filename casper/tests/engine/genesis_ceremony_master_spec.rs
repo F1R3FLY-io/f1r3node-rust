@@ -90,15 +90,12 @@ impl GenesisCeremonyMasterSpec {
                 let connections_cell = fixture.connections_cell.clone();
                 let last_approved_block = fixture.last_approved_block.clone();
                 let event_publisher = fixture.event_publisher.clone();
-                let block_retriever = fixture.block_retriever.clone();
                 let block_store = fixture.block_store.clone();
                 let block_dag_storage = fixture.block_dag_storage.clone();
                 let deploy_storage = fixture.deploy_storage.clone();
-                let casper_buffer_storage = fixture.casper_buffer_storage.clone();
                 let runtime_manager = fixture.runtime_manager.clone();
                 let estimator = fixture.estimator.clone();
-                let block_processing_queue_tx = fixture.block_processing_queue_tx.clone();
-                let blocks_in_processing = fixture.blocks_in_processing.clone();
+                let ingest = fixture.ingest.clone();
                 let casper_shard_conf = fixture.casper_shard_conf.clone();
                 let validator_id = Some(fixture.validator_id.clone());
 
@@ -109,17 +106,14 @@ impl GenesisCeremonyMasterSpec {
                         connections_cell,
                         last_approved_block,
                         &event_publisher,
-                        block_retriever,
                         engine_cell_for_loop,
                         block_store,
                         block_dag_storage,
                         deploy_storage,
                         fixture.rejected_deploy_buffer.clone(),
-                        casper_buffer_storage,
                         runtime_manager,
                         estimator,
-                        block_processing_queue_tx,
-                        blocks_in_processing,
+                        ingest,
                         casper_shard_conf,
                         validator_id,
                         true,
@@ -243,17 +237,14 @@ async fn waiting_for_approved_block_loop_keeps_a_flat_stack() {
     let connections_cell = fixture.connections_cell.clone();
     let last_approved_block = fixture.last_approved_block.clone();
     let event_publisher = fixture.event_publisher.clone();
-    let block_retriever = fixture.block_retriever.clone();
     let engine_cell = Arc::new(EngineCell::init());
     let block_store = fixture.block_store.clone();
     let block_dag_storage = fixture.block_dag_storage.clone();
     let deploy_storage = fixture.deploy_storage.clone();
     let rejected_deploy_buffer = fixture.rejected_deploy_buffer.clone();
-    let casper_buffer_storage = fixture.casper_buffer_storage.clone();
     let runtime_manager = fixture.runtime_manager.clone();
     let estimator = fixture.estimator.clone();
-    let block_processing_queue_tx = fixture.block_processing_queue_tx.clone();
-    let blocks_in_processing = fixture.blocks_in_processing.clone();
+    let ingest = fixture.ingest.clone();
     let casper_shard_conf = fixture.casper_shard_conf.clone();
     let validator_id = Some(fixture.validator_id.clone());
 
@@ -274,17 +265,14 @@ async fn waiting_for_approved_block_loop_keeps_a_flat_stack() {
                             connections_cell,
                             last_approved_block,
                             &event_publisher,
-                            block_retriever,
                             engine_cell,
                             block_store,
                             block_dag_storage,
                             deploy_storage,
                             rejected_deploy_buffer,
-                            casper_buffer_storage,
                             runtime_manager,
                             estimator,
-                            block_processing_queue_tx,
-                            blocks_in_processing,
+                            ingest,
                             casper_shard_conf,
                             validator_id,
                             true,

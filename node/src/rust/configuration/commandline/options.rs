@@ -362,13 +362,9 @@ pub struct RunOptions {
     #[arg(long = "validator-private-key-path")]
     pub validator_private_key_path: Option<PathBuf>,
 
-    /// Interval for the casper loop to maintain requested blocks and missing dependent blocks
+    /// Interval of the engine tick that runs until casper is initialized
     #[arg(long = "casper-loop-interval", value_parser = ValueParser::new(parse_duration))]
     pub casper_loop_interval: Option<Duration>,
-
-    /// Timeout for blocks requests
-    #[arg(long = "requested-blocks-timeout", value_parser = ValueParser::new(parse_duration))]
-    pub requested_blocks_timeout: Option<Duration>,
 
     /// Finalization is called every `n` blocks
     #[arg(long = "finalization-rate")]
@@ -545,6 +541,17 @@ pub struct RunOptions {
     /// Takes precedence over --enable-mergeable-channel-gc if both are provided.
     #[arg(long = "disable-mergeable-channel-gc", action = ArgAction::SetTrue)]
     pub disable_mergeable_channel_gc: bool,
+
+    /// Delete old finalized block bodies that no honest validator can still
+    /// cite. Piggybacks on the mergeable-channel GC pass; has no effect when
+    /// mergeable-channel GC is disabled.
+    #[arg(long = "enable-block-store-gc", action = ArgAction::SetTrue)]
+    pub enable_block_store_gc: bool,
+
+    /// Disable block-store garbage collection.
+    /// Takes precedence over --enable-block-store-gc if both are provided.
+    #[arg(long = "disable-block-store-gc", action = ArgAction::SetTrue)]
+    pub disable_block_store_gc: bool,
 
     /// Enable heartbeat block proposing for liveness
     #[arg(long = "heartbeat-enabled", action = ArgAction::SetTrue)]

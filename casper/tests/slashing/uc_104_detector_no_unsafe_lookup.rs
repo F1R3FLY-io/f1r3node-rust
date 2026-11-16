@@ -22,7 +22,7 @@ use super::detector_totality_helpers::{
 #[tokio::test]
 async fn uc_104_missing_direct_lookup_does_not_abort_detector() {
     let fixture = DetectorFixture::new().await;
-    fixture.add_record(0, 0, &[]);
+    fixture.add_equivocation(0, 0);
 
     let child_a = block(
         10,

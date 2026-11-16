@@ -6,15 +6,14 @@
 //! plan's "Layout C" entry for the wider context.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, Mutex};
 
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::validator::Validator;
@@ -31,10 +30,12 @@ use parking_lot::Mutex as PlMutex;
 use prost::bytes::Bytes;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
+use crate::rust::block_status::InvalidBlock;
+use crate::rust::blocks::ingest::block_ingest::IngestHandle;
 use crate::rust::casper::CasperShardConf;
-use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::multi_parent_casper::bond_cache::FinalizedBondCache;
 use crate::rust::estimator::Estimator;
+use crate::rust::util::bounded_cache::BoundedCache;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
@@ -48,9 +49,9 @@ use crate::rust::validator_identity::ValidatorIdentity;
 // hardcoded predicate. The caller in `block_admission::add_deploy`
 // reads `this.casper_shard_conf.deploy_heartbeat_wake_enabled`.
 
-pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
+pub struct MultiParentCasperImpl {
     pub observer: Arc<std::sync::OnceLock<crate::rust::soak_observer::ObserverBinding>>,
-    pub block_retriever: BlockRetriever<T>,
+    pub ingest: IngestHandle,
     pub event_publisher: F1r3flyEvents,
     /// P4-4 (slashing audit) originally required
     /// `Arc<tokio::sync::Mutex<RuntimeManager>>` because `RuntimeManager`
@@ -75,12 +76,17 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     /// happen synchronously inside the proposer (block_creator) and
     /// validator (validate.rs::repeat_deploy) — never across `.await`.
     pub rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    pub casper_buffer_storage: CasperBufferKeyValueStorage,
     pub validator_id: Option<ValidatorIdentity>,
     pub finalized_bond_cache: FinalizedBondCache,
     // TODO: this should be read from chain, for now read from startup options - OLD
     pub casper_shard_conf: CasperShardConf,
     pub approved_block: BlockMessage,
+    /// Live effective-anchor height. Initialized to the approved block's
+    /// height and advanced by block-store GC past the citation horizon.
+    /// Shared with block ingest (gates settled-history admission) and
+    /// validation (gates deferral vs. invalid-recording) so a single
+    /// store write updates every consumer.
+    pub effective_anchor: Arc<AtomicI64>,
     /// Escalates a persistent containment hold (the shard finalizing floors
     /// this node's LFB is not contained in) to a finality-divergence ERROR
     /// and metric. See `finalization_runner::DivergenceMonitor`.
@@ -112,4 +118,10 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     /// Cache for get_active_validators results keyed by post_state_hash bytes.
     /// Avoids re-reading from RSpace when the main parent block hasn't changed.
     pub active_validators_cache: Arc<tokio::sync::Mutex<HashMap<Vec<u8>, Vec<Validator>>>>,
+    /// Final verdicts on the contents of equivocations held as parents.
+    pub judged_twins: Arc<BoundedCache<BlockHash, Result<(), InvalidBlock>>>,
+}
+
+impl MultiParentCasperImpl {
+    pub const MAX_JUDGED_TWINS: usize = 1024;
 }

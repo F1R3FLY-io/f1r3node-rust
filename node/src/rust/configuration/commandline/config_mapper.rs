@@ -234,10 +234,6 @@ impl ConfigMapper<Options> for NodeConf {
                 run.casper_loop_interval,
             );
             Self::try_override_value(
-                &mut self.casper.requested_blocks_timeout,
-                run.requested_blocks_timeout,
-            );
-            Self::try_override_value(
                 &mut self.casper.fork_choice_stale_threshold,
                 run.fork_choice_stale_threshold,
             );
@@ -344,6 +340,13 @@ impl ConfigMapper<Options> for NodeConf {
                 self.casper.enable_mergeable_channel_gc = false;
             } else if run.enable_mergeable_channel_gc {
                 self.casper.enable_mergeable_channel_gc = true;
+            }
+
+            // Block-store GC overrides
+            if run.disable_block_store_gc {
+                self.casper.enable_block_store_gc = false;
+            } else if run.enable_block_store_gc {
+                self.casper.enable_block_store_gc = true;
             }
 
             // Heartbeat configuration overrides
@@ -498,7 +501,6 @@ mod tests {
         "--validator-private-key=111111",
         "--validator-private-key-path=/var/lib/rnode/pem.key",
         "--casper-loop-interval=111111seconds",
-        "--requested-blocks-timeout=111111seconds",
         "--finalization-rate=111111",
         "--max-number-of-parents=111111",
         "--max-parent-depth=111111",
@@ -675,7 +677,6 @@ mod tests {
                 validator_private_key: Some("111111".to_string()),
                 validator_private_key_path: Some(PathBuf::from("/var/lib/rnode/pem.key")),
                 casper_loop_interval: Some(Duration::from_secs(111111)),
-                requested_blocks_timeout: Some(Duration::from_secs(111111)),
                 finalization_rate: Some(111111),
                 max_number_of_parents: Some(111111),
                 max_parent_depth: Some(111111),
@@ -714,6 +715,8 @@ mod tests {
                 ceremony_master_mode: false,
                 enable_mergeable_channel_gc: false,
                 disable_mergeable_channel_gc: false,
+                enable_block_store_gc: false,
+                disable_block_store_gc: false,
                 heartbeat_enabled: true,
                 heartbeat_disabled: true,
                 heartbeat_check_interval: Some(Duration::from_secs(111111)),
@@ -781,6 +784,7 @@ mod tests {
                 deploy_max_inflight: None,
                 max_blocks_limit: 100,
                 enable_reporting: false,
+                report_cache_retention_blocks: 0,
                 exploratory_deploy_max_concurrent: 1,
                 exploratory_deploy_phlo_limit: 5_000_000,
                 exploratory_deploy_execution_timeout: Duration::from_secs(15),
@@ -813,10 +817,10 @@ mod tests {
                 shard_name: "".to_string(),
                 parent_shard_id: "/".to_string(),
                 casper_loop_interval: Duration::from_secs(1),
-                requested_blocks_timeout: Duration::from_secs(30),
                 finalization_rate: 1,
                 max_number_of_parents: 1,
                 max_parent_depth: 1,
+                dag_hot_window_depth: 1024,
                 deploy_lifespan: 50,
                 deploy_admission: casper::rust::deploy_admission::default_retained_pool_limits(),
                 deploy_play_budget: Duration::ZERO,
@@ -865,6 +869,7 @@ mod tests {
                 enable_mergeable_channel_gc: false,
                 mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
                 mergeable_channels_gc_depth_buffer: 10,
+                enable_block_store_gc: false,
                 synchrony_recovery_stall_window: Duration::from_secs(60),
                 synchrony_recovery_cooldown: Duration::from_secs(20),
                 synchrony_recovery_max_bypasses: 2,
@@ -1051,10 +1056,6 @@ mod tests {
         );
         assert_eq!(
             default_config.casper.casper_loop_interval,
-            Duration::from_secs(111111)
-        );
-        assert_eq!(
-            default_config.casper.requested_blocks_timeout,
             Duration::from_secs(111111)
         );
         assert_eq!(default_config.casper.finalization_rate, 111111);

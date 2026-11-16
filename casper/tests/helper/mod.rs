@@ -5,6 +5,7 @@ pub mod block_util;
 pub mod bonding_util;
 pub mod casper_invalid_blocks_contract;
 pub mod deployer_id_contract;
+pub mod inline_ingest;
 pub mod no_ops_casper_effect;
 pub mod process_context_ext;
 pub mod rho_logger_contract;
