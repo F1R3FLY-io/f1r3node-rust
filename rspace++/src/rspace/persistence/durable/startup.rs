@@ -354,7 +354,8 @@ pub(super) fn resolve_reclamation_candidate_v1(
             ReclamationCatalogRelationV1::PreCas => {
                 lease.remove_reclamation_candidate()?;
             }
-            ReclamationCatalogRelationV1::SelectedSuccessor => {
+            ReclamationCatalogRelationV1::SelectedSuccessor |
+            ReclamationCatalogRelationV1::SelectedDescendant => {
                 lease.reclaim_reclamation_candidate(candidate, selected)?;
             }
             ReclamationCatalogRelationV1::Unrelated => {

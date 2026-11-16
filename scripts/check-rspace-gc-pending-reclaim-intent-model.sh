@@ -65,8 +65,11 @@ expect_violation TornIntentPublishedMutant TornIntentNeverPublished TearIntent
 expect_violation KeepIntentTempMutant IntentTempNeverLive TearIntent Recover
 expect_violation DropOnAdvanceMutant SelectedDeletionObligationCovered SelectAB AdvanceB
 expect_violation OverwriteMutant SelectedDeletionObligationCovered SelectAB StageBC PersistBC
+expect_violation BlockOnPendingMutant PendingIntentDoesNotBlockCheckpoint PersistAB SelectAB AckAB
 expect_violation PreCasWitness NoPreCasRecoveryOrphan StageAB Recover
-expect_violation RetryWitness NoRetryAfterPendingAdvanceAndRestart \
-  RefuseBC AdvanceB Recover FinishA
+expect_violation RetryWitness NoRetryAfterPendingCheckpointAndRestart \
+  AdvanceB SelectBC Recover FinishA
+expect_violation SecondAckWitness NoSecondAcknowledgementWhileOldPending SelectAB SelectBC AckBC
+expect_violation MidReclaimWitness NoMidReclaimWhileOldPinned SelectBC RetireB DeleteBPart
 
-echo "gc-pending-reclaim-intent: baseline, five mutants and two witnesses passed; logs in $evidence_dir"
+echo "gc-pending-reclaim-intent: baseline, six mutants and four witnesses passed; logs in $evidence_dir"

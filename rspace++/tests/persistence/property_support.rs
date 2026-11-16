@@ -444,7 +444,7 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("GC-11", "only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash"),
     ("GC-12", "the_wal_frontier_is_the_recovery_tail_and_no_request_holds_a_wal_start"),
     ("GC-13", "the_wal_frontier_is_the_recovery_tail_and_no_request_holds_a_wal_start"),
-    ("GC-14", "checkpoint_reclamation_waits_for_older_epoch_pin_from_independent_open"),
+    ("GC-14", "an_object_only_pin_blocks_no_later_generation_checkpoint"),
     ("GC-15", "the_wal_frontier_is_the_recovery_tail_and_no_request_holds_a_wal_start"),
     (
         "GC-16",

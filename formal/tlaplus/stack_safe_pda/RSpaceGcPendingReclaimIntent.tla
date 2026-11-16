@@ -2,11 +2,12 @@
 EXTENDS FiniteSets, TLC
 
 CONSTANTS DropOnOrdinaryAdvance, OverwritePendingIntent, AtomicIntentPublication,
-          RemoveIntentTempOnRecover
+          RemoveIntentTempOnRecover, RefuseWhilePending
 ASSUME DropOnOrdinaryAdvance \in BOOLEAN
 ASSUME OverwritePendingIntent \in BOOLEAN
 ASSUME AtomicIntentPublication \in BOOLEAN
 ASSUME RemoveIntentTempOnRecover \in BOOLEAN
+ASSUME RefuseWhilePending \in BOOLEAN
 
 AParts == {"aPack", "aIndex"}
 BParts == {"bPack", "bIndex"}
@@ -21,10 +22,10 @@ Stages == {"idle", "ABFiles", "ABIntent", "ABSelected",
            "BCFiles", "BCIntent", "BCSelected"}
 
 VARIABLES live, catalog, intent, stage, files, pins, retired,
-          ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+          ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
           retryWitness
 vars == <<live, catalog, intent, stage, files, pins, retired,
-          ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+          ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
           retryWitness>>
 SelectedB == catalog \in {"B", "B1"}
 SelectedC == catalog \in {"C", "C1"}
@@ -41,8 +42,7 @@ Init ==
   /\ retired = {}
   /\ ackAB = FALSE
   /\ ackBC = FALSE
-  /\ refusedBC = FALSE
-  /\ pinnedRefusal = FALSE
+  /\ pinnedCheckpoint = FALSE
   /\ pendingAdvance = FALSE
   /\ restartedPending = FALSE
   /\ retryWitness = FALSE
@@ -52,7 +52,7 @@ AcquireA ==
   /\ "A" \notin pins /\ catalog \in {"A", "B", "B1"}
   /\ pins' = pins \cup {"A"}
   /\ UNCHANGED <<live, catalog, intent, stage, files, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 AcquireB ==
@@ -60,14 +60,14 @@ AcquireB ==
   /\ "B" \notin pins /\ catalog \in {"B", "B1", "C", "C1"}
   /\ pins' = pins \cup {"B"}
   /\ UNCHANGED <<live, catalog, intent, stage, files, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 Release(generation) ==
   /\ generation \in pins
   /\ pins' = pins \ {generation}
   /\ UNCHANGED <<live, catalog, intent, stage, files, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 CleanOrphanB ==
@@ -75,15 +75,15 @@ CleanOrphanB ==
   /\ BParts \cap files # {}
   /\ files' = files \ BParts
   /\ UNCHANGED <<live, catalog, intent, stage, pins, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 CleanOrphanC ==
-  /\ live /\ SelectedB /\ stage = "idle" /\ intent = "none"
+  /\ live /\ SelectedB /\ stage = "idle" /\ intent \in {"none", "AB"}
   /\ CParts \cap files # {}
   /\ files' = files \ CParts
   /\ UNCHANGED <<live, catalog, intent, stage, pins, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 StageAB ==
@@ -92,7 +92,7 @@ StageAB ==
   /\ stage' = "ABFiles"
   /\ files' = files \cup BParts
   /\ UNCHANGED <<live, catalog, intent, pins, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 PersistAB ==
@@ -101,7 +101,7 @@ PersistAB ==
   /\ intent' = "AB"
   /\ stage' = "ABIntent"
   /\ UNCHANGED <<live, catalog, files, pins, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 SelectAB ==
@@ -109,7 +109,7 @@ SelectAB ==
   /\ catalog' = "B"
   /\ stage' = "ABSelected"
   /\ UNCHANGED <<live, intent, files, pins, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 AckAB ==
@@ -117,62 +117,57 @@ AckAB ==
   /\ stage' = "idle"
   /\ ackAB' = TRUE
   /\ UNCHANGED <<live, catalog, intent, files, pins, retired,
-                 ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 AdvanceB ==
   /\ live /\ catalog = "B" /\ stage = "idle"
   /\ catalog' = "B1"
   /\ intent' = IF DropOnOrdinaryAdvance THEN "none" ELSE intent
-  /\ pendingAdvance' =
-       (pendingAdvance \/ (pinnedRefusal /\ intent = "AB" /\ OldPartsRemain))
+  /\ pendingAdvance' = (pendingAdvance \/ (intent = "AB" /\ OldPartsRemain))
   /\ UNCHANGED <<live, stage, files, pins, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, restartedPending, retryWitness>>
-
-RefuseBC ==
-  /\ live /\ SelectedB /\ stage = "idle" /\ intent = "AB"
-  /\ OldPartsRemain
-  /\ (~refusedBC \/ ("A" \in pins /\ ~pinnedRefusal))
-  /\ refusedBC' = TRUE
-  /\ pinnedRefusal' = (pinnedRefusal \/ ("A" \in pins))
-  /\ UNCHANGED <<live, catalog, intent, stage, files, pins, retired,
-                 ackAB, ackBC, pendingAdvance, restartedPending, retryWitness>>
+                 ackAB, ackBC, pinnedCheckpoint, restartedPending, retryWitness>>
 
 StageBC ==
   /\ live /\ SelectedB /\ stage = "idle"
-  /\ (intent = "none" \/ OverwritePendingIntent)
-  /\ (AParts \cap files = {} \/ OverwritePendingIntent)
+  /\ IF RefuseWhilePending
+       THEN /\ (intent = "none" \/ OverwritePendingIntent)
+            /\ (AParts \cap files = {} \/ OverwritePendingIntent)
+       ELSE intent \in {"none", "AB"}
   /\ CParts \cap files = {}
   /\ stage' = "BCFiles"
   /\ files' = files \cup CParts
   /\ UNCHANGED <<live, catalog, intent, pins, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 PersistBC ==
   /\ live /\ SelectedB /\ stage = "BCFiles"
   /\ IntentTemp \notin files
-  /\ (intent = "none" \/ OverwritePendingIntent)
-  /\ intent' = "BC"
+  /\ IF RefuseWhilePending
+       THEN (intent = "none" \/ OverwritePendingIntent)
+       ELSE intent \in {"none", "AB"}
+  /\ intent' = IF intent = "AB" /\ ~OverwritePendingIntent THEN "AB" ELSE "BC"
   /\ stage' = "BCIntent"
   /\ UNCHANGED <<live, catalog, files, pins, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 SelectBC ==
-  /\ live /\ SelectedB /\ stage = "BCIntent" /\ intent = "BC"
+  /\ live /\ SelectedB /\ stage = "BCIntent" /\ intent \in {"AB", "BC"}
   /\ catalog' = "C"
   /\ stage' = "BCSelected"
+  /\ pinnedCheckpoint' = (pinnedCheckpoint \/
+       (pendingAdvance /\ intent = "AB" /\ "A" \in pins /\ OldPartsRemain))
   /\ UNCHANGED <<live, intent, files, pins, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
-                 retryWitness>>
+                 ackAB, ackBC, pendingAdvance, restartedPending, retryWitness>>
 
 AckBC ==
   /\ live /\ catalog = "C" /\ stage = "BCSelected"
   /\ stage' = "idle"
   /\ ackBC' = TRUE
   /\ UNCHANGED <<live, catalog, intent, files, pins, retired,
-                 ackAB, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 AdvanceC ==
@@ -180,64 +175,64 @@ AdvanceC ==
   /\ catalog' = "C1"
   /\ intent' = IF DropOnOrdinaryAdvance THEN "none" ELSE intent
   /\ UNCHANGED <<live, stage, files, pins, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 RetireA ==
-  /\ live /\ SelectedB /\ intent = "AB"
+  /\ live /\ (SelectedB \/ SelectedC) /\ intent = "AB"
   /\ "A" \notin pins /\ "A" \notin retired
   /\ retired' = retired \cup {"A"}
   /\ UNCHANGED <<live, catalog, intent, stage, files, pins,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 DeleteAPart(part) ==
-  /\ live /\ SelectedB /\ intent = "AB" /\ "A" \in retired
+  /\ live /\ (SelectedB \/ SelectedC) /\ intent = "AB" /\ "A" \in retired
   /\ part \in AParts \cap files
   /\ files' = files \ {part}
   /\ UNCHANGED <<live, catalog, intent, stage, pins, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 SyncAUnlinks ==
-  /\ live /\ SelectedB /\ intent = "AB" /\ "A" \in retired
+  /\ live /\ (SelectedB \/ SelectedC) /\ intent = "AB" /\ "A" \in retired
   /\ AParts \cap files = {} /\ "aUnlinksSynced" \notin retired
   /\ retired' = retired \cup {"aUnlinksSynced"}
   /\ UNCHANGED <<live, catalog, intent, stage, files, pins,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 FinishA ==
-  /\ live /\ SelectedB /\ intent = "AB" /\ AParts \cap files = {}
+  /\ live /\ (SelectedB \/ SelectedC) /\ intent = "AB" /\ AParts \cap files = {}
   /\ "aUnlinksSynced" \in retired
+  /\ SelectedC => (BParts \cap files = {} /\ "bUnlinksSynced" \in retired)
   /\ intent' = "none"
-  /\ retryWitness' = (retryWitness \/
-       (pinnedRefusal /\ pendingAdvance /\ restartedPending))
+  /\ retryWitness' = (retryWitness \/ (pinnedCheckpoint /\ restartedPending))
   /\ UNCHANGED <<live, catalog, stage, files, pins, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending>>
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending>>
 
 RetireB ==
-  /\ live /\ SelectedC /\ intent = "BC"
+  /\ live /\ SelectedC /\ intent \in {"AB", "BC"}
   /\ "B" \notin pins /\ "B" \notin retired
   /\ retired' = retired \cup {"B"}
   /\ UNCHANGED <<live, catalog, intent, stage, files, pins,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 DeleteBPart(part) ==
-  /\ live /\ SelectedC /\ intent = "BC" /\ "B" \in retired
+  /\ live /\ SelectedC /\ intent \in {"AB", "BC"} /\ "B" \in retired
   /\ part \in BParts \cap files
   /\ files' = files \ {part}
   /\ UNCHANGED <<live, catalog, intent, stage, pins, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 SyncBUnlinks ==
-  /\ live /\ SelectedC /\ intent = "BC" /\ "B" \in retired
+  /\ live /\ SelectedC /\ intent \in {"AB", "BC"} /\ "B" \in retired
   /\ BParts \cap files = {} /\ "bUnlinksSynced" \notin retired
   /\ retired' = retired \cup {"bUnlinksSynced"}
   /\ UNCHANGED <<live, catalog, intent, stage, files, pins,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 FinishB ==
@@ -245,7 +240,7 @@ FinishB ==
   /\ "bUnlinksSynced" \in retired
   /\ intent' = "none"
   /\ UNCHANGED <<live, catalog, stage, files, pins, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, restartedPending,
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, restartedPending,
                  retryWitness>>
 
 Crash ==
@@ -254,7 +249,7 @@ Crash ==
   /\ stage' = "idle"
   /\ pins' = {}
   /\ retired' = {}
-  /\ UNCHANGED <<catalog, intent, files, ackAB, ackBC, refusedBC, pinnedRefusal,
+  /\ UNCHANGED <<catalog, intent, files, ackAB, ackBC, pinnedCheckpoint,
                  pendingAdvance, restartedPending, retryWitness>>
 
 TearIntent ==
@@ -270,7 +265,7 @@ TearIntent ==
             /\ UNCHANGED intent
        ELSE /\ intent' = "torn"
             /\ UNCHANGED files
-  /\ UNCHANGED <<catalog, ackAB, ackBC, refusedBC, pinnedRefusal,
+  /\ UNCHANGED <<catalog, ackAB, ackBC, pinnedCheckpoint,
                  pendingAdvance, restartedPending, retryWitness>>
 
 Recover ==
@@ -281,14 +276,14 @@ Recover ==
   /\ intent' = IF (catalog = "A") \/ (SelectedB /\ intent = "BC")
                    THEN "none" ELSE intent
   /\ restartedPending' = (restartedPending \/
-       (SelectedB /\ intent = "AB" /\ OldPartsRemain /\ pendingAdvance))
+       (SelectedC /\ intent = "AB" /\ OldPartsRemain /\ pinnedCheckpoint))
   /\ UNCHANGED <<catalog, stage, pins, retired,
-                 ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, retryWitness>>
+                 ackAB, ackBC, pinnedCheckpoint, pendingAdvance, retryWitness>>
 
 Next ==
   AcquireA \/ AcquireB \/ (\E g \in Generations : Release(g)) \/
   CleanOrphanB \/ CleanOrphanC \/ StageAB \/ PersistAB \/ SelectAB \/ AckAB \/
-  AdvanceB \/ RefuseBC \/ StageBC \/ PersistBC \/ SelectBC \/
+  AdvanceB \/ StageBC \/ PersistBC \/ SelectBC \/
   AckBC \/ AdvanceC \/ RetireA \/
   (\E part \in AParts : DeleteAPart(part)) \/ SyncAUnlinks \/ FinishA \/
   RetireB \/ (\E part \in BParts : DeleteBPart(part)) \/
@@ -302,8 +297,8 @@ TypeInvariant ==
   /\ stage \in Stages /\ files \subseteq Parts
   /\ pins \subseteq Generations
   /\ retired \subseteq (Generations \cup SyncMarkers)
-  /\ ackAB \in BOOLEAN /\ ackBC \in BOOLEAN /\ refusedBC \in BOOLEAN
-  /\ pinnedRefusal \in BOOLEAN
+  /\ ackAB \in BOOLEAN /\ ackBC \in BOOLEAN
+  /\ pinnedCheckpoint \in BOOLEAN
   /\ pendingAdvance \in BOOLEAN /\ restartedPending \in BOOLEAN
   /\ retryWitness \in BOOLEAN
 
@@ -313,14 +308,20 @@ CurrentAuthorityProtected ==
   /\ (SelectedC => CParts \subseteq files)
 
 SelectedDeletionObligationCovered ==
-  /\ (SelectedB /\ OldPartsRemain => intent = "AB")
-  /\ (SelectedC /\ MidPartsRemain => intent = "BC")
+  /\ ((SelectedB \/ SelectedC) /\ OldPartsRemain => intent = "AB")
+  /\ (SelectedC /\ MidPartsRemain => intent \in {"AB", "BC"})
+
+PendingIntentDoesNotBlockCheckpoint ==
+  (live /\ SelectedB /\ stage = "idle" /\ intent = "AB" /\ OldPartsRemain /\
+   CParts \cap files = {}) => ENABLED StageBC
 
 NoReaderRetired == pins \cap retired = {}
 NoSecondAcknowledgementWhileOldPending ==
   ackBC => ~OldPartsRemain
 
-NoRetryAfterPendingAdvanceAndRestart == ~retryWitness
+NoRetryAfterPendingCheckpointAndRestart == ~retryWitness
+NoMidReclaimWhileOldPinned ==
+  ~(SelectedC /\ "A" \in pins /\ OldPartsRemain /\ BParts \cap files = {})
 RecoveryAvailable == ~live => ENABLED Recover
 TornIntentNeverPublished == intent # "torn"
 IntentTempNeverLive == live => IntentTemp \notin files

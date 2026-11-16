@@ -7213,3 +7213,49 @@ temporary, were each killed by their named tests. See
 for the decisions and the evidence, and the invariant catalog's
 [torn reclamation intents section](../design/pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md#torn-reclamation-intents-bug-11970-2026-10-28)
 for the fix, the model and the tests.
+
+**CBR-053 living continuation (2026-11-16, generation checkpoint under a
+deferred reclamation).** The dormant durable RSpace store no longer refuses a
+generation checkpoint while a reader in the owner's process defers a pending
+reclamation. Task 12443 found that the refusal contradicts the invariant
+`ObjectOnlyPinDoesNotBlockWal` of the garbage-collection protection model
+(`formal/tlaplus/stack_safe_pda/RSpaceGcProtection.tla`), and the owner ruled
+on 2026-11-16 that the runtime changes, not the model. Task 14510
+(`rspace-gc-checkpoint-under-deferred-reclamation`) implements the ruling
+under its approved design. `resolve_reclamation_before_checkpoint`
+(`rspace++/src/rspace/persistence/durable/io.rs`) now returns the pending
+reclamation record instead of the error `ReclamationPending`, which is
+removed. `publish_generation_checkpoint_v1`
+(`rspace++/src/rspace/persistence/durable/publication.rs`) keeps that record
+and writes none of its own, and `reclaim_reclamation_candidate` removes each
+superseded generation that the record covers as soon as no lease of a reader
+in the process overlaps its packs.
+
+| Surface | Finding at this checkpoint |
+|---|---|
+| Production reachability | None: the persistence module is `expect(dead_code)` outside tests (`rspace++/src/rspace/mod.rs:11-18`). A source search finds a call of `select_rspace_backend` with the durable backend, and callers of generation-checkpoint publication and of compaction, only in the tests of `rspace++`; no node opens a durable directory |
+| Durable bytes | Unchanged: the record under `reclaim.v1` keeps its name, its 88 bytes, its format and the rule that it is never replaced, and the WAL, pack, index and catalog framings are unchanged. The meaning of the record is extended. Under a catalog slot that is a lockstep descendant of the record's successor (one live pack, a larger epoch, and a pack that lies as many identifiers above the successor's active pack as its index generation lies above the successor's, at least one), the record now obligates the deletion of the old generation, of the successor and of every generation between the successor and the selected slot. A binary built before this change classifies such a slot as unrelated and fails closed with `CatalogAuthorityChanged`: it deletes nothing, and a binary with this change completes the reclamation at its next start |
+| Outcomes of the dormant store | A generation checkpoint or a compaction under a deferred reclamation publishes instead of failing with `ReclamationPending`. It leaves the pending record byte for byte (invariant-catalog property RI-04 holds), and it refuses before the catalog compare-and-swap, definitely not published, with `CatalogAuthorityChanged` when the pending record does not classify its successor as a lockstep descendant. Each superseded generation is deleted as soon as no lease of the owner's process overlaps its packs, and the record is removed, after a directory synchronization, when none is left. Once a later superseded generation is retired, a new lease on an earlier superseded generation is refused with `Retired`, while the leases that already hold it keep it (invariant-catalog property GC-14) |
+| State and cryptographic identities | No block, state root, legacy history root, semantic manifest or canonical semantic object byte changes |
+| Serialization | No RhoPath, protobuf, bincode, ACT, WAL, pack, index, catalog or reclamation-record format change |
+| Language and metering | No syntax, matching, COMM order, accepted program, blessed contract, compute or storage charge change |
+| Classification | `NO_PRODUCTION_CHANGE_DERIVED`; activating the durable backend (task 7931) must re-enter this register with the release note of 2026-10-26, the owner's outcomes of 2026-10-27, the platform requirement of 2026-10-28 and this extended meaning of the reclamation record |
+
+Evidence: on the candidate tree (HEAD `74fd63f06` plus this change), the 644
+selected rspace++ persistence tests and the 1,093 tests of the crate's whole
+library target passed in debug and release, clippy of the crate with every
+target reported nothing new, and `rustfmt --check` passed on the changed Rust
+files. The model `RSpaceGcPendingReclaimIntent.tla` passed its runner: the
+baseline holds the new invariant `PendingIntentDoesNotBlockCheckpoint`, and
+the mutant that restores the refusal violates it. On the production files of
+`ffc4a1e22` the five new history tests failed, the test bound to
+`ObjectOnlyPinDoesNotBlockWal` with `ReclamationPending` at its second
+checkpoint, and eight code faults, among them the restored refusal, an
+overwritten pending record and a deletion without the lease check, were each
+killed by the new tests. These checks inject faults in-process and make no
+power-loss claim. See the pending-intent design's
+[section on the checkpoint under a deferred reclamation](../design/pathmap/gc-pending-reclaim-intent-2026-10-08.md#checkpoint-under-a-deferred-reclamation-task-14510)
+for the meaning of the record, the protocol, the model and the controls, and
+the invariant catalog's
+[section on the WAL frontier](../design/pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md#wal-frontier-at-the-recovery-tail-2026-11-16)
+for the binding of the invariant.

@@ -6000,7 +6000,9 @@ The older tests that fail under C5, C8 and C9, besides TS-11, are these:
     - `checkpoint_reclamation_waits_for_older_epoch_pin_from_independent_open`
     - `compaction_keeps_transitive_retained_closure_through_old_pack_lease`
     - `pending_reclamation_retries_partial_deletion_after_restart`
-    - `pending_reclamation_survives_incremental_epoch_and_blocks_second_checkpoint`
+    - `an_object_only_pin_blocks_no_later_generation_checkpoint`, which since
+      task 14510 stands in the place of
+      `pending_reclamation_survives_incremental_epoch_and_blocks_second_checkpoint`
     - `pending_reclamation_waits_for_selected_successor_verification`
 - In `rspace++/tests/persistence/durable_rspace_authority.rs`, under C5 and C9:
   - `cold_restart_before_acknowledgement_selects_old_or_new_without_delta_replay`
@@ -6928,7 +6930,7 @@ dropped. The two parts do different jobs:
 | Part | What it keeps | Who relies on it |
 |---|---|---|
 | The shared core | The pinned index and the open pack handles of one generation, in this process. | The handle's own reads. |
-| The generation lease | A registry entry that names the generation's pack range. | Reclamation. `reclaim_reclamation_candidate` deletes a superseded generation's packs and index only after `retire_pack_range_if_unleased` finds no lease that overlaps their range. That one registry operation also refuses every later lease on the range. |
+| The generation lease | A registry entry that names the generation's pack range. | Reclamation. `reclaim_reclamation_candidate` deletes a superseded generation's packs and index only after `retire_packs_if_unleased` finds no lease that overlaps their range. That one registry operation also refuses every later lease on the range. |
 
 The `Arc` alone therefore keeps the core alive, but only the lease keeps its
 generation from being reclaimed. Without the lease, reclamation could delete
@@ -8682,7 +8684,7 @@ derivation matrix must cite.
 | GC-11 | Crash-phase quiescence (`CrashPhaseQuiescence`). In the obligation trial, a crash with live views on the old generation, after the publication of the successor, leaves no lease in the registry and changes neither `reclaim.v1` nor the old generation. The recovery that follows selects the successor, reclaims the old generation and removes the intent before the first lease is taken; the authority then holds one lease and its view a second. This is the order of the model's witness: `Crash`, `Recover`, `Reclaim`, then `AcquireNewPin`. | `only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash` |
 | GC-12 | No request holds a WAL start (`WalFrontierProtected`). In each of nine trials a generation checkpoint publishes while one request holds the old generation: none, the five views of the runtime requests R1 and R3 together, each of five durable views, an exact pin or a Known lease. Under every request, as under none, the successor's one live pack is the pack directly after the pack of the old recovery tail, its header names that tail as its predecessor, and crash recovery of the successor reads that pack alone, from its generation checkpoint to its durable tail. The old generation stays wholly present while a request holds it, outside the successor's WAL, and a reclamation request after the release reclaims it whole; with no request the publication reclaims it. | `the_wal_frontier_is_the_recovery_tail_and_no_request_holds_a_wal_start` |
 | GC-13 | The WAL head does not pass the reclaimable frontier (`WalReclaimableMinimum`). With no WAL start held, the frontier is the recovery tail: the commit record that the catalog slot names, which ends at its durable pack tail. In the nine trials of GC-12, crash recovery of the old generation reads its one pack to that tail, past at least one transaction, and ends at the slot's commit address. The successor's header names the pack and the commit digest of that record as its predecessor and starts at the sequence number after its commit sequence, which `PackHeaderV1::verify_predecessor` checks, and crash recovery of the successor starts at its own generation checkpoint, with one checkpoint and no transaction. The head thus moves exactly to the frontier and never past it. | `the_wal_frontier_is_the_recovery_tail_and_no_request_holds_a_wal_start` |
-| GC-14 | An object-only pin does not block the WAL (`ObjectOnlyPinDoesNotBlockWal`). An older-epoch generation lease on the pack range of the old generation, taken through an independently opened directory, does not block a generation checkpoint: the catalog selects the successor while the old pack, the old index and `reclaim.v1` stay; a re-admission selects the successor and keeps the old pack and the intent; the reclamation is deferred while the lease lives; and after the release it deletes the old pack and index and removes the intent, after which the older key is refused with `Retired`. The model's later rotation under such a pin is not bound; see the section on the WAL frontier at the recovery tail. | `checkpoint_reclamation_waits_for_older_epoch_pin_from_independent_open` |
+| GC-14 | An object-only pin does not block the WAL (`ObjectOnlyPinDoesNotBlockWal`). An older-epoch generation lease on the pack range of the old generation, taken through an independently opened directory, blocks no generation checkpoint. The first checkpoint selects the successor while the old pack, the old index and `reclaim.v1` stay, and an incremental publication and a re-admission keep them. A second and a third generation checkpoint then publish while the lease lives: each leaves `reclaim.v1` and the old pack and index byte for byte and deletes the pack and the index of the generation that it supersedes, so that the directory holds the old generation and the selected one and no other. After the third checkpoint the older key is refused with `Retired` while the lease on it is still held, and the key of the selected generation is granted. After the release a re-admission deletes the old pack and index and removes the intent, and a further generation checkpoint leaves its own generation alone in the directory. | `an_object_only_pin_blocks_no_later_generation_checkpoint` |
 | GC-15 | A Known lease holds no WAL position (`KnownWalOrthogonal`). In the Known trial of GC-12, a Known lease on the appointed retention object, registered through the admitted writer on a store with an earlier generation checkpoint and a data successor, holds the old generation through a generation checkpoint as the other requests do: the successor's WAL opens directly after the old recovery tail and follows it, and the old generation stays wholly present only until the lease is released, after which a reclamation request reclaims it whole. | `the_wal_frontier_is_the_recovery_tail_and_no_request_holds_a_wal_start` |
 | GC-16 | Pinned reads survive a foreign unlink (`PinnedReadReturnsAdmittedBytes`). In the cross-process trial, process A's two handles read the manifest, one datum, one continuation and one join when they are admitted. A closes its owner; process B then publishes onto the pack and the index of A's generation and reclaims that generation with a compaction, and the names of its files are absent before and after A reads again. Every read through A's handles after the reclamation, once with the handles alone and once beside the owner that A reopened at B's successor, returns exactly the admitted reads. A handle on the successor reads B's second datum, so the admitted state is not the current one. | `a_pinned_read_handle_returns_its_admitted_bytes_after_another_process_reclaims_its_packs` |
 | GC-17 | A live or dead reader of another process holds nothing back (`DeadProcessHoldsNothing`). In the cross-process trial, B's writer lock is granted while A holds only handles, and B's compaction of A's generation reclaims it within the call while A runs: right after the call the directory holds exactly `catalog.v1`, `writer.lock.v1` and the successor's pack and index. A then reopens the store and is killed with `SIGKILL` while it holds its owner, two handles on the current generation and its first two handles. B's first lock attempt after the death is granted, the directory holds exactly `catalog.v1`, `writer.lock.v1` and the current generation's pack and index, and B's next compaction reclaims the generation that A's handles held within the call, again leaving exactly the catalog, the lock file and the successor's files. | `another_process_reclaims_unblocked_by_a_live_or_killed_reader_and_leaves_nothing_stale` |
@@ -8913,25 +8915,49 @@ production files of an export of the candidate tree and run in debug:
   fail: every publication under a request returns `PublishedRecovery` with
   `ReclamationPending`.
 
-**ObjectOnlyPinDoesNotBlockWal, in part.** GC-14 is bound to the existing test
-`checkpoint_reclamation_waits_for_older_epoch_pin_from_independent_open` of
-the durable publication tests: an older-epoch generation lease on the pack
-range of the old generation, taken through an independently opened directory,
-does not block the generation checkpoint; it defers only the reclamation,
-which deletes the old pack and index after the release. The model also
-requires `RotateWal` to stay enabled after the catalog swap while an
+**ObjectOnlyPinDoesNotBlockWal.** Since task 14510
+(`rspace-gc-checkpoint-under-deferred-reclamation`) GC-14 is bound to
+`an_object_only_pin_blocks_no_later_generation_checkpoint` of the durable
+publication tests, and the invariant holds at runtime for every rotation. The
+model requires `RotateWal` to stay enabled after the catalog swap while an
 object-only pin keeps the old generation present and the tail lies past the
-head. At runtime that later rotation is the next generation checkpoint after
-an incremental publication, and `resolve_reclamation_before_checkpoint`
-refuses it with `ReclamationPending` while a pin still defers the pending
-reclamation
-(`pending_reclamation_survives_incremental_epoch_and_blocks_second_checkpoint`).
-That refusal is the behaviour of the mutant `BlockWalOnOldPack`, so this part
-of the invariant does not hold at runtime. The owner ruled on 2026-11-16 that
-the runtime changes, not the model: task 14510
-(`rspace-gc-checkpoint-under-deferred-reclamation`) lets a generation
-checkpoint proceed while a reader defers the reclamation. Until that task
-lands, GC-14 stays partial.
+head. At runtime the first rotation is fused with the catalog swap, and a
+later rotation is the next generation checkpoint. In the test an older-epoch
+generation lease on the pack range of the old generation, taken through an
+independently opened directory, is held through three generation checkpoints,
+with an incremental publication and a re-admission between the first and the
+second. Every checkpoint publishes. The lease defers only the reclamation of
+the generation that it holds: the reclamation candidate of the first
+checkpoint stays byte for byte, each later checkpoint deletes the pack and the
+index of the generation that it supersedes, and after the release the old pack
+and index are deleted and the candidate is removed. A checkpoint under a
+deferred reclamation keeps the pending candidate instead of writing one, and
+the candidate then covers the generations that later checkpoints supersede;
+the
+[pending-intent design](gc-pending-reclaim-intent-2026-10-08.md#checkpoint-under-a-deferred-reclamation-task-14510)
+defines that meaning, the protocol and its controls. Such a checkpoint does
+not reach the guard of `from_catalogs` that the trial above names, because it
+writes no candidate. Before the catalog swap it checks instead that the
+pending candidate classifies the slot that the checkpoint is about to select
+as a *lockstep descendant* of the candidate's successor: a slot with one live
+pack and a larger epoch, whose pack lies as many identifiers above the active
+pack of the candidate's successor as its index generation lies above that
+successor's, and at least one. A slot with more than one live pack is no
+lockstep descendant, and the checkpoint refuses it with
+`CatalogAuthorityChanged`.
+
+Task 12443 had bound GC-14 to
+`checkpoint_reclamation_waits_for_older_epoch_pin_from_independent_open` and
+recorded that the invariant held in part. Until task 14510,
+`resolve_reclamation_before_checkpoint` refused the later rotation with the
+error `ReclamationPending` while a pin still deferred the pending reclamation,
+which is the behaviour of the mutant `BlockWalOnOldPack`, and the owner ruled
+on 2026-11-16 that the runtime changes, not the model. The third control above
+is of that time: it uses the error `ReclamationPending`, which task 14510
+removes, and its "test of GC-14" is the test that task 12443 had bound. The
+analogue of the same mutant for the later rotation is the first control of
+task 14510, a checkpoint that refuses while a reclamation is deferred; under
+it the bound test fails at its second checkpoint.
 
 **Limits.** Each trial lets one request hold the old generation and observes
 one generation checkpoint. No request in the code holds a WAL start, so the
@@ -10033,7 +10059,7 @@ Two orders make the cell safe without the owner's mutex:
 1. A reader holds its generation lease before it reads any pack. The only way
    from the cell to a core that `read_handle` reads is `pin`, which returns
    the core together with its lease. Reclamation deletes a generation's packs
-   and index only after `retire_pack_range_if_unleased` found no lease on the
+   and index only after `retire_packs_if_unleased` found no lease on the
    generation's range, and the registry then refuses every later lease on
    that range. A pinned generation is therefore never reclaimed, and a retired
    one is never pinned. This registry rule is the only validity check; the
@@ -13969,7 +13995,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | GC-11 | `CrashPhaseQuiescence` | `EXEC_ONLY` | P | Partially entailed (task 12441): the invariant disables every pin acquisition and release, every durable registration and release, and every WAL advance and rotation while the phase is crashed. A crashed process executes nothing, and its leases live only in its memory. The executable refinement obligation is the order of the model's witness: a crash leaves no lease and changes no file, and the recovery, which completes a pending reclamation, precedes the first lease. Enabledness is not observed: inside the crate, `GenerationLeaseRegistryV1::acquire` on a registry handle taken from a newly opened directory succeeds before any recovery. Outside the tests, leases are acquired only by a recovered authority, by the owner that it becomes and by the read handles of their cores, all of which exist only after a recovery. |
 | GC-12 | `WalFrontierProtected` | `EXEC_ONLY` | P | Partially entailed (task 12443): the invariant keeps every start that an active WAL id holds between the WAL head and the tail. Under the ruling of 2026-11-10 on decision GC5/GC7 (option (a)) no runtime request holds a WAL start: the durable roles are `current` and `retained`, and the pins of views are reader pins, so the refinement mapping realizes `ActiveWalIds` as the empty set and the invariant holds vacuously. The executable refinement obligation is that no request holds a start, observed through its consequence: under each request of the trial, as under none, the successor's WAL opens directly after the old recovery tail. |
 | GC-13 | `WalReclaimableMinimum` | `EXEC_ONLY` | P | Partially entailed (task 12443): with `ActiveWalIds` empty, `ReclaimableWalFrontier` is `walTail`, and the invariant requires `walHead <= walTail`. The implementation's head is the checkpoint record at the start of the generation's one live pack and its tail is the commit record that the catalog slot names; the head moves only at a generation checkpoint, and then exactly to the old tail, because the successor's pack follows the pack of the tail and its header names the tail as its predecessor. The checkpoint's recovery preflight charges exactly one live pack, so no older pack stays in the window. The trial observes one publication per request, each with at least one transaction between the head and the tail; other histories are not observed. |
-| GC-14 | `ObjectOnlyPinDoesNotBlockWal` | `EXEC_ONLY` | P | Partially entailed (task 12443): the invariant requires `RotateWal` to be enabled whenever the catalog selects the successor, the old generation is present, an old pin is held, no WAL id is active and the tail lies past the head. The implementation fuses the first rotation with the catalog swap, and an object-only pin does not block it: the bound test publishes under an older-epoch pin and defers only the reclamation. A later rotation is the next generation checkpoint, which `resolve_reclamation_before_checkpoint` refuses with `ReclamationPending` while a pin still defers the pending reclamation (`pending_reclamation_survives_incremental_epoch_and_blocks_second_checkpoint`). That refusal is the behaviour of the mutant `BlockWalOnOldPack`; this part of the invariant does not hold at runtime. By the owner's ruling of 2026-11-16 the runtime changes, in task 14510 (`rspace-gc-checkpoint-under-deferred-reclamation`). |
+| GC-14 | `ObjectOnlyPinDoesNotBlockWal` | `EXEC_ONLY` | P | Partially entailed (tasks 12443, 14510): the invariant requires `RotateWal` to be enabled whenever the catalog selects the successor, the old generation is present, an old pin is held, no WAL id is active and the tail lies past the head. The implementation fuses the first rotation with the catalog swap, and an object-only pin does not block it. A later rotation is the next generation checkpoint, and since task 14510 an object-only pin does not block that either: the bound test publishes a second and a third generation checkpoint under an older-epoch pin from an independent open, and the pin defers only the reclamation of the generation that it holds. Until task 14510 `resolve_reclamation_before_checkpoint` refused the later rotation with `ReclamationPending`, the behaviour of the mutant `BlockWalOnOldPack`; by the owner's ruling of 2026-11-16 the runtime changed, not the model. That a generation checkpoint is the model's rotation, and that it publishes under every deferred reclamation that the runtime reaches, are the executable refinement obligation; the pending-intent model checks the second for one pending candidate and one further checkpoint, as its invariant `PendingIntentDoesNotBlockCheckpoint`. |
 | GC-15 | `KnownWalOrthogonal` | `EXEC_ONLY` | P | Partially entailed (task 12443): in the Known configuration the invariant requires that the Known role protects no WAL bytes and that `known0` is not a WAL id. At runtime a Known lease is a row of `RetainedRootRegistryV1` together with a generation lease on its exact generation, and neither records a WAL position; the trial observes that a Known lease leaves the successor's WAL where no request leaves it. |
 | GC-16 | `PinnedReadReturnsAdmittedBytes` | `EXEC_ONLY` | P | Partially entailed (task 12447): the invariant quantifies over every read that a live handle of a process can issue, and `HandleRead` returns the stored bytes for a handle in `pinned` of its process whatever `deleted` holds. Under the mapping of the cross-process trial, A's handles are in `leases` and `pinned` of A, and the states from the return of B's first compaction on have A's pack in `deleted`; the model reaches such states through `CloseOwner`, `OpenStore`, `RetireFirst` and `DeleteFirst`, the trace of its path-reopen mutant. The executable refinement obligation is that a handle reads only through the pack descriptors that admission opened, so that an unlink by another process leaves its reads unchanged. Four reads of one state through two handles are observed, with the handles alone and beside a newer owner of the same process; not every read, pack or schedule is. B's publication onto A's pack exercises the model's abstraction A3, appends beyond every admitted tail. The red control of the trial, a read that opens the pack by its name for every read as the path-reopen mutant does, fails this test after the unlink. |
 | GC-17 | `DeadProcessHoldsNothing` | `EXEC_ONLY` | P | Partially entailed (task 12447): `Crash` releases `lock` when the process holds it and empties its `leases` and `pinned`, and a dead process takes no step other than `Restart`. The executable refinement obligation is K2 together with the absence of any durable trace of a reader: a process killed with `SIGKILL` while it holds the writer lock and read handles neither refuses the next opener nor defers the next reclamation, and it leaves no file. The lock conjunct is observed as the granted lock attempt after the death, the lease conjunct as the reclamation within the call of the generation that the dead process held, and the absence of a durable trace as the exact directory listing. The pin conjunct, that the storage of an unlinked pack is freed, is not observed. The trial also observes F5 for a live reader: a lease of another process does not defer a reclamation. |
@@ -15392,6 +15418,46 @@ hashes a file of this slice. No Rocq or TLA+ file changed, and no proof or
 model was run for this slice. No persisted byte, record kind, root, identity
 or wire message changed, and the crate has no new dependency. See the section
 on the WAL frontier at the recovery tail.
+
+The 2026-11-16 deferred-reclamation slice of task 7944 (task 14510) adds no ID
+and removes none, so the catalog/derivation/binding registry keeps its size
+(**313** IDs on the tree of this slice). It restates GC-14: the binding row,
+the derivation row and the paragraph in the section on the WAL frontier now
+state that `ObjectOnlyPinDoesNotBlockWal` holds for every rotation, and GC-14
+is bound to `an_object_only_pin_blocks_no_later_generation_checkpoint`. A
+generation checkpoint under a deferred reclamation now publishes and keeps the
+pending reclamation candidate, which then covers the generations that later
+checkpoints supersede; the pending-intent design records the meaning, the
+protocol and the controls. The slice changes five production files
+(`reclaim.rs`, `io.rs`, `publication.rs` and `startup.rs` of the durable
+module, and `retention.rs`), the durable publication tests, the list of
+property bindings, the pending-intent model with its configurations and its
+runner, this catalog, the GC protection matrix, the pending-intent design, the
+traceability document and the consensus change register. On the candidate
+tree the persistence tests of the library target passed in debug and in
+release (644 passed, 6 ignored), and so did the whole library target (1093
+passed, 13 ignored). With the new tests on the production files of the tree
+before the slice, the five history tests of the slice failed, the test of
+GC-14 with `ReclamationPending` at its second checkpoint, and no other
+persistence test failed. Eight textual faults were applied one at a time to
+the production files of the candidate tree, each run in debug against the ten
+tests of the slice and removed, and each failed the tests that the
+pending-intent design lists; each faulted file was restored and compared with
+its copy after the run. The runner of the pending-intent model passed: the
+baseline generated 14,367 states, 4,442 of them distinct, with no invariant
+error, and its six mutants and four witnesses each violated the designated
+invariant. The GC protection model is unchanged, and its runner passed with
+`BlockWalOnOldPack` violating `ObjectOnlyPinDoesNotBlockWal`. Clippy of
+`rspace_plus_plus` with every target lists, in the files of this slice, only
+the one finding that the tree before the slice has as well, and
+`rustfmt --check` passes on its Rust files. No obligation registry hashes a
+file of this slice. No Rocq file changed, and no proof was run for this slice.
+No persisted byte, record kind, root, identity or wire message changed, and
+the crate has no new dependency; the meaning of the reclamation candidate
+under a lockstep-descendant catalog slot is extended, as the consensus change
+register records. See the section on the WAL frontier at the recovery tail and
+the
+[pending-intent design](gc-pending-reclaim-intent-2026-10-08.md#checkpoint-under-a-deferred-reclamation-task-14510).
 
 ## Caller-authority contract (2026-09-06)
 

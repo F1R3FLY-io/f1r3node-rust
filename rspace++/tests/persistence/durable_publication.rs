@@ -2148,86 +2148,683 @@ fn compaction_keeps_transitive_retained_closure_through_old_pack_lease() {
     assert_admitted_objects(&reopened, &objects);
 }
 
-#[test]
-fn pending_reclamation_survives_incremental_epoch_and_blocks_second_checkpoint() {
-    use crate::rspace::persistence::{
-        DagTransactionLimits, GenerationLeaseKeyV1, MutationBatchViewV1,
-    };
+fn generation_file_names(generations: &[u64], reclamation_record: bool) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    names.insert("catalog.v1".to_owned());
+    if reclamation_record {
+        names.insert("reclaim.v1".to_owned());
+    }
+    for &generation in generations {
+        names.insert(pack_file_name(
+            PackId::new(generation).expect("a generation names a nonzero pack"),
+        ));
+        names.insert(index_file_name(
+            IndexGenerationV1::new(generation)
+                .expect("a generation names a nonzero index generation"),
+        ));
+    }
+    names
+}
 
-    let scratch = test_scratch::acquire("rspace-gc-pending-reclaim-advance-");
-    install_checkpoint_image(
-        scratch.path(),
-        &checkpoint_image_from_source(checkpoint_source_fixture()),
+fn store_names(root: &Path) -> BTreeSet<String> { directory_snapshot(root).into_keys().collect() }
+
+fn checkpoint_generation(catalog: CatalogSlotV1) -> u64 {
+    let pack = catalog.pack();
+    assert_eq!(
+        pack.first_live_pack(),
+        pack.active_pack(),
+        "a checkpoint generation holds one live pack"
     );
-    let writer = admit(scratch.path());
-    let old_key = GenerationLeaseKeyV1::from_catalog(writer.catalog());
-    let old_pack = scratch.path().join(pack_file_name(PackId::GENESIS));
-    let old_index = scratch
-        .path()
-        .join(index_file_name(IndexGenerationV1::FIRST));
-    let registry = writer.generation_leases();
-    let pin = registry.acquire(old_key).unwrap();
-    let selected = publish(writer).unwrap();
-    let selected_key = GenerationLeaseKeyV1::from_catalog(selected.catalog());
-    let sidecar = scratch.path().join("reclaim.v1");
-    let saved_intent = fs::read(&sidecar).unwrap();
+    assert_eq!(
+        pack.index_generation(),
+        pack.active_pack(),
+        "packs and index generations advance in lockstep"
+    );
+    pack.active_pack()
+}
 
-    let mutation = data_batch(selected.catalog().state(), "reclaim-epoch-advance");
-    let sealed = selected
-        .seal_transaction(
-            MutationBatchViewV1::parse(&mutation).unwrap(),
-            DagTransactionLimits::UNBOUNDED,
-            DurableAdmissionLimitsV1::UNBOUNDED,
-        )
-        .unwrap();
-    let prepared = selected
-        .prepare_transaction(
-            &sealed,
-            selected.catalog().commit_sequence().successor().unwrap(),
-            LogPackDecodeLimits::UNBOUNDED,
-        )
-        .unwrap();
-    let advanced = selected
-        .publish_incremental_transaction_v1(
-            &prepared,
-            limits(),
-            LogPackDecodeLimits::UNBOUNDED,
-            DurableAdmissionLimitsV1::UNBOUNDED,
-        )
-        .unwrap();
+#[cfg(unix)]
+#[test]
+fn an_object_only_pin_blocks_no_later_generation_checkpoint() {
+    use crate::rspace::persistence::{GenerationLeaseError, GenerationLeaseKeyV1};
+
+    let scratch = trial_scratch("pending-reclaim-advance-");
+    let root = scratch.path();
+    install_checkpoint_image(root, &checkpoint_image_from_source(checkpoint_source_fixture()));
+    let writer = admit(root);
+    let old = writer.catalog();
+    let old_key = GenerationLeaseKeyV1::from_catalog(old);
+    let old_pack = root.join(pack_file_name(PackId::GENESIS));
+    let old_index = root.join(index_file_name(IndexGenerationV1::FIRST));
+    let old_pack_bytes = fs::read(&old_pack).expect("read the old pack");
+    let old_index_bytes = fs::read(&old_index).expect("read the old index");
+    let registry = DurableDirectoryV1::open(root)
+        .expect("open the durable directory independently")
+        .generation_leases();
+    assert!(registry.shares_registry(&writer.generation_leases()));
+    let older_key = GenerationLeaseKeyV1::new(
+        old.epoch().saturating_sub(1),
+        old_key.first_live_pack(),
+        old_key.active_pack(),
+        old_key.index_generation(),
+    );
+    assert_ne!(older_key, old_key);
+    let pin = registry
+        .acquire(older_key)
+        .expect("pin the old generation under an older epoch");
+
+    let selected = publish(writer).expect("the first checkpoint publishes under the pin");
+    let selected_key = GenerationLeaseKeyV1::from_catalog(selected.catalog());
+    let sidecar = root.join("reclaim.v1");
+    let saved_intent = fs::read(&sidecar).expect("the first checkpoint leaves its record");
+    assert_eq!(
+        saved_intent,
+        ReclamationCandidateV1::from_catalogs(old, selected.catalog())
+            .expect("the first checkpoint supersedes the old generation")
+            .encode()
+    );
+    assert_eq!(store_names(root), generation_file_names(&[1, 2], true));
+
+    let advanced = publish_data_successor(selected, "reclaim-epoch-advance");
     let advanced_catalog = advanced.catalog();
     let advanced_key = GenerationLeaseKeyV1::from_catalog(advanced_catalog);
     assert!(advanced_key.epoch() > selected_key.epoch());
     assert_eq!(advanced_key.first_live_pack(), selected_key.first_live_pack());
     assert_eq!(advanced_key.active_pack(), selected_key.active_pack());
     assert_eq!(advanced_key.index_generation(), selected_key.index_generation());
-    assert_eq!(fs::read(&sidecar).unwrap(), saved_intent);
+    assert_eq!(fs::read(&sidecar).expect("the record survives the epoch"), saved_intent);
     drop(advanced);
 
-    let reopened = admit(scratch.path());
+    let reopened = admit(root);
     assert_eq!(reopened.catalog(), advanced_catalog);
-    assert_eq!(fs::read(&sidecar).unwrap(), saved_intent);
-    assert!(old_pack.exists());
-    assert!(old_index.exists());
-    let before_catalog = fs::read(scratch.path().join("catalog.v1")).unwrap();
-    let second = publication_error(publish(reopened));
+    assert_eq!(fs::read(&sidecar).expect("the record survives the re-admission"), saved_intent);
+    assert_eq!(fs::read(&old_pack).expect("the pinned pack stays"), old_pack_bytes);
+    assert_eq!(fs::read(&old_index).expect("the pinned index stays"), old_index_bytes);
+    assert_eq!(store_names(root), generation_file_names(&[1, 2], true));
+
+    let second = publish(reopened).expect("the second checkpoint publishes under the pin");
+    assert_eq!(checkpoint_generation(second.catalog()), 3);
+    assert!(second.catalog().epoch() > advanced_catalog.epoch());
+    assert_eq!(
+        fs::read(&sidecar).expect("the record survives the second checkpoint"),
+        saved_intent
+    );
+    assert_eq!(fs::read(&old_pack).expect("the pinned pack stays"), old_pack_bytes);
+    assert_eq!(fs::read(&old_index).expect("the pinned index stays"), old_index_bytes);
+    assert_eq!(store_names(root), generation_file_names(&[1, 3], true));
+
+    let third = publish(second).expect("the third checkpoint publishes under the pin");
+    let third_catalog = third.catalog();
+    assert_eq!(checkpoint_generation(third_catalog), 4);
+    assert_eq!(fs::read(&sidecar).expect("the record survives the third checkpoint"), saved_intent);
+    assert_eq!(fs::read(&old_pack).expect("the pinned pack stays"), old_pack_bytes);
+    assert_eq!(fs::read(&old_index).expect("the pinned index stays"), old_index_bytes);
+    assert_eq!(store_names(root), generation_file_names(&[1, 4], true));
     assert!(matches!(
-        second,
-        GenerationCheckpointPublicationErrorV1::Io(DurableIoError::ReclamationPending { .. })
+        registry.acquire(older_key),
+        Err(GenerationLeaseError::Retired(key)) if key == older_key
     ));
-    assert_eq!(fs::read(scratch.path().join("catalog.v1")).unwrap(), before_catalog);
-    assert_eq!(fs::read(&sidecar).unwrap(), saved_intent);
-    assert!(old_pack.exists());
-    assert!(old_index.exists());
+    assert!(
+        registry
+            .acquire(GenerationLeaseKeyV1::from_catalog(third_catalog))
+            .is_ok()
+    );
+    drop(third);
 
     drop(pin);
-    let retry = admit(scratch.path());
-    assert_eq!(retry.catalog(), advanced_catalog);
+    let settled = admit(root);
+    assert_eq!(settled.catalog(), third_catalog);
     assert!(!old_pack.exists());
     assert!(!old_index.exists());
     assert!(!sidecar.exists());
-    let next = publish(retry).unwrap();
-    assert!(next.catalog().pack().active_pack() > advanced_catalog.pack().active_pack());
+    assert_eq!(store_names(root), generation_file_names(&[4], false));
+    let next = publish(settled).expect("a further checkpoint publishes");
+    assert!(next.catalog().pack().active_pack() > third_catalog.pack().active_pack());
+    assert_eq!(store_names(root), generation_file_names(&[5], false));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_crash_at_every_checkpoint_phase_under_a_deferred_reclamation_completes_it() {
+    use GenerationCheckpointPublicationOutcomeV1::{
+        DefinitelyNotPublished, Indeterminate, Published,
+    };
+
+    use crate::rspace::persistence::GenerationLeaseKeyV1;
+
+    let swap = FORMAL_PUBLICATION_PHASE_ORDER
+        .iter()
+        .position(|point| {
+            *point == GenerationCheckpointPublicationHookPointV1::AfterCatalogSlotWrite
+        })
+        .expect("the formal phase order writes the catalog slot");
+    let pinned_pack_name = pack_file_name(PackId::GENESIS);
+    let pinned_index_name = index_file_name(IndexGenerationV1::FIRST);
+    let successor_names = [
+        pack_file_name(PackId::new(3).expect("the third pack id is nonzero")),
+        index_file_name(IndexGenerationV1::new(3).expect("the third index generation is nonzero")),
+    ];
+    for (phase, point) in FORMAL_PUBLICATION_PHASE_ORDER.iter().copied().enumerate() {
+        let (outcome, recovered_generation) = match phase.cmp(&swap) {
+            std::cmp::Ordering::Less => (DefinitelyNotPublished, 2),
+            std::cmp::Ordering::Equal => (Indeterminate, 3),
+            std::cmp::Ordering::Greater => (Published, 3),
+        };
+        for release_before_restart in [false, true] {
+            let scratch = trial_scratch("deferred-reclamation-crash-");
+            let root = scratch.path();
+            install_checkpoint_store(root);
+            let writer = admit(root);
+            let pin = writer
+                .generation_leases()
+                .acquire(GenerationLeaseKeyV1::from_catalog(writer.catalog()))
+                .expect("pin the first generation");
+            let first = publish(writer).expect("the first checkpoint publishes under the pin");
+            let selected = first.catalog();
+            let record =
+                fs::read(root.join("reclaim.v1")).expect("the first checkpoint leaves its record");
+            let pinned_pack = fs::read(root.join(&pinned_pack_name)).expect("read the pinned pack");
+            let pinned_index =
+                fs::read(root.join(&pinned_index_name)).expect("read the pinned index");
+            assert_eq!(store_names(root), generation_file_names(&[1, 2], true), "{point:?}");
+
+            start_generation_checkpoint_publication_trace();
+            arm_generation_checkpoint_publication_failpoint(point);
+            let error = publication_error(publish(first));
+            assert_eq!(
+                take_generation_checkpoint_publication_trace(),
+                FORMAL_PUBLICATION_PHASE_ORDER[..=phase],
+                "{point:?}"
+            );
+            assert_eq!(error.publication_outcome(), outcome, "{point:?}");
+            let crashed = directory_snapshot(root);
+            let orphans: Vec<String> = successor_names
+                .iter()
+                .filter(|name| recovered_generation == 2 && crashed.contains_key(*name))
+                .cloned()
+                .collect();
+            let mut expected = match (release_before_restart, recovered_generation) {
+                (false, generation) => generation_file_names(&[1, generation], true),
+                (true, generation) => generation_file_names(&[generation], false),
+            };
+            expected.extend(orphans.iter().cloned());
+
+            let pin = if release_before_restart {
+                drop(pin);
+                None
+            } else {
+                Some(pin)
+            };
+            let reopened = admit(root);
+            assert_eq!(
+                checkpoint_generation(reopened.catalog()),
+                recovered_generation,
+                "{point:?} release {release_before_restart}"
+            );
+            if recovered_generation == 2 {
+                assert_eq!(reopened.catalog(), selected, "{point:?}");
+            }
+            let recovered = directory_snapshot(root);
+            assert_eq!(
+                recovered.keys().cloned().collect::<BTreeSet<_>>(),
+                expected,
+                "{point:?} release {release_before_restart}"
+            );
+            for name in &orphans {
+                assert_eq!(recovered.get(name), crashed.get(name), "{point:?} orphan {name}");
+            }
+            let generation = recovered_generation + 1;
+            match pin {
+                Some(pin) => {
+                    assert_eq!(recovered.get("reclaim.v1"), Some(&record), "{point:?}");
+                    assert_eq!(recovered.get(&pinned_pack_name), Some(&pinned_pack), "{point:?}");
+                    assert_eq!(recovered.get(&pinned_index_name), Some(&pinned_index), "{point:?}");
+                    let retried = publish(reopened)
+                        .expect("a checkpoint publishes after the crash while the pin is held");
+                    assert_eq!(checkpoint_generation(retried.catalog()), generation, "{point:?}");
+                    assert_eq!(
+                        store_names(root),
+                        generation_file_names(&[1, generation], true),
+                        "{point:?}"
+                    );
+                    assert_eq!(
+                        fs::read(root.join("reclaim.v1")).expect("the record survives the retry"),
+                        record,
+                        "{point:?}"
+                    );
+                    drop(retried);
+                    drop(pin);
+                    let settled = admit(root);
+                    assert_eq!(checkpoint_generation(settled.catalog()), generation, "{point:?}");
+                    assert_eq!(
+                        store_names(root),
+                        generation_file_names(&[generation], false),
+                        "{point:?}"
+                    );
+                }
+                None => {
+                    let next = publish(reopened)
+                        .expect("the next checkpoint publishes after the completed reclamation");
+                    assert_eq!(checkpoint_generation(next.catalog()), generation, "{point:?}");
+                    assert_eq!(
+                        store_names(root),
+                        generation_file_names(&[generation], false),
+                        "{point:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    let scratch = trial_scratch("deferred-reclamation-partial-");
+    let root = scratch.path();
+    install_checkpoint_store(root);
+    let writer = admit(root);
+    let registry = writer.generation_leases();
+    let first_pin = registry
+        .acquire(GenerationLeaseKeyV1::from_catalog(writer.catalog()))
+        .expect("pin the first generation");
+    let first = publish(writer).expect("the first checkpoint publishes under the pin");
+    let record = fs::read(root.join("reclaim.v1")).expect("the first checkpoint leaves its record");
+    let second_pin = registry
+        .acquire(GenerationLeaseKeyV1::from_catalog(first.catalog()))
+        .expect("pin the second generation");
+    let second = publish(first).expect("the second checkpoint publishes under both pins");
+    assert_eq!(checkpoint_generation(second.catalog()), 3);
+    assert_eq!(store_names(root), generation_file_names(&[1, 2, 3], true));
+    drop(second);
+    fs::remove_file(
+        root.join(pack_file_name(PackId::new(2).expect("the second pack id is nonzero"))),
+    )
+    .expect("remove the pack of the second generation and keep its index");
+    drop(second_pin);
+    let reopened = admit(root);
+    assert_eq!(checkpoint_generation(reopened.catalog()), 3);
+    assert_eq!(store_names(root), generation_file_names(&[1, 3], true));
+    assert_eq!(
+        fs::read(root.join("reclaim.v1")).expect("the record survives the partial state"),
+        record
+    );
+    drop(reopened);
+    drop(first_pin);
+    let settled = admit(root);
+    assert_eq!(checkpoint_generation(settled.catalog()), 3);
+    assert_eq!(store_names(root), generation_file_names(&[3], false));
+}
+
+#[test]
+fn each_superseded_generation_is_reclaimed_when_its_own_pins_release() {
+    use crate::rspace::persistence::GenerationLeaseKeyV1;
+
+    let scratch = trial_scratch("several-pins-");
+    let root = scratch.path();
+    install_checkpoint_store(root);
+    let writer = admit(root);
+    let registry = writer.generation_leases();
+    let pin = |catalog: CatalogSlotV1| {
+        registry
+            .acquire(GenerationLeaseKeyV1::from_catalog(catalog))
+            .expect("pin the current generation")
+    };
+    let settled = |catalog: CatalogSlotV1, superseded: &[u64], live_pins: usize| {
+        let selected = checkpoint_generation(catalog);
+        let mut generations = Vec::with_capacity(superseded.len() + 1);
+        generations.extend_from_slice(superseded);
+        generations.push(selected);
+        let names = store_names(root);
+        assert_eq!(
+            names,
+            generation_file_names(&generations, !superseded.is_empty()),
+            "generation {selected} is selected"
+        );
+        let packs = names
+            .iter()
+            .filter(|name| name.starts_with("pack-"))
+            .count();
+        let indexes = names
+            .iter()
+            .filter(|name| name.starts_with("index-"))
+            .count();
+        assert_eq!(packs, indexes, "generation {selected} is selected");
+        assert!(
+            packs <= live_pins + 1,
+            "{packs} generations are present under {live_pins} live pins"
+        );
+    };
+    let record = || fs::read(root.join("reclaim.v1")).expect("a reclamation record is pending");
+
+    let first_pin = pin(writer.catalog());
+    let writer = publish(writer).expect("the checkpoint to the second generation publishes");
+    settled(writer.catalog(), &[1], 1);
+    let first_record = record();
+    let second_pin = pin(writer.catalog());
+    let writer = publish(writer).expect("the checkpoint to the third generation publishes");
+    settled(writer.catalog(), &[1, 2], 2);
+    let writer = publish(writer).expect("the checkpoint to the fourth generation publishes");
+    settled(writer.catalog(), &[1, 2], 2);
+    let writer = publish(writer).expect("the checkpoint to the fifth generation publishes");
+    settled(writer.catalog(), &[1, 2], 2);
+    assert_eq!(record(), first_record);
+
+    drop(second_pin);
+    let writer = publish_data_successor(writer, "several-pins-second-release");
+    settled(writer.catalog(), &[1], 1);
+    assert_eq!(record(), first_record);
+    drop(first_pin);
+    let writer = publish_data_successor(writer, "several-pins-first-release");
+    settled(writer.catalog(), &[], 0);
+
+    let fifth_pin = pin(writer.catalog());
+    let writer = publish(writer).expect("the checkpoint to the sixth generation publishes");
+    settled(writer.catalog(), &[5], 1);
+    let second_record = record();
+    assert_ne!(second_record, first_record);
+    let writer = publish(writer).expect("the checkpoint to the seventh generation publishes");
+    settled(writer.catalog(), &[5], 1);
+    assert_eq!(record(), second_record);
+    drop(fifth_pin);
+    let writer = publish_data_successor(writer, "several-pins-fifth-release");
+    settled(writer.catalog(), &[], 0);
+
+    let writer = publish(writer).expect("the checkpoint to the eighth generation publishes");
+    settled(writer.catalog(), &[], 0);
+    let writer = publish(writer).expect("the checkpoint to the ninth generation publishes");
+    settled(writer.catalog(), &[], 0);
+    assert_eq!(checkpoint_generation(writer.catalog()), 9);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_deferred_reclamation_never_deletes_the_selected_generation_or_an_unnamed_file() {
+    use crate::rspace::persistence::GenerationLeaseKeyV1;
+
+    let scratch = trial_scratch("deferred-reclamation-exact-");
+    let root = scratch.path();
+    install_checkpoint_store(root);
+    let writer = admit(root);
+    let pin = writer
+        .generation_leases()
+        .acquire(GenerationLeaseKeyV1::from_catalog(writer.catalog()))
+        .expect("pin the first generation");
+    let first = publish(writer).expect("the first checkpoint publishes under the pin");
+    let second = publish(first).expect("the second checkpoint publishes under the pin");
+    let selected = second.catalog();
+    assert_eq!(checkpoint_generation(selected), 3);
+    assert_eq!(store_names(root), generation_file_names(&[1, 3], true));
+    drop(second);
+
+    let orphan_pack = pack_file_name(PackId::new(4).expect("the fourth pack id is nonzero"));
+    let orphan_index =
+        index_file_name(IndexGenerationV1::new(4).expect("the fourth index generation is nonzero"));
+    let rebuild_temporary = format!(
+        "{}.rebuild",
+        index_file_name(IndexGenerationV1::new(2).expect("the second index generation is nonzero"))
+    );
+    let planted: [(&str, &[u8]); 5] = [
+        (orphan_pack.as_str(), b"an unpublished successor pack"),
+        (orphan_index.as_str(), b"an unpublished successor index"),
+        (rebuild_temporary.as_str(), b"an index rebuild temporary"),
+        ("pack-2.rsp", b"a pack name that is not canonical"),
+        ("operator-notes.txt", b"not a store file"),
+    ];
+    for (name, bytes) in planted {
+        write_owner_only(&root.join(name), bytes);
+    }
+    let before = directory_snapshot(root);
+    let mut expected_names = generation_file_names(&[1, 3, 4], true);
+    expected_names.extend(
+        [rebuild_temporary.as_str(), "pack-2.rsp", "operator-notes.txt"]
+            .into_iter()
+            .map(str::to_owned),
+    );
+    assert_eq!(before.keys().cloned().collect::<BTreeSet<_>>(), expected_names);
+
+    let mut lease = DurableDirectoryV1::open(root)
+        .and_then(DurableDirectoryV1::try_acquire_writer)
+        .expect("take the writer lease");
+    let candidate = lease
+        .read_reclamation_candidate()
+        .expect("read the reclamation record")
+        .expect("the reclamation record is pending");
+    let held = lease
+        .reclaim_reclamation_candidate(candidate, selected)
+        .expect("the attempt under the pin succeeds");
+    assert!(held.deferred_for_reader);
+    assert_eq!(held.deleted_packs, 0);
+    assert!(!held.deleted_index);
+    assert_eq!(directory_snapshot(root), before);
+
+    drop(pin);
+    let released = lease
+        .reclaim_reclamation_candidate(candidate, selected)
+        .expect("the attempt after the release succeeds");
+    assert!(!released.deferred_for_reader);
+    assert_eq!(released.deleted_packs, 1);
+    assert!(released.deleted_index);
+    let mut expected = before;
+    for name in [
+        "reclaim.v1".to_owned(),
+        pack_file_name(PackId::GENESIS),
+        index_file_name(IndexGenerationV1::FIRST),
+    ] {
+        assert!(expected.remove(&name).is_some(), "{name} was present before the release");
+    }
+    assert_eq!(directory_snapshot(root), expected);
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug)]
+enum PinHistoryStep {
+    PinCurrent,
+    ReleaseOne,
+    Incremental,
+    Checkpoint,
+    ReAdmit,
+    DropAllPins,
+}
+
+#[cfg(unix)]
+const PIN_HISTORY_PREFIX: [PinHistoryStep; 2] =
+    [PinHistoryStep::PinCurrent, PinHistoryStep::Checkpoint];
+
+#[cfg(unix)]
+const PIN_HISTORY_STEPS_WITHOUT_PINS: [PinHistoryStep; 8] = [
+    PinHistoryStep::PinCurrent,
+    PinHistoryStep::PinCurrent,
+    PinHistoryStep::PinCurrent,
+    PinHistoryStep::PinCurrent,
+    PinHistoryStep::Checkpoint,
+    PinHistoryStep::Checkpoint,
+    PinHistoryStep::Incremental,
+    PinHistoryStep::ReAdmit,
+];
+
+#[cfg(unix)]
+const PIN_HISTORY_STEPS_WITH_PINS: [PinHistoryStep; 16] = [
+    PinHistoryStep::PinCurrent,
+    PinHistoryStep::PinCurrent,
+    PinHistoryStep::ReleaseOne,
+    PinHistoryStep::ReleaseOne,
+    PinHistoryStep::Incremental,
+    PinHistoryStep::Incremental,
+    PinHistoryStep::Checkpoint,
+    PinHistoryStep::Checkpoint,
+    PinHistoryStep::Checkpoint,
+    PinHistoryStep::Checkpoint,
+    PinHistoryStep::Checkpoint,
+    PinHistoryStep::Checkpoint,
+    PinHistoryStep::ReAdmit,
+    PinHistoryStep::ReAdmit,
+    PinHistoryStep::ReAdmit,
+    PinHistoryStep::DropAllPins,
+];
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Default)]
+struct PinHistoryCoverage {
+    checkpoints_under_a_deferred_reclamation: usize,
+    generations_reclaimed_after_their_release: usize,
+    readmissions_under_a_deferred_reclamation: usize,
+    readmissions_under_a_descendant_record: usize,
+}
+
+#[cfg(unix)]
+fn reclaim_unpinned_generations<Lease>(
+    superseded: &mut BTreeSet<u64>,
+    pins: &[(u64, Lease)],
+) -> usize {
+    let before = superseded.len();
+    superseded.retain(|generation| pins.iter().any(|(pinned, _)| pinned == generation));
+    before - superseded.len()
+}
+
+#[cfg(unix)]
+fn check_pin_history(selectors: &[(u8, u8)]) -> Result<PinHistoryCoverage, TestCaseError> {
+    use crate::rspace::persistence::GenerationLeaseKeyV1;
+
+    let scratch = trial_scratch("pin-history-");
+    let root = scratch.path();
+    install_checkpoint_store(root);
+    let mut writer = admit(root);
+    let registry = writer.generation_leases();
+    let steps = PIN_HISTORY_PREFIX.len() + selectors.len();
+    let mut coverage = PinHistoryCoverage::default();
+    let mut pins = Vec::with_capacity(steps);
+    let mut superseded = BTreeSet::new();
+    let mut record_from: Option<u64> = None;
+    let mut expected = generation_file_names(&[1], false);
+    for position in 0..steps {
+        let (step, argument) = match position.checked_sub(PIN_HISTORY_PREFIX.len()) {
+            None => (PIN_HISTORY_PREFIX[position], 0),
+            Some(generated) => {
+                let (choice, argument) = selectors[generated];
+                let table: &[PinHistoryStep] = if pins.is_empty() {
+                    &PIN_HISTORY_STEPS_WITHOUT_PINS
+                } else {
+                    &PIN_HISTORY_STEPS_WITH_PINS
+                };
+                (table[usize::from(choice) % table.len()], usize::from(argument))
+            }
+        };
+        let selected = checkpoint_generation(writer.catalog());
+        let attempted = match step {
+            PinHistoryStep::PinCurrent => {
+                let pin = registry
+                    .acquire(GenerationLeaseKeyV1::from_catalog(writer.catalog()))
+                    .map_err(|error| {
+                        TestCaseError::fail(format!(
+                            "step {position} could not pin the current generation: {error:?}"
+                        ))
+                    })?;
+                pins.push((selected, pin));
+                false
+            }
+            PinHistoryStep::ReleaseOne => {
+                if let Some(released) = argument.checked_rem(pins.len()) {
+                    drop(pins.remove(released));
+                }
+                false
+            }
+            PinHistoryStep::DropAllPins => {
+                pins.clear();
+                false
+            }
+            PinHistoryStep::Incremental => {
+                writer = publish_data_successor(writer, &format!("pin-history-{position}"));
+                coverage.generations_reclaimed_after_their_release +=
+                    reclaim_unpinned_generations(&mut superseded, &pins);
+                true
+            }
+            PinHistoryStep::ReAdmit => {
+                let pending = !superseded.is_empty();
+                let descendant = record_from.is_some_and(|from| selected > from + 1);
+                drop(writer);
+                writer = admit(root);
+                coverage.generations_reclaimed_after_their_release +=
+                    reclaim_unpinned_generations(&mut superseded, &pins);
+                coverage.readmissions_under_a_deferred_reclamation +=
+                    usize::from(pending && !superseded.is_empty());
+                coverage.readmissions_under_a_descendant_record +=
+                    usize::from(pending && descendant);
+                true
+            }
+            PinHistoryStep::Checkpoint => {
+                coverage.generations_reclaimed_after_their_release +=
+                    reclaim_unpinned_generations(&mut superseded, &pins);
+                if superseded.is_empty() {
+                    record_from = Some(selected);
+                } else {
+                    coverage.checkpoints_under_a_deferred_reclamation += 1;
+                }
+                writer = publish(writer).map_err(|error| {
+                    TestCaseError::fail(format!("step {position} refused a checkpoint: {error:?}"))
+                })?;
+                prop_assert_eq!(checkpoint_generation(writer.catalog()), selected + 1);
+                superseded.insert(selected);
+                reclaim_unpinned_generations(&mut superseded, &pins);
+                true
+            }
+        };
+        if attempted {
+            if superseded.is_empty() {
+                record_from = None;
+            }
+            let mut generations = Vec::with_capacity(superseded.len() + 1);
+            generations.extend(superseded.iter().copied());
+            generations.push(checkpoint_generation(writer.catalog()));
+            expected = generation_file_names(&generations, !superseded.is_empty());
+        }
+        prop_assert_eq!(
+            &store_names(root),
+            &expected,
+            "after step {} ({:?}) with pins on {:?}",
+            position,
+            step,
+            pins.iter().map(|(pinned, _)| *pinned).collect::<Vec<_>>()
+        );
+    }
+    Ok(coverage)
+}
+
+#[cfg(unix)]
+#[test]
+fn generated_pin_histories_keep_exactly_the_pinned_generations_and_never_refuse_a_checkpoint() {
+    let coverage = std::cell::RefCell::new(PinHistoryCoverage::default());
+    let mut runner = TestRunner::new_with_rng(
+        ProptestConfig {
+            cases: 16,
+            failure_persistence: None,
+            max_shrink_iters: 32,
+            ..ProptestConfig::default()
+        },
+        proptest::test_runner::TestRng::deterministic_rng(
+            proptest::test_runner::RngAlgorithm::ChaCha,
+        ),
+    );
+    runner
+        .run(&prop::collection::vec((any::<u8>(), any::<u8>()), 6), |selectors| {
+            let observed =
+                super::trusted_history_production::isolated(move || check_pin_history(&selectors))?;
+            let mut total = coverage.borrow_mut();
+            total.checkpoints_under_a_deferred_reclamation +=
+                observed.checkpoints_under_a_deferred_reclamation;
+            total.generations_reclaimed_after_their_release +=
+                observed.generations_reclaimed_after_their_release;
+            total.readmissions_under_a_deferred_reclamation +=
+                observed.readmissions_under_a_deferred_reclamation;
+            total.readmissions_under_a_descendant_record +=
+                observed.readmissions_under_a_descendant_record;
+            Ok(())
+        })
+        .expect("every generated pin history keeps exactly the pinned generations");
+    let coverage = coverage.into_inner();
+    assert!(
+        coverage.checkpoints_under_a_deferred_reclamation > 0 &&
+            coverage.generations_reclaimed_after_their_release > 0 &&
+            coverage.readmissions_under_a_deferred_reclamation > 0 &&
+            coverage.readmissions_under_a_descendant_record > 0,
+        "the generated pin histories missed a path: {coverage:?}"
+    );
 }
 
 #[test]

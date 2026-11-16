@@ -701,17 +701,24 @@ impl GenerationLeaseRegistryV1 {
         &self,
         key: GenerationLeaseKeyV1,
     ) -> Result<bool, GenerationLeaseError> {
+        self.retire_packs_if_unleased(key.first_live_pack, key.active_pack)
+    }
+
+    pub(crate) fn retire_packs_if_unleased(
+        &self,
+        first_live_pack: u64,
+        active_pack: u64,
+    ) -> Result<bool, GenerationLeaseError> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| GenerationLeaseError::Poisoned)?;
         if state.leases.values().any(|candidate| {
-            candidate.first_live_pack <= key.active_pack &&
-                key.first_live_pack <= candidate.active_pack
+            candidate.first_live_pack <= active_pack && first_live_pack <= candidate.active_pack
         }) {
             return Ok(false);
         }
-        state.retired_pack_through = state.retired_pack_through.max(key.active_pack);
+        state.retired_pack_through = state.retired_pack_through.max(active_pack);
         #[cfg(unix)]
         if let Some(identity) = state.directory_identity {
             let mut registries = directory_lease_registries()
@@ -1039,6 +1046,81 @@ mod registry_tests {
         ));
         assert_eq!(successor_reader.key(), disjoint_packs);
         assert!(registry.acquire(disjoint_packs).is_ok());
+    }
+
+    #[test]
+    fn retiring_a_later_range_under_an_earlier_lease_keeps_the_lease_and_refuses_new_earlier_leases()
+     {
+        let registry = GenerationLeaseRegistryV1::default();
+        let earlier = GenerationLeaseKeyV1::new(4, 1, 3, 7);
+        let later = GenerationLeaseKeyV1::new(6, 4, 4, 8);
+        let current = GenerationLeaseKeyV1::new(9, 5, 5, 9);
+        let mut earlier_reader = registry
+            .acquire(earlier)
+            .expect("the earlier generation is not retired yet");
+
+        assert!(
+            registry
+                .retire_packs_if_unleased(later.first_live_pack(), later.active_pack())
+                .expect("the registry answers for the later range")
+        );
+        assert_eq!(
+            registry
+                .state
+                .lock()
+                .expect("generation lease registry lock")
+                .retired_pack_through,
+            later.active_pack()
+        );
+        assert!(
+            registry
+                .has_active(earlier)
+                .expect("the registry answers for the earlier lease")
+        );
+        assert!(
+            !registry
+                .retire_packs_if_unleased(earlier.first_live_pack(), earlier.active_pack())
+                .expect("the registry answers for the earlier range")
+        );
+        assert!(matches!(
+            registry.acquire(earlier),
+            Err(GenerationLeaseError::Retired(key)) if key == earlier
+        ));
+        assert!(matches!(
+            registry.acquire(later),
+            Err(GenerationLeaseError::Retired(key)) if key == later
+        ));
+        assert!(registry.acquire(current).is_ok());
+
+        earlier_reader
+            .release()
+            .expect("the earlier lease releases once");
+        assert!(
+            registry
+                .retire_packs_if_unleased(earlier.first_live_pack(), earlier.active_pack())
+                .expect("the registry answers for the released range")
+        );
+        assert_eq!(
+            registry
+                .state
+                .lock()
+                .expect("generation lease registry lock")
+                .retired_pack_through,
+            later.active_pack()
+        );
+        assert!(matches!(
+            registry.acquire(later),
+            Err(GenerationLeaseError::Retired(key)) if key == later
+        ));
+        assert!(registry.acquire(current).is_ok());
+        assert_eq!(
+            registry
+                .retire_pack_range_if_unleased(later)
+                .expect("the key entry point answers for the later range"),
+            registry
+                .retire_packs_if_unleased(later.first_live_pack(), later.active_pack())
+                .expect("the range entry point answers for the later range")
+        );
     }
 
     #[test]

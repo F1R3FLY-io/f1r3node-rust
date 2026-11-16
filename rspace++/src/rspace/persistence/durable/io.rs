@@ -6,13 +6,16 @@ use std::path::{Path, PathBuf};
 
 use super::reclaim::{
     RECLAMATION_RECORD_LEN_V1, ReclamationCandidateV1, ReclamationCatalogRelationV1,
+    ReclamationUnitV1,
 };
 use super::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogSlotV1,
     INDEX_HEADER_LEN_V1, IndexGenerationV1, PACK_HEADER_LEN_V1,
 };
 use crate::rspace::persistence::retention::v2_format::{RetentionFormat, RetentionReader};
-use crate::rspace::persistence::{CanonicalSink, GenerationLeaseRegistryV1, PackId};
+use crate::rspace::persistence::{
+    CanonicalSink, GenerationLeaseKeyV1, GenerationLeaseRegistryV1, PackId,
+};
 
 pub(crate) const CATALOG_FILE_NAME_V1: &str = "catalog.v1";
 pub(crate) const WRITER_LOCK_FILE_NAME_V1: &str = "writer.lock.v1";
@@ -268,9 +271,6 @@ pub(crate) enum DurableIoError {
     CatalogAuthorityChanged {
         path: PathBuf,
     },
-    ReclamationPending {
-        path: PathBuf,
-    },
     SuccessorOverflow {
         path: PathBuf,
         artifact: &'static str,
@@ -440,11 +440,6 @@ impl Display for DurableIoError {
             Self::CatalogAuthorityChanged { path } => write!(
                 formatter,
                 "durable catalog {} changed before successor orphan cleanup",
-                path.display()
-            ),
-            Self::ReclamationPending { path } => write!(
-                formatter,
-                "durable reclamation {} still waits for an old-generation reader",
                 path.display()
             ),
             Self::SuccessorOverflow {
@@ -943,6 +938,7 @@ impl DurableDirectoryV1 {
             Ok(()) => Ok(DurableWriterLeaseV1 {
                 directory: self,
                 _lock: lock,
+                reclamation: ReclamationProgressV1::default(),
             }),
             Err(TryLockError::WouldBlock) => Err(DurableIoError::WriterLockContended {
                 operation: DurableIoOperation::AcquireWriterLock,
@@ -1055,6 +1051,14 @@ impl DurableDirectoryV1 {
 pub(crate) struct DurableWriterLeaseV1 {
     directory: DurableDirectoryV1,
     _lock: DurableFileV1,
+    reclamation: ReclamationProgressV1,
+}
+
+#[derive(Debug, Default)]
+struct ReclamationProgressV1 {
+    candidate: Option<ReclamationCandidateV1>,
+    units_below: u64,
+    pending: Vec<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1218,6 +1222,7 @@ impl DurableWriterLeaseV1 {
         &mut self,
         candidate: ReclamationCandidateV1,
     ) -> Result<(), DurableIoError> {
+        self.reclamation = ReclamationProgressV1::default();
         let temporary = RECLAMATION_CANDIDATE_TEMPORARY_FILE_NAME_V1;
         #[cfg(test)]
         trip_durable_io_failpoint(
@@ -1317,6 +1322,7 @@ impl DurableWriterLeaseV1 {
     }
 
     pub(crate) fn remove_reclamation_candidate(&mut self) -> Result<(), DurableIoError> {
+        self.reclamation = ReclamationProgressV1::default();
         let name = RECLAMATION_CANDIDATE_FILE_NAME_V1;
         let opened = self.directory.open_child(name, ChildOpenMode::ReadOnly)?;
         ensure_child_matches_handle(
@@ -1353,22 +1359,24 @@ impl DurableWriterLeaseV1 {
     pub(crate) fn resolve_reclamation_before_checkpoint(
         &mut self,
         selected: CatalogSlotV1,
-    ) -> Result<(), DurableIoError> {
+    ) -> Result<Option<ReclamationCandidateV1>, DurableIoError> {
         let Some(candidate) = self.read_reclamation_candidate()? else {
-            return Ok(());
+            return Ok(None);
         };
         match candidate.relation_to_catalog(selected) {
-            ReclamationCatalogRelationV1::PreCas => self.remove_reclamation_candidate(),
-            ReclamationCatalogRelationV1::SelectedSuccessor => {
+            ReclamationCatalogRelationV1::PreCas => {
+                self.remove_reclamation_candidate()?;
+                Ok(None)
+            }
+            ReclamationCatalogRelationV1::SelectedSuccessor |
+            ReclamationCatalogRelationV1::SelectedDescendant => {
                 if self
                     .reclaim_reclamation_candidate(candidate, selected)?
                     .deferred_for_reader
                 {
-                    Err(DurableIoError::ReclamationPending {
-                        path: self.directory.path.join(RECLAMATION_CANDIDATE_FILE_NAME_V1),
-                    })
+                    Ok(Some(candidate))
                 } else {
-                    Ok(())
+                    Ok(None)
                 }
             }
             ReclamationCatalogRelationV1::Unrelated => {
@@ -1379,55 +1387,97 @@ impl DurableWriterLeaseV1 {
         }
     }
 
-    /// Reclaim exactly the superseded generation named by an authenticated
+    /// Reclaim exactly the superseded generations covered by an authenticated
     /// candidate. The catalog image must already have selected the candidate's
-    /// successor; active leases on the old generation defer deletion without
-    /// consuming the sidecar.
+    /// successor or a lockstep descendant of it; each covered generation is
+    /// removed once no lease overlaps it, and the sidecar is consumed only
+    /// when none remains.
     pub(crate) fn reclaim_reclamation_candidate(
         &mut self,
         candidate: ReclamationCandidateV1,
         selected_successor: CatalogSlotV1,
     ) -> Result<ReclamationOutcomeV1, DurableIoError> {
-        if candidate.relation_to_catalog(selected_successor) !=
-            ReclamationCatalogRelationV1::SelectedSuccessor
-        {
+        let Some(below) =
+            candidate.units_below(GenerationLeaseKeyV1::from_catalog(selected_successor))
+        else {
             return Err(DurableIoError::CatalogAuthorityChanged {
                 path: self.directory.path.clone(),
             });
+        };
+        let mut progress = std::mem::take(&mut self.reclamation);
+        if progress.candidate != Some(candidate) ||
+            below < progress.units_below ||
+            below.saturating_sub(1) > progress.units_below
+        {
+            progress = self.seed_reclamation(candidate, below)?;
+        } else if below > progress.units_below {
+            progress.pending.push(below - 1);
         }
+        progress.units_below = below;
+        let mut outcome = ReclamationOutcomeV1 {
+            deleted_packs: 0,
+            deleted_index: false,
+            deferred_for_reader: false,
+        };
+        let registry = self.generation_leases();
+        let mut deferred = 0usize;
         // This check and the exclusion of future old-generation leases must
         // linearize as one registry operation. A separate has_active check
         // permits acquisition between the check and the first unlink.
-        if !self
-            .generation_leases()
-            .retire_pack_range_if_unleased(candidate.old())
-            .map_err(|error| DurableIoError::Io {
-                operation: DurableIoOperation::Metadata,
-                path: self.directory.path.clone(),
-                source: io::Error::other(error.to_string()),
-            })?
-        {
-            return Ok(ReclamationOutcomeV1 {
-                deleted_packs: 0,
-                deleted_index: false,
-                deferred_for_reader: true,
-            });
+        for position in 0..progress.pending.len() {
+            let number = progress.pending[position];
+            let unit = candidate
+                .unit(number)
+                .ok_or_else(|| DurableIoError::SuccessorOverflow {
+                    path: self.directory.path.clone(),
+                    artifact: "reclamation unit",
+                    current: number,
+                })?;
+            if registry
+                .retire_packs_if_unleased(unit.first_pack, unit.active_pack)
+                .map_err(|error| DurableIoError::Io {
+                    operation: DurableIoOperation::Metadata,
+                    path: self.directory.path.clone(),
+                    source: io::Error::other(error.to_string()),
+                })?
+            {
+                self.remove_reclamation_unit(unit, &mut outcome)?;
+            } else {
+                progress.pending[deferred] = number;
+                deferred += 1;
+            }
         }
+        progress.pending.truncate(deferred);
+        if progress.pending.is_empty() {
+            self.sync_directory()?;
+            self.remove_reclamation_candidate()?;
+            return Ok(outcome);
+        }
+        self.reclamation = progress;
+        Ok(ReclamationOutcomeV1 {
+            deferred_for_reader: true,
+            ..outcome
+        })
+    }
 
-        let old = candidate.old();
-        let mut deleted_packs = 0u64;
-        let mut pack = old.first_live_pack();
-        while pack <= old.active_pack() {
+    fn remove_reclamation_unit(
+        &mut self,
+        unit: ReclamationUnitV1,
+        outcome: &mut ReclamationOutcomeV1,
+    ) -> Result<(), DurableIoError> {
+        let mut pack = unit.first_pack;
+        while pack <= unit.active_pack {
             let name = pack_file_name(PackId::new(pack).expect("validated nonzero pack id"));
             match self.remove_child(&name) {
                 Ok(()) => {
-                    deleted_packs = deleted_packs.checked_add(1).ok_or_else(|| {
-                        DurableIoError::SuccessorOverflow {
-                            path: self.directory.path.clone(),
-                            artifact: "reclamation pack count",
-                            current: deleted_packs,
-                        }
-                    })?
+                    outcome.deleted_packs =
+                        outcome.deleted_packs.checked_add(1).ok_or_else(|| {
+                            DurableIoError::SuccessorOverflow {
+                                path: self.directory.path.clone(),
+                                artifact: "reclamation pack count",
+                                current: outcome.deleted_packs,
+                            }
+                        })?
                 }
                 Err(DurableIoError::Io { source, .. })
                     if source.kind() == io::ErrorKind::NotFound => {}
@@ -1443,21 +1493,44 @@ impl DurableWriterLeaseV1 {
         }
 
         let index_name = index_file_name(
-            IndexGenerationV1::new(old.index_generation()).expect("validated index generation"),
+            IndexGenerationV1::new(unit.index_generation).expect("validated index generation"),
         );
-        let deleted_index = match self.remove_child(&index_name) {
-            Ok(()) => true,
-            Err(DurableIoError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-                false
-            }
+        match self.remove_child(&index_name) {
+            Ok(()) => outcome.deleted_index = true,
+            Err(DurableIoError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
+        }
+        Ok(())
+    }
+
+    fn seed_reclamation(
+        &self,
+        candidate: ReclamationCandidateV1,
+        below: u64,
+    ) -> Result<ReclamationProgressV1, DurableIoError> {
+        let pending = match below {
+            1 => vec![0],
+            _ => {
+                let names = self.directory.store_file_names()?;
+                let mut pending = Vec::with_capacity(names.len());
+                pending.extend(names.iter().filter_map(|name| {
+                    match (parse_pack_file_name(name), parse_index_file_name(name)) {
+                        (Some(pack), _) => candidate.unit_of_pack(pack, below),
+                        (None, Some(index_generation)) => {
+                            candidate.unit_of_index(index_generation, below)
+                        }
+                        (None, None) => None,
+                    }
+                }));
+                pending.sort_unstable();
+                pending.dedup();
+                pending
+            }
         };
-        self.sync_directory()?;
-        self.remove_reclamation_candidate()?;
-        Ok(ReclamationOutcomeV1 {
-            deleted_packs,
-            deleted_index,
-            deferred_for_reader: false,
+        Ok(ReclamationProgressV1 {
+            candidate: Some(candidate),
+            units_below: below,
+            pending,
         })
     }
 
@@ -1717,6 +1790,18 @@ fn is_store_file_name(name: &str) -> bool {
 fn store_file_number(name: &str, prefix: &str, suffix: &str) -> Option<u64> {
     let (digits, _) = name.strip_prefix(prefix)?.split_once(suffix)?;
     digits.parse().ok()
+}
+
+fn parse_pack_file_name(name: &str) -> Option<u64> {
+    let number = store_file_number(name, PACK_FILE_PREFIX_V1, PACK_FILE_SUFFIX_V1)?;
+    let pack = PackId::new(number).ok()?;
+    (pack_file_name(pack) == name).then_some(number)
+}
+
+fn parse_index_file_name(name: &str) -> Option<u64> {
+    let number = store_file_number(name, INDEX_FILE_PREFIX_V1, INDEX_FILE_SUFFIX_V1)?;
+    let generation = IndexGenerationV1::new(number).ok()?;
+    (index_file_name(generation) == name).then_some(number)
 }
 
 fn is_pack_file_name(name: &str) -> bool {

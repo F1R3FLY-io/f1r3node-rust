@@ -722,10 +722,10 @@ impl<P: SemanticProfile> CheckpointPublicationAuthorityV1<P> {
         admission_limits: DurableAdmissionLimitsV1,
     ) -> Result<SemanticallyAdmittedDurableWriterV1<P>, GenerationCheckpointPublicationErrorV1>
     {
-        let (mut lease, authority, durable) = {
+        let (mut lease, authority, durable, pending) = {
             let (mut lease, source) = self.into_parts();
             let authority = source.authority().clone();
-            let durable = prepare_and_write_successor_generation::<P>(
+            let (durable, pending) = prepare_and_write_successor_generation::<P>(
                 &mut lease,
                 &source,
                 &authority,
@@ -736,20 +736,32 @@ impl<P: SemanticProfile> CheckpointPublicationAuthorityV1<P> {
             // The admitted old-generation store and all plans borrowing it
             // leave scope here. Only the lease, exact old catalog token, and
             // fully synchronized successor receipts cross the CAS boundary.
-            (lease, authority, durable)
+            (lease, authority, durable, pending)
         };
 
         // Both final successor names and their complete metadata must be
         // durable before the catalog is allowed to make them reachable.
         lease.sync_directory()?;
 
-        // Persist the authenticated cleanup intent before catalog CAS.  A
+        // Persist the authenticated cleanup intent before catalog CAS, or keep
+        // a pending one that covers the successor as a lockstep descendant.  A
         // pre-CAS crash leaves the old catalog authoritative; a post-CAS
         // restart can validate this exact candidate before reclaiming files.
-        let reclamation =
-            super::ReclamationCandidateV1::from_catalogs(authority.slot(), durable.successor)
-                .expect("fresh generation must strictly supersede its captured authority");
-        lease.write_reclamation_candidate(reclamation)?;
+        match pending {
+            None => lease.write_reclamation_candidate(
+                super::ReclamationCandidateV1::from_catalogs(authority.slot(), durable.successor)
+                    .expect("fresh generation must strictly supersede its captured authority"),
+            )?,
+            Some(pending)
+                if pending.relation_to_catalog(durable.successor) ==
+                    super::reclaim::ReclamationCatalogRelationV1::SelectedDescendant => {}
+            Some(_) => {
+                return Err(DurableIoError::CatalogAuthorityChanged {
+                    path: lease.directory().path().to_path_buf(),
+                }
+                .into());
+            }
+        }
 
         #[cfg(test)]
         run_generation_checkpoint_publication_hook(
@@ -790,7 +802,7 @@ impl<P: SemanticProfile> CheckpointPublicationAuthorityV1<P> {
             .map_err(GenerationCheckpointPublicationErrorV1::PublishedCatalogDirectory)?;
 
         // The catalog is now durable and authoritative. Reclaim only the
-        // exact superseded generation named by the synchronized candidate;
+        // superseded generations that the synchronized candidate covers;
         // active readers defer cleanup while retaining the sidecar for retry.
         if let Some(candidate) = lease.read_reclamation_candidate().map_err(|error| {
             GenerationCheckpointPublicationErrorV1::PublishedRecovery(Box::new(
@@ -890,7 +902,10 @@ fn prepare_and_write_successor_generation<P: SemanticProfile>(
     recovery_limits: DurableLimits,
     wal_limits: LogPackDecodeLimits,
     admission_limits: DurableAdmissionLimitsV1,
-) -> Result<GenerationFilesDurableV1, GenerationCheckpointPublicationErrorV1> {
+) -> Result<
+    (GenerationFilesDurableV1, Option<super::ReclamationCandidateV1>),
+    GenerationCheckpointPublicationErrorV1,
+> {
     let current = authority.slot();
     let current_pack = PackId::new(current.pack().active_pack())?;
     let previous_terminal = PackTerminalIdentityV1::new(
@@ -960,12 +975,13 @@ fn prepare_and_write_successor_generation<P: SemanticProfile>(
         });
     }
 
-    lease.resolve_reclamation_before_checkpoint(current)?;
+    let pending = lease.resolve_reclamation_before_checkpoint(current)?;
 
     let prepare_durable = write_and_sync_prepare(lease, pack_header, prepare_address, &prepared)?;
     let index_durable = write_and_sync_index(lease, &index_plan, prepare_durable)?;
     let commit_durable = append_and_sync_commit(lease, current, commit_address, index_durable)?;
     prepare_successor_catalog(authority, current, &prepared, commit_durable, retained_roots)
+        .map(|durable| (durable, pending))
 }
 
 pub(crate) fn require_incremental_retention_manifest<P: SemanticProfile>(
