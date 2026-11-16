@@ -1,10 +1,8 @@
-// Transfers from one sender. Each transfer sprouts a temporary purse whose
-// balance is a mergeable-tagged number cell, named from the deploy's
-// unforgeable-name seed: (deployer key, timestamp, valid-after block). Two
-// distinct deploys signed by one key with the same seed inputs create the
-// same purse: its cell is initialized twice and the next read trips the
-// IntegerAdd single-value invariant. A capacity run wedged two of four
-// validators this way.
+// Deploys from one sender. A deploy's unforgeable names derive from its seed:
+// (deployer key, timestamp, valid-after block). Two distinct deploys signed by
+// one key with the same seed inputs create the same names; a mergeable-tagged
+// number cell they both create is initialized twice and the next read trips
+// the IntegerAdd single-value invariant.
 
 use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::tools::Tools;
@@ -174,21 +172,46 @@ async fn must_survive(
     );
 }
 
-/// Two distinct transfers signed by one key at one timestamp (they differ
-/// only in phlo limit, so their signatures differ), in consecutive blocks —
-/// the shape that wedged validator 4.
+/// A deploy that creates a NonNegativeNumber and adds to it: the number's
+/// cell is a mergeable-tagged channel named from the deploy's seed.
+fn counter(timestamp: i64, phlo_limit: i64, shard_id: &str) -> Signed<DeployData> {
+    let term = r#"
+        new rl(`rho:registry:lookup`), nnCh, ret, ack in {
+            rl!(`rho:lang:nonNegativeNumber`, *nnCh) |
+            for (@(_, nn) <- nnCh) {
+                @nn!(1, *ret) |
+                for (@counter <- ret) { @counter!("add", 1, *ack) }
+            }
+        }
+    "#
+    .to_string();
+    construct_deploy::source_deploy(
+        term,
+        timestamp,
+        Some(phlo_limit),
+        None,
+        None,
+        None,
+        Some(shard_id.to_string()),
+    )
+    .expect("counter deploy")
+}
+
+/// Two distinct counter deploys signed by one key at one timestamp (they
+/// differ only in phlo limit, so their signatures differ), in consecutive
+/// blocks.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn a_transfer_sharing_key_and_timestamp_with_one_in_state_must_not_wedge() {
-    let (mut nodes, shard_id, payer) = network().await;
-    let first = transfer_with_phlo(&payer, 7, 1_000_000, &shard_id);
-    let second = transfer_with_phlo(&payer, 7, 1_000_001, &shard_id);
+async fn a_counter_sharing_a_seed_with_one_in_state_must_not_wedge() {
+    let (mut nodes, shard_id, _) = network().await;
+    let first = counter(7, 1_000_000, &shard_id);
+    let second = counter(7, 1_000_001, &shard_id);
     assert_ne!(first.sig, second.sig, "the two deploys must be distinct");
 
     propose_and_replay(
         &mut nodes,
         std::slice::from_ref(&first),
-        "the first transfer",
+        "the first counter",
     )
     .await;
     must_survive(
@@ -196,18 +219,18 @@ async fn a_transfer_sharing_key_and_timestamp_with_one_in_state_must_not_wedge()
         std::slice::from_ref(&second),
         Some(&first),
         &shard_id,
-        "a second transfer with the first's key and timestamp",
+        "a second counter with the first's seed",
     )
     .await;
 }
 
-/// The same pair in one block — the two-deploy attempt that failed first.
+/// The same pair in one block.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn transfers_sharing_key_and_timestamp_in_one_block_must_not_wedge() {
-    let (mut nodes, shard_id, payer) = network().await;
-    let first = transfer_with_phlo(&payer, 7, 1_000_000, &shard_id);
-    let second = transfer_with_phlo(&payer, 7, 1_000_001, &shard_id);
+async fn counters_sharing_a_seed_in_one_block_must_not_wedge() {
+    let (mut nodes, shard_id, _) = network().await;
+    let first = counter(7, 1_000_000, &shard_id);
+    let second = counter(7, 1_000_001, &shard_id);
     assert_ne!(first.sig, second.sig, "the two deploys must be distinct");
 
     must_survive(
@@ -215,7 +238,7 @@ async fn transfers_sharing_key_and_timestamp_in_one_block_must_not_wedge() {
         &[first, second],
         None,
         &shard_id,
-        "two transfers sharing key and timestamp in one block",
+        "two counters sharing a seed in one block",
     )
     .await;
 }
