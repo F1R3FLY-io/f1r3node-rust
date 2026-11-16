@@ -8527,6 +8527,89 @@ generation and remove the intent, after which the authority holds one lease
 and its view a second. A refused step halts the trial, and the test then
 fails.
 
+**The cross-process trial.** GC-16 to GC-18 share one deterministic trial of
+two operating-system processes over one store directory. It runs the store's
+code against the pack-lease model
+[`RSpaceGcPackLeaseRace.tla`](../../../formal/tlaplus/stack_safe_pda/RSpaceGcPackLeaseRace.tla)
+and the section on
+[reads across processes](gc-protection-matrix-2026-10-01.md#reads-across-processes-descriptor-pins-instead-of-a-lease-record)
+of the GC protection matrix, whose facts F1 to F5, K1 and K2 it uses by name.
+The test process is process *B*. Process *A* is the same test binary, started
+by the trial with the arguments `--ignored --exact` and the name of the
+ignored test `pinned_reader_child`, as the startup tests start their child.
+A receives the store directory in an environment variable, takes one command
+per line on its standard input and writes one report per line on its standard
+output. A *read* of A is one of four calls on its handles: the semantic roots
+of one handle, and, through a `DurableViewReaderV1` on a second handle, the
+data of `channel`, the continuations of the group `[channel, channel]` and the
+joins of `channel`. A report renders each read as `ok` with its number of
+values, or as `error`, followed by the `Debug` text of its result. Every object
+that a read loads is checked against its length and digest, so two equal
+renderings of reads through the same handle stand for the same bytes. The
+trial:
+
+1. creates the store of a durable RSpace owner, publishes one datum on
+   `channel`, one continuation on `[channel, channel]` and one join through the
+   owner's checkpoint, and closes and drops the owner. The generation that the
+   catalog then selects is G0;
+2. starts A. A opens an owner on the store, takes two read handles from the
+   owner's published core and reports its generation key and its four reads,
+   the *admitted reads*;
+3. while A's owner is open, takes a snapshot of the store's files other than
+   `writer.lock.v1`, tries the writer lock with `try_acquire_writer`, tries to
+   open the store with `recover_read_authority` and takes the snapshot again;
+4. tells A to close. A closes its owner and drops it and its hot store, so that
+   only the two handles hold G0's packs. B then takes the writer lock and
+   releases it;
+5. opens an owner in B, publishes a second datum on `channel` through its
+   checkpoint, which appends to the pack and the index of G0, and closes the
+   owner. B then admits the store with a writer, compacts it with
+   `compact_generation_v1` into a successor G1 in a fresh pack range, lists the
+   directory as soon as the call returns and asks whether A still runs;
+6. tells A to read. A reads through its two handles again, and B lists the
+   directory before and after;
+7. tells A to reopen. A opens an owner at G1, takes two handles on it and
+   reports G1's key, the reads of the G1 handles and the reads of its G0
+   handles. A keeps the owner and all four handles;
+8. repeats step 3 against A's reopened owner;
+9. kills A with `SIGKILL`, reaps it, lists the directory, and takes the writer
+   lock and releases it;
+10. compacts the store again into G2 and lists the directory as soon as the
+    call returns.
+
+GC-16 requires the admitted reads to find the manifest, one datum, one
+continuation and one join, and the G1 handle to find two data; B's first
+compaction to remove the generation that A was admitted on, after B's
+publication appended to its active pack and its index; the names of that
+generation's files to be absent before and after A's read; and both later
+reads through A's G0 handles, one with the handles alone and one beside A's
+reopened owner, to equal the admitted reads. GC-17 requires the writer lock to
+be granted while A holds only handles, A to run when B's first compaction
+returns, the directory right after each compaction to hold exactly
+`catalog.v1`, `writer.lock.v1` and the successor's pack and index, A to end by
+`SIGKILL` while it holds its owner and handles on G1, B's first lock attempt
+after A's death to be granted, B's second compaction to start from A's G1 key,
+and the directory after A's death to hold exactly `catalog.v1`,
+`writer.lock.v1` and G1's pack and index. GC-18 requires each attempt of steps
+3 and 8 to be refused with `WriterLockContended` and to leave the snapshot
+unchanged, and the lock to be granted after A closes its owner. A failed step
+ends the trial; A is then killed and reaped, and the three tests fail with the
+step's message. In every outcome A is killed or has ended, and is reaped,
+before the trial returns.
+
+Under this trial the model's variables are observed as follows. `lock` is the
+process whose owner holds `writer.lock.v1`, or none; `alive` of A is false from
+the reaping on; `leases` and `pinned` of A are A's handles, each a generation
+lease in A's own registry and the descriptors of its generation's packs, which
+admission opened; `deleted` holds G0's pack from the return of B's first
+compaction and G1's from the return of the second. `rewritten` is not observed
+directly: a rewrite of admitted bytes in place would change the reads that
+GC-16 compares. Unlike the model, the trial runs on the host's kernel, so K1
+and K2 are exercised there rather than assumed. The manifest test now also
+reads the source of `RSpaceGcPackLeaseRace.tla`, so that GC rows can cite its
+symbols; its configurations are not added to those whose invariants the
+derivation matrix must cite.
+
 **The GC rows.** GC is the garbage-collection protection family.
 
 | ID | Required property | Test |
@@ -8542,6 +8625,9 @@ fails.
 | GC-09 | No durable replay or rollback obligation (`DurableExactGenerationProtected`). In the obligation trial only the owner's checkpoint makes durable writes, and they are exactly its publication: `catalog.v1` is rewritten and the pack and the index of the generation are appended to. A replay, a reset, a rollback, a `clear` and a spawn view each resolve their target, make no durable write and add exactly one generation lease. `ReclamationCandidateV1::new` accepts no ordered pair of the keys that the views read, so `reclaim.v1` stays absent: the only durable record of the store that names an old generation names it as reclaimable, never as protected. | `only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash` |
 | GC-10 | The successor holds the published closure (`PublishedClosureProtected`). In every trial of the shared sample in which the catalog selects the successor, every admission, re-admission and recovery that follows succeeds. Each of them reads the current state and every retained state through the successor's live packs and its index alone, and a refused one halts the trial, which fails the test. Observed: the recovery after a crash after the catalog swap, and the settling re-admission of every trial, after which no old file remains. | `crash_before_publication_keeps_the_old_generation_for_retry` |
 | GC-11 | Crash-phase quiescence (`CrashPhaseQuiescence`). In the obligation trial, a crash with live views on the old generation, after the publication of the successor, leaves no lease in the registry and changes neither `reclaim.v1` nor the old generation. The recovery that follows selects the successor, reclaims the old generation and removes the intent before the first lease is taken; the authority then holds one lease and its view a second. This is the order of the model's witness: `Crash`, `Recover`, `Reclaim`, then `AcquireNewPin`. | `only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash` |
+| GC-16 | Pinned reads survive a foreign unlink (`PinnedReadReturnsAdmittedBytes`). In the cross-process trial, process A's two handles read the manifest, one datum, one continuation and one join when they are admitted. A closes its owner; process B then publishes onto the pack and the index of A's generation and reclaims that generation with a compaction, and the names of its files are absent before and after A reads again. Every read through A's handles after the reclamation, once with the handles alone and once beside the owner that A reopened at B's successor, returns exactly the admitted reads. A handle on the successor reads B's second datum, so the admitted state is not the current one. | `a_pinned_read_handle_returns_its_admitted_bytes_after_another_process_reclaims_its_packs` |
+| GC-17 | A live or dead reader of another process holds nothing back (`DeadProcessHoldsNothing`). In the cross-process trial, B's writer lock is granted while A holds only handles, and B's compaction of A's generation reclaims it within the call while A runs: right after the call the directory holds exactly `catalog.v1`, `writer.lock.v1` and the successor's pack and index. A then reopens the store and is killed with `SIGKILL` while it holds its owner, two handles on the current generation and its first two handles. B's first lock attempt after the death is granted, the directory holds exactly `catalog.v1`, `writer.lock.v1` and the current generation's pack and index, and B's next compaction reclaims the generation that A's handles held within the call, again leaving exactly the catalog, the lock file and the successor's files. | `another_process_reclaims_unblocked_by_a_live_or_killed_reader_and_leaves_nothing_stale` |
+| GC-18 | One owner at a time across processes (`TypeInvariant` of the pack-lease model, its conjunct on `lock`). In the cross-process trial, while A's owner is open, after A's first open and again after A reopened the store, B's `try_acquire_writer` and B's `recover_read_authority` are each refused with `WriterLockContended`, and the store's files other than `writer.lock.v1` keep their bytes. Once A has closed its owner, B's lock attempt is granted. | `an_owner_open_in_another_process_refuses_the_writer_lock_as_contended` |
 
 ### Dynamic retained-root handoff to compaction (2026-11-13)
 
@@ -13129,6 +13215,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | GC-09 | `DurableExactGenerationProtected` | `EXEC_ONLY` | P | Partially entailed (task 12441): the invariant keeps the old generation present while `oldDurable`, the set of durable replay or rollback assignments to it, is not empty. Under the ruling of 2026-11-10 on decision GC5/GC7 (option (a)) no runtime request makes a durable assignment, so the refinement mapping realizes `oldDurable` as the empty set and the premise is never true. The executable refinement obligation is that no request can make one: only a checkpoint makes durable writes, exactly its publication; a view makes none; and `reclaim.v1`, the only durable record that names an old generation, holds an old and a successor key, which `ReclamationCandidateV1::new` accepts only when the successor has the larger epoch and starts after the old active pack, and no field for a kind, a root or a WAL position. While the process lives, the generation lease of a view's read handle protects the generation that the view reads (`durable_views_on_an_old_generation_defer_reclamation_until_dropped`); a crash ends the lease, and recovery then reclaims the generation. |
 | GC-10 | `PublishedClosureProtected` | `EXEC_ONLY` | P | Partially entailed (task 12441): with `durable` equal to `{"current", "retained"}` and `oldDurable` empty, `NewDurableRequiredObjects` is the closure of the current and retained states, so the invariant requires the successor to hold that closure once the catalog selects it. The executable refinement obligation is that admission and recovery read objects only through the live packs and the index of the selected slot, so that a successor that lacks an object of that closure is refused, and that no admission or recovery with the successor selected is refused. `copied` is not observed before the catalog swap, and the closure is not compared object by object. |
 | GC-11 | `CrashPhaseQuiescence` | `EXEC_ONLY` | P | Partially entailed (task 12441): the invariant disables every pin acquisition and release, every durable registration and release, and every WAL advance and rotation while the phase is crashed. A crashed process executes nothing, and its leases live only in its memory. The executable refinement obligation is the order of the model's witness: a crash leaves no lease and changes no file, and the recovery, which completes a pending reclamation, precedes the first lease. Enabledness is not observed: inside the crate, `GenerationLeaseRegistryV1::acquire` on a registry handle taken from a newly opened directory succeeds before any recovery. Outside the tests, leases are acquired only by a recovered authority, by the owner that it becomes and by the read handles of their cores, all of which exist only after a recovery. |
+| GC-16 | `PinnedReadReturnsAdmittedBytes` | `EXEC_ONLY` | P | Partially entailed (task 12447): the invariant quantifies over every read that a live handle of a process can issue, and `HandleRead` returns the stored bytes for a handle in `pinned` of its process whatever `deleted` holds. Under the mapping of the cross-process trial, A's handles are in `leases` and `pinned` of A, and the states from the return of B's first compaction on have A's pack in `deleted`; the model reaches such states through `CloseOwner`, `OpenStore`, `RetireFirst` and `DeleteFirst`, the trace of its path-reopen mutant. The executable refinement obligation is that a handle reads only through the pack descriptors that admission opened, so that an unlink by another process leaves its reads unchanged. Four reads of one state through two handles are observed, with the handles alone and beside a newer owner of the same process; not every read, pack or schedule is. B's publication onto A's pack exercises the model's abstraction A3, appends beyond every admitted tail. The red control of the trial, a read that opens the pack by its name for every read as the path-reopen mutant does, fails this test after the unlink. |
+| GC-17 | `DeadProcessHoldsNothing` | `EXEC_ONLY` | P | Partially entailed (task 12447): `Crash` releases `lock` when the process holds it and empties its `leases` and `pinned`, and a dead process takes no step other than `Restart`. The executable refinement obligation is K2 together with the absence of any durable trace of a reader: a process killed with `SIGKILL` while it holds the writer lock and read handles neither refuses the next opener nor defers the next reclamation, and it leaves no file. The lock conjunct is observed as the granted lock attempt after the death, the lease conjunct as the reclamation within the call of the generation that the dead process held, and the absence of a durable trace as the exact directory listing. The pin conjunct, that the storage of an unlinked pack is freed, is not observed. The trial also observes F5 for a live reader: a lease of another process does not defer a reclamation. |
+| GC-18 | `TypeInvariant` | `EXEC_ONLY` | P | Partially entailed (task 12447): in the pack-lease model `TypeInvariant` types `lock` as one value of `Procs \cup {NoProcess}`, so the writer lock has at most one holder, and `OpenStore` is enabled only while `lock = NoProcess`. The executable refinement obligation is F1 across processes: an open of the store takes the writer lock first, and while an owner of another process holds the lock the open is refused with `WriterLockContended` and changes no file other than `writer.lock.v1`; `close` releases the lock. The other conjuncts of `TypeInvariant` are not observed. |
 | TX-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14302): the closure, every object once and parent-first, carried by the pages of a pinned export of a retained durable state. `RSpaceDagStateTransfer.tla` states the transfer contract over an abstract closure of two objects and is not among this matrix's TLA+ sources, and no cited model represents canonical objects, the export order or the page layout. |
 | TX-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14303): a refused transfer page changes neither the import session's frontier and in-memory closure nor its staging log, frontier record or staging directory. `RSpaceDagStateTransfer.tla` rejects an out-of-order page over an abstract closure of two objects and is not among this matrix's TLA+ sources, and no cited model represents pages, their decoding, canonical objects or the staging's files. |
 | TX-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14434): the seal of a completely staged state is its full cold admission over the staging log alone, a staged state with a dangling join is refused by it, and neither a seal nor its refusal changes the staging or the store directory outside it. `RSpaceDagStateTransfer.tla` admits an abstract closure of two objects at its complete frontier, `RSpaceAffineImportLifecycle.tla` seals a session whose closure is verified, and neither is among this matrix's TLA+ sources; no cited model represents canonical objects, the staging log or the semantic rules of a state. |
@@ -14489,6 +14578,37 @@ or model was run for this slice. Nothing outside the tests calls the bridge
 yet. No persisted byte, record kind, root, identity or wire message changed,
 and the crate has no new dependency. See the section on the RCI2 image
 bridge.
+
+The 2026-11-16 cross-process slice of task 7944 (task 12447) adds GC-16 to
+GC-18, so the catalog/derivation/binding registry now contains **305** IDs. It
+binds `PinnedReadReturnsAdmittedBytes`, `DeadProcessHoldsNothing` and
+`TypeInvariant` of the pack-lease model `RSpaceGcPackLeaseRace.tla` to the
+cross-process trial of the GC protection section. The manifest test's TLA+
+sources gain that model's source, and its executable sources gain the new
+module `durable_gc_cross_process.rs`. The slice changes that module, the two
+lines of the persistence tests' module list that declare it, the manifest
+test's file, the list of property bindings and this catalog. It also corrects
+one sentence each of `gc-protection-matrix-2026-10-01.md` and of
+`dag-formal-fault-runtime-traceability-2026-10-08.md`, which said that no test
+takes a read handle in one process and reclaims in another. No other file
+changes apart from the two registries named below; no production file changes.
+On the candidate tree, the three tests of the new module and the manifest test
+passed in debug and in release (4 passed, 1 ignored: the test of the reading
+process itself, which only the trial runs).
+One control was applied to `durable/admission.rs`, run against the new module
+in debug and removed: with every object read opening its pack by name instead
+of reading through the descriptor pinned at admission, as the model's
+path-reopen mutant does, GC-16 was the only test to fail, with its message
+`GC-16: every read by process A after process B's reclamation must return the
+admitted bytes` and `NotFound` errors in place of the admitted reads. The
+faulted file was restored and compared with the base after the run. Clippy of
+`rspace_plus_plus` with every target lists no finding in the files of this
+slice, and `rustfmt --check` passes on its Rust files. The workspace-regression
+registry and the PathMap aggregate hash the persistence tests' module list and
+the manifest test's file, which both change, so they are to be regenerated
+with this slice. No Rocq or TLA+ file changed, and no proof or model was run
+for this slice. No persisted byte, record kind, root, identity or wire message
+changed, and the crate has no new dependency. See the GC protection section.
 
 ## Caller-authority contract (2026-09-06)
 

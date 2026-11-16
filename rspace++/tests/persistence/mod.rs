@@ -77,3 +77,5 @@ mod owner_transition_memo;
 #[cfg(unix)]
 mod transfer_import_seal;
 mod transfer_export_binding;
+#[cfg(unix)]
+mod durable_gc_cross_process;

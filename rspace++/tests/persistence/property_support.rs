@@ -442,6 +442,15 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("GC-09", "only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash"),
     ("GC-10", "crash_before_publication_keeps_the_old_generation_for_retry"),
     ("GC-11", "only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash"),
+    (
+        "GC-16",
+        "a_pinned_read_handle_returns_its_admitted_bytes_after_another_process_reclaims_its_packs",
+    ),
+    (
+        "GC-17",
+        "another_process_reclaims_unblocked_by_a_live_or_killed_reader_and_leaves_nothing_stale",
+    ),
+    ("GC-18", "an_owner_open_in_another_process_refuses_the_writer_lock_as_contended"),
     ("TX-01", "pages_carry_exactly_the_closure_once_parent_first_for_deep_wide_and_shared_states"),
     ("DF-01", "visited_differences_turn_the_from_state_into_the_to_state"),
     ("DF-02", "a_difference_reads_only_the_nodes_the_two_states_do_not_share"),

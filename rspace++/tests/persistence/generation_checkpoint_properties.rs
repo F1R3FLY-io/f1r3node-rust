@@ -474,6 +474,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceCompaction.tla"),
         include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceGcPendingReclaimIntent.tla"),
         include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceGcProtection.tla"),
+        include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceGcPackLeaseRace.tla"),
     ]
     .concat();
     let tla_configs = [
@@ -753,6 +754,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("transfer_import_seal.rs"),
         include_str!("transfer_export_binding.rs"),
         include_str!("../rho_path_v2_bridge.rs"),
+        include_str!("durable_gc_cross_process.rs"),
     ]
     .concat();
     for (id, target) in PROPERTY_BINDINGS {

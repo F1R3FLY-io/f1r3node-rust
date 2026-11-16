@@ -386,8 +386,8 @@
     "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs": "ac5176ca7b1d2072457afd81e61e5262ac3732eb39e82742c121a587bf2ff159",
     "rspace++/src/rspace/persistence/mod.rs": "223bf6b32b2cdc44d3ca0c9b2c0d7779e08d8fc63c72dfc5399324a2846d4656",
     "rspace++/src/rspace/state/rspace_state_authority.rs": "d3cbca00b88112aaae53ce19bb23bf1b21134d53635b7ecdab8f2ad1585822b6",
-    "rspace++/tests/persistence/generation_checkpoint_properties.rs": "17e3cd5fdd05c03e75c8f0a6655c29784692e786e676510a20a77c9204bb3044",
-    "rspace++/tests/persistence/mod.rs": "ea93b603c019e153e645cf8cd230ef541b73c8dc4706adfeb5c288aa50566a78",
+    "rspace++/tests/persistence/generation_checkpoint_properties.rs": "149ec6685f282a1158c58bc0c50a3070b82be48d66c748c65d8c0557b2f4eb83",
+    "rspace++/tests/persistence/mod.rs": "5d7a8270ae2519626798fd566d2eaaa504c29dc9cc771b19864e7629ce2d78ca",
     "rspace++/tests/state/atomic_state_authority.rs": "60204064e8d40908db50346e5df00fd9ab1da49b65fc12f4262816c955fc8181",
     "shared/Cargo.toml": "eb329b1f634d0cfbc623f9a28007d221b4f6100cb6d12638023072d73dd229c0",
     "shared/tests/workspace_regression_formal_bindings.rs": "0cc934d3b6d274c80df8bf3b093afffd3e7d3a8cc0f3cb983dac5d67e0f05946"
