@@ -1326,8 +1326,16 @@ where
                 None,
                 Some(source_ref),
             );
-            self.pending_source_bytes
-                .insert(&identity_path, source_bytes);
+            match self.pending_content.get(&identity_path) {
+                Some(_) => {
+                    self.pending_source_bytes
+                        .insert(&identity_path, source_bytes);
+                }
+                None => {
+                    self.pending_source_bytes
+                        .remove_val_at(&identity_path, true);
+                }
+            }
         }
         self.maintain_receive_index(&prefix, receive_support);
         inserted
@@ -2010,6 +2018,7 @@ pub mod order_index_experiment;
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::collections::BTreeSet;
     use std::{fmt, thread};
 
@@ -2019,6 +2028,7 @@ mod tests {
     use super::*;
     use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
     use crate::rspace::history::cold_store::{ContinuationsLeaf, JoinsLeaf, PersistedData};
+    use crate::rspace::persistence::ObjectDigest;
     use crate::rspace::serializers::serializers::{
         encode_continuation_identity, encode_continuation_source_into, encode_continuations,
         encode_joins,
@@ -2191,6 +2201,304 @@ mod tests {
         restored.restore_pending_source_bytes(store.pending_source_bytes().clone());
         assert_eq!(restored.pending_content().get(&identity_path), Some(&replaced));
         assert_eq!(restored.pending_source_bytes().get(&identity_path), Some(&replacement_bytes),);
+    }
+
+    type TestStore = RSpaceContinuationStore<String, String, String>;
+
+    fn journalled_source_references(store: &TestStore) -> BTreeMap<Vec<u8>, ObjectRefV1> {
+        store
+            .pending_source_bytes()
+            .iter()
+            .map(|(path, bytes)| {
+                let encoded_len =
+                    u64::try_from(bytes.len()).expect("journalled source bytes fit a u64 length");
+                let reference =
+                    ObjectRefV1::new(ObjectDigest::of_canonical_bytes(bytes), encoded_len)
+                        .expect("journalled source bytes hold a canonical object envelope");
+                (path, reference)
+            })
+            .collect()
+    }
+
+    fn transition_targets(store: &TestStore) -> BTreeMap<Vec<u8>, ObjectRefV1> {
+        store
+            .pending_content()
+            .iter()
+            .filter_map(|(path, transition)| transition.after().map(|after| (path, after)))
+            .collect()
+    }
+
+    fn assert_source_journal_follows_content(store: &TestStore, step: &str) {
+        assert_eq!(
+            journalled_source_references(store),
+            transition_targets(store),
+            "after {step} the source journal does not hold exactly the bytes of the content \
+             transitions that end in a reference"
+        );
+    }
+
+    #[test]
+    fn the_source_journal_holds_bytes_exactly_at_transitions_to_a_reference() {
+        let channels = vec!["channel".to_owned()];
+        let prefix = RhoPathV1::continuation_prefix(&channels);
+        let first = continuation(1, "same");
+        let replacement = continuation(9, "same");
+        let fresh = continuation(2, "fresh");
+        let record_path = |value: &WaitingContinuation<String, String>| {
+            let prepared = PreparedContinuationRecord::encode_waiting(value);
+            let mut path = Vec::with_capacity(prefix.len() + prepared.canonical().len());
+            path.extend_from_slice(&prefix);
+            path.extend_from_slice(prepared.canonical());
+            path
+        };
+        let identity_path = |value: &WaitingContinuation<String, String>| {
+            RhoPathV1::collection_record_path(&prefix, &encode_continuation_identity(value))
+        };
+        let put = |store: &mut TestStore, value: &WaitingContinuation<String, String>| {
+            store.put_prepared(
+                &channels,
+                value.clone(),
+                PreparedContinuationRecord::encode_waiting(value),
+            )
+        };
+        assert_eq!(identity_path(&first), identity_path(&replacement));
+        assert_ne!(record_path(&first), record_path(&replacement));
+
+        let mut store = TestStore::new();
+        store.set_group(channels.clone(), Vec::new());
+        assert_source_journal_follows_content(&store, "loading an empty group");
+        assert!(put(&mut store, &fresh));
+        assert_source_journal_follows_content(&store, "a put of a new record");
+        assert_eq!(store.pending_source_bytes().val_count(), 1);
+
+        let mut store = TestStore::new();
+        store.set_group(channels.clone(), vec![first.clone()]);
+        assert_source_journal_follows_content(&store, "loading a base record");
+        assert_eq!(store.remove_path(&channels, &record_path(&first)), Some(first.clone()));
+        assert_source_journal_follows_content(&store, "a removal of the base record");
+        assert!(put(&mut store, &first));
+        assert_source_journal_follows_content(&store, "a put of the removed base record");
+        assert!(store.pending_delta().is_empty());
+        assert!(store.pending_content().is_empty());
+        assert!(store.pending_source_bytes().is_empty());
+
+        let mut store = TestStore::new();
+        store.set_group(channels.clone(), vec![first.clone()]);
+        assert!(put(&mut store, &fresh));
+        assert_source_journal_follows_content(&store, "a put of a new record beside a base record");
+        assert_eq!(store.remove_path(&channels, &record_path(&fresh)), Some(fresh.clone()));
+        assert_source_journal_follows_content(&store, "a removal of the new record");
+        assert!(store.pending_content().is_empty());
+        assert!(store.pending_source_bytes().is_empty());
+
+        let mut store = TestStore::new();
+        store.set_group(channels.clone(), vec![first.clone()]);
+        assert_eq!(store.remove_path(&channels, &record_path(&first)), Some(first.clone()));
+        assert_source_journal_follows_content(&store, "a removal of the base record");
+        assert!(put(&mut store, &replacement));
+        assert_source_journal_follows_content(&store, "a put of another source at its identity");
+        assert_eq!(store.pending_source_bytes().val_count(), 1);
+
+        let mut store = TestStore::new();
+        store.set_group(channels.clone(), vec![first.clone()]);
+        assert_eq!(store.remove_path(&channels, &record_path(&first)), Some(first.clone()));
+        let prepared = PreparedContinuationRecord::encode_waiting(&first);
+        let (_, first_bytes) = continuation_source(prepared.record_view().source_suffix());
+        let mut restored = PathMap::new();
+        restored.insert(identity_path(&first), first_bytes);
+        store.restore_pending_source_bytes(restored);
+        assert_ne!(journalled_source_references(&store), transition_targets(&store));
+        assert!(put(&mut store, &first));
+        assert_source_journal_follows_content(&store, "a put that cancels a removal");
+        assert!(store.pending_source_bytes().is_empty());
+    }
+
+    const GENERATED_BODIES: [&str; 3] = ["a", "b", "c"];
+    const GENERATED_SOURCES: [u8; 2] = [1, 9];
+    const SOURCE_JOURNAL_CASES: u32 = 256;
+
+    #[derive(Clone, Copy, Debug)]
+    enum GroupOperation {
+        Put {
+            body_index: usize,
+            source_index: usize,
+        },
+        Remove {
+            selector: usize,
+        },
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct SourceJournalCoverage {
+        cases: u32,
+        cancelled_removals: u32,
+        replaced_removals: u32,
+        cancelled_insertions: u32,
+        journalled_sources: u32,
+    }
+
+    impl SourceJournalCoverage {
+        fn merge(&mut self, other: Self) {
+            let Self {
+                cases,
+                cancelled_removals,
+                replaced_removals,
+                cancelled_insertions,
+                journalled_sources,
+            } = other;
+            self.cases += cases;
+            self.cancelled_removals += cancelled_removals;
+            self.replaced_removals += replaced_removals;
+            self.cancelled_insertions += cancelled_insertions;
+            self.journalled_sources += journalled_sources;
+        }
+
+        fn assert_complete(&self) {
+            let Self {
+                cases,
+                cancelled_removals,
+                replaced_removals,
+                cancelled_insertions,
+                journalled_sources,
+            } = *self;
+            assert!(
+                [
+                    cases,
+                    cancelled_removals,
+                    replaced_removals,
+                    cancelled_insertions,
+                    journalled_sources
+                ]
+                .into_iter()
+                .all(|count| count > 0),
+                "a class of source journal step never occurred: {self:?}"
+            );
+        }
+    }
+
+    fn generated_continuation(
+        body_index: usize,
+        source_index: usize,
+    ) -> WaitingContinuation<String, String> {
+        continuation(GENERATED_SOURCES[source_index], GENERATED_BODIES[body_index])
+    }
+
+    fn group_operations() -> impl Strategy<Value = GroupOperation> {
+        prop_oneof![
+            (0..GENERATED_BODIES.len(), 0..GENERATED_SOURCES.len()).prop_map(
+                |(body_index, source_index)| GroupOperation::Put {
+                    body_index,
+                    source_index,
+                }
+            ),
+            (0..4_usize).prop_map(|selector| GroupOperation::Remove { selector }),
+        ]
+    }
+
+    fn transition_ends(
+        transition: Option<ContentTransition>,
+    ) -> Option<(Option<ObjectRefV1>, Option<ObjectRefV1>)> {
+        transition.map(|transition| (transition.before(), transition.after()))
+    }
+
+    fn check_source_journal_steps(
+        base: &[(usize, usize)],
+        operations: &[GroupOperation],
+    ) -> Result<SourceJournalCoverage, TestCaseError> {
+        let channels = vec!["group".to_owned()];
+        let prefix = RhoPathV1::continuation_prefix(&channels);
+        let mut store = TestStore::new();
+        store.set_group(
+            channels.clone(),
+            base.iter()
+                .map(|&(body_index, source_index)| generated_continuation(body_index, source_index))
+                .collect(),
+        );
+        prop_assert_eq!(journalled_source_references(&store), transition_targets(&store));
+        let mut coverage = SourceJournalCoverage {
+            cases: 1,
+            ..SourceJournalCoverage::default()
+        };
+        for &operation in operations {
+            match operation {
+                GroupOperation::Put {
+                    body_index,
+                    source_index,
+                } => {
+                    let value = generated_continuation(body_index, source_index);
+                    let prepared = PreparedContinuationRecord::encode_waiting(&value);
+                    let identity_path = RhoPathV1::collection_record_path(
+                        &prefix,
+                        prepared.record_view().identity(),
+                    );
+                    let before = store.pending_content().get(&identity_path).copied();
+                    store.put_prepared(&channels, value, prepared);
+                    let after = store.pending_content().get(&identity_path).copied();
+                    match (transition_ends(before), after) {
+                        (Some((Some(_), None)), None) => coverage.cancelled_removals += 1,
+                        (Some((Some(_), None)), Some(_)) => coverage.replaced_removals += 1,
+                        _ => {}
+                    }
+                }
+                GroupOperation::Remove { selector } => {
+                    let records = store
+                        .resting_records(&channels)
+                        .expect("the generated group is loaded");
+                    if let Some(index) = selector.checked_rem(records.len()) {
+                        let record = &records[index];
+                        let identity_path = record
+                            .identity_path
+                            .clone()
+                            .expect("a continuation record carries its identity path");
+                        let before = store.pending_content().get(identity_path.as_ref()).copied();
+                        prop_assert!(store.remove_path(&channels, &record.path).is_some());
+                        let after = store.pending_content().get(identity_path.as_ref()).copied();
+                        if let (Some((None, Some(_))), None) = (transition_ends(before), after) {
+                            coverage.cancelled_insertions += 1;
+                        }
+                    }
+                }
+            }
+            prop_assert_eq!(
+                journalled_source_references(&store),
+                transition_targets(&store),
+                "the source journal does not hold exactly the bytes of the content transitions \
+                 that end in a reference after {:?}",
+                operation
+            );
+            coverage.journalled_sources += u32::from(!store.pending_source_bytes().is_empty());
+        }
+        Ok(coverage)
+    }
+
+    #[test]
+    fn generated_group_operations_keep_the_source_journal_at_transitions_to_a_reference() {
+        let coverage = Cell::new(SourceJournalCoverage::default());
+        prop::test_runner::TestRunner::new(ProptestConfig {
+            cases: SOURCE_JOURNAL_CASES,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })
+        .run(
+            &(
+                prop::collection::vec(
+                    (0..GENERATED_BODIES.len(), 0..GENERATED_SOURCES.len()),
+                    0..4,
+                ),
+                prop::collection::vec(group_operations(), 0..16),
+            ),
+            |(base, operations)| {
+                let mut total = coverage.get();
+                total.merge(check_source_journal_steps(&base, &operations)?);
+                coverage.set(total);
+                Ok(())
+            },
+        )
+        .expect("generated operations on one group keep J-SRC after every step");
+        let coverage = coverage.get();
+        println!("source journal steps: {coverage:?}");
+        assert!(coverage.cases >= SOURCE_JOURNAL_CASES);
+        coverage.assert_complete();
     }
 
     #[test]

@@ -1232,10 +1232,18 @@ impl CheckpointCoverage {
     }
 }
 
-fn seed_checkpoint_cases() -> [AgreementCase; 2] {
+fn seed_checkpoint_cases() -> [AgreementCase; 3] {
     let [_, publishing, _] = seed_agreement_cases();
     let [_, rich, _] = seed_bases();
-    [publishing, AgreementCase {
+    let removed_and_put_back = AgreementCase {
+        base: base_state(&[], &[(&["b", "a"], "k1")]),
+        cache: CacheMask::NONE,
+        operations: vec![
+            StoreOperation::remove_continuation(&["b", "a"], 0),
+            StoreOperation::put_continuation(&["b", "a"], "k1"),
+        ],
+    };
+    [publishing, removed_and_put_back, AgreementCase {
         base: rich,
         cache: CacheMask::NONE,
         operations: vec![

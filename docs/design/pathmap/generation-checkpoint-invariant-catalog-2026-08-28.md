@@ -10154,10 +10154,13 @@ records it returned.
    two states must be equal, the successor slots that `attach` reports must be
    equal and name that state, both journals must be empty, every probed key
    must hold the same records, and, once both owners are dropped, the two
-   directories must hold the same files byte for byte. Two seeded cases and 16
-   generated ones are checked; a checkpoint that publishes a new generation,
-   one whose empty journal leaves the state unchanged, and a fill that
-   returned records all occur.
+   directories must hold the same files byte for byte. Three seeded cases and
+   16 generated ones are checked; a checkpoint that publishes a new
+   generation, one whose empty journal leaves the state unchanged, and a fill
+   that returned records all occur. The second seed, added by task 14471,
+   removes the one continuation of its base and puts the identical record
+   back; before that task the store kept the record's source bytes in its
+   journal, and the lazy store's journal was not empty after the checkpoint.
 4. `detached_journals_cannot_be_published_and_mismatched_binds_change_nothing`
    (VR-08) has two parts. On the second seeded base, a lazy store with no
    cache puts a datum and a continuation, so that its journal is not empty.
@@ -11983,13 +11986,18 @@ of the tests must also leave the store's records as they were.
    generated receiving base, must satisfy the refinement.
 2. `a_same_base_rebase_reproduces_the_journals_of_the_soft_checkpoint`
    (OG-02) rebases a payload onto its own capture base. The three count
-   journals and the content transitions must equal the captured ones. The
-   source bytes must equal the captured bytes at the transitions that end in
-   a reference: a live source journal can also hold the bytes of a record
-   that was removed and put again unchanged, whose transition cancelled, and
-   neither the model's `source_of_transition` nor the rebased journal holds
-   them. The seeded case holds such bytes and shows all seventeen shapes by
-   itself; 256 generated cases with up to fifteen operations follow.
+   journals, the content transitions and the source bytes must equal the
+   captured ones. Since task 14471 a live source journal holds bytes at an
+   identity path exactly when the content journal holds there a transition
+   that ends in a reference, and they are the bytes of that reference, as
+   the model's `source_of_transition` requires (invariant J-SRC). Two tests of
+   `rspace++/src/rspace/record_index.rs` check it after every step:
+   `the_source_journal_holds_bytes_exactly_at_transitions_to_a_reference` and
+   `generated_group_operations_keep_the_source_journal_at_transitions_to_a_reference`.
+   A record that was removed and put again unchanged, whose transition
+   cancelled, leaves no bytes, so no capture holds source bytes that a
+   same-base rebase drops. The seeded case shows the other sixteen shapes
+   by itself; 256 generated cases with up to fifteen operations follow.
 3. `rebased_count_sides_are_disjoint_and_stay_within_u64` (OG-03) calls
    `record_rebased_counts` for the 25 pairs of a base count and an overlay
    count from $`0`$, $`1`$, $`2`$, $`2^{64}-2`$ and $`2^{64}-1`$. The
@@ -12062,8 +12070,14 @@ tests without an ID, the 20 journal-commit tests and the manifest test
 passed. OG-01 failed under every fault, each time at its seeded case. OG-02
 failed where a fault also changes a journal over the capture base: under
 fault 3 at the data journal, and under faults 1, 6 and 7 at the source
-bytes, because its seeded payload holds captured source bytes without a
-transition. OG-03 failed under faults 1, 2 and 4 at the addition of the
+bytes, because its seeded payload then held captured source bytes without a
+transition. Since task 14471 no capture holds such bytes, so over the
+capture base the journals that faults 1, 6 and 7 install equal the captured
+ones, which is what OG-02 requires. Each of the three was run again in
+debug on the candidate tree of that task against the seven tests of
+`journal_rebase.rs`: fault 1 failed exactly OG-01, OG-03 and OG-05, fault 6
+exactly OG-01 and OG-05, and fault 7 exactly OG-01. OG-03 failed under
+faults 1, 2 and 4 at the addition of the
 datum that the store holds $`2^{64}-1`$ times, and under fault 3 at the
 removal from a base count of 1 to an overlay count of 0. OG-04 failed under
 fault 4 alone, where a rebase without captured keys made no call of the
@@ -12080,7 +12094,7 @@ added in the order in which their leaves land.
 | ID | Required property | Test |
 |---|---|---|
 | OG-01 | Rebased journals give the overlay. After `rebase_pending_deltas` on a store of `create_from_durable_reader`, over any receiving base, each of the three count journals applies to the base's records and gives the overlay's records, with no path on both sides; every content transition starts at the base's content reference, and the transitions applied to the base's references give the overlay's references; the source journal holds exactly the overlay's source bytes at the transitions that end in a reference. A captured member with an empty list hides the base's records, and a member that is not captured keeps them. The rebase changes no record of the store. | `rebased_journals_applied_to_the_receiving_base_give_the_overlay` |
-| OG-02 | A same-base rebase reproduces the capture. For a payload taken as `create_soft_checkpoint` takes it and rebased onto its own capture base, the three count journals and the content transitions equal the captured ones, and the source bytes equal the captured bytes at the transitions that end in a reference. Captured source bytes without such a transition are not kept. | `a_same_base_rebase_reproduces_the_journals_of_the_soft_checkpoint` |
+| OG-02 | A same-base rebase reproduces the capture. For a payload taken as `create_soft_checkpoint` takes it and rebased onto its own capture base, the three count journals, the content transitions and the source bytes equal the captured ones. A capture's source journal holds bytes exactly at the content transitions that end in a reference, and they are the bytes of that reference (invariant J-SRC). | `a_same_base_rebase_reproduces_the_journals_of_the_soft_checkpoint` |
 | OG-03 | Disjoint sides within `u64`. For a base count $`b`$ and an overlay count $`o`$ from $`0`$, $`1`$, $`2`$, $`2^{64}-2`$ and $`2^{64}-1`$, the rebased addition $`a`$ is $`\max(o-b,0)`$ and the rebased removal $`r`$ is $`\max(b-o,0)`$; $`a`$ and $`r`$ are not both nonzero, $`r \le b`$, $`a \le o`$, and $`(b-r)+a=o`$ in checked `u64` arithmetic. A store that holds a datum $`2^{64}-1`$ times is rebased onto a base that holds it once or twice with an addition of $`2^{64}-2`$ or $`2^{64}-3`$ and no removal. | `rebased_count_sides_are_disjoint_and_stay_within_u64` |
 | OG-04 | One read per member of the domain. A rebase calls the reader of the receiving base exactly once for each captured member and once for each further member that a key of the captured journals names, and makes no other call. For a captured payload these are exactly the members of its cache. | `a_rebase_reads_the_receiving_base_once_per_domain_member` |
 | OG-05 | An FFI-shaped payload is rebased from its records. With five empty captured journals, the rebase installs the journals that OG-01 requires for the payload's cache over the receiving base. | `an_ffi_shaped_payload_rebases_to_the_overlay_difference` |
@@ -13142,7 +13156,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | OG-17 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12421): the backend of a store prefix is fixed at its first use and stays fixed across a shutdown of the manager. None of the models that this matrix cites has a backend selection. The caller-authority model `RSpaceCallerAuthority.v`, which this matrix does not cite, carries the backend as a field of an owner's domain, and each of its three owner transitions keeps that domain. |
 | OG-18 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12421): a durable selection is refused for the `eval` prefix and for a prefix that is not one normal path component. None of the models that this matrix cites has a store prefix or a directory name. |
 | OG-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12415): the five journals that `rebase_pending_deltas` installs, compared with an oracle over the store's records and the receiving base. The oracle is the refinement `hot_journal_refinement` of the caller-authority model `RSpaceCallerAuthority.v`. The row witnesses that model's `rebased_journals_refine_soft_restore` and `rebased_counts_apply_to_target`, and the caller registry's CA-26, `captured_values_override_current_history`, and CA-27, `uncaptured_values_use_receiving_history`; by the model's `soft_restore_refinement_determines_the_journals` no other journals satisfy the refinement. This matrix does not cite the model, for the reason given at VR-01. |
-| OG-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12415): a rebase onto the capture base reproduces the captured count journals and content transitions, and the captured source bytes at the transitions that end in a reference. The row witnesses `same_base_rebase_is_identity_for_exact_journals` of `RSpaceCallerAuthority.v` for the count journals and `soft_restore_refinement_determines_the_journals` for the content and source journals; this matrix does not cite them, for the reason given at VR-01. |
+| OG-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12415): a rebase onto the capture base reproduces the captured count journals, content transitions and source bytes (the source bytes in full since task 14471, after which a captured source journal holds bytes only at the content transitions that end in a reference). The row witnesses `same_base_rebase_is_identity_for_exact_journals` of `RSpaceCallerAuthority.v` for the count journals and `soft_restore_refinement_determines_the_journals` for the content and source journals; this matrix does not cite them, for the reason given at VR-01. |
 | OG-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12415): the addition and the removal of a rebased count journal at the boundary counts of `u64`. The row witnesses `rebased_counts_are_disjoint` and `rebased_counts_bounded` of `RSpaceCallerAuthority.v` with the limit `u64::MAX`, and the caller registry's CA-29, `rebased_journal_reconstructs_exact_restored_count`, and CA-30, `rebased_journal_has_no_underflow_or_intermediate_overflow`; this matrix does not cite them, for the reason given at VR-01. |
 | OG-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12415): the calls that a rebase makes on the reader of the receiving base. No model counts the calls of a reader. `rebase_is_zero_outside_overlay_domain` of `RSpaceCallerAuthority.v`, which this matrix does not cite, for the reason given at VR-01, states that a rebased count journal has no entry outside the captured cells, which is why the operation need not read beyond its domain. |
 | OG-05 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12415): the rebase of a payload whose five captured journals are empty, as those of a payload that arrives through the FFI are. The row witnesses `every_legacy_overlay_has_a_permitted_restore` of `RSpaceCallerAuthority.v`, the corollary of the caller registry's CA-23, `every_legacy_overlay_with_refined_journals_has_a_permitted_restore`; this matrix does not cite them, for the reason given at VR-01. The journals that the corollary's restore needs exist for every payload, because the operation computes them from the records and the receiving base alone. The permit, the attached view and the authenticated history of the corollary belong to the caller, task 12429. |
@@ -14637,9 +14651,9 @@ written on 2026-09-06).
 | CA-38 | `rebased_counts_are_disjoint` | Hot-store witnesses in the file of CA-37. `rebased_count_sides_are_disjoint_and_stay_within_u64` (OG-03) requires, for every pair of a receiving count and an overlay count from 0, 1, 2, `u64::MAX - 1` and `u64::MAX`, that the recomputed addition and removal are not both nonzero. The witness of CA-37 requires that no path of a recomputed count journal is on both sides. |
 | CA-39 | `rebased_counts_bounded` | Hot-store witness `rebased_count_sides_are_disjoint_and_stay_within_u64` (OG-03) in the file of CA-37. For the count pairs of CA-38 the removal does not exceed the receiving count, the addition does not exceed the overlay count, and the receiving count less the removal plus the addition is the overlay count in checked `u64` arithmetic. A store that holds a datum `u64::MAX` times is rebased onto a history that holds it once or twice. |
 | CA-40 | `rebase_is_zero_outside_overlay_domain` | Hot-store witness `a_rebase_reads_the_receiving_base_once_per_domain_member` (OG-04) in the file of CA-37. The theorem states that a recomputed count journal has no entry outside the captured cells, which is why the operation need not read beyond its domain; no model counts the calls of a reader. The test requires that a rebase calls the reader of the receiving history exactly once for each captured member and once for each further member that a key of the captured journals names, and makes no other call, so it never scans the store. That a member without captured records gets no delta follows from the witness of CA-37, which applies each journal to all records of the receiving history and compares the result with the whole overlay. |
-| CA-41 | `same_base_rebase_is_identity_for_exact_journals` | Hot-store witness `a_same_base_rebase_reproduces_the_journals_of_the_soft_checkpoint` (OG-02) in the file of CA-37. A payload taken as `create_soft_checkpoint` takes it (the snapshot and the pending journals of a hot store), rebased onto the history it was captured over, reproduces the three captured count journals and the captured content transitions, and the captured source bytes at the transitions that end in a reference. The theorem assumes an exact captured journal. A live source journal can hold bytes without a transition, after a removed record is put back unchanged, and the rebase does not keep those bytes. |
+| CA-41 | `same_base_rebase_is_identity_for_exact_journals` | Hot-store witness `a_same_base_rebase_reproduces_the_journals_of_the_soft_checkpoint` (OG-02) in the file of CA-37. A payload taken as `create_soft_checkpoint` takes it (the snapshot and the pending journals of a hot store), rebased onto the history it was captured over, reproduces the three captured count journals, the captured content transitions and the captured source bytes. The theorem assumes an exact captured journal. Since task 14471 the live source journal holds bytes exactly at the content transitions that end in a reference, which is the source clause of the model's `hot_journal_refinement`, so a removed record that is put back unchanged leaves no bytes. |
 | CA-42 | `rebased_journals_refine_soft_restore` | Hot-store witness of CA-37 (OG-01), over the same seeded and generated payloads: the three count journals applied to the receiving history give the overlay's records, every content transition starts at the receiving history's content reference and the transitions applied to its references give the overlay's references, and the source journal holds exactly the overlay's source bytes at the transitions that end in a reference. |
-| CA-43 | `soft_restore_refinement_determines_the_journals` | Fault injections recorded under [Hot-store journal rebase onto the receiving history](#hot-store-journal-rebase-onto-the-receiving-history-2026-11-12): a verbatim copy of the captured journals and Rust versions of the six rejected designs that `RSpaceCallerAuthorityMutants.v` refutes for the count journals, the content transitions and the source bytes. Each makes the witness of CA-37 fail, together with the other tests that the table of red controls names for it. The landing gate of `rspace-hotstore-journal-rebase` ran the seven faults; the test suite does not repeat them. |
+| CA-43 | `soft_restore_refinement_determines_the_journals` | Fault injections recorded under [Hot-store journal rebase onto the receiving history](#hot-store-journal-rebase-onto-the-receiving-history-2026-11-12): a verbatim copy of the captured journals and Rust versions of the six rejected designs that `RSpaceCallerAuthorityMutants.v` refutes for the count journals, the content transitions and the source bytes. Each made the witness of CA-37 fail, together with the other tests that the table of red controls names for it. The landing gate of `rspace-hotstore-journal-rebase` ran the seven faults; the test suite does not repeat them. Since task 14471 the witness of CA-41 (OG-02) passes under faults 1, 6 and 7, as that section records, and the witness of CA-37 still fails under each of the three. |
 | CA-44 | `every_legacy_overlay_has_a_permitted_restore` | Hot-store witness `an_ffi_shaped_payload_rebases_to_the_overlay_difference` (OG-05) in the file of CA-37 for the first half: for payloads whose five captured journals are empty, as those of a payload that arrives through the FFI are, the operation computes the journals of CA-37 from the records and the receiving history alone. It adds no error variant. With the existing `JournalConflict` it refuses a captured journal that holds a malformed key, a key that is not canonical for its channels, or a continuation count key under no continuation group of the payload (`a_malformed_captured_key_fails_closed_and_changes_nothing`); a journal that a hot store recorded holds no such key. Contract for the second half: `rspace-soft-revert-durable-rebase` must rebase on every durable revert and install the restored store only after the rebase succeeds. The legacy witness of CA-23 restores every generated payload without refusal, but through the revert that copies the captured journals, and it asserts nothing about a journal. |
 
 `RSpaceCallerAuthorityMutants.v` holds the controls and has 51 `Print Assumptions`

@@ -25,6 +25,7 @@ const REFINEMENT_CASES: u32 = 256;
 const SAME_BASE_CASES: u32 = 256;
 const READ_CASES: u32 = 128;
 const FFI_CASES: u32 = 128;
+const DROPPED_CAPTURED_SOURCES: &str = "captured source bytes that the rebase drops";
 
 fn channel(name: &str) -> String { name.to_owned() }
 
@@ -556,7 +557,7 @@ fn shapes(
         ),
         ("source bytes", !rebased.sources.is_empty()),
         (
-            "captured source bytes that the rebase drops",
+            DROPPED_CAPTURED_SOURCES,
             payload
                 .journals
                 .sources
@@ -604,11 +605,13 @@ impl Coverage {
         }
     }
 
-    fn assert_complete(&self) {
+    fn assert_complete(&self) { self.assert_complete_except(&[]); }
+
+    fn assert_complete_except(&self, unreachable: &[&str]) {
         let missing: Vec<&str> = self
             .shapes
             .iter()
-            .filter(|(_, count)| **count == 0)
+            .filter(|(shape, count)| **count == 0 && !unreachable.contains(shape))
             .map(|(shape, _)| *shape)
             .collect();
         assert!(
@@ -668,19 +671,10 @@ fn check_same_base(
         &captured_content,
         "the rebased content transitions are not the captured ones"
     );
-    let exact_sources: BTreeMap<Vec<u8>, Arc<[u8]>> = entries(&payload.journals.sources)
-        .into_iter()
-        .filter(|(path, _)| {
-            captured_content
-                .get(path)
-                .is_some_and(|transition| transition.after().is_some())
-        })
-        .collect();
     prop_assert_eq!(
         entries(&rebased.sources),
-        exact_sources,
-        "the rebased source bytes are not the captured ones at the transitions that end in a \
-         reference"
+        entries(&payload.journals.sources),
+        "the rebased source bytes are not the captured ones"
     );
     coverage.record(base, &payload, &rebased);
     Ok(())
@@ -881,7 +875,7 @@ fn a_same_base_rebase_reproduces_the_journals_of_the_soft_checkpoint() {
     check_same_base(&base, &operations, &mut seeded)
         .expect("the seeded same-base payload satisfies OG-02");
     println!("same-base journal rebase seed: {seeded:?}");
-    seeded.assert_complete();
+    seeded.assert_complete_except(&[DROPPED_CAPTURED_SOURCES]);
     let coverage = RefCell::new(seeded);
     runner(SAME_BASE_CASES)
         .run(
@@ -892,7 +886,7 @@ fn a_same_base_rebase_reproduces_the_journals_of_the_soft_checkpoint() {
     let coverage = coverage.into_inner();
     println!("same-base journal rebase: {coverage:?}");
     assert!(coverage.cases > SAME_BASE_CASES);
-    coverage.assert_complete();
+    coverage.assert_complete_except(&[DROPPED_CAPTURED_SOURCES]);
 }
 
 fn counted(path: &[u8], count: u64) -> Bag {

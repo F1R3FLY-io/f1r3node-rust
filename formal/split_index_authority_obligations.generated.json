@@ -95,5 +95,5 @@
     }
   ],
   "runtime": "rspace++/src/rspace/record_index.rs",
-  "runtime_sha256": "0463bb400b907ff7d25b155fd6c97c7f27e09b5d6e79b090c3a7a70ea11621b2"
+  "runtime_sha256": "8a6cd8291fb827fde0d195fb20238e8e3b9adf04703f207613dd36bfb1e1a990"
 }
