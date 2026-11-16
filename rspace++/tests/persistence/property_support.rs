@@ -442,6 +442,10 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("GC-09", "only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash"),
     ("GC-10", "crash_before_publication_keeps_the_old_generation_for_retry"),
     ("GC-11", "only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash"),
+    ("GC-12", "the_wal_frontier_is_the_recovery_tail_and_no_request_holds_a_wal_start"),
+    ("GC-13", "the_wal_frontier_is_the_recovery_tail_and_no_request_holds_a_wal_start"),
+    ("GC-14", "checkpoint_reclamation_waits_for_older_epoch_pin_from_independent_open"),
+    ("GC-15", "the_wal_frontier_is_the_recovery_tail_and_no_request_holds_a_wal_start"),
     (
         "GC-16",
         "a_pinned_read_handle_returns_its_admitted_bytes_after_another_process_reclaims_its_packs",

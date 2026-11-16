@@ -8432,6 +8432,8 @@ old generation is the one that the catalog selects when a trial begins.
 | Reader, export and import pins | Rows of kinds `Reader`, `Export` and `Import` in `RetainedRootRegistryV1`, each with a generation lease on the exact admitted generation. |
 | `durable`, `oldDurable` | `durable` is `{"current", "retained"}` and `oldDurable` is empty in every observed state. The catalog slot appoints the current state and its retention manifest lists the retained states; no file of the store records a replay or rollback registration, so no implementation step refines `RegisterDurable` or `ReleaseDurable` (GC-09). |
 | `copied` | The objects that the successor's live packs and its index hold, observed only while the catalog selects the successor: every admission and recovery then reads the current state and every retained state through those packs alone (GC-10). |
+| `walHead`, `walTail`, `AdvanceWal`, `RotateWal` | The write-ahead log (WAL) of the selected generation is the log of its one live pack, which is also its active pack. In a generation that a generation checkpoint published, `walHead` is the checkpoint record at the start of that pack, from which crash recovery replays; `walTail` is the commit record that the catalog slot names, which ends at the slot's durable pack tail: the *recovery tail*. An incremental publication appends one transaction and refines `AdvanceWal`. The catalog swap of a generation checkpoint corresponds to `Publish` followed, when a transaction lies past the head, by `RotateWal` to the frontier `walTail`: the successor's one pack is the pack after the one that holds the old recovery tail, and its header names that tail as its predecessor (GC-12 to GC-15). |
+| `walStarts`, `ActiveWalIds` | Every entry of `walStarts` is `NoWalStart` and `ActiveWalIds` is empty in every observed state. The [runtime request mapping](gc-protection-matrix-2026-10-01.md#runtime-request-mapping) finds that no request holds a WAL start, and the trial of GC-12 observes the consequence under the runtime views, the durable views, an exact pin and a Known lease. Crash recovery, which starts at `walHead` of the selected generation, is not a WAL id. |
 
 **Trial engine.** GC-01 to GC-04 evaluate their invariants over one shared,
 deterministic sample of 76 trials. Each trial runs in its own thread, because
@@ -8625,6 +8627,10 @@ derivation matrix must cite.
 | GC-09 | No durable replay or rollback obligation (`DurableExactGenerationProtected`). In the obligation trial only the owner's checkpoint makes durable writes, and they are exactly its publication: `catalog.v1` is rewritten and the pack and the index of the generation are appended to. A replay, a reset, a rollback, a `clear` and a spawn view each resolve their target, make no durable write and add exactly one generation lease. `ReclamationCandidateV1::new` accepts no ordered pair of the keys that the views read, so `reclaim.v1` stays absent: the only durable record of the store that names an old generation names it as reclaimable, never as protected. | `only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash` |
 | GC-10 | The successor holds the published closure (`PublishedClosureProtected`). In every trial of the shared sample in which the catalog selects the successor, every admission, re-admission and recovery that follows succeeds. Each of them reads the current state and every retained state through the successor's live packs and its index alone, and a refused one halts the trial, which fails the test. Observed: the recovery after a crash after the catalog swap, and the settling re-admission of every trial, after which no old file remains. | `crash_before_publication_keeps_the_old_generation_for_retry` |
 | GC-11 | Crash-phase quiescence (`CrashPhaseQuiescence`). In the obligation trial, a crash with live views on the old generation, after the publication of the successor, leaves no lease in the registry and changes neither `reclaim.v1` nor the old generation. The recovery that follows selects the successor, reclaims the old generation and removes the intent before the first lease is taken; the authority then holds one lease and its view a second. This is the order of the model's witness: `Crash`, `Recover`, `Reclaim`, then `AcquireNewPin`. | `only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash` |
+| GC-12 | No request holds a WAL start (`WalFrontierProtected`). In each of nine trials a generation checkpoint publishes while one request holds the old generation: none, the five views of the runtime requests R1 and R3 together, each of five durable views, an exact pin or a Known lease. Under every request, as under none, the successor's one live pack is the pack directly after the pack of the old recovery tail, its header names that tail as its predecessor, and crash recovery of the successor reads that pack alone, from its generation checkpoint to its durable tail. The old generation stays wholly present while a request holds it, outside the successor's WAL, and a reclamation request after the release reclaims it whole; with no request the publication reclaims it. | `the_wal_frontier_is_the_recovery_tail_and_no_request_holds_a_wal_start` |
+| GC-13 | The WAL head does not pass the reclaimable frontier (`WalReclaimableMinimum`). With no WAL start held, the frontier is the recovery tail: the commit record that the catalog slot names, which ends at its durable pack tail. In the nine trials of GC-12, crash recovery of the old generation reads its one pack to that tail, past at least one transaction, and ends at the slot's commit address. The successor's header names the pack and the commit digest of that record as its predecessor and starts at the sequence number after its commit sequence, which `PackHeaderV1::verify_predecessor` checks, and crash recovery of the successor starts at its own generation checkpoint, with one checkpoint and no transaction. The head thus moves exactly to the frontier and never past it. | `the_wal_frontier_is_the_recovery_tail_and_no_request_holds_a_wal_start` |
+| GC-14 | An object-only pin does not block the WAL (`ObjectOnlyPinDoesNotBlockWal`). An older-epoch generation lease on the pack range of the old generation, taken through an independently opened directory, does not block a generation checkpoint: the catalog selects the successor while the old pack, the old index and `reclaim.v1` stay; a re-admission selects the successor and keeps the old pack and the intent; the reclamation is deferred while the lease lives; and after the release it deletes the old pack and index and removes the intent, after which the older key is refused with `Retired`. The model's later rotation under such a pin is not bound; see the section on the WAL frontier at the recovery tail. | `checkpoint_reclamation_waits_for_older_epoch_pin_from_independent_open` |
+| GC-15 | A Known lease holds no WAL position (`KnownWalOrthogonal`). In the Known trial of GC-12, a Known lease on the appointed retention object, registered through the admitted writer on a store with an earlier generation checkpoint and a data successor, holds the old generation through a generation checkpoint as the other requests do: the successor's WAL opens directly after the old recovery tail and follows it, and the old generation stays wholly present only until the lease is released, after which a reclamation request reclaims it whole. | `the_wal_frontier_is_the_recovery_tail_and_no_request_holds_a_wal_start` |
 | GC-16 | Pinned reads survive a foreign unlink (`PinnedReadReturnsAdmittedBytes`). In the cross-process trial, process A's two handles read the manifest, one datum, one continuation and one join when they are admitted. A closes its owner; process B then publishes onto the pack and the index of A's generation and reclaims that generation with a compaction, and the names of its files are absent before and after A reads again. Every read through A's handles after the reclamation, once with the handles alone and once beside the owner that A reopened at B's successor, returns exactly the admitted reads. A handle on the successor reads B's second datum, so the admitted state is not the current one. | `a_pinned_read_handle_returns_its_admitted_bytes_after_another_process_reclaims_its_packs` |
 | GC-17 | A live or dead reader of another process holds nothing back (`DeadProcessHoldsNothing`). In the cross-process trial, B's writer lock is granted while A holds only handles, and B's compaction of A's generation reclaims it within the call while A runs: right after the call the directory holds exactly `catalog.v1`, `writer.lock.v1` and the successor's pack and index. A then reopens the store and is killed with `SIGKILL` while it holds its owner, two handles on the current generation and its first two handles. B's first lock attempt after the death is granted, the directory holds exactly `catalog.v1`, `writer.lock.v1` and the current generation's pack and index, and B's next compaction reclaims the generation that A's handles held within the call, again leaving exactly the catalog, the lock file and the successor's files. | `another_process_reclaims_unblocked_by_a_live_or_killed_reader_and_leaves_nothing_stale` |
 | GC-18 | One owner at a time across processes (`TypeInvariant` of the pack-lease model, its conjunct on `lock`). In the cross-process trial, while A's owner is open, after A's first open and again after A reopened the store, B's `try_acquire_writer` and B's `recover_read_authority` are each refused with `WriterLockContended`, and the store's files other than `writer.lock.v1` keep their bytes. Once A has closed its owner, B's lock attempt is granted. | `an_owner_open_in_another_process_refuses_the_writer_lock_as_contended` |
@@ -8752,6 +8758,135 @@ and inode only on Unix, as the generation leases are. A row registered through
 lease. The store keeps no history latches; GC-08 computes them from the leases
 and files it observes by the model's rules, and its derivation row states what
 that leaves falsifiable.
+
+### WAL frontier at the recovery tail (2026-11-16)
+
+Task 12443 (leaf GC7 of task 7944) binds four invariants of the GC protection
+model
+[`RSpaceGcProtection.tla`](../../../formal/tlaplus/stack_safe_pda/RSpaceGcProtection.tla)
+about the write-ahead log (WAL) as GC-12 to GC-15: `WalFrontierProtected`,
+`WalReclaimableMinimum`, `ObjectOnlyPinDoesNotBlockWal` and
+`KnownWalOrthogonal`. The owner's ruling of 2026-11-10 on decision GC5/GC7
+(option (a)) writes no durable replay or rollback record, and it re-scoped the
+leaf to a test that fails if any request other than crash recovery holds a WAL
+start and that checks that the WAL frontier which the publication path uses
+equals the recovery tail. No production file changes.
+
+**The WAL of a generation.** The WAL of the generation that the catalog
+selects is the log of its live packs, and its first live pack is its active
+pack: a generation checkpoint gives its successor one pack, and an incremental
+publication keeps the pack range of its generation. A generation that a
+generation checkpoint published begins its log with the checkpoint record, the
+model's `walHead`, from which crash recovery replays. Each incremental
+publication appends one transaction, the model's `AdvanceWal`. The commit
+record that the catalog slot names ends at the slot's durable pack tail; it is
+the model's `walTail` and the *recovery tail* of the generation. A generation
+checkpoint writes its successor's pack, the pack after the one that holds the
+recovery tail, with a header that names the pack and the commit digest of the
+recovery tail as its predecessor and whose first sequence number is the one
+after the tail's commit sequence; `PackHeaderV1::verify_predecessor` checks
+all three. When the catalog swap selects the successor, the WAL head therefore
+moves exactly to the old tail. This corresponds to the model's `Publish`
+followed by `RotateWal` to the frontier, which is `walTail` because
+`ActiveWalIds` is empty. The mutant `PrunePastWalStart` moves the head one
+record past the frontier only when the frontier lies before the tail, so with
+no WAL id it changes nothing; the second control below removes the start of
+crash recovery instead, as the runtime analogue of pruning past a start.
+
+**The trial.**
+`the_wal_frontier_is_the_recovery_tail_and_no_request_holds_a_wal_start` runs
+nine trials, each in its own thread and store directory. A trial builds a
+store whose selected generation holds at least one transaction past its WAL
+head, lets one request hold that generation, and publishes a generation
+checkpoint. The requests are none; the five views of the requests R1 and R3 of
+the
+[runtime request mapping](gc-protection-matrix-2026-10-01.md#runtime-request-mapping),
+held together on the store of a durable RSpace owner as in the obligation
+trial (a replay and a rollback to the pre-state, a reset and a spawn to the
+current state, and `clear`); each of the five durable views of
+`durable_views_on_an_old_generation_defer_reclamation_until_dropped` (the read
+handle of the writer's published core at the current and at the retained
+state, the read handle of a recovered read authority, and the read handle of a
+recovered read authority at the current and at the retained state); an exact
+pin, a generation lease on the generation's exact key; and a Known lease on
+the appointed retention object, registered through the admitted writer on a
+store with an earlier generation checkpoint and a data successor. The test
+requires, under every request:
+
+1. before the publication, crash recovery of the old generation reads its one
+   pack to the durable tail, finds at least one transaction past the head and
+   ends at the commit address that the catalog slot names;
+2. the first live and the active pack of the successor are both the pack
+   directly after the pack of the old recovery tail;
+3. the header of that pack names the old recovery tail as its predecessor:
+   `PackHeaderV1::verify_predecessor` accepts the pack, the commit sequence
+   and the commit digest of the old slot;
+4. crash recovery of the successor reads that pack alone, from its generation
+   checkpoint to its durable tail: one checkpoint, no transaction, and an end
+   at the successor's commit address;
+5. the old generation stays wholly present while a request holds it, and with
+   no request the publication reclaims it; after the release a reclamation
+   request reclaims it whole, or finds no intent when there was no request,
+   and the successor stays wholly present.
+
+The nine records are compared at once, and a refused step or a panic records
+its message in the place of its trial, so that the test reports every trial
+that differs. A request that kept an older pack in the successor's WAL would
+hold a WAL start. The publication's own guard refuses such a successor before
+the catalog swap: `ReclamationCandidateV1::from_catalogs` accepts a successor
+only when its first live pack follows the old active pack, and the publication
+panics with `fresh generation must strictly supersede its captured authority`
+otherwise. The first control below meets that guard.
+
+**The controls.** Three textual faults, applied one at a time to the
+production files of an export of the candidate tree and run in debug:
+
+- A replay path retains an older pack, the red copy of the acceptance: while a
+  lease on the exact key of the old generation is active, as the lease of a
+  replay view is, the checkpoint keeps the old first live pack in the
+  successor's live range. The new test fails: the eight trials with a request
+  panic at the guard with `fresh generation must strictly supersede its
+  captured authority`, and the trial with no request passes.
+- The analogue of `PrunePastWalStart`: reclamation deletes the packs up to the
+  active pack of the successor instead of the old one, which removes the pack
+  from which crash recovery of the successor starts. The new test fails: with
+  no request the publication's own reclamation deletes that pack, and the
+  recovery that rebuilds the returned writer fails with `PublishedRecovery`;
+  with a request the reclamation after the release deletes it, and the
+  successor is then partial.
+- The analogue of `BlockWalOnOldPack`: a reclamation that a lease defers fails
+  with `ReclamationPending` instead of deferring, so that a publication fails
+  while a pin keeps the old pack present. The new test and the test of GC-14
+  fail: every publication under a request returns `PublishedRecovery` with
+  `ReclamationPending`.
+
+**ObjectOnlyPinDoesNotBlockWal, in part.** GC-14 is bound to the existing test
+`checkpoint_reclamation_waits_for_older_epoch_pin_from_independent_open` of
+the durable publication tests: an older-epoch generation lease on the pack
+range of the old generation, taken through an independently opened directory,
+does not block the generation checkpoint; it defers only the reclamation,
+which deletes the old pack and index after the release. The model also
+requires `RotateWal` to stay enabled after the catalog swap while an
+object-only pin keeps the old generation present and the tail lies past the
+head. At runtime that later rotation is the next generation checkpoint after
+an incremental publication, and `resolve_reclamation_before_checkpoint`
+refuses it with `ReclamationPending` while a pin still defers the pending
+reclamation
+(`pending_reclamation_survives_incremental_epoch_and_blocks_second_checkpoint`).
+That refusal is the behaviour of the mutant `BlockWalOnOldPack`, so this part
+of the invariant does not hold at runtime. The owner ruled on 2026-11-16 that
+the runtime changes, not the model: task 14510
+(`rspace-gc-checkpoint-under-deferred-reclamation`) lets a generation
+checkpoint proceed while a reader defers the reclamation. Until that task
+lands, GC-14 stays partial.
+
+**Limits.** Each trial lets one request hold the old generation and observes
+one generation checkpoint. No request in the code holds a WAL start, so the
+trial checks the consequence of the ruling for the requests that exist; a
+request that holds a WAL start later must add its own trial. Reader, export
+and import roots of `RetainedRootRegistryV1` each hold a generation lease on
+the exact admitted generation, the lease of the exact-pin trial, and are not
+run separately.
 
 ### Durable state transfer export (2026-11-11)
 
@@ -13215,6 +13350,10 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | GC-09 | `DurableExactGenerationProtected` | `EXEC_ONLY` | P | Partially entailed (task 12441): the invariant keeps the old generation present while `oldDurable`, the set of durable replay or rollback assignments to it, is not empty. Under the ruling of 2026-11-10 on decision GC5/GC7 (option (a)) no runtime request makes a durable assignment, so the refinement mapping realizes `oldDurable` as the empty set and the premise is never true. The executable refinement obligation is that no request can make one: only a checkpoint makes durable writes, exactly its publication; a view makes none; and `reclaim.v1`, the only durable record that names an old generation, holds an old and a successor key, which `ReclamationCandidateV1::new` accepts only when the successor has the larger epoch and starts after the old active pack, and no field for a kind, a root or a WAL position. While the process lives, the generation lease of a view's read handle protects the generation that the view reads (`durable_views_on_an_old_generation_defer_reclamation_until_dropped`); a crash ends the lease, and recovery then reclaims the generation. |
 | GC-10 | `PublishedClosureProtected` | `EXEC_ONLY` | P | Partially entailed (task 12441): with `durable` equal to `{"current", "retained"}` and `oldDurable` empty, `NewDurableRequiredObjects` is the closure of the current and retained states, so the invariant requires the successor to hold that closure once the catalog selects it. The executable refinement obligation is that admission and recovery read objects only through the live packs and the index of the selected slot, so that a successor that lacks an object of that closure is refused, and that no admission or recovery with the successor selected is refused. `copied` is not observed before the catalog swap, and the closure is not compared object by object. |
 | GC-11 | `CrashPhaseQuiescence` | `EXEC_ONLY` | P | Partially entailed (task 12441): the invariant disables every pin acquisition and release, every durable registration and release, and every WAL advance and rotation while the phase is crashed. A crashed process executes nothing, and its leases live only in its memory. The executable refinement obligation is the order of the model's witness: a crash leaves no lease and changes no file, and the recovery, which completes a pending reclamation, precedes the first lease. Enabledness is not observed: inside the crate, `GenerationLeaseRegistryV1::acquire` on a registry handle taken from a newly opened directory succeeds before any recovery. Outside the tests, leases are acquired only by a recovered authority, by the owner that it becomes and by the read handles of their cores, all of which exist only after a recovery. |
+| GC-12 | `WalFrontierProtected` | `EXEC_ONLY` | P | Partially entailed (task 12443): the invariant keeps every start that an active WAL id holds between the WAL head and the tail. Under the ruling of 2026-11-10 on decision GC5/GC7 (option (a)) no runtime request holds a WAL start: the durable roles are `current` and `retained`, and the pins of views are reader pins, so the refinement mapping realizes `ActiveWalIds` as the empty set and the invariant holds vacuously. The executable refinement obligation is that no request holds a start, observed through its consequence: under each request of the trial, as under none, the successor's WAL opens directly after the old recovery tail. |
+| GC-13 | `WalReclaimableMinimum` | `EXEC_ONLY` | P | Partially entailed (task 12443): with `ActiveWalIds` empty, `ReclaimableWalFrontier` is `walTail`, and the invariant requires `walHead <= walTail`. The implementation's head is the checkpoint record at the start of the generation's one live pack and its tail is the commit record that the catalog slot names; the head moves only at a generation checkpoint, and then exactly to the old tail, because the successor's pack follows the pack of the tail and its header names the tail as its predecessor. The checkpoint's recovery preflight charges exactly one live pack, so no older pack stays in the window. The trial observes one publication per request, each with at least one transaction between the head and the tail; other histories are not observed. |
+| GC-14 | `ObjectOnlyPinDoesNotBlockWal` | `EXEC_ONLY` | P | Partially entailed (task 12443): the invariant requires `RotateWal` to be enabled whenever the catalog selects the successor, the old generation is present, an old pin is held, no WAL id is active and the tail lies past the head. The implementation fuses the first rotation with the catalog swap, and an object-only pin does not block it: the bound test publishes under an older-epoch pin and defers only the reclamation. A later rotation is the next generation checkpoint, which `resolve_reclamation_before_checkpoint` refuses with `ReclamationPending` while a pin still defers the pending reclamation (`pending_reclamation_survives_incremental_epoch_and_blocks_second_checkpoint`). That refusal is the behaviour of the mutant `BlockWalOnOldPack`; this part of the invariant does not hold at runtime. By the owner's ruling of 2026-11-16 the runtime changes, in task 14510 (`rspace-gc-checkpoint-under-deferred-reclamation`). |
+| GC-15 | `KnownWalOrthogonal` | `EXEC_ONLY` | P | Partially entailed (task 12443): in the Known configuration the invariant requires that the Known role protects no WAL bytes and that `known0` is not a WAL id. At runtime a Known lease is a row of `RetainedRootRegistryV1` together with a generation lease on its exact generation, and neither records a WAL position; the trial observes that a Known lease leaves the successor's WAL where no request leaves it. |
 | GC-16 | `PinnedReadReturnsAdmittedBytes` | `EXEC_ONLY` | P | Partially entailed (task 12447): the invariant quantifies over every read that a live handle of a process can issue, and `HandleRead` returns the stored bytes for a handle in `pinned` of its process whatever `deleted` holds. Under the mapping of the cross-process trial, A's handles are in `leases` and `pinned` of A, and the states from the return of B's first compaction on have A's pack in `deleted`; the model reaches such states through `CloseOwner`, `OpenStore`, `RetireFirst` and `DeleteFirst`, the trace of its path-reopen mutant. The executable refinement obligation is that a handle reads only through the pack descriptors that admission opened, so that an unlink by another process leaves its reads unchanged. Four reads of one state through two handles are observed, with the handles alone and beside a newer owner of the same process; not every read, pack or schedule is. B's publication onto A's pack exercises the model's abstraction A3, appends beyond every admitted tail. The red control of the trial, a read that opens the pack by its name for every read as the path-reopen mutant does, fails this test after the unlink. |
 | GC-17 | `DeadProcessHoldsNothing` | `EXEC_ONLY` | P | Partially entailed (task 12447): `Crash` releases `lock` when the process holds it and empties its `leases` and `pinned`, and a dead process takes no step other than `Restart`. The executable refinement obligation is K2 together with the absence of any durable trace of a reader: a process killed with `SIGKILL` while it holds the writer lock and read handles neither refuses the next opener nor defers the next reclamation, and it leaves no file. The lock conjunct is observed as the granted lock attempt after the death, the lease conjunct as the reclamation within the call of the generation that the dead process held, and the absence of a durable trace as the exact directory listing. The pin conjunct, that the storage of an unlinked pack is freed, is not observed. The trial also observes F5 for a live reader: a lease of another process does not defer a reclamation. |
 | GC-18 | `TypeInvariant` | `EXEC_ONLY` | P | Partially entailed (task 12447): in the pack-lease model `TypeInvariant` types `lock` as one value of `Procs \cup {NoProcess}`, so the writer lock has at most one holder, and `OpenStore` is enabled only while `lock = NoProcess`. The executable refinement obligation is F1 across processes: an open of the store takes the writer lock first, and while an owner of another process holds the lock the open is refused with `WriterLockContended` and changes no file other than `writer.lock.v1`; `close` releases the lock. The other conjuncts of `TypeInvariant` are not observed. |
@@ -14609,6 +14748,29 @@ the manifest test's file, which both change, so they are to be regenerated
 with this slice. No Rocq or TLA+ file changed, and no proof or model was run
 for this slice. No persisted byte, record kind, root, identity or wire message
 changed, and the crate has no new dependency. See the GC protection section.
+
+The 2026-11-16 WAL-frontier slice of task 7944 (task 12443) adds GC-12 to
+GC-15, so the catalog/derivation/binding registry now contains **309** IDs. It
+binds `WalFrontierProtected`, `WalReclaimableMinimum` and `KnownWalOrthogonal`
+to the WAL-frontier trial of the GC property module and
+`ObjectOnlyPinDoesNotBlockWal` to an existing test of the durable publication
+module, and the GC protection matrix records why the WAL frontier is the
+recovery tail. No file other than this catalog, the GC protection matrix, the
+GC property module of the tests and their list of property bindings changes.
+On an export of the candidate tree, the GC property module, the durable
+publication module and the manifest test passed in debug and in release (65
+passed, 1 ignored), and so did the library target (1071 passed, 13 ignored).
+The three controls of the section on the WAL frontier were applied one at a
+time to the production files in the export, each run in debug against the
+tests that the section names and removed, and each failed exactly those tests,
+with their messages. Each faulted file was restored from the candidate tree,
+and the export was compared with that tree after the runs. Clippy of
+`rspace_plus_plus` with every target lists no finding in the files of this
+slice, and `rustfmt --check` passes on its Rust files. No obligation registry
+hashes a file of this slice. No Rocq or TLA+ file changed, and no proof or
+model was run for this slice. No persisted byte, record kind, root, identity
+or wire message changed, and the crate has no new dependency. See the section
+on the WAL frontier at the recovery tail.
 
 ## Caller-authority contract (2026-09-06)
 

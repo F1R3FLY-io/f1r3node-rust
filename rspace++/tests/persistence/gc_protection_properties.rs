@@ -3512,3 +3512,309 @@ fn a_registration_racing_a_compaction_is_carried_refuses_it_or_is_sealed_out() {
         "an interrupted catalog swap left the root registry sealed",
     );
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WalRequest {
+    NoRequest,
+    RuntimeViews,
+    View(DurableView),
+    ExactPin,
+    KnownLease,
+}
+
+const WAL_REQUESTS: [WalRequest; 9] = [
+    WalRequest::NoRequest,
+    WalRequest::RuntimeViews,
+    WalRequest::View(DurableView::PublishedCore(ViewTarget::Current)),
+    WalRequest::View(DurableView::PublishedCore(ViewTarget::Retained)),
+    WalRequest::View(DurableView::RecoveredAuthority),
+    WalRequest::View(DurableView::RecoveredAuthorityAt(ViewTarget::Current)),
+    WalRequest::View(DurableView::RecoveredAuthorityAt(ViewTarget::Retained)),
+    WalRequest::ExactPin,
+    WalRequest::KnownLease,
+];
+
+const WAL_KNOWN_STORE: KnownStoreSpec =
+    known_store(3, 1, RetentionFormat::V2, 1, KnownRootChoice::AppointedRetention);
+
+#[derive(Debug, PartialEq, Eq)]
+struct WalRecovery {
+    checkpoints: u64,
+    transactions: u64,
+    reads_one_pack_to_its_tail: bool,
+    ends_at_the_catalog_commit: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct WalFrontierRecord {
+    old_tail_past_the_head: bool,
+    old_tail_reads_one_pack: bool,
+    old_tail_is_the_catalog_commit: bool,
+    successor_window_past_the_tail: Option<(u64, u64)>,
+    successor_follows_the_tail: Result<(), String>,
+    old_generation_while_held: Presence,
+    successor_recovery: Result<WalRecovery, String>,
+    reclamation_after_release: Result<ProbeOutcome, String>,
+    old_generation_after_release: Presence,
+    successor_after_release: Presence,
+}
+
+fn recover_wal(root: &Path, slot: CatalogSlotV1) -> Result<WalRecovery, String> {
+    let writer = DurableDirectoryV1::open(root)
+        .map_err(|error| format!("the store directory does not open: {error:?}"))?
+        .recover_writer_v1(limits(), LogPackDecodeLimits::UNBOUNDED)
+        .map_err(|error| format!("crash recovery was refused: {error:?}"))?;
+    let recovered = writer.recovered();
+    Ok(WalRecovery {
+        checkpoints: recovered.checkpoints(),
+        transactions: recovered.transactions(),
+        reads_one_pack_to_its_tail: recovered.scanned_bytes() == slot.durable_pack_tail(),
+        ends_at_the_catalog_commit: recovered.terminal_address() == slot.commit_address(),
+    })
+}
+
+fn follows_the_recovery_tail(
+    root: &Path,
+    old: CatalogSlotV1,
+    successor: CatalogSlotV1,
+) -> Result<(), String> {
+    use crate::rspace::persistence::{PACK_HEADER_LEN_V1, PackHeaderV1, PackTerminalIdentityV1};
+
+    let pack = PackId::new(successor.pack().first_live_pack())
+        .map_err(|error| format!("invalid first live pack: {error:?}"))?;
+    let bytes = fs::read(root.join(pack_file_name(pack)))
+        .map_err(|error| format!("cannot read the first live pack: {error}"))?;
+    let header_len = usize::try_from(PACK_HEADER_LEN_V1)
+        .map_err(|error| format!("the pack header length does not fit memory: {error}"))?;
+    let header = bytes
+        .get(..header_len)
+        .ok_or_else(|| format!("the first live pack holds {} bytes", bytes.len()))?;
+    let tail = old.commit_address();
+    PackHeaderV1::parse_exact(header)
+        .and_then(|header| {
+            header.verify_predecessor(PackTerminalIdentityV1::new(
+                tail.pack_id(),
+                old.commit_sequence(),
+                old.commit_digest(),
+            ))
+        })
+        .map_err(|error| format!("the successor does not follow the recovery tail: {error:?}"))
+}
+
+fn observe_wal_frontier(
+    root: &Path,
+    release: impl FnOnce() -> Result<(), String>,
+    publish: impl FnOnce(&Path) -> Result<CatalogSlotV1, String>,
+) -> Result<WalFrontierRecord, String> {
+    let old = selected_slot(root)?;
+    let old_files = generation_files(root, GenerationLeaseKeyV1::from_catalog(old))?;
+    let old_tail = recover_wal(root, old)?;
+    let successor = publish(root)?;
+    let successor_files = generation_files(root, GenerationLeaseKeyV1::from_catalog(successor))?;
+    let old_generation_while_held = generation_presence(&old_files);
+    let tail_pack = old.commit_address().segment();
+    let successor_window_past_the_tail = successor
+        .pack()
+        .first_live_pack()
+        .checked_sub(tail_pack)
+        .zip(successor.pack().active_pack().checked_sub(tail_pack));
+    let successor_follows_the_tail = follows_the_recovery_tail(root, old, successor);
+    let successor_recovery = recover_wal(root, successor);
+    release()?;
+    let reclamation_after_release = request_reclamation(root);
+    Ok(WalFrontierRecord {
+        old_tail_past_the_head: old_tail.transactions > 0,
+        old_tail_reads_one_pack: old_tail.reads_one_pack_to_its_tail,
+        old_tail_is_the_catalog_commit: old_tail.ends_at_the_catalog_commit,
+        successor_window_past_the_tail,
+        successor_follows_the_tail,
+        old_generation_while_held,
+        successor_recovery,
+        reclamation_after_release,
+        old_generation_after_release: generation_presence(&old_files),
+        successor_after_release: generation_presence(&successor_files),
+    })
+}
+
+fn wal_data_store(
+    root: &Path,
+) -> Result<(GcWriter, DurableStateRootV1, DurableStateRootV1), String> {
+    install_checkpoint_image(root, &checkpoint_image_from_source(checkpoint_source_fixture()));
+    let first = admit_checkpoint(root)?;
+    let retained = DurableStateRootV1::of_manifest(first.catalog().state().manifest());
+    let writer = publish_data_successor(first, "gc-wal-frontier");
+    let current = DurableStateRootV1::of_manifest(writer.catalog().state().manifest());
+    Ok((writer, retained, current))
+}
+
+fn publish_test_store(root: &Path) -> Result<CatalogSlotV1, String> {
+    publish_checkpoint(admit_checkpoint(root)?).map(|writer| writer.catalog())
+}
+
+fn publish_known_store(root: &Path) -> Result<CatalogSlotV1, String> {
+    publish_checkpoint(admit_with_retention_writer(root, WAL_KNOWN_STORE.retention_writer)?)
+        .map(|writer| writer.catalog())
+}
+
+fn publish_owner_store(root: &Path) -> Result<CatalogSlotV1, String> {
+    DurableDirectoryV1::open(root)
+        .map_err(|error| format!("the store directory does not open: {error:?}"))?
+        .recover_and_admit_v1::<Profile>(
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .map_err(|error| format!("admission was refused: {error:?}"))?
+        .publish_generation_checkpoint_v1(
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .map(|writer| writer.catalog())
+        .map_err(|error| format!("publication was refused: {error:?}"))
+}
+
+fn observe_runtime_views() -> Result<WalFrontierRecord, String> {
+    let (scratch, hot, gate, mut owner) = owner_fixture();
+    let pre_state = Blake2b256Hash::from(owner.current_root());
+    populate(&hot);
+    poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits())
+        .map_err(|error| format!("the owner's checkpoint was refused: {error:?}"))?;
+    let repository = DurableHistoryRepositoryV1::new(owner.published_core())
+        .map_err(|error| format!("the durable repository does not open: {error:?}"))?;
+    let mut views = Vec::with_capacity(RUNTIME_VIEW_REQUESTS.len());
+    for request in RUNTIME_VIEW_REQUESTS {
+        let target = match request {
+            RuntimeRequest::Replay | RuntimeRequest::Rollback => pre_state.clone(),
+            RuntimeRequest::Reset | RuntimeRequest::Spawn => repository.root(),
+            RuntimeRequest::Clear => repository.empty_root(),
+        };
+        views.push(
+            repository
+                .reset(&target)
+                .map_err(|error| format!("the {request:?} view was refused: {error:?}"))?,
+        );
+    }
+    owner
+        .close()
+        .map_err(|error| format!("the owner does not close: {error:?}"))?;
+    observe_wal_frontier(
+        scratch.path(),
+        move || {
+            drop((owner, hot, gate, repository, views));
+            Ok(())
+        },
+        publish_owner_store,
+    )
+}
+
+fn run_wal_frontier_trial(request: WalRequest) -> Result<WalFrontierRecord, String> {
+    match request {
+        WalRequest::NoRequest => {
+            let scratch = trial_scratch("gc-wal-frontier-");
+            drop(wal_data_store(scratch.path())?);
+            observe_wal_frontier(scratch.path(), || Ok(()), publish_test_store)
+        }
+        WalRequest::RuntimeViews => observe_runtime_views(),
+        WalRequest::View(view) => {
+            let scratch = trial_scratch("gc-wal-frontier-");
+            let root = scratch.path();
+            let (writer, retained, current) = wal_data_store(root)?;
+            let (handle, writer) = hold_durable_view(view, root, writer, retained, current)?;
+            drop(writer);
+            observe_wal_frontier(
+                root,
+                move || {
+                    drop(handle);
+                    Ok(())
+                },
+                publish_test_store,
+            )
+        }
+        WalRequest::ExactPin => {
+            let scratch = trial_scratch("gc-wal-frontier-");
+            let root = scratch.path();
+            let (writer, _, _) = wal_data_store(root)?;
+            let pin = writer
+                .generation_leases()
+                .acquire(GenerationLeaseKeyV1::from_catalog(writer.catalog()))
+                .map_err(|error| format!("the exact pin was refused: {error:?}"))?;
+            drop(writer);
+            observe_wal_frontier(
+                root,
+                move || {
+                    drop(pin);
+                    Ok(())
+                },
+                publish_test_store,
+            )
+        }
+        WalRequest::KnownLease => {
+            let scratch = trial_scratch("gc-wal-frontier-");
+            let root = scratch.path();
+            let store = open_known_store(WAL_KNOWN_STORE, root)?;
+            let mut known = store
+                .writer
+                .register_known_root_v1(store.known_root)
+                .map_err(|error| {
+                    format!(
+                        "the writer refused a Known lease on an object of its generation: {error}"
+                    )
+                })?;
+            drop(store);
+            observe_wal_frontier(
+                root,
+                move || {
+                    known
+                        .release()
+                        .map_err(|error| format!("the Known lease was not released: {error}"))
+                },
+                publish_known_store,
+            )
+        }
+    }
+}
+
+#[test]
+fn the_wal_frontier_is_the_recovery_tail_and_no_request_holds_a_wal_start() {
+    let observed = WAL_REQUESTS.map(|request| {
+        (request, on_trial_thread("gc-wal-frontier", move || run_wal_frontier_trial(request)))
+    });
+    let expected = WAL_REQUESTS.map(|request| {
+        let (while_held, after_release) = match request {
+            WalRequest::NoRequest => (Presence::Absent, ProbeOutcome::NoIntent),
+            WalRequest::RuntimeViews |
+            WalRequest::View(_) |
+            WalRequest::ExactPin |
+            WalRequest::KnownLease => (Presence::Present, ProbeOutcome::Reclaimed),
+        };
+        let record = WalFrontierRecord {
+            old_tail_past_the_head: true,
+            old_tail_reads_one_pack: true,
+            old_tail_is_the_catalog_commit: true,
+            successor_window_past_the_tail: Some((1, 1)),
+            successor_follows_the_tail: Ok(()),
+            old_generation_while_held: while_held,
+            successor_recovery: Ok(WalRecovery {
+                checkpoints: 1,
+                transactions: 0,
+                reads_one_pack_to_its_tail: true,
+                ends_at_the_catalog_commit: true,
+            }),
+            reclamation_after_release: Ok(after_release),
+            old_generation_after_release: Presence::Absent,
+            successor_after_release: Presence::Present,
+        };
+        (request, Ok::<WalFrontierRecord, String>(record))
+    });
+    assert_eq!(
+        observed, expected,
+        "GC-12, GC-13 and GC-15: no request other than crash recovery may hold a WAL start, so \
+         under the runtime views, each durable view, an exact pin and a Known lease, as under no \
+         request, the checkpoint must open the successor's one-pack WAL window directly after the \
+         recovery tail of the old generation and follow that tail, crash recovery of the \
+         successor must read that pack alone from its checkpoint to its durable tail, and the old \
+         generation must stay only as objects while the request holds it and then be reclaimed \
+         whole"
+    );
+}
