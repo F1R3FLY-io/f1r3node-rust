@@ -218,6 +218,7 @@ impl TransportLayerServer for TransportLayerServerTestImpl {
             .await?;
 
         // Return a no-op cancelable since we've already processed everything
-        Ok(tokio::spawn(async {}))
+        let (shutdown, _) = tokio::sync::oneshot::channel();
+        Ok(Cancelable::new(tokio::spawn(async {}), shutdown))
     }
 }
