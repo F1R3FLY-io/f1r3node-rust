@@ -11,7 +11,7 @@ use common::{deploy, eventually, finalized_verdict, FakeNode, Queue};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
-use deploy_queue::engine::FinalityHold;
+use deploy_queue::engine::{FinalityHold, QueueSnapshot};
 use deploy_queue::error::{Congestion, IntakeError};
 use deploy_queue::http::accept;
 use deploy_queue::record::QueueState;
@@ -165,7 +165,22 @@ async fn a_deploy_is_released_and_follows_the_node_to_its_verdict() {
         view.latest_block_hash,
         Some(hex::decode(format!("{:064x}", 11)).unwrap())
     );
+    let snapshot = queue.handle.snapshot().await.unwrap();
+    assert_eq!((snapshot.finalized, snapshot.held), (1, 1));
+    assert_eq!(held_by_state(&snapshot), snapshot.held);
     queue.stop();
+}
+
+fn held_by_state(snapshot: &QueueSnapshot) -> usize {
+    snapshot.ready
+        + snapshot.waiting
+        + snapshot.closed
+        + snapshot.submitted
+        + snapshot.in_block
+        + snapshot.finalized
+        + snapshot.failed
+        + snapshot.expired
+        + snapshot.rejected
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -544,6 +559,9 @@ async fn a_refusal_from_the_node_is_terminal() {
     let view = queue.handle.status(sig).await.unwrap().unwrap();
     assert_eq!(view.state.status_label(), "Rejected");
     assert!(view.detail.unwrap().starts_with("illegal_argument"));
+    let snapshot = queue.handle.snapshot().await.unwrap();
+    assert_eq!((snapshot.rejected, snapshot.held), (1, 1));
+    assert_eq!(held_by_state(&snapshot), snapshot.held);
     queue.stop();
 }
 

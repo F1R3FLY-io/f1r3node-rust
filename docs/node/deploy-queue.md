@@ -84,5 +84,9 @@ the same transitions and ends when every named deploy is terminal.
 `GET /queue/status` answers the queue's counts per state, what it measures of its validator (own blocks, share
 of the shard's blocks, intake per height, pool target, latest cap and its source) and of the shard (seconds per
 height, backpressure, finality lag), and `finality_hold` with the lag while the queue holds release for finality.
+Queued deploys are counted as `ready` (window open, released earliest deadline first), `waiting` (not yet valid:
+`validAfterBlockNumber` above the tip) and `closed` (window closed before release); then `submitted`, `in_block`, and the terminal
+`finalized`, `failed`, `expired` and `rejected`. A terminal deploy stays held for one lifespan after its verdict,
+so its status can still be read. `held` is the sum of all of these.
 `GET /queue/metrics` answers Prometheus metrics. `GET /ws/events` relays the node's
 [event stream](websocket-events.md).
