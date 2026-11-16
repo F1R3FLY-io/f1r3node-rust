@@ -1074,7 +1074,7 @@ async fn deploy_seed_reuse_rejects_a_deploy_reusing_an_ancestors_name_seed() {
         let snapshot = mk_casper_snapshot(block_dag_storage.get_representation().expect("dag"));
 
         assert_eq!(
-            Validate::deploy_seed_reuse(&block, &snapshot, &block_store),
+            Validate::deploy_seed_reuse(&block, &snapshot, &block_store, None, 50),
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
         );
     })
@@ -1116,7 +1116,7 @@ async fn deploy_seed_reuse_rejects_two_deploys_sharing_a_name_seed_in_one_block(
         let snapshot = mk_casper_snapshot(block_dag_storage.get_representation().expect("dag"));
 
         assert_eq!(
-            Validate::deploy_seed_reuse(&block, &snapshot, &block_store),
+            Validate::deploy_seed_reuse(&block, &snapshot, &block_store, None, 50),
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
         );
     })
@@ -1161,7 +1161,7 @@ async fn deploy_seed_reuse_accepts_the_same_deploy_and_distinct_seeds() {
         let snapshot = mk_casper_snapshot(block_dag_storage.get_representation().expect("dag"));
 
         assert_eq!(
-            Validate::deploy_seed_reuse(&block, &snapshot, &block_store),
+            Validate::deploy_seed_reuse(&block, &snapshot, &block_store, None, 50),
             Either::Right(ValidBlock::Valid)
         );
     })

@@ -466,7 +466,13 @@ impl Validate {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
-        if let Either::Left(err) = Self::deploy_seed_reuse(block, s, block_store) {
+        if let Either::Left(err) = Self::deploy_seed_reuse(
+            block,
+            s,
+            block_store,
+            floor_ctx_slot.as_ref(),
+            expiration_threshold as i64,
+        ) {
             return Either::Left(err);
         }
         tracing::debug!(target: "f1r3fly.casper", "before-block-number-validation");
@@ -959,11 +965,15 @@ impl Validate {
     /// carry two deploys with one seed, nor a deploy whose seed another
     /// deploy in its ancestry already used. Two deploys share a seed only if
     /// they share a valid-after block, and a deploy lands only above that
-    /// block, so the ancestry walk stops below the block's lowest one.
+    /// block, so the ancestry walk stops below the block's lowest one. A live
+    /// deploy's copies also sit above the floor's window, so with a floor the
+    /// walk stops there too; a deploy below it fails the expiry check.
     pub fn deploy_seed_reuse(
         block: &BlockMessage,
         s: &CasperSnapshot,
         block_store: &KeyValueBlockStore,
+        floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
+        deploy_lifespan: i64,
     ) -> ValidBlockProcessing {
         let mut block_seeds: HashMap<Vec<u8>, Bytes> = HashMap::new();
         for pd in &block.body.deploys {
@@ -994,7 +1004,17 @@ impl Validate {
         else {
             return Either::Right(ValidBlock::Valid);
         };
-        let scan_start = lowest_valid_after + 1;
+        let scan_start = match floor_ctx {
+            Some(ctx) => match crate::rust::util::deploy_window::lowest_live_carrier_height(
+                ctx.floor.block_number,
+                deploy_lifespan,
+                lowest_valid_after,
+            ) {
+                Ok(start) => start,
+                Err(e) => return Either::Left(BlockError::from_validation_error(e)),
+            },
+            None => lowest_valid_after + 1,
+        };
 
         let needing_scan = match proto_util::seeds_needing_scan(
             &s.dag,
