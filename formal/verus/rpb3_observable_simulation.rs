@@ -4739,6 +4739,51 @@ pub proof fn theorem_forward_simulation(
     }
 }
 
+pub proof fn theorem_successor_agreement(
+    states: Seq<dispatcher::IntegratedState>, actions: Seq<dispatcher::IntegratedAction>,
+    event: observable::ObservableEvent, next: observable::ObservableState,
+)
+    requires
+        integrated_segment(states, actions),
+        observable::observable_event_same_except_repeated(
+            event, segment_image_event(states, actions),
+        ),
+        observable::observable_next(project(states[0]), event) == Some(next),
+    ensures next == project(states.last()),
+{
+    let image = segment_image_event(states, actions);
+    theorem_forward_simulation(states, actions);
+    assert(observable::observable_event_same_except_repeated(event, image));
+    observable::lemma_observable_next_repeated_irrelevant(project(states[0]), event, image);
+}
+
+pub proof fn corollary_segment_has_raw_shape(
+    states: Seq<dispatcher::IntegratedState>, actions: Seq<dispatcher::IntegratedAction>,
+)
+    requires integrated_segment(states, actions),
+    ensures raw_event_shape(states[0], segment_image_event(states, actions)),
+{
+    let image = segment_image_event(states, actions);
+    theorem_forward_simulation(states, actions);
+    lemma_backward_structural(states[0], image);
+}
+
+pub proof fn corollary_segment_preserves_observable_wf(
+    states: Seq<dispatcher::IntegratedState>, actions: Seq<dispatcher::IntegratedAction>,
+)
+    requires
+        integrated_segment(states, actions),
+        observable::observable_wf(project(states[0])),
+    ensures
+        observable::observable_wf(project(states.last())),
+        canonical_path_top_is_root(states.last()),
+{
+    let image = segment_image_event(states, actions);
+    theorem_forward_simulation(states, actions);
+    observable::lemma_observable_next_preserves_wf(project(states[0]), image);
+    lemma_observable_wf_bounds_canonical_path(states.last());
+}
+
 pub proof fn lemma_single_step_is_segment(
     before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
     action: dispatcher::IntegratedAction,
