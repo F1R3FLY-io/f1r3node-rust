@@ -128,8 +128,8 @@ There are two kinds of keys:
 
 - The **deploy key**, `F1R3FLY_SIGNING_KEY`, signs and pays for the deploy.
   It needs a REV balance. It has no authority over any identity.
-- The **identity keys and admin keys** sign the payloads. They never sign a
-  deploy.
+- The **identity keys and admin keys** sign the payloads. They do not
+  necessarily sign a deploy.
 
 The client proposes the block itself. The node must accept a propose
 request on its internal gRPC port.
