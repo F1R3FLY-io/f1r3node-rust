@@ -310,10 +310,13 @@ impl DeployRecordQuarantine {
                 }
                 continue;
             }
-            if !live.delete_if_value(&record.key, &record.value)? {
-                continue;
+            {
+                let mut sizes = self.sizes.lock();
+                if !live.delete_if_value(&record.key, &record.value)? {
+                    continue;
+                }
+                sizes.remove(&record.key);
             }
-            self.sizes.lock().remove(&record.key);
             moved += 1;
             metrics::counter!(
                 QUARANTINED_RECORDS_METRIC,
