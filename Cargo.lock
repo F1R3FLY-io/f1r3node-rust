@@ -1172,7 +1172,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -1535,7 +1535,7 @@ dependencies = [
 [[package]]
 name = "crypto"
 version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22#252a86d1dcf5ebffc0c39d17614c1256df9c3a22"
+source = "git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15#0ccc315d84b32d668e8db49cd56ba3c576693e15"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1560,7 +1560,7 @@ dependencies = [
  "rcgen",
  "serde",
  "sha2 0.10.9",
- "shared 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22)",
+ "shared 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15)",
  "thiserror 2.0.19",
  "time",
  "tiny-keccak",
@@ -2214,7 +2214,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3124,7 +3124,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "system-configuration 0.7.0",
  "tokio",
  "tower-service",
@@ -4002,33 +4002,35 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tracing",
- "utoipa 6.0.0",
+ "utoipa",
  "uuid",
 ]
 
 [[package]]
 name = "models"
 version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22#252a86d1dcf5ebffc0c39d17614c1256df9c3a22"
+source = "git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15#0ccc315d84b32d668e8db49cd56ba3c576693e15"
 dependencies = [
- "crypto 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22)",
+ "crypto 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15)",
  "hex",
  "itertools 0.14.0",
+ "num-bigint",
+ "num-traits",
  "pathmap",
  "proptest",
  "proptest-derive",
  "prost 0.14.4",
  "rand 0.9.5",
- "rspace_plus_plus 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22)",
+ "rspace_plus_plus 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15)",
  "serde",
  "serde_json",
- "shared 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22)",
+ "shared 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15)",
  "thiserror 2.0.19",
  "tonic 0.14.6",
  "tonic-prost",
  "tonic-prost-build",
  "tracing",
- "utoipa 5.5.0",
+ "utoipa",
  "uuid",
 ]
 
@@ -4219,7 +4221,7 @@ dependencies = [
  "rand 0.9.5",
  "regex",
  "rholang 0.1.0",
- "rholang-parser 0.1.0 (git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2)",
+ "rholang-parser",
  "rpassword",
  "rspace_plus_plus 0.1.0",
  "rustyline",
@@ -4242,15 +4244,15 @@ dependencies = [
  "tracing",
  "tracing-log",
  "tracing-subscriber",
- "utoipa 6.0.0",
+ "utoipa",
  "utoipa-swagger-ui",
  "uuid",
 ]
 
 [[package]]
 name = "node_cli"
-version = "0.2.9"
-source = "git+https://github.com/F1R3FLY-io/rust-client.git?branch=main#4bb001690b2893e0cd465f71feac3ed9e3a1b81d"
+version = "0.2.7"
+source = "git+https://github.com/F1R3FLY-io/rust-client.git?branch=dev#5d1c9b4d12e33ec8b64a74a28df196ef03478e73"
 dependencies = [
  "blake2",
  "bs58",
@@ -4258,24 +4260,24 @@ dependencies = [
  "clap",
  "crc",
  "crossterm",
- "crypto 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22)",
+ "crypto 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15)",
  "futures-util",
  "hex",
  "log",
- "models 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22)",
+ "models 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15)",
  "num-bigint",
  "prost 0.14.4",
  "rand 0.8.7",
  "ratatui",
  "reqwest 0.12.28",
- "rholang 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22)",
+ "rholang 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15)",
  "rustls",
  "secp256k1",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "sha3",
- "shared 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22)",
+ "shared 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15)",
  "thiserror 2.0.19",
  "tokio",
  "tokio-tungstenite 0.26.2",
@@ -4329,7 +4331,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5126,7 +5128,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.11.0",
  "log",
  "multimap",
  "petgraph 0.8.3",
@@ -5160,7 +5162,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.11.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -5173,7 +5175,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.11.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -5312,7 +5314,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -5350,9 +5352,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5857,14 +5859,14 @@ dependencies = [
 [[package]]
 name = "rho-pure-eval"
 version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22#252a86d1dcf5ebffc0c39d17614c1256df9c3a22"
+source = "git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15#0ccc315d84b32d668e8db49cd56ba3c576693e15"
 dependencies = [
  "imbl",
- "models 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22)",
+ "models 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15)",
  "num-bigint",
  "num-rational",
  "num-traits",
- "shared 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22)",
+ "shared 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15)",
 ]
 
 [[package]]
@@ -5904,7 +5906,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "rho-pure-eval 0.1.0",
- "rholang-parser 0.1.0 (git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2)",
+ "rholang-parser",
  "rspace_plus_plus 0.1.0",
  "rust-bert",
  "serde",
@@ -5928,14 +5930,14 @@ dependencies = [
 [[package]]
 name = "rholang"
 version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22#252a86d1dcf5ebffc0c39d17614c1256df9c3a22"
+source = "git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15#0ccc315d84b32d668e8db49cd56ba3c576693e15"
 dependencies = [
  "anyhow",
  "async-trait",
  "bincode",
  "clap",
  "console",
- "crypto 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22)",
+ "crypto 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15)",
  "dotenv",
  "futures",
  "hex",
@@ -5946,7 +5948,7 @@ dependencies = [
  "libc",
  "linkme",
  "metrics 0.23.1",
- "models 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22)",
+ "models 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15)",
  "num-bigint",
  "num-integer",
  "num-rational",
@@ -5957,12 +5959,12 @@ dependencies = [
  "rayon",
  "regex",
  "reqwest 0.12.28",
- "rho-pure-eval 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22)",
- "rholang-parser 0.1.0 (git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353)",
- "rspace_plus_plus 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22)",
+ "rho-pure-eval 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15)",
+ "rholang-parser",
+ "rspace_plus_plus 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15)",
  "serde",
  "serde_json",
- "shared 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22)",
+ "shared 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15)",
  "smallvec",
  "stacker",
  "tempfile",
@@ -5985,23 +5987,8 @@ source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14
 dependencies = [
  "bitvec",
  "nonempty-collections",
- "rholang-tree-sitter 0.1.2 (git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2)",
- "rholang-tree-sitter-proc-macro 0.1.2 (git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2)",
- "smallvec",
- "tree-sitter",
- "typed-arena",
- "validated",
-]
-
-[[package]]
-name = "rholang-parser"
-version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353#527af8afb37f6cad470516fe316076f120b9c353"
-dependencies = [
- "bitvec",
- "nonempty-collections",
- "rholang-tree-sitter 0.1.2 (git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353)",
- "rholang-tree-sitter-proc-macro 0.1.2 (git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353)",
+ "rholang-tree-sitter",
+ "rholang-tree-sitter-proc-macro",
  "smallvec",
  "tree-sitter",
  "typed-arena",
@@ -6018,34 +6005,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "rholang-tree-sitter"
-version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353#527af8afb37f6cad470516fe316076f120b9c353"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
-
-[[package]]
 name = "rholang-tree-sitter-proc-macro"
 version = "0.1.2"
 source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2#4e22339eca493c5ce3d14386c2af67af74bfffa2"
 dependencies = [
  "anyhow",
  "quote",
- "rholang-tree-sitter 0.1.2 (git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2)",
- "syn 2.0.119",
- "tree-sitter",
-]
-
-[[package]]
-name = "rholang-tree-sitter-proc-macro"
-version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353#527af8afb37f6cad470516fe316076f120b9c353"
-dependencies = [
- "anyhow",
- "quote",
- "rholang-tree-sitter 0.1.2 (git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353)",
+ "rholang-tree-sitter",
  "syn 2.0.119",
  "tree-sitter",
 ]
@@ -6146,7 +6112,7 @@ dependencies = [
  "prost 0.14.4",
  "rand 0.9.5",
  "rayon",
- "rholang-parser 0.1.0 (git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2)",
+ "rholang-parser",
  "rstest",
  "serde",
  "serde_json",
@@ -6164,7 +6130,7 @@ dependencies = [
 [[package]]
 name = "rspace_plus_plus"
 version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22#252a86d1dcf5ebffc0c39d17614c1256df9c3a22"
+source = "git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15#0ccc315d84b32d668e8db49cd56ba3c576693e15"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -6193,11 +6159,11 @@ dependencies = [
  "prost 0.14.4",
  "rand 0.9.5",
  "rayon",
- "rholang-parser 0.1.0 (git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353)",
+ "rholang-parser",
  "rstest",
  "serde",
  "serde_json",
- "shared 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22)",
+ "shared 0.1.0 (git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15)",
  "state",
  "tokio",
  "tracing",
@@ -6346,7 +6312,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6814,7 +6780,7 @@ dependencies = [
 [[package]]
 name = "shared"
 version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=252a86d1dcf5ebffc0c39d17614c1256df9c3a22#252a86d1dcf5ebffc0c39d17614c1256df9c3a22"
+source = "git+https://github.com/F1R3FLY-io/f1r3node-rust.git?rev=0ccc315d84b32d668e8db49cd56ba3c576693e15#0ccc315d84b32d668e8db49cd56ba3c576693e15"
 dependencies = [
  "axum 0.8.9",
  "bincode",
@@ -6828,6 +6794,7 @@ dependencies = [
  "indexmap 2.14.0",
  "lz4_flex",
  "metrics 0.23.1",
+ "num-bigint",
  "prost 0.14.4",
  "rand 0.9.5",
  "serde",
@@ -7267,7 +7234,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8263,18 +8230,6 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "utoipa"
-version = "5.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bde15df68e80b16c7d16b9616e80770ad158988daa56a27dccd1e55558b0160"
-dependencies = [
- "indexmap 2.14.0",
- "serde",
- "serde_json",
- "utoipa-gen 5.5.0",
-]
-
-[[package]]
-name = "utoipa"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8765fe27aeff71012a3f90fa474cf1df863a7d0dd81ed25de4e63fff2544994f"
@@ -8282,18 +8237,7 @@ dependencies = [
  "indexmap 2.14.0",
  "serde",
  "serde_json",
- "utoipa-gen 6.0.1",
-]
-
-[[package]]
-name = "utoipa-gen"
-version = "5.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ba0b99ee52df3028635d93840c797102da61f8a7bb3cf751032455895b52ef8"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
+ "utoipa-gen",
 ]
 
 [[package]]
@@ -8321,7 +8265,7 @@ dependencies = [
  "serde",
  "serde_json",
  "url",
- "utoipa 6.0.0",
+ "utoipa",
  "utoipa-swagger-ui-vendored",
  "zip 9.2.2",
 ]
@@ -8658,7 +8602,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

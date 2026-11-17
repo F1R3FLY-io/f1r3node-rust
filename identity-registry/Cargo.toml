@@ -14,7 +14,7 @@ models = { path = "../models" }
 blake2 = "0.10.6"
 clap = { version = "4", features = ["derive", "env"] }
 hex = { workspace = true }
-node_cli = { git = "https://github.com/F1R3FLY-io/rust-client.git", branch = "main" }
+node_cli = { git = "https://github.com/F1R3FLY-io/rust-client.git", branch = "dev" }
 prost = { workspace = true }
 rand = { workspace = true }
 secp256k1 = { version = "0.31.1", features = ["rand", "serde"] }
