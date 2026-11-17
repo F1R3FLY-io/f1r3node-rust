@@ -406,7 +406,14 @@ env:
   #   outcome when the read-only node finalizes it, so the capacity check no
   #   longer reads blocks the block-store GC pruned. Verified: descends from
   #   7673d5e; 616 unit tests pass.
-  SYSTEM_INTEGRATION_REF: 6afe9a0f80ad025f2dc3f9682d0d50855f3f0b7d
+  # 2026-11-17: 6afe9a0 -> 5717054 (system-integration main, PR #175 merged
+  #   through promotion #188). Keeps pytest from capturing the client's DEBUG
+  #   gRPC responses (the load driver's memory growth), runs a deploy queue in
+  #   front of every validator in the compose shards, and trims the unit
+  #   tests. Verified: descends from 6afe9a0 and contains #175's head 6df28f3;
+  #   588 unit tests pass; system-integration CI passed except the two compose
+  #   smoke jobs, which need a node image that ships the deploy-queue binary.
+  SYSTEM_INTEGRATION_REF: 5717054ba55437d86f05aef9f73c63ad37017d3f
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
