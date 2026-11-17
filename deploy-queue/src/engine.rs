@@ -463,24 +463,22 @@ impl Engine {
         let now_ms = now_millis();
         if deploy.data.is_expired_at(now_ms) {
             return Ok(Err(IntakeError::DeployExpired(format!(
-                "Deploy has expired: expirationTimestamp={:?} is in the past.",
+                "expirationTimestamp={:?} is in the past.",
                 deploy.data.expiration_timestamp
             ))));
         }
         let valid_after = deploy.data.valid_after_block_number;
-        let next_block = chain.tip + 1;
+        let next_block = chain.tip;
         if !window_open(valid_after, next_block, shard.deploy_lifespan) {
             return Ok(Err(IntakeError::DeployExpired(format!(
-                "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
+                "validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
                 valid_after, next_block, shard.deploy_lifespan
             ))));
         }
         if is_too_far_ahead(valid_after, chain.tip, shard.max_parent_depth) {
-            return Ok(Err(IntakeError::IllegalArgument(too_far_ahead_message(
-                valid_after,
-                chain.tip,
-                shard.max_parent_depth,
-            ))));
+            return Ok(Err(IntakeError::InvalidDeployWindow(
+                too_far_ahead_message(valid_after, chain.tip, shard.max_parent_depth),
+            )));
         }
 
         let depth = citable_depth(shard);

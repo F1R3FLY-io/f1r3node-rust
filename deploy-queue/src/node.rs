@@ -324,6 +324,41 @@ mod tests {
     }
 
     #[test]
+    fn node_pool_limit_refusals_retry_and_an_oversized_record_is_rejected() {
+        for kind in ["deploy_pool_busy", "deploy_admission_busy"] {
+            assert!(
+                matches!(
+                    classify_submit(StatusCode::SERVICE_UNAVAILABLE, &body(kind), None),
+                    SubmitOutcome::Retry { .. }
+                ),
+                "{kind}"
+            );
+        }
+        assert_eq!(
+            classify_submit(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                &body("deploy_too_large"),
+                None
+            ),
+            SubmitOutcome::Rejected {
+                kind: "deploy_too_large".to_string(),
+                message: "m".to_string()
+            }
+        );
+        assert_eq!(
+            classify_submit(
+                StatusCode::BAD_REQUEST,
+                &body("invalid_deploy_window"),
+                None
+            ),
+            SubmitOutcome::Rejected {
+                kind: "invalid_deploy_window".to_string(),
+                message: "m".to_string()
+            }
+        );
+    }
+
+    #[test]
     fn urls_keep_the_node_host_and_take_the_request_path() {
         let node = NodeHttp::new("http://validator:40403").unwrap();
         assert_eq!(

@@ -383,7 +383,7 @@ async fn refusals_follow_the_node_rules() {
     // Tip 100 plus the 25-height citable depth.
     assert!(matches!(
         accept(&queue.handle, deploy(126, "root", 8)).await,
-        Err(IntakeError::IllegalArgument(message)) if message.contains("highest accepted block number 125")
+        Err(IntakeError::InvalidDeployWindow(message)) if message.contains("highest accepted block number 125")
     ));
     accept(&queue.handle, deploy(125, "root", 9)).await.unwrap();
     let held = deploy(95, "root", 5);

@@ -36,8 +36,10 @@ pub enum IntakeError {
     IllegalArgument(String),
     #[error("{0}")]
     RholangBadTerm(String),
-    #[error("{0}")]
+    #[error("deploy_expired: {0}")]
     DeployExpired(String),
+    #[error("invalid_deploy_window: {0}")]
+    InvalidDeployWindow(String),
     #[error("Deploy already known: {}", hex::encode(.0))]
     Duplicate(Sig),
     #[error(
@@ -71,7 +73,8 @@ impl IntakeError {
         match self {
             IntakeError::IllegalArgument(_)
             | IntakeError::RholangBadTerm(_)
-            | IntakeError::DeployExpired(_) => StatusCode::BAD_REQUEST,
+            | IntakeError::DeployExpired(_)
+            | IntakeError::InvalidDeployWindow(_) => StatusCode::BAD_REQUEST,
             IntakeError::Duplicate(_) => StatusCode::CONFLICT,
             IntakeError::QueueFull { .. }
             | IntakeError::DeployerShareFull { .. }
@@ -86,6 +89,7 @@ impl IntakeError {
             IntakeError::IllegalArgument(_) => "illegal_argument",
             IntakeError::RholangBadTerm(_) => "rholang_bad_term",
             IntakeError::DeployExpired(_) => "deploy_expired",
+            IntakeError::InvalidDeployWindow(_) => "invalid_deploy_window",
             IntakeError::Duplicate(_) => "duplicate_deploy",
             IntakeError::QueueFull { .. } | IntakeError::DeployerShareFull { .. } => {
                 "deploy_queue_full"

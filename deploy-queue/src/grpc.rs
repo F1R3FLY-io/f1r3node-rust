@@ -118,6 +118,7 @@ impl DeployService for QueueGrpc {
                 error @ (IntakeError::IllegalArgument(_)
                 | IntakeError::RholangBadTerm(_)
                 | IntakeError::DeployExpired(_)
+                | IntakeError::InvalidDeployWindow(_)
                 | IntakeError::Duplicate(_)),
             ) => deploy_error(error.to_string()),
             Err(

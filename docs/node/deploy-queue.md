@@ -19,7 +19,7 @@ The queue applies the node's admission rules before it accepts a deploy. `validA
 block in the open window:
 
 - above `latestBlockNumber - deployLifespan`, or the deploy is expired (`deploy_expired`);
-- at most `latestBlockNumber + maxParentDepth`, or the deploy is refused (`illegal_argument`).
+- at most `latestBlockNumber + maxParentDepth`, or the deploy is refused (`invalid_deploy_window`).
 
 Read `latestBlockNumber`, `deployLifespan` and `maxParentDepth` from
 [`GET /api/status`](api-reference.md#get-apistatus).
@@ -28,7 +28,7 @@ Read `latestBlockNumber`, `deployLifespan` and `maxParentDepth` from
 
 | `error` | HTTP | gRPC | Cause | Client action |
 |---------|------|------|-------|---------------|
-| `invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `deploy_expired` | 400 | `ServiceError` in the response, as the node | The deploy is not valid | Correct the deploy |
+| `invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `deploy_expired`, `invalid_deploy_window` | 400 | `ServiceError` in the response, as the node; `deploy_expired` and `invalid_deploy_window` messages start with their kind | The deploy is not valid | Correct the deploy |
 | `duplicate_deploy` | 409 | `ServiceError` | The queue already holds this deploy | Read its status |
 | `deploy_queue_full` | 503 + `Retry-After` | `RESOURCE_EXHAUSTED` + `retry-after` metadata | At the validator's intake, the deploys ahead would keep this one out of a block until its window closes, or this deployer holds its full share of the queue | Wait for `Retry-After` seconds, sign the deploy again with a current `validAfterBlockNumber`, then send it |
 | `node_unavailable` | 503 + `Retry-After` | `UNAVAILABLE` + `retry-after` metadata | The queue is not connected to its node | Wait and send again |
