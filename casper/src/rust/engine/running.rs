@@ -942,11 +942,21 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
 
         let exporter = self.casper.get_history_exporter().await;
         let export_path = start_path.clone();
-        let export = tokio::task::spawn_blocking(move || {
+        let export = match tokio::task::spawn_blocking(move || {
             RSpaceExporterItems::get_history_and_data(exporter, export_path, skip, take)
         })
         .await
-        .map_err(|e| CasperError::RuntimeError(format!("State export task failed: {e}")))?;
+        {
+            Ok(export) => export,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    %peer,
+                    "State export task for StoreItemsMessageRequest failed; ignoring"
+                );
+                return Ok(());
+            }
+        };
 
         let (history, data) = match export {
             Ok(items) => items,

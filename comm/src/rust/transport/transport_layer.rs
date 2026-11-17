@@ -74,7 +74,7 @@ pub trait TransportLayer {
 
     async fn stream_mult(&self, peers: &[PeerNode], blob: &Blob) -> Result<(), CommError>;
 
-    fn queued_stream_bytes(&self) -> usize { 0 }
+    fn queued_stream_bytes(&self) -> usize;
 
     /// Disconnect from a peer, shutting down any gRPC channels
     async fn disconnect(&self, peer: &PeerNode) -> Result<(), CommError>;
@@ -399,6 +399,8 @@ mod tests {
 
     #[async_trait]
     impl TransportLayer for RefusingTransport {
+        fn queued_stream_bytes(&self) -> usize { 0 }
+
         async fn send(&self, _peer: &PeerNode, _msg: &Protocol) -> Result<(), CommError> { Ok(()) }
 
         async fn broadcast(&self, _peers: &[PeerNode], _msg: &Protocol) -> Result<(), CommError> {
