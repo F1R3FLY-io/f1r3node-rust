@@ -89,7 +89,10 @@ if [ -n "$EPHEMERAL_PORTS" ]; then
   echo "bench shard publishes host port(s) $EPHEMERAL_PORTS at or above the ephemeral floor $EPHEMERAL_FLOOR" >&2
   exit 2
 fi
-HTTP_PORT="$(jq -r '[.services.validator1.ports[]? | select(.target == 40403) | .published][0] // empty' \
+# validator1's deploy queue owns its HTTP port on the host and sends requests
+# for deploys it does not hold on to the validator.
+HTTP_PORT="$(jq -r '[(.services["deploy-queue1"], .services.validator1) | .ports[]?
+  | select(.target == 40403) | .published][0] // empty' \
   "$OUT_DIR/compose-config.json")"
 if ! [[ "$HTTP_PORT" =~ ^[0-9]+$ ]]; then
   # A shard without validator1 (the soak test fixtures) keeps the default
