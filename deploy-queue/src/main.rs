@@ -99,14 +99,22 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
         data_dir = %args.data_dir.display(),
         "deploy queue starting"
     );
-    let link = tokio::spawn(run_event_link(node_http, commands));
+    let mut link = tokio::spawn(run_event_link(node_http, commands));
     let engine = tokio::spawn(engine.run(command_receiver));
 
+    // The link ends cleanly only once the engine has stopped, so when both have
+    // ended the engine's own outcome is the one reported.
     let outcome: Result<(), Box<dyn std::error::Error + Send + Sync>> = tokio::select! {
+        biased;
         served = grpc_server => served.map_err(Into::into),
         served = http_server => served.map_err(Into::into),
         stopped = engine => match stopped {
             Ok(Ok(())) => Err("deploy queue engine stopped".into()),
+            Ok(Err(e)) => Err(e.into()),
+            Err(e) => Err(e.into()),
+        },
+        linked = &mut link => match linked {
+            Ok(Ok(())) => Err("node event link stopped".into()),
             Ok(Err(e)) => Err(e.into()),
             Err(e) => Err(e.into()),
         },

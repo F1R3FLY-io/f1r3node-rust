@@ -79,6 +79,8 @@ fn status_body(tip: i64, lfb: i64) -> Value {
         "deployLifespan": 50,
         "maxUserDeploysPerBlock": 4,
         "maxParentDepth": 25,
+        "isValidator": true,
+        "isReadOnly": false,
     })
 }
 
@@ -138,7 +140,14 @@ impl Queue {
         let engine = Engine::new(store, node.clone(), commands.clone()).unwrap();
         let tasks = vec![
             tokio::spawn(async move { engine.run(receiver).await.unwrap() }),
-            tokio::spawn(run_event_link(node, commands.clone())),
+            tokio::spawn({
+                let commands = commands.clone();
+                async move {
+                    run_event_link(node, commands)
+                        .await
+                        .expect("the stand-in node fronts a validator")
+                }
+            }),
         ];
         let queue = Self {
             handle: EngineHandle::new(commands),

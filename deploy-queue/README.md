@@ -11,8 +11,9 @@ The states a client reads, the refusals and the client endpoints are in
 
 ## Validator and shard
 
-Deploys never gossip: only the validator a queue fronts can include that queue's deploys. The queue learns
-everything else from the node's event stream:
+Deploys never gossip: only the validator a queue fronts can include that queue's deploys. On every connect the
+queue reads the node's status and stops when the node is read-only or has no validator key, since such a node
+can never include a deploy. The queue learns everything else from the node's event stream:
 
 - **The validator.** Each `block-created` event carries the block's deploys and the block creator's
   `deploy-admission`: the most fresh deploys the block could take (`cap`), what set the cap, and whether the node

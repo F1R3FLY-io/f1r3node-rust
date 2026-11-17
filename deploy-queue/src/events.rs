@@ -155,12 +155,19 @@ pub fn parse_event(text: &str) -> Result<NodeEvent, serde_json::Error> {
     })
 }
 
+/// The node the queue fronts can never include a deploy.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}; a deploy queue must front a validator")]
+pub struct NotAValidator(String);
+
 #[derive(Debug, thiserror::Error)]
 enum LinkError {
     #[error("websocket: {0}")]
     WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
     #[error("node status: {0}")]
     Status(String),
+    #[error(transparent)]
+    NotAValidator(#[from] NotAValidator),
     #[error("deploy queue engine has stopped")]
     EngineStopped,
 }
@@ -168,19 +175,24 @@ enum LinkError {
 /// Holds one event subscription to the node for the life of the process,
 /// reconnecting with backoff. Each connection subscribes first and reads the
 /// node's status second, so no event between the two is missed; the engine
-/// resynchronizes its in-flight deploys on every connect.
-pub async fn run_event_link(node: NodeHttp, commands: mpsc::Sender<Command>) {
+/// resynchronizes its in-flight deploys on every connect. Ends with `Err`
+/// when the node is not a validator.
+pub async fn run_event_link(
+    node: NodeHttp,
+    commands: mpsc::Sender<Command>,
+) -> Result<(), NotAValidator> {
     let mut delay = RECONNECT_FLOOR;
     loop {
         match link_once(&node, &commands, &mut delay).await {
             Ok(()) => tracing::warn!(target: "deploy_queue::link", "node closed the event stream"),
-            Err(LinkError::EngineStopped) => return,
+            Err(LinkError::EngineStopped) => return Ok(()),
+            Err(LinkError::NotAValidator(e)) => return Err(e),
             Err(e) => {
                 tracing::warn!(target: "deploy_queue::link", error = %e, "node event link failed")
             }
         }
         if commands.send(Command::Disconnected).await.is_err() {
-            return;
+            return Ok(());
         }
         metrics::counter!("deploy_queue.node_link_reconnects").increment(1);
         tokio::time::sleep(delay).await;
@@ -233,6 +245,7 @@ async fn announce(node: &NodeHttp, commands: &mpsc::Sender<Command>) -> Result<b
         .status()
         .await
         .map_err(|e| LinkError::Status(e.to_string()))?;
+    status.fronts_a_validator().map_err(NotAValidator)?;
     let Some(chain) = status.chain().map_err(LinkError::Status)? else {
         tracing::info!(target: "deploy_queue::link", "node is not running casper yet; waiting for it");
         return Ok(false);

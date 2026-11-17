@@ -11,8 +11,10 @@ use common::{deploy, eventually, finalized_verdict, FakeNode, Queue};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
-use deploy_queue::engine::{FinalityHold, QueueSnapshot};
+use deploy_queue::engine::{FinalityHold, QueueSnapshot, COMMAND_BUFFER};
 use deploy_queue::error::{Congestion, IntakeError};
+use deploy_queue::events::run_event_link;
+use deploy_queue::node::NodeHttp;
 use deploy_queue::record::QueueState;
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::deploy_window::last_includable_block;
@@ -797,4 +799,28 @@ async fn a_decided_deploy_keeps_its_record_on_disk_without_its_payload() {
     assert_eq!(store.load().unwrap().len(), 2);
     assert_eq!(store.payload(&decided).unwrap(), None);
     assert!(store.payload(&held).unwrap().is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_link_stops_in_front_of_a_node_that_is_not_a_validator() {
+    for (is_validator, is_read_only) in [(false, false), (true, true)] {
+        let node = FakeNode::new(10, 8);
+        {
+            let mut status = node.status.lock().unwrap();
+            status["isValidator"] = json!(is_validator);
+            status["isReadOnly"] = json!(is_read_only);
+        }
+        let url = node.serve().await;
+        let (commands, _engine_side) = tokio::sync::mpsc::channel(COMMAND_BUFFER);
+        let linked = tokio::time::timeout(
+            Duration::from_secs(10),
+            run_event_link(NodeHttp::new(&url).unwrap(), commands),
+        )
+        .await
+        .expect("the link stops instead of retrying");
+        assert!(
+            linked.is_err(),
+            "isValidator {is_validator}, isReadOnly {is_read_only}"
+        );
+    }
 }

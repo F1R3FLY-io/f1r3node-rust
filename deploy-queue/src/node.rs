@@ -53,9 +53,25 @@ pub struct NodeStatus {
     pub max_user_deploys_per_block: Option<u32>,
     #[serde(rename = "maxParentDepth")]
     pub max_parent_depth: Option<i32>,
+    #[serde(rename = "isValidator")]
+    pub is_validator: bool,
+    #[serde(rename = "isReadOnly")]
+    pub is_read_only: bool,
 }
 
 impl NodeStatus {
+    /// `Err` naming why the node can never include a deploy: it runs read-only
+    /// or has no validator key. Both are fixed by the node's configuration.
+    pub fn fronts_a_validator(&self) -> Result<(), String> {
+        if self.is_read_only {
+            return Err("the node is read-only".to_string());
+        }
+        if !self.is_validator {
+            return Err("the node has no validator key".to_string());
+        }
+        Ok(())
+    }
+
     /// The snapshot, once casper is up and has finalized at least genesis.
     /// `Err` for values no running shard can hold.
     pub fn chain(&self) -> Result<Option<ChainSnapshot>, String> {
@@ -374,7 +390,8 @@ mod tests {
         let status: NodeStatus = serde_json::from_str(
             r#"{"shardId":"root","minPhloPrice":"1","lastFinalizedBlockNumber":-1,
                 "latestBlockNumber":null,"deployLifespan":null,
-                "maxUserDeploysPerBlock":null,"maxParentDepth":null}"#,
+                "maxUserDeploysPerBlock":null,"maxParentDepth":null,
+                "isValidator":true,"isReadOnly":false}"#,
         )
         .unwrap();
         assert_eq!(status.chain(), Ok(None));
@@ -382,7 +399,8 @@ mod tests {
         let status: NodeStatus = serde_json::from_str(
             r#"{"shardId":"root","minPhloPrice":"1","lastFinalizedBlockNumber":40,
                 "latestBlockNumber":43,"deployLifespan":300,
-                "maxUserDeploysPerBlock":4,"maxParentDepth":25}"#,
+                "maxUserDeploysPerBlock":4,"maxParentDepth":25,
+                "isValidator":true,"isReadOnly":false}"#,
         )
         .unwrap();
         let chain = status.chain().unwrap().unwrap();
@@ -395,10 +413,34 @@ mod tests {
         let status: NodeStatus = serde_json::from_str(&format!(
             r#"{{"shardId":"root","minPhloPrice":"1","lastFinalizedBlockNumber":40,
                 "latestBlockNumber":43,"deployLifespan":300,
-                "maxUserDeploysPerBlock":4,"maxParentDepth":{}}}"#,
+                "maxUserDeploysPerBlock":4,"maxParentDepth":{},
+                "isValidator":true,"isReadOnly":false}}"#,
             i32::MAX
         ))
         .unwrap();
         assert!(status.chain().is_err());
+    }
+
+    #[test]
+    fn only_a_writable_node_with_a_validator_key_fronts_a_validator() {
+        let status = |is_validator: bool, is_read_only: bool| -> NodeStatus {
+            serde_json::from_str(&format!(
+                r#"{{"shardId":"root","minPhloPrice":"1","lastFinalizedBlockNumber":40,
+                    "latestBlockNumber":43,"deployLifespan":300,
+                    "maxUserDeploysPerBlock":4,"maxParentDepth":25,
+                    "isValidator":{},"isReadOnly":{}}}"#,
+                is_validator, is_read_only
+            ))
+            .unwrap()
+        };
+        assert_eq!(status(true, false).fronts_a_validator(), Ok(()));
+        assert_eq!(
+            status(false, false).fronts_a_validator(),
+            Err("the node has no validator key".to_string())
+        );
+        assert_eq!(
+            status(false, true).fronts_a_validator(),
+            Err("the node is read-only".to_string())
+        );
     }
 }

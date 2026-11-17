@@ -10,6 +10,11 @@ validator takes deploys into its blocks. How the queue decides is in the
 | 40401 | gRPC | `DeployService.doDeploy`, `DeployService.deployFinalizationStatus` for a held deploy, `deployqueue.v1.DeployQueue.watchDeploys` | Every other `DeployService` call |
 | 40403 | HTTP | `POST /api/deploy`, `POST /api/v1/deploy`, `GET /api/deploy-finalization-status/{sig}`, `GET /ws/deploys`, `GET /ws/events`, `GET /queue/status`, `GET /queue/metrics` | Every other path |
 
+A queue fronts a validator only. Each time it connects to its node it reads
+[`GET /api/status`](api-reference.md#get-apistatus), and it stops with an error when the node is read-only
+(`isReadOnly`) or has no validator key (`isValidator`). A validator that is not bonded creates no blocks, so its
+queue refuses deploys with `deploy_queue_full` once a citable depth passes without one.
+
 ## Submitting a deploy
 
 The request is the node's [`POST /api/deploy`](api-reference.md#post-apideploy) body or the gRPC `doDeploy`
