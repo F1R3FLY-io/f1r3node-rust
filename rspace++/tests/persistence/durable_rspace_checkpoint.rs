@@ -201,12 +201,12 @@ pub(super) struct Observed {
 }
 
 #[derive(Default)]
-struct Segment {
-    admitted: Vec<(Operation, Option<Receive>)>,
-    left_out: u32,
-    comms_by_produce: u32,
-    comms_by_consume: u32,
-    comms_on_contents_of_an_earlier_checkpoint: u32,
+pub(super) struct Segment {
+    pub(super) admitted: Vec<(Operation, Option<Receive>)>,
+    pub(super) left_out: u32,
+    pub(super) comms_by_produce: u32,
+    pub(super) comms_by_consume: u32,
+    pub(super) comms_on_contents_of_an_earlier_checkpoint: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -347,7 +347,11 @@ pub(super) fn produce(channel_name: &str, value_name: &str) -> Operation {
     }
 }
 
-pub fn consume(channel_names: &[&str], pattern_names: &[&str], body_name: &str) -> Operation {
+pub(super) fn consume(
+    channel_names: &[&str],
+    pattern_names: &[&str],
+    body_name: &str,
+) -> Operation {
     assert_eq!(channel_names.len(), pattern_names.len(), "a receive names one pattern per channel");
     Operation::Consume(Receive::new(
         group_of(channel_names),
@@ -356,7 +360,9 @@ pub fn consume(channel_names: &[&str], pattern_names: &[&str], body_name: &str) 
     ))
 }
 
-fn matcher() -> Arc<Box<dyn Match<String, String, String>>> { Arc::new(Box::new(EqualStrings)) }
+pub(super) fn matcher() -> Arc<Box<dyn Match<String, String, String>>> {
+    Arc::new(Box::new(EqualStrings))
+}
 
 pub(super) fn first_poll<T>(operation: impl Future<Output = T>) -> T {
     let mut operation = std::pin::pin!(tokio::task::unconstrained(operation));
@@ -440,7 +446,7 @@ fn fired_receive(
     fired
 }
 
-fn perform<S: ISpace<String, String, String, String>>(
+pub(super) fn perform<S: ISpace<String, String, String, String>>(
     space: &S,
     operation: Operation,
 ) -> Option<Receive> {
@@ -475,7 +481,7 @@ pub(super) fn run(view: &Space, contents: &mut Contents, operations: &[Operation
     }
 }
 
-fn observe(
+pub(super) fn observe(
     data_on: impl Fn(&String) -> Vec<Datum<String>>,
     receives_on: impl Fn(&[String]) -> Vec<WaitingContinuation<String, String>>,
     joins_of: impl Fn(&String) -> Vec<Vec<String>>,
@@ -573,7 +579,7 @@ fn single_view_roots(segments: &[&[Operation]]) -> Vec<Blake2b256Hash> {
         .collect()
 }
 
-fn admit(contents: &mut Contents, operations: &[Operation]) -> Segment {
+pub(super) fn admit(contents: &mut Contents, operations: &[Operation]) -> Segment {
     let mut segment = Segment {
         admitted: Vec::with_capacity(operations.len()),
         ..Segment::default()
@@ -770,7 +776,7 @@ fn check_trace(trace: &[Vec<Operation>]) -> Result<Coverage, TestCaseError> {
     Ok(coverage)
 }
 
-fn seeded_traces() -> [Vec<Vec<Operation>>; 3] {
+pub(super) fn seeded_traces() -> [Vec<Vec<Operation>>; 3] {
     [
         vec![
             vec![
@@ -815,7 +821,7 @@ fn generated_operations() -> impl Strategy<Value = Operation> {
     ]
 }
 
-fn generated_traces() -> impl Strategy<Value = Vec<Vec<Operation>>> {
+pub(super) fn generated_traces() -> impl Strategy<Value = Vec<Vec<Operation>>> {
     prop::collection::vec(
         prop::collection::vec(generated_operations(), 0..=MAX_OPERATIONS),
         1..=MAX_SEGMENTS,
@@ -916,7 +922,7 @@ async fn checkpoint_under_the_held_view_gate(authority: Arc<RSpaceStateAuthority
     assert_eq!(observe_root(&slot, &next.root), expected(&contents));
 }
 
-fn finish_under_the_gate_watchdog(trial: impl FnOnce() + Send + 'static) {
+pub(super) fn finish_under_the_gate_watchdog(trial: impl FnOnce() + Send + 'static) {
     let (finished_sender, finished_receiver) = mpsc::channel();
     let runtime_thread = std::thread::spawn(move || {
         trial();
@@ -947,7 +953,7 @@ fn a_hard_checkpoint_under_the_held_view_gate_and_owner_mutex_completes() {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OwnerExit {
+pub(super) enum OwnerExit {
     SameBaseEmptyJournal,
     SameBasePublication,
     CrossBaseEmptyJournal,
@@ -957,7 +963,7 @@ enum OwnerExit {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RacedProduce {
+pub(super) enum RacedProduce {
     WaitedForTheGate,
     RanOnTheSupersededStore,
 }
@@ -972,7 +978,7 @@ struct RacedInstallation {
     next_root: Observed,
 }
 
-fn exit_taken(
+pub(super) fn exit_taken(
     base: &Blake2b256Hash,
     current: &Blake2b256Hash,
     answered: &Blake2b256Hash,

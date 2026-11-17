@@ -7930,10 +7930,10 @@ that no test binds.
 | `StaleIncarnationRefused`, `NeverRefusedRetainedIncarnation` | OG-06 and OG-07 | G07, in [owner incarnations](#durable-owner-incarnations-and-close-2026-11-01) |
 | `PermitProvenance`, `NoViewMutationWhilePending` | OG-09 | G08, in [checkpoint views](#durable-owner-checkpoint-views-under-caller-held-permits-2026-11-01) |
 | `CapturedPredecessorIsOwnerRoot` | OG-10 | G08, in the same section |
-| `PublishedSuccessorIsOfViewBase`, `NeverPublishedAcrossBases` | XB-01, whose seeded scenarios must publish from another base, and OG-42 | Task 14349, in [cross-base view checkpoint](#cross-base-view-checkpoint-through-the-durable-owner-2026-11-12); leaf G15, `rspace-hard-checkpoint-durable-wiring` (task 12424), adds OG-42 on the hard checkpoint path, in [durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13) |
+| `PublishedSuccessorIsOfViewBase`, `NeverPublishedAcrossBases` | XB-01, whose seeded scenarios must publish from another base, OG-42 and OG-32 | Task 14349, in [cross-base view checkpoint](#cross-base-view-checkpoint-through-the-durable-owner-2026-11-12); leaf G15, `rspace-hard-checkpoint-durable-wiring` (task 12424), adds OG-42 on the hard checkpoint path, in [durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13); leaf G16, `rspace-replay-checkpoint-durable-wiring` (task 12425), adds OG-32 on the replay hard checkpoint path, in [durable replay checkpoint](#durable-replay-checkpoint-through-the-owner-2026-11-17) |
 | `OwnerRootIsLastPublication` | OG-43 | Leaf G17, `rspace-reset-durable-wiring` (task 12426), in [durable reset and clear](#durable-reset-and-clear-as-view-local-operations-2026-11-17) |
 | `LockOrder` | OG-11 and OG-31 | G08, in the same section; leaf G15 (task 12424) adds OG-31 on the hard checkpoint path, in [durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13) |
-| `NoViewOperationOnSupersededStore`, `NeverInstalledAnswer` | OG-47 | Leaf G15, `rspace-hard-checkpoint-durable-wiring` (task 12424), in [durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13) |
+| `NoViewOperationOnSupersededStore`, `NeverInstalledAnswer` | OG-47 and OG-48 | Leaf G15, `rspace-hard-checkpoint-durable-wiring` (task 12424), in [durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13); leaf G16, `rspace-replay-checkpoint-durable-wiring` (task 12425), adds OG-48 on the replay hard checkpoint path, in [durable replay checkpoint](#durable-replay-checkpoint-through-the-owner-2026-11-17) |
 | `AckOnce` | JO-13 | G08 migrated the owner's acknowledgement tests |
 | `SpawnSharesOwner` | None yet | Leaf G19, `rspace-spawn-durable-attachment`, adds its row when spawn attaches through the owner |
 | `PendingResolves`, `NeverReconciledByOtherView` | None yet | The owner's handling of another view's record is decided with the view layer, as the row for `ReconcileFirst` in the checkpoint views section records |
@@ -11542,10 +11542,12 @@ of a state that the runtime itself reached.
 
 **Not in this slice.**
 
-- `RSpace::create_with_replay` asks the repository for a history reader at
+- `RSpace::create_with_replay` asked the repository for a history reader at
   its root, which the durable repository refuses with
-  `HistoryError::BackendMismatch(History)`, so in durable mode it returns
-  that refusal. This slice does not change it.
+  `HistoryError::BackendMismatch(History)`, so in durable mode it returned
+  that refusal. This slice does not change it; the
+  [durable replay checkpoint](#durable-replay-checkpoint-through-the-owner-2026-11-17)
+  section does.
 - The backend does not create a missing directory; `Directory` refuses it.
 - The lazy readers keep their default limits, and
   `DurableViewReaderV1::with_limits` stays test-only.
@@ -14012,9 +14014,11 @@ contents.
 - The reset and the spawn of a durable space, and the soft-checkpoint
   revert: tasks `rspace-reset-durable-wiring`,
   `rspace-spawn-durable-attachment` and `rspace-soft-revert-durable-rebase`.
-  The replay space's hard checkpoint is not routed through the owner either
-  (task `rspace-replay-checkpoint-durable-wiring`): OG-30 publishes the
-  replay's journal through the twin's owner directly. Each of these, when
+  The replay space's hard checkpoint is routed through the owner in the
+  [durable replay checkpoint](#durable-replay-checkpoint-through-the-owner-2026-11-17)
+  section (task `rspace-replay-checkpoint-durable-wiring`), while OG-30
+  still publishes its replay's journal through the twin's owner directly.
+  Each of these, when
   it is routed through the owner, has to install the owner's answer under
   the permit that the owner hands back, as the hard checkpoint does.
 - The operations that take no gate. `get_data`, `get_waiting_continuations`,
@@ -14684,6 +14688,283 @@ table of faults of the
 [view gates](#view-gates-owner-mutex-and-incarnations-2026-11-01) section
 records.
 
+### Durable replay checkpoint through the owner (2026-11-17)
+
+Task 12425, leaf G16 `rspace-replay-checkpoint-durable-wiring`, routes the
+hard checkpoint of a replay space whose store prefix selected the durable
+backend through the durable owner, as the
+[durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13)
+section routes that of a play space, and lets `RSpace::create_with_replay`
+build a play space and a replay space over a durable store. Before it,
+`create_with_replay` asked the durable repository for a history reader at
+its root and returned the refusal `HistoryError::BackendMismatch(History)`,
+and a replay space built by hand with `create_history_repo` and
+`ReplayRSpace::apply` reached the repository's `checkpoint`, which refuses
+in the same way. No durable replay space could take a hard checkpoint, so
+OG-30 replays an event log on a twin store and publishes the replay's
+journal by calling the owner itself. Now `ISpace::create_checkpoint` of a
+replay space in
+[`replay_rspace.rs`](../../../rspace++/src/rspace/replay_rspace.rs) hands
+its journal to the owner through a `DurableViewV1`, as the play space does,
+and continues from the state that the owner returns. This section uses the
+terms of the durable hard checkpoint section and of the sections it builds
+on: the view gate, the owner mutex, the base $`X`$, the journal $`J`$, the
+successor $`X + J`$ and the exits of the owner.
+
+No persisted byte, record kind, root, identity or wire message changes, and
+the crate gains no dependency. Over an LMDB or in-memory store,
+`create_with_replay` runs the same statements as before, and
+`create_checkpoint` of a replay space tests one `Option` field and then
+takes the legacy path.
+
+**Terms.**
+
+| Term | Meaning |
+|---|---|
+| Durable pair | The play space and the replay space that `RSpace::create_with_replay` returns for an `RSpaceStore` whose authority answers `route()` with `AuthorityRouteV1::Durable`. Each space holds its own view of the same owner slot. |
+| Durable replay space | A `ReplayRSpace` that holds a `DurableViewV1`. In this task it is the replay space of a durable pair. |
+| Rigged log | The event log that `rig` hands to a replay space. `rig` keys each COMM of the log by the consume and the produce events that it names and that the log holds. |
+| Replay data | The COMMs of the rigged log that the replay has not used yet, under their keys. A replay operation whose event is a key fires only a COMM recorded under that key, and a COMM that fires is removed from the replay data. |
+| Produce counter | For each produce event, the number of non-persistent produces with that event since the counter was last cleared. A COMM that the play records names this count for the produce of every datum that it consumes, and the replay fires the COMM only when its own count is the same. |
+
+**How a durable pair is built.** `create_with_replay` asks the store's
+authority for its route. On the durable route it calls
+`create_durable_view`, the function that `RSpace::create` calls for its one
+space, once for each space. Each call takes the backend's owner slot, builds
+a `DurableHistoryRepositoryV1` over the slot's published core and calls
+`view_at` with the repository's root, which pins that state and returns its
+`ViewBaseV1` with a lazily filled hot store. The first result becomes the
+play space, built by `apply` with its view as `create` builds it, so the
+play space of a durable pair is a durable space in the sense of the durable
+hard checkpoint section. The second result becomes the replay space, built
+by `ReplayRSpace::apply_with_logger` with a `BasicLogger`, as before, and
+given its view by `with_durable_view`. The two spaces share the owner slot
+and nothing else: each has its own repository object, hot store, view gate
+and base, where the legacy route gives both spaces one repository object.
+Both start at the published state. Every other route runs the legacy
+statements, which follow unchanged.
+
+**The replay hard checkpoint.** `create_checkpoint` of a replay space that
+holds a view runs `create_durable_checkpoint`:
+
+```text
+create_durable_checkpoint(view):
+  permit ← write_owned(operation_gate)        -- the replay space's view gate, as an owned write permit
+  check_replay_data()                          -- a COMM of the rigged log left unused refuses here
+  hot    ← the replay space's hot store
+  (root, permit) ← view.checkpoint(permit, gate, hot)
+                                               -- the owner mutex is locked around the owner call only;
+                                               -- a refusal returns here and nothing below runs
+  (base′, store′) ← view.view_at(root)        -- the reached state, pinned, as a new base and store
+  history ← history.reset(root)
+  log     ← take the event log; clear the produce counter
+  install store′
+  view.record_base(base′)
+  restore the installed continuations
+  release(permit)                              -- the view gate is free only now
+  return Checkpoint { root, log }
+```
+
+The three calls of the view are the landed `DurableViewV1::checkpoint`,
+`view_at` and `record_base`, used as they are. `checkpoint` reads the
+recorded base, locks the owner mutex, calls `checkpoint_view_from_base` with
+the slot's `ViewCheckpointLimitsV1`, unlocks the mutex and returns the
+answered root with the permit, and every exit of the owner that answers a
+state leads to the same installation. The statements differ from those of
+the play space's `create_durable_checkpoint` in three points, each of them
+the replay space's own.
+
+1. `check_replay_data` runs first, under the permit, as on the legacy path.
+   A replay that left a COMM of its rigged log unused is refused with
+   `RSpaceError::BugFoundError("Unused COMM event: replayData multimap has
+   N elements left")` before the owner is called, so nothing is published
+   and nothing of the space changes. Because the check runs under the
+   permit, no gated operation of the space can change its store between the
+   check and the owner's capture.
+2. The event log is taken and returned. Replay operations append nothing to
+   it, so it is empty in every replay flow, and `Checkpoint.log` is the
+   empty log that the legacy replay checkpoint returns.
+3. The produce counter is cleared, where the legacy replay checkpoint keeps
+   it. The play space clears its counter at every hard checkpoint, so a COMM
+   that the play records after a checkpoint names counts that start from
+   zero there. A legacy replay space is reset before it replays the next
+   log, and the reset clears its counter. A durable replay space continues
+   from its own hard checkpoint, because its reset is not routed through the
+   owner yet, and it fires the COMM of a datum that was produced before that
+   checkpoint only if it cleared its counter at the same point as the play.
+   Red control 4 below shows the failure without the clearing.
+
+The replay space has no cache of retained-set automata, so the step of the
+play space that clears that cache has no counterpart.
+
+The steps of one segment of OG-32's traces, with the three replay spaces
+that replay the play's event log:
+
+```text
+  the play space of the played pair runs the segment and takes a hard checkpoint: root R, event log L
+                                                   │ L
+               ┌───────────────────────────────────┼───────────────────────────────────┐
+               ▼                                   ▼                                   ▼
+   replay space of the played         replay space of the              replay space of the overtaken
+   pair: its base is the state        independent pair: its base       pair: its base is superseded
+   that R has just superseded         is the published state           by a datum of its own play space
+               │                                   │                                   │
+               ▼                                   ▼                                   ▼
+               R                                   R                                   R
+```
+
+Each replay space rigs $`L`$, runs the admitted operations with the play's
+effects, uses every COMM of $`L`$ and takes a hard checkpoint, which returns
+$`R`$. The replay space of the played pair is answered without a publication,
+because the play space has just published the same transition. The replay
+space of the independent pair publishes from the published state. The
+replay space of the overtaken pair publishes from a superseded base: the
+difference walk turns the other state back into the base on every path
+where they differ, so the owner publishes the successor of the replay's own
+base, which reads the play's contents and has the play's root.
+
+**Installation under the permit.** The installation keeps the permit that
+the owner hands back until its last statement, bound as `_operation_guard`,
+for the reason and with the outcomes that the durable hard checkpoint
+section states: a state comes back with the permit, a refusal drops the
+permit with nothing installed, and an error that leaves a pending record
+keeps it in the record. The argument by reduction of that section carries
+over to the replay space. Every operation of a replay space that writes its
+state takes the view gate first: `produce`, `consume`, `install`,
+`remove_all_data` and `remove_all_continuations` for reading, and `reset`,
+`clear`, `create_soft_checkpoint`, `take_event_log`,
+`revert_to_soft_checkpoint` and the hard checkpoint for writing. Outside the
+space the installation reads only the reached state, through the owner's
+published core. The operations that take no gate are those that take none
+on the legacy path: `get_data`, `get_waiting_continuations`, `get_joins`,
+`get_root`, `to_map`, `rig`, `check_replay_data`, `update_produce` and
+`spawn`. A replay operation appends no event to the event log, and from the
+owned permit to the return of the checkpoint every gated operation of the
+space waits, so no order of two operations of one replay space leaves an
+event in a log with its effect in no published state. OG-48 checks the
+window between the owner's answer and the installation at six exits of the
+owner.
+
+**Refusals.** A refusal of the owner becomes an `RSpaceError` as it does for
+the play space: a journal refusal stays the journal's error, a root refusal
+becomes `HistoryError::RootError`, and every other refusal becomes
+`HistoryError::ActionError` with the refusal's text, for example `the
+durable owner refused the view checkpoint: Closed`. The replay's own
+refusal, `BugFoundError` for an unused COMM, comes before the owner call. A
+refused replay checkpoint returns before any installation statement, so the
+space keeps its repository, hot store, contents, base, event log, produce
+counter and replay data. A durable replay space that `create_with_replay`
+did not build, such as one built by `create_history_repo` and
+`ReplayRSpace::apply`, holds no view and keeps the refusal
+`BackendMismatch(History)`.
+
+**Cost.** Above the owner's own work, a durable replay checkpoint costs the
+`check_replay_data` of the legacy path, one lock of the base, one `view_at`
+and the installation steps. No state is enumerated: the new hot store reads
+the durable state on demand.
+
+| ID | Required property | Test |
+|---|---|---|
+| OG-32 | Durable replay of the play's event log at every checkpoint. The traces of OG-30, three seeded and 24 generated, and one fixed trace that returns to an earlier state run on the play space of a durable pair, which takes a hard checkpoint after each segment. After each checkpoint three durable replay spaces replay the play's event log, each continuing from its own previous checkpoint: the replay space of the same pair, whose base the play has just superseded; the replay space of a second pair, whose base is the published state of its store; and the replay space of a third pair, whose play space has just published one more datum on a channel outside the traces, so that the replay's base is superseded by a state that is not the play's. Each replay rigs the log, every admitted operation has the play's effect on it, it uses every COMM of the log, and its hard checkpoint returns the play's root with an empty event log. Its repository is then at that root, and the contents read at the root on its store, and the replay space's own contents, equal the model's, so the three replays agree with each other and with the play. The exit of the owner is identified as in OG-47. On the seeded traces it is the exit that the three bases imply: for a segment that moves the root, the current state answered to the base that the play has just superseded (by the code from the owner's memo, before the difference walk, as red control 1 confirms), a publication from the published state and a publication from the superseded base; for a segment that does not, an empty journal at the published state, twice, and an empty journal at the superseded base. On the trace that returns to an earlier state, which repeats a transition that the owner has memoised, at least one replay checkpoint is answered at another exit than the play's segment implies, and every root is still the play's. The seeded traces cover a replayed COMM by a produce, by a consume and on contents of an earlier checkpoint, and each of those five exits. Last, a play stores a continuation and a datum that its pattern refuses, and a COMM that pairs them is added to the play's event log. A replay space of another pair runs the same operations on the altered log; its hard checkpoint is refused with `BugFoundError("Unused COMM event: replayData multimap has 2 elements left")`, writes no store file, and keeps the published state, the replay space's root and its contents. The same replay space then rigs the unaltered log and publishes the play's root. Nothing is compared with LMDB mode. | `a_durable_replay_returns_the_plays_root_at_every_checkpoint` |
+| OG-48 | Installation under the held view gate of a replay space at every owner exit. OG-47's six scenarios run on the replay space of a durable pair, on a runtime with two worker threads: the pair's play space publishes the states that put the replay space's base behind, and the replay space stores the journal without replay data. In each scenario, after the owner has answered the replay checkpoint and before the replay space installs the answer, a produce of the same replay space is started on a worker thread and polled once. That poll is pending at every exit: the produce waits for the view gate. The exit is identified as in OG-47 and is the one that the scenario names. After the replay checkpoint has returned, the produce completes without a COMM, the replay space reads the journal's contents with the produce's datum, its next hard checkpoint returns an empty event log, and the state that this checkpoint returns reads the same contents. The six scenarios complete within 30 seconds, under the watchdog of OG-47. | `a_concurrent_replay_operation_waits_until_every_owner_exit_is_installed` |
+
+Two more tests bind no ID.
+`create_with_replay_builds_a_durable_pair_and_both_spaces_checkpoint`
+builds a durable pair with `RSpace::create_with_replay` and shows that both
+spaces start at the published state. In each of two segments, the second of
+which fires a COMM on the continuation that the first stored, the play space
+takes a hard checkpoint and publishes its root, and the replay space replays
+the play's event log and returns the same root: its base is superseded,
+and the owner answers the current state, by the code from its memo,
+without moving the published state or writing a store file.
+`a_refused_durable_replay_checkpoint_is_a_typed_error_and_changes_nothing`
+closes the owner and shows that the replay space's next hard checkpoint
+returns the typed error above, writes no store file, and keeps the published
+state, the root of the replay space's repository and its contents. It also
+shows that a durable replay space built by `create_history_repo` and
+`ReplayRSpace::apply` keeps the refusal `BackendMismatch(History)`.
+
+**Not covered.**
+
+- The reset of a durable replay space, with `rig_and_reset` and `clear`
+  (task `rspace-replay-reset-durable-wiring`), its spawn (task
+  `rspace-spawn-durable-attachment`), and its soft checkpoint and revert are
+  not routed through the owner by this task. A durable replay space
+  therefore continues from its own hard checkpoints, and OG-32 replays the
+  logs of a trace one after the other on the same replay spaces.
+- `ReportingRspace::create` builds its replay space with
+  `create_history_repo` and its own `apply`, so that space holds no view.
+  Its hard checkpoint, to which `ReportingRspace::create_checkpoint`
+  delegates, keeps the refusal `BackendMismatch(History)` in durable mode.
+- The traces use non-persistent produces and consumes without peeks, and
+  the model leaves out every operation that has a choice, as in OG-30.
+- The operations that take no gate, and a failure of `view_at` or of the
+  repository reset after the owner has published, as for the play space.
+
+**Red controls.** A red control puts one fault into the wiring. The tests
+that state the faulted property must then fail, and every other test of the
+run must pass. Six faults were each applied to one production file of the
+candidate tree, run once in debug with
+`PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`, and removed. Fault 1 is in the
+owner, and it ran against the four tests of this section only, because what
+the other tests of the owner's walk do under it is not a claim of this task.
+Faults 2 to 6 ran against the 29 tests of the focused list: the four tests
+of this section, the eight of the durable hard checkpoint
+(`durable_rspace_checkpoint`), the seven of the backend selection
+(`durable_authority_backend`), the seven of the cross-base checkpoint
+(`owner_cross_base_checkpoint`), the two of the digest-collision replay
+(`digest_collision_replay_tests`) and the manifest test.
+
+| # | Fault | Tests that failed | Failure text |
+|---|---|---|---|
+| 1 | In `checkpoint_view_from_base` the difference walk compares the current state with itself (`current.roots()` in place of `view.state.roots()`), so it visits no path and the journal is published on the current state as it was captured. | OG-32, OG-48. | OG-32: `a durable replay of the event log returned another root than the play`. OG-48: `the raced replay checkpoint returns the answer of the owner`, with the owner's refusal of the journal. |
+| 2 | The replay space's `create_durable_checkpoint` binds the permit that the owner hands back to `_`, not to `_operation_guard`, so the permit is dropped as soon as the owner call has returned. | OG-48. | `a produce that arrives while a replay checkpoint installs the answer of the owner must wait for the view gate at every owner exit, run on the installed store and be published by the next checkpoint`. |
+| 3 | `create_durable_checkpoint` does not call `check_replay_data`. | OG-32. | `a replay that left a COMM of its log unused must be refused`. |
+| 4 | `create_durable_checkpoint` does not clear the produce counter. | OG-32. | `had another effect than the play`. |
+| 5 | `create_durable_checkpoint` does not record the state that it returns as the view's base. | OG-32, OG-48, `create_with_replay_builds_a_durable_pair_and_both_spaces_checkpoint`. | `JournalConflict("durable journal was recorded against another state than the capture's origin")`. |
+| 6 | `create_with_replay` does not give the replay space its view. | The four tests of this section. | `BackendMismatch(History)`. |
+
+In each run the failed tests were exactly those of its row, and the other
+tests of the run passed: 2 under fault 1, 28 under faults 2, 3 and 4, 26
+under fault 5 and 25 under fault 6. Fault 1 shows the walk: the replay space
+of the overtaken pair then publishes its journal on the other state, which
+keeps the other view's datum, and returns another root than the play's; in
+OG-48's scenario whose journal turns the superseded base into the current
+state, the journal names data that the current state already holds, and the
+owner refuses it. The replay spaces of the played pair, and the test of the
+pair, are answered from the memo before the walk and pass. Fault 2 shows the
+installation under the permit: the produce that OG-48 starts before the
+installation completes on its first poll, on the store that the answer
+supersedes. Fault 3 shows the check of the replay data: the altered log is
+no longer refused. Fault 4 shows the produce counter: a COMM that the play
+recorded on a datum produced in an earlier segment names a count of zero,
+while the replay space still counts that produce, so the replay does not
+fire the COMM. Fault 5 shows the base record: a replay space's next hard
+checkpoint names the base it had before the last one, while its journal was
+recorded against the state that the last one reached, and the owner refuses
+it; the refusal test has no successful checkpoint and passes. Fault 6 shows
+the construction: the replay space without a view takes the legacy path,
+which the durable repository refuses. After each run the faulted file was
+restored and compared byte for byte with its content before the fault.
+
+**Verification record.** Each command ran once on the candidate tree, with
+`PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`:
+
+- the focused list, `cargo test --locked --offline -j 8 -p rspace_plus_plus
+  --lib` with the filters `durable_rspace_checkpoint::`,
+  `durable_authority_backend::`, `owner_cross_base_checkpoint::`, the
+  manifest test, `digest_collision_replay_tests::` and
+  `durable_replay_checkpoint::`: 29 tests, 29 passed, 0 ignored, in debug
+  and in release;
+- the whole library target of `rspace_plus_plus`: 1124 tests listed, 1111
+  passed, 0 failed, 13 ignored, in debug and in release;
+- `cargo clippy --locked --offline -j 8 -p rspace_plus_plus --all-targets`:
+  exit status 0 and no diagnostic in a file that this task changes;
+- `cargo test --locked --offline -j 8 -p rspace_plus_plus --test
+  concurrent_rspace_architecture_repro_tests`: 6 passed;
+- the property registry: 324 bindings in 38 families, each ID bound once,
+  each with a row of this catalog and a row of the derivation matrix.
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -15012,6 +15293,8 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | OG-33 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12426): after a durable reset to each retained root a space reads that state's contents, and its two read handles hold their generation leases until its next reset or its drop. The owner model has no contents, read handles or leases. Its step `ResetView` is enabled whatever view holds the owner mutex; that the Rust reset does not wait for that mutex is checked by the test, not by the model. |
 | OG-34 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12426): a reset to an unknown or malformed root, and a reset whose target resolves but whose hot store cannot be built, returns its refusal and leaves the space's root, reads, installed continuation and event log, the store files and the published state as they were. The model's `ResetView` draws its target from the model's roots, so a refused target has no counterpart there. The test witnesses the caller registry's CA-11, `unknown_target_cannot_be_admitted`, through `RSpace::reset`. |
 | OG-43 | `OwnerRootIsLastPublication` | `EXEC_ONLY` | P | Partially entailed (task 12426): `OwnerRootIsLastPublication` requires the owner's root to be the target of the last publication, and `ResetView` changes only the base of its view; the fault "reset-moves-owner", in which a reset also moves the owner's root, violates the invariant in one step. That a durable reset and a clear perform no write and no sync under each of the sixteen directory failpoints and leave the store directory and the published state unchanged, and that a checkpoint with no operation after a clear returns the store-genesis root without a write, are the executable refinement obligation. The model has no store files, syncs or store genesis. |
+| OG-32 | `PublishedSuccessorIsOfViewBase` | `EXEC_ONLY` | P | Partially entailed (task 12425): the invariant requires the target of a pending record to be `Succ(base, view)`, a function of the record's own base and view; on the replay path the base is the one that the replay space recorded at `create_with_replay` or at its previous hard checkpoint, and the view is the journal of the replayed operations. That a replay space whose operations have the play's effects returns the play's root from a base that the play has just superseded, from the published state, from a base that another view has superseded, and from the owner's memo, is the executable refinement obligation. That a replay uses every COMM of its log, that a log naming a COMM which is not enabled is refused, and that the replay's operations have the play's effects are properties of the Rust replay space, which the owner model does not represent. |
+| OG-48 | `NoViewOperationOnSupersededStore` | `EXEC_ONLY` | P | Partially entailed (task 12425): `NoViewOperationOnSupersededStore` requires a view whose checkpoint is acknowledged to hold its own gate until `InstallView`; the replay space's `create_durable_checkpoint` takes its view gate as an owned permit, receives it back from `checkpoint_view_from_base` with every state that the owner answers, and holds it until the answer is installed. As for OG-47, the model takes the installation as one step, and that its statements commute with every concurrent step is argued by reduction, not checked. That a produce of the same replay space, started on a worker thread after the owner has answered and before the installation, waits for the view gate at each of six owner exits, then runs on the installed store, and is returned by the next replay checkpoint, is the executable refinement obligation. The model has no counterpart of the two exits of an empty journal and of the memo hits. |
 
 ## Generator discipline
 

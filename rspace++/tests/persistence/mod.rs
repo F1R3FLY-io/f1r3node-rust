@@ -85,3 +85,4 @@ mod preimage_index;
 #[cfg(unix)]
 mod durable_gc_wal_admission;
 mod durable_rspace_reset;
+mod durable_replay_checkpoint;

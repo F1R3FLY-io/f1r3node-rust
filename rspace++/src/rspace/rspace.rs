@@ -778,6 +778,21 @@ where
         A: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
         K: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
     {
+        if let AuthorityRouteV1::Durable(durable) = store.authority.route() {
+            let (repository, hot_store, view) = Self::create_durable_view(durable)?;
+            let mut space = Self::apply(Arc::new(repository), hot_store, matcher.clone());
+            space.durable_view = Some(Arc::new(view));
+            let (replay_repository, replay_store, replay_view) =
+                Self::create_durable_view(durable)?;
+            let replay = ReplayRSpace::apply_with_logger(
+                Arc::new(replay_repository),
+                Arc::new(replay_store),
+                matcher,
+                Box::new(BasicLogger::new()),
+            )
+            .with_durable_view(replay_view);
+            return Ok((space, replay));
+        }
         let setup = Self::create_history_repo(store)?;
         let (history_repo, store) = setup;
         let history_repo_arc = Arc::new(history_repo);

@@ -48,8 +48,11 @@ use crate::rspace::hot_store::{
     StoredContinuationCommit,
 };
 use crate::rspace::internal::*;
+#[cfg(test)]
+use crate::rspace::persistence::journal_owner_hooks;
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use crate::rspace::space_matcher::SpaceMatcher;
+use crate::rspace::state::rspace_state_authority::DurableViewV1;
 
 #[repr(C)]
 #[derive(Clone)]
@@ -70,6 +73,7 @@ pub struct ReplayRSpace<C, P, A, K> {
     /// hot store remains copy-on-write, but its root, replay log, and history
     /// authority must be observed as one transaction boundary.
     operation_gate: Arc<tokio::sync::RwLock<()>>,
+    durable_view: Option<Arc<DurableViewV1<C, P, A, K>>>,
 }
 
 impl<C, P, A, K> ReplayRSpace<C, P, A, K>
@@ -120,6 +124,32 @@ where
         .set(0.0);
 
         Ok(())
+    }
+
+    async fn create_durable_checkpoint(
+        &self,
+        view: &DurableViewV1<C, P, A, K>,
+    ) -> Result<Checkpoint, RSpaceError> {
+        let permit = Arc::clone(&self.operation_gate).write_owned().await;
+        self.check_replay_data().await?;
+        let hot = self.get_store();
+        let (root, _operation_guard) = view.checkpoint(permit, &self.operation_gate, &hot).await?;
+        #[cfg(test)]
+        journal_owner_hooks::run(
+            journal_owner_hooks::JournalOwnerHookPoint::BeforeViewInstallation,
+        );
+        let (base, next_store) = view.view_at(&root)?;
+        let next_history = self.get_history_repository().reset(&root)?;
+        *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
+        let log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
+        self.produce_counter
+            .lock()
+            .expect("produce counter lock")
+            .clear();
+        *self.store.write().expect("store write lock") = Arc::new(next_store);
+        view.record_base(base);
+        self.restore_installs();
+        Ok(Checkpoint { root, log })
     }
 
     pub fn get_store(&self) -> Arc<Box<dyn HotStore<C, P, A, K>>> {
@@ -271,6 +301,9 @@ where
     K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
 {
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
+        if let Some(view) = self.durable_view.as_deref() {
+            return self.create_durable_checkpoint(view).await;
+        }
         let _operation_guard = self.operation_gate.write().await;
         self.check_replay_data().await?;
 
@@ -660,6 +693,7 @@ where
             phase_a_locks: Arc::new(DashMap::new()),
             phase_b_locks: Arc::new(DashMap::new()),
             operation_gate: Arc::new(tokio::sync::RwLock::new(())),
+            durable_view: None,
         }
     }
 
@@ -688,7 +722,13 @@ where
             phase_a_locks: Arc::new(DashMap::new()),
             phase_b_locks: Arc::new(DashMap::new()),
             operation_gate: Arc::new(tokio::sync::RwLock::new(())),
+            durable_view: None,
         }
+    }
+
+    pub(super) fn with_durable_view(mut self, view: DurableViewV1<C, P, A, K>) -> Self {
+        self.durable_view = Some(Arc::new(view));
+        self
     }
 
     fn inc_replay_waiting_continuations(&self, channels: &[C]) {

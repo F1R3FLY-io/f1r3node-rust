@@ -515,6 +515,8 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("OG-33", "a_reset_to_each_retained_root_reads_that_state_and_keeps_its_generation_lease"),
     ("OG-34", "a_reset_that_does_not_succeed_changes_nothing"),
     ("OG-43", "a_reset_and_a_clear_write_and_sync_nothing_and_a_clear_returns_the_store_genesis"),
+    ("OG-32", "a_durable_replay_returns_the_plays_root_at_every_checkpoint"),
+    ("OG-48", "a_concurrent_replay_operation_waits_until_every_owner_exit_is_installed"),
 ];
 
 pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {
