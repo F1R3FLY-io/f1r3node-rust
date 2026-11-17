@@ -9,11 +9,11 @@ Express the byte limit as integer bytes.
 Do not derive the limits from transport limits, the proposer block limit, or declared phlo.
 
 Keep the record count and the encoded byte total in the deploy store.
-Compute both totals from the stored keys and value lengths at the first limit check, without decoding.
+Compute both totals from the stored keys and value lengths at the first write or limit check, without decoding.
 Do not scan for the totals when the store opens or when it reads records.
 After that, update both totals under one store lock for each insert and each deletion.
 Release the charge of a deletion only for a key that the deletion removed.
-Release the charge of a record that the quarantine moves out of the live store.
+Release the charge of a record that the quarantine moves out of the live store, under the same lock as its deletion.
 Count every stored record: fresh, included, rejected, expired, and terminal copies, until their removal.
 After a restart, count all stored records, even above lowered limits.
 Lower limits stop new admission. They do not delete stored records.
@@ -45,10 +45,11 @@ Refuse a `validAfterBlockNumber` above the next block number plus `max-parent-de
 ## Admission
 
 Refuse a signature that a block, the pool, or the rejected-deploy buffer already holds with `duplicate_deploy`.
-Check the limits before the lifecycle write, so that a refused deploy opens no lifecycle row.
+Check the limits before the lifecycle write, so that a deploy refused by this check opens no lifecycle row.
+A deploy refused at the insert keeps its lifecycle row, which settles to the deploy's actual outcome.
 Open the lifecycle row with the deploy's `validAfterBlockNumber` before the pool insert.
 Retry when the pool or rejected-buffer record for the signature changes during admission.
-After three attempts, return `deploy_admission_busy` without persistence.
+After three attempts, return `deploy_admission_busy` without storing the deploy.
 Save no deploy and send no heartbeat or proposal signal after a refusal.
 
 ## Responses

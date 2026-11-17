@@ -8,7 +8,7 @@ These values are resource ceilings, not a measured optimum or a latency guarante
 Adaptive submission control is the job of the external deploy queue, not of the node.
 
 The deploy store keeps the totals.
-The first admission check computes the record count and the encoded byte total from the stored keys and value lengths, without decoding.
+The first write or admission check computes the record count and the encoded byte total from the stored keys and value lengths, without decoding.
 Opening the store and reading records do not scan for the totals.
 After that, every insert and every deletion updates the totals under one store lock.
 Admission checks the limits and inserts the record under that same lock, so concurrent submissions cannot share the last slot.
@@ -32,7 +32,7 @@ The limits do not change the proposer's block limit and never stop block process
 1. The API refuses a closed validity window or a past expiration timestamp with `deploy_expired`.
 2. The API refuses a `validAfterBlockNumber` above the next block number plus `max-parent-depth` with `invalid_deploy_window`.
 3. Admission refuses a signature that a block, the pool, or the rejected-deploy buffer already holds.
-4. Admission checks the limits without writing, so a refused deploy leaves no lifecycle row.
+4. Admission checks the limits without writing, so a deploy refused by this check leaves no lifecycle row.
 5. Admission opens the deploy's lifecycle row with its `validAfterBlockNumber`.
 6. Admission inserts the record if the pool record and the limits are unchanged.
 
@@ -51,7 +51,7 @@ The finalizer settles every open row.
 A deploy that no block carries settles `Expired` when finality passes its window end plus the citability horizon.
 This does not depend on the local validator creating blocks.
 A crash between the row and the insert leaves a row without a pool copy, which settles `Expired`.
-A row left by a deploy that lost a concurrent insert settles to the deploy's actual outcome.
+A row left by a deploy that lost a concurrent insert, or that the insert refused at a limit, settles to the deploy's actual outcome.
 
 ## Submission concurrency and metrics
 

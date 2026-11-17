@@ -143,7 +143,7 @@ mod deploy_ingress_tests {
     }
 
     #[test]
-    fn explicit_comparison_preserves_unlimited_submission() {
+    fn no_inflight_limit_admits_every_submission() {
         let limiter = DeployRequestLimiter::new(None).unwrap();
         let permits: Vec<_> = (0..1024).map(|_| limiter.try_acquire().unwrap()).collect();
         assert_eq!(permits.len(), 1024);

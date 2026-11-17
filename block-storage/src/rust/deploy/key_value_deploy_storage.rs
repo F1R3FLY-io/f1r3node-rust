@@ -253,7 +253,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
             .iter()
             .map(|(key, value)| (key.clone(), value.len() as u64))
             .collect();
-        let mut sizes = self.quarantine.sizes().lock();
+        let mut sizes = self.sizes()?;
         self.store.raw_store().put(records)?;
         for (key, len) in sized {
             sizes.insert(key, len);
@@ -267,7 +267,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
             return Ok(false);
         }
         let inserted = {
-            let mut sizes = self.quarantine.sizes().lock();
+            let mut sizes = self.sizes()?;
             let len = deploy.value.len() as u64;
             let inserted = self
                 .store
@@ -373,7 +373,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
     }
 
     fn delete_keys(&self, keys: Vec<BitVector>) -> Result<usize, KvStoreError> {
-        let mut sizes = self.quarantine.sizes().lock();
+        let mut sizes = self.sizes()?;
         let removed = self.store.raw_store().delete(keys.clone())?;
         for key in &keys {
             sizes.remove(key);
@@ -574,6 +574,61 @@ mod tests {
                 ("deploy_storage".to_string(), 2.0),
                 ("rejected_deploy_buffer".to_string(), 1.0),
             ])
+        );
+    }
+
+    #[tokio::test]
+    async fn writes_publish_the_totals_of_every_stored_record_after_a_reopen() {
+        let mut kvm = InMemoryStoreManager::new();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        storage.add(vec![deploy(1), deploy(2)]).unwrap();
+        buffer.add(vec![deploy(3)]).unwrap();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        let bytes =
+            |store: &KeyValueDeployStorage, ts| store.prepare(&deploy(ts)).unwrap().value.len();
+        let buffer_bytes = buffer.prepare(&deploy(3)).unwrap().value.len()
+            + buffer.prepare(&deploy(4)).unwrap().value.len();
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            storage.add(vec![deploy(5)]).unwrap();
+            buffer.add(vec![deploy(4)]).unwrap();
+        });
+
+        let gauges: HashMap<(String, String), f64> = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter_map(|(key, _, _, value)| match value {
+                DebugValue::Gauge(value) => key
+                    .key()
+                    .labels()
+                    .find(|label| label.key() == "store")
+                    .map(|label| {
+                        (
+                            (key.key().name().to_string(), label.value().to_string()),
+                            value.into_inner(),
+                        )
+                    }),
+                _ => None,
+            })
+            .collect();
+        let gauge = |name: &str, store: &str| gauges[&(name.to_string(), store.to_string())];
+        assert_eq!(gauge(DEPLOY_STORE_SIZE_METRIC, "deploy_storage"), 3.0);
+        assert_eq!(
+            gauge(DEPLOY_STORE_BYTES_METRIC, "deploy_storage"),
+            (bytes(&storage, 1) + bytes(&storage, 2) + bytes(&storage, 5)) as f64
+        );
+        assert_eq!(
+            gauge(DEPLOY_STORE_SIZE_METRIC, "rejected_deploy_buffer"),
+            2.0
+        );
+        assert_eq!(
+            gauge(DEPLOY_STORE_BYTES_METRIC, "rejected_deploy_buffer"),
+            buffer_bytes as f64
         );
     }
 

@@ -16,12 +16,13 @@ references:
 ```
 
 The deploy store bounds its stored records by count and encoded bytes.
-The check and the insert run under the store lock that every insert and deletion takes, so concurrent submissions cannot exceed a limit.
+The check and the insert run under the store lock that every insert, deletion, and quarantine move takes, so concurrent submissions cannot exceed a limit.
 Only a deletion that removed the record, or a quarantine move, releases its charge.
 The totals after a restart include every stored record, even above lowered limits, and no record is deleted to meet a limit.
 A record larger than the byte limit and a full pool have distinct HTTP refusals.
 Duplicate detection precedes both refusals.
-Refused deploys produce no pool insertion, lifecycle row, or proposal signal.
+A deploy refused by the limit check before the lifecycle write produces no pool insertion, lifecycle row, or proposal signal.
+A deploy refused at the insert, or after three changed attempts, produces no pool insertion or proposal signal. Its lifecycle row settles to the deploy's actual outcome.
 
 ```yaml
 claim_id: CLAIM-DEPLOY-EXPIRY-001
