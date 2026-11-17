@@ -311,3 +311,46 @@ Build or test a smaller target first:
 cargo build -p node
 cargo test -p casper
 ```
+
+## Running Two Checkouts In Parallel
+
+Two side-by-side checkouts can each run `cargo nextest run --release -p <crate>`
+or the full `.githooks/pre-push` gate without the filesystem-level contention
+that bit the single-tree workspace (each checkout has its own `target/`, each
+test opens an LMDB env under a per-process `tempfile::tempdir()`, and the
+process-global `env_cache` in `rspace++/src/rspace/shared/env_cache.rs` cannot
+reach across process boundaries). The remaining contention is kernel
+scheduling pressure on timing-sensitive sentinels listed in
+`.config/nextest.toml`.
+
+Those sentinels assert wall-clock bounds — "the scan released the worker
+within scan/4", "the snapshot cost did not scale with store size", "the mutex
+did not contend above 50%". Within one tree they run on an island
+(`threads-required = "num-cpus"`) so no other test in the same run competes.
+The island cannot stop a second `cargo nextest` on the same host from stealing
+CPU, and under enough pressure the kernel delays the sentinel's ticker or
+measurement window and the assertion breaks even though the production
+invariant it guards is intact.
+
+Pick one of:
+
+1. **Serialize the gates.** Run one checkout's pre-push at a time. Simplest,
+   zero flake, cost is wall time.
+2. **Partition the crates.** Give each tree disjoint `TEST_CRATES`:
+   ```bash
+   # checkout A
+   TEST_CRATES="crypto shared models graphz block-storage rspace_plus_plus" git push
+   # checkout B (run after A starts)
+   TEST_CRATES="comm rholang casper node deploy-queue" git push
+   ```
+   The sentinel-heavy crates (`rspace_plus_plus`, `casper`) land in different
+   gates and never compete at the same wall-clock instant.
+3. **Skip the Rust tests in one tree.** If you only need the second tree to
+   run clippy / CI script tests:
+   ```bash
+   SKIP_TESTS=1 git push
+   ```
+
+If you need two full test gates in parallel for a deadline, (2) is the lowest
+pain: the two trees still get full crate coverage, they just do not race the
+same timing sentinel.

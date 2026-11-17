@@ -41,11 +41,23 @@
 # only and needs no island. The island cannot stop noise from outside the
 # process on a shared runner, so the two contention sentinels also carry a
 # 50% threshold with the measured margins recorded beside each constant.
+#
+# `ft_propagation_scan_hands_off_its_worker` builds a one-worker tokio
+# runtime, spins a 1ms ticker, and asserts the worst ticker gap during a
+# `block_in_place`-wrapped LMDB scan stays below scan/4 — i.e. that the
+# synchronous scan releases the shared worker promptly. Under a fully
+# parallel block-storage run the ticker is kernel-scheduled against every
+# other test's CPU, so the gap grows without any real regression in the
+# hand-off. Same scheduling-artifact class as the sentinels above.
+# Cross-tree parallel pre-push runs still can starve the ticker from
+# outside this process; see DEVELOPER.md "Running two checkouts in
+# parallel" for the user-side remedy.
 [[profile.default.overrides]]
 filter = '''
   test(/genesis::contracts::pos_spec::pos_spec/)
   | test(/batch2::floor_cap_deadlock_spec::past_the_floor_cap_a_proposal_is_held_or_mints_a_witness_every_node_accepts$/)
   | test(/soft_checkpoint_cost_does_not_scale_with_accumulated_store_size/)
   | test(/rspace::rspace::tests::(event_log_mutex_does_not_contend_under_concurrent_produces|par_branch_event_log_does_not_contend_at_rholang_par_scale|event_log_and_produce_counter_isolated_cost_at_rholang_par_scale|get_store_read_lock_isolated_cost_at_rholang_par_scale)$/)
+  | test(/block_dag_key_value_storage::tests::ft_propagation_scan_hands_off_its_worker$/)
 '''
 threads-required = "num-cpus"
