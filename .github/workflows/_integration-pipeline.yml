@@ -1142,6 +1142,108 @@ jobs:
         shell: bash {0}
         run: docker compose -f docker/shard.yml -f docker/ci-ports.shard.yml down -v
 
+  # Identity registry suite: the docker shard with the 2-of-3 admin quorum
+  # overlay, driven by the crate's Rust client. The deploy signer is the public
+  # bootstrap dev key from docker/.env.example, so the job needs no secrets.
+  identity_registry_tests:
+    name: Identity Registry Tests (Docker Shard)
+    needs: build_docker_image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Clone Repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
+          ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
+          persist-credentials: false
+          # See smoke_docker_shard. Do not add secrets to this job.
+          allow-unsafe-pr-checkout: true
+
+      - name: Load Docker Image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: artifacts-docker-amd64
+          path: /tmp
+
+      - name: Import Docker Image
+        shell: bash -ex {0}
+        run: |
+          zcat /tmp/rust-node-docker.tar.gz | docker image load
+          docker tag ${{ env.DOCKER_IMAGE_NAME }}:amd64 ${{ env.DOCKER_IMAGE_NAME }}
+
+      - name: Check node host ports
+        shell: bash -e {0}
+        run: .github/scripts/check-node-ports.sh 14400 14455
+
+      - name: Start shard
+        shell: bash -ex {0}
+        run: |
+          cp docker/.env.example docker/.env
+          docker compose -f docker/shard.yml -f docker/ci-ports.shard.yml -f identity-registry/docker/quorum.yml up -d
+
+      # Compiles while the shard boots.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: nightly-2026-02-09
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: identity-registry-tests
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
+
+      - name: Install system dependencies
+        run: bash .github/scripts/install-system-dependencies.sh
+
+      - name: Build tests
+        run: cargo test -p identity-registry --features integration_tests --test identity_registry --no-run
+
+      - name: Wait for 10 finalized blocks on bootstrap
+        shell: bash -e {0}
+        run: |
+          for i in $(seq 1 60); do
+            LFB=$(curl -sf http://localhost:14403/api/last-finalized-block | jq -r '.blockInfo.blockNumber // 0')
+            LFB=${LFB:-0}
+            echo "  [$((i*5))s] LFB: #$LFB"
+            [ "$LFB" -ge 10 ] && exit 0
+            sleep 5
+          done
+          echo "FAIL: LFB only at #$LFB after 300s"
+          exit 1
+
+      - name: Run identity registry tests
+        env:
+          F1R3FLY_GRPC_PORT: "14422"
+          F1R3FLY_SIGNING_KEY: 5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657
+        run: cargo test -p identity-registry --features integration_tests --test identity_registry -- --test-threads=1
+
+      - name: Collect logs
+        if: always()
+        shell: bash {0}
+        run: |
+          mkdir -p /tmp/logs
+          docker ps -a > /tmp/logs/containers.txt 2>&1 || true
+          for c in $(docker ps -aq --filter "name=rnode" 2>/dev/null); do
+            name=$(docker inspect --format '{{.Name}}' "$c" | sed 's|^/||')
+            docker logs "$c" > "/tmp/logs/${name}.log" 2>&1 || true
+          done
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: identity-registry-logs
+          path: /tmp/logs/
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        shell: bash {0}
+        run: docker compose -f docker/shard.yml -f docker/ci-ports.shard.yml -f identity-registry/docker/quorum.yml down -v
+
   # Smoke test: extract binary from docker image, run locally without docker.
   smoke_local_standalone:
     name: Smoke Test (Local Standalone)
