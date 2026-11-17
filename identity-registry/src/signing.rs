@@ -2,9 +2,10 @@
 // scheme that casper/src/main/resources/IdentityRegistry.rhox uses on-chain via
 // rho:crypto:secp256k1Verify.
 
-use crate::payload::{NAME_LEN, PK_LEN, admin_relink_payload, blake2b256};
 use secp256k1::ecdsa::Signature;
 use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
+
+use crate::payload::{admin_relink_payload, blake2b256, NAME_LEN, PK_LEN};
 
 /// Signs `blake2b256(payload)` under `sk` and returns the ECDSA signature.
 pub fn sign_payload(payload: &[u8], sk: &SecretKey) -> Signature {
@@ -28,15 +29,11 @@ pub fn verify_payload(
 
 /// Serialises a public key into its 65-byte uncompressed form, matching the
 /// shape the Rholang contract expects on the wire.
-pub fn uncompressed_pk_bytes(pk: &PublicKey) -> [u8; 65] {
-    pk.serialize_uncompressed()
-}
+pub fn uncompressed_pk_bytes(pk: &PublicKey) -> [u8; 65] { pk.serialize_uncompressed() }
 
 /// Serialises a signature in DER form, matching the format
 /// `rho:crypto:secp256k1Verify` consumes.
-pub fn signature_der(sig: &Signature) -> Vec<u8> {
-    sig.serialize_der().to_vec()
-}
+pub fn signature_der(sig: &Signature) -> Vec<u8> { sig.serialize_der().to_vec() }
 
 /// Signs an admin_relink payload with one admin key. Returns the
 /// (uncompressed pk, DER sig) pair that admin_relink carries per admin.

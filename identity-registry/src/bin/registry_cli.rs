@@ -1,10 +1,11 @@
+use std::env;
+
 use clap::{Parser, Subcommand};
-use rand::RngCore;
-use secp256k1::{PublicKey, Secp256k1, SecretKey};
-use identity_registry::IdentityRegistryClient;
 use identity_registry::payload::{NAME_LEN, NONCE_LEN, PK_LEN};
 use identity_registry::signing::admin_sign;
-use std::env;
+use identity_registry::IdentityRegistryClient;
+use rand::RngCore;
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 const DEFAULT_NODE_HOST: &str = "127.0.0.1";
 const DEFAULT_GRPC_PORT: u16 = 40422;
@@ -14,7 +15,11 @@ const DEFAULT_GRPC_PORT: u16 = 40422;
 struct Cli {
     /// URI of the identity registry contract. Defaults to the registry
     /// deployed at genesis.
-    #[arg(long, env = "IDENTITY_REGISTRY_URI", default_value = "rho:system:identityRegistry")]
+    #[arg(
+        long,
+        env = "IDENTITY_REGISTRY_URI",
+        default_value = "rho:system:identityRegistry"
+    )]
     registry_uri: Option<String>,
 
     /// Host of the F1R3FLY validator node.
@@ -152,8 +157,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("pk: {}", hex::encode(pk.serialize_uncompressed()));
             return Ok(());
         }
-        Command::AdminSign { admin_sk, name, new_pk, seq, evidence } => {
-            let admin_sk = SecretKey::from_byte_array(parse_hex_array::<32>(&admin_sk, "admin_sk")?)?;
+        Command::AdminSign {
+            admin_sk,
+            name,
+            new_pk,
+            seq,
+            evidence,
+        } => {
+            let admin_sk =
+                SecretKey::from_byte_array(parse_hex_array::<32>(&admin_sk, "admin_sk")?)?;
             let name_bytes = parse_hex_array::<NAME_LEN>(&name, "name")?;
             let new_pk_bytes = parse_hex_array::<PK_LEN>(&new_pk, "new_pk")?;
             let evidence_bytes = hex::decode(&evidence)?;
@@ -164,8 +176,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         command => command,
     };
 
-    let deploy_sk_hex = env::var("F1R3FLY_SIGNING_KEY")
-        .map_err(|_| "F1R3FLY_SIGNING_KEY must be set")?;
+    let deploy_sk_hex =
+        env::var("F1R3FLY_SIGNING_KEY").map_err(|_| "F1R3FLY_SIGNING_KEY must be set")?;
 
     let client = IdentityRegistryClient::new(
         &deploy_sk_hex,
@@ -189,11 +201,19 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let identity_pk = PublicKey::from_secret_key(&Secp256k1::new(), &identity_sk);
             let name = client.register(&identity_sk, &nonce_bytes).await?;
             println!("identity_sk (keep safe): {}", hex::encode(sk_bytes));
-            println!("identity_pk:             {}", hex::encode(identity_pk.serialize_uncompressed()));
+            println!(
+                "identity_pk:             {}",
+                hex::encode(identity_pk.serialize_uncompressed())
+            );
             println!("nonce:                   {}", hex::encode(nonce_bytes));
             println!("name:                    {}", hex::encode(name));
         }
-        Command::Rotate { name, current_sk, new_sk, seq } => {
+        Command::Rotate {
+            name,
+            current_sk,
+            new_sk,
+            seq,
+        } => {
             let name_bytes = parse_hex_array::<NAME_LEN>(&name, "name")?;
             let current_sk_bytes = parse_hex_array::<32>(&current_sk, "current_sk")?;
             let new_sk_bytes = parse_hex_array::<32>(&new_sk, "new_sk")?;
@@ -202,7 +222,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let new_seq = client.rotate(&current, &name_bytes, &new, seq).await?;
             println!("new_seq: {new_seq}");
         }
-        Command::AdminRelink { name, new_sk, seq, evidence, admin_sks, admin_sigs } => {
+        Command::AdminRelink {
+            name,
+            new_sk,
+            seq,
+            evidence,
+            admin_sks,
+            admin_sigs,
+        } => {
             if admin_sks.is_empty() && admin_sigs.is_empty() {
                 return Err("admin-relink needs at least one --admin-sk or --admin-sig".into());
             }
@@ -210,14 +237,21 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let new_sk_bytes = parse_hex_array::<32>(&new_sk, "new_sk")?;
             let evidence_bytes = hex::decode(&evidence)?;
             let new = SecretKey::from_byte_array(new_sk_bytes)?;
-            let new_pk_bytes = PublicKey::from_secret_key(&Secp256k1::new(), &new).serialize_uncompressed();
+            let new_pk_bytes =
+                PublicKey::from_secret_key(&Secp256k1::new(), &new).serialize_uncompressed();
             let mut pairs = admin_sigs
                 .iter()
                 .map(|s| parse_admin_sig(s))
                 .collect::<Result<Vec<_>, _>>()?;
             for s in &admin_sks {
                 let sk = SecretKey::from_byte_array(parse_hex_array::<32>(s, "admin_sk")?)?;
-                pairs.push(admin_sign(&sk, &name_bytes, &new_pk_bytes, seq, &evidence_bytes));
+                pairs.push(admin_sign(
+                    &sk,
+                    &name_bytes,
+                    &new_pk_bytes,
+                    seq,
+                    &evidence_bytes,
+                ));
             }
             let new_seq = client
                 .admin_relink_with_sigs(&pairs, &name_bytes, &new, seq, &evidence_bytes)

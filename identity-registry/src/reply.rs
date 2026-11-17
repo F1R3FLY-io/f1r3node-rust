@@ -3,11 +3,13 @@
 // fetch what was sent and decode the ("ok", value) / ("err", reason)
 // envelope.
 
-use crate::error::IdentityRegistryError;
-use models::casper::DataAtNameByBlockQuery;
 use models::casper::v1::deploy_service_client::DeployServiceClient;
 use models::casper::v1::rho_data_response::Message;
-use models::rhoapi::{EList, EMap, ETuple, Expr, Par, expr::ExprInstance};
+use models::casper::DataAtNameByBlockQuery;
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::{EList, EMap, ETuple, Expr, Par};
+
+use crate::error::IdentityRegistryError;
 
 /// Builds the Par that represents the forgeable channel `@"<slot>"`.
 pub fn reply_slot_par(slot: &str) -> Par {
@@ -60,7 +62,9 @@ pub async fn fetch_reply(
             Ok(payload.par.into_iter().next().unwrap())
         }
         Some(Message::Error(e)) => Err(IdentityRegistryError::Node(format!("{e:?}"))),
-        None => Err(IdentityRegistryError::ResponseParse("empty response".into())),
+        None => Err(IdentityRegistryError::ResponseParse(
+            "empty response".into(),
+        )),
     }
 }
 
@@ -94,7 +98,9 @@ pub fn extract_etuple(par: &Par) -> Result<&ETuple, IdentityRegistryError> {
             return Ok(t);
         }
     }
-    Err(IdentityRegistryError::ResponseParse("expected ETuple".into()))
+    Err(IdentityRegistryError::ResponseParse(
+        "expected ETuple".into(),
+    ))
 }
 
 pub fn extract_gstring(par: &Par) -> Result<String, IdentityRegistryError> {
@@ -103,7 +109,9 @@ pub fn extract_gstring(par: &Par) -> Result<String, IdentityRegistryError> {
             return Ok(s.clone());
         }
     }
-    Err(IdentityRegistryError::ResponseParse("expected GString".into()))
+    Err(IdentityRegistryError::ResponseParse(
+        "expected GString".into(),
+    ))
 }
 
 pub fn extract_gbytearray(par: &Par) -> Result<Vec<u8>, IdentityRegistryError> {
@@ -112,7 +120,9 @@ pub fn extract_gbytearray(par: &Par) -> Result<Vec<u8>, IdentityRegistryError> {
             return Ok(b.clone());
         }
     }
-    Err(IdentityRegistryError::ResponseParse("expected GByteArray".into()))
+    Err(IdentityRegistryError::ResponseParse(
+        "expected GByteArray".into(),
+    ))
 }
 
 pub fn extract_gint(par: &Par) -> Result<i64, IdentityRegistryError> {
@@ -130,7 +140,9 @@ pub fn extract_elist(par: &Par) -> Result<&EList, IdentityRegistryError> {
             return Ok(l);
         }
     }
-    Err(IdentityRegistryError::ResponseParse("expected EList".into()))
+    Err(IdentityRegistryError::ResponseParse(
+        "expected EList".into(),
+    ))
 }
 
 pub fn extract_emap(par: &Par) -> Result<&EMap, IdentityRegistryError> {
