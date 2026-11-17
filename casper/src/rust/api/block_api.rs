@@ -185,6 +185,40 @@ impl std::fmt::Display for BlockNotFoundError {
 
 impl std::error::Error for BlockNotFoundError {}
 
+/// The block was once held by this node but has been deleted by the
+/// retention sweep. The DAG still carries its metadata (hash, parents,
+/// height) so we can report the height at which it lived, and the
+/// current prune floor so consumers can decide whether to ask an
+/// archive node. Distinct from [`BlockNotFoundError`], which means
+/// "we have no record of this hash at all" — a joiner that hasn't
+/// caught up yet, or an outright invalid hash. #923 Option D callers
+/// use this split so a client walking `/reporting/trace` can tell
+/// deleted history from a gap and route accordingly.
+#[derive(Debug)]
+pub struct BlockPrunedError {
+    pub hash: String,
+    /// Height of the block when it was retained. Known from the DAG
+    /// metadata index, which is not swept.
+    pub block_height: i64,
+    /// The node's current body-prune floor: the highest height for
+    /// which block bodies have been deleted. Callers can request the
+    /// same hash from an archive node with retention above this.
+    pub prune_floor: i64,
+}
+
+impl std::fmt::Display for BlockPrunedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Block {} (height {}) is below this node's prune floor (height {}). \
+             Consult an archive node to retrieve it.",
+            self.hash, self.block_height, self.prune_floor
+        )
+    }
+}
+
+impl std::error::Error for BlockPrunedError {}
+
 #[derive(Debug)]
 pub struct InvalidHashError(pub String);
 
@@ -1637,11 +1671,37 @@ impl BlockAPI {
                 find_block.await
             };
 
-            let block = block_f?.ok_or_else(|| {
-                eyre::Report::new(BlockNotFoundError {
-                    hash: hash.to_string(),
-                })
-            })?;
+            let block = match block_f? {
+                Some(block) => block,
+                None => {
+                    // The body is missing. Distinguish "was it ever here"
+                    // (BlockNotFoundError) from "we had it, the retention
+                    // sweep deleted it" (BlockPrunedError). The DAG metadata
+                    // index is not swept by #1010 / #1045, so its presence
+                    // of the hash tells us we knew the block once.
+                    let dag = casper.block_dag().await?;
+                    let padded_hash = pad_hex_string(hash);
+                    let hash_bytes = hex::decode(&padded_hash).map_err(|_| {
+                        eyre::Report::new(InvalidHashError(format!(
+                            "'{}' is not valid block hash",
+                            hash
+                        )))
+                    })?;
+                    let dag_hash: prost::bytes::Bytes = hash_bytes.into();
+                    return Err(match dag.lookup(&dag_hash)? {
+                        Some(metadata) => eyre::Report::new(BlockPrunedError {
+                            hash: hash.to_string(),
+                            block_height: metadata.block_number,
+                            prune_floor: casper
+                                .effective_anchor_handle()
+                                .load(std::sync::atomic::Ordering::Acquire),
+                        }),
+                        None => eyre::Report::new(BlockNotFoundError {
+                            hash: hash.to_string(),
+                        }),
+                    });
+                }
+            };
 
             let dag = casper.block_dag().await?;
             if dag.contains(&block.block_hash)? {

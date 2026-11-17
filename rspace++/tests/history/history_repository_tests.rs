@@ -906,3 +906,162 @@ impl TrieImporter for EmptyImporter {
 
     fn set_root(&self, _key: &KeyHash) { todo!() }
 }
+
+// --- prune_history_atomic -------------------------------------------------
+
+/// The atomic prune covers mark + sweep in one pass against the
+/// backing store. These tests pin the per-node correctness of
+/// `HistoryRepositoryImpl::prune_history_atomic` — the pre-#1045-fix
+/// code did mark and sweep in two separate steps, which admitted the
+/// race that could delete a new block's just-written trie nodes.
+mod prune_history_atomic {
+    use rspace_plus_plus::rspace::history::radix_tree::{Item, empty_node, encode, hash_node};
+
+    use super::*;
+
+    fn put_node(
+        store: &Arc<dyn KeyValueStore>,
+        node: &rspace_plus_plus::rspace::history::radix_tree::Node,
+    ) -> Blake2b256Hash {
+        let (hash_bytes, _) = hash_node(node);
+        store.put(vec![(hash_bytes.clone(), encode(node))]).unwrap();
+        Blake2b256Hash::from_bytes(hash_bytes)
+    }
+
+    fn leaf_node(
+        slot: usize,
+        prefix: Vec<u8>,
+        value: Vec<u8>,
+    ) -> rspace_plus_plus::rspace::history::radix_tree::Node {
+        let mut n = empty_node();
+        n[slot] = Item::Leaf { prefix, value };
+        n
+    }
+
+    fn pointer_node(
+        slot: usize,
+        ptr: Vec<u8>,
+    ) -> rspace_plus_plus::rspace::history::radix_tree::Node {
+        let mut n = empty_node();
+        n[slot] = Item::NodePtr {
+            prefix: vec![],
+            ptr,
+        };
+        n
+    }
+
+    #[test]
+    fn retains_reachable_nodes_and_sweeps_the_rest() {
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        // Two chains: root_a -> child_a -> leaf_a, and root_b -> leaf_b.
+        // Retaining only root_a should keep {root_a, child_a, leaf_a}
+        // and sweep {root_b, leaf_b}.
+        let leaf_a = put_node(&history_store, &leaf_node(0, vec![0x01], vec![0xaa; 32]));
+        let child_a = put_node(&history_store, &pointer_node(1, leaf_a.bytes()));
+        let root_a = put_node(&history_store, &pointer_node(2, child_a.bytes()));
+
+        let leaf_b = put_node(&history_store, &leaf_node(3, vec![0x02], vec![0xbb; 32]));
+        let root_b = put_node(&history_store, &pointer_node(4, leaf_b.bytes()));
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+        let result = repo
+            .prune_history_atomic(std::slice::from_ref(&root_a))
+            .expect("atomic prune");
+
+        assert_eq!(result.marked, 3, "root_a + child_a + leaf_a");
+        assert_eq!(result.swept, 2, "root_b and leaf_b are unreachable");
+        assert!(history_store.get_one(&root_a.bytes()).unwrap().is_some());
+        assert!(history_store.get_one(&child_a.bytes()).unwrap().is_some());
+        assert!(history_store.get_one(&leaf_a.bytes()).unwrap().is_some());
+        assert!(history_store.get_one(&root_b.bytes()).unwrap().is_none());
+        assert!(history_store.get_one(&leaf_b.bytes()).unwrap().is_none());
+    }
+
+    #[test]
+    fn shared_subtrees_are_marked_once_and_retained() {
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        // Two roots sharing one child. Retaining both keeps the shared
+        // subtree once; the swept set is empty.
+        let shared = put_node(&history_store, &empty_node());
+        let root_a = put_node(&history_store, &pointer_node(0, shared.bytes()));
+        let root_b = put_node(&history_store, &pointer_node(1, shared.bytes()));
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+        let result = repo
+            .prune_history_atomic(&[root_a.clone(), root_b.clone()])
+            .expect("atomic prune");
+
+        assert_eq!(result.marked, 3, "root_a, root_b, and shared counted once each");
+        assert_eq!(result.swept, 0);
+        assert!(history_store.get_one(&shared.bytes()).unwrap().is_some());
+    }
+
+    #[test]
+    fn missing_root_subtree_is_tolerated() {
+        // A joiner that has a root tag but has not yet imported the
+        // subtree. The prune must not fail; it marks the root hash and
+        // stops the walk at the first missing descendant. Downstream
+        // readers of such a subtree then get the typed
+        // `RadixTreeError::MissingNode` (not a panic) and can decide to
+        // fetch from peers.
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        // root references a child that is not in the store.
+        let phantom_child = vec![0xCD; 32];
+        let root = put_node(&history_store, &pointer_node(0, phantom_child));
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+        let result = repo
+            .prune_history_atomic(std::slice::from_ref(&root))
+            .expect("prune must tolerate a missing subtree, not panic");
+
+        // The walk marks the root AND the phantom child hash (so a later
+        // root referencing the same phantom short-circuits), but only the
+        // root is actually in the store. Nothing is swept.
+        assert_eq!(result.marked, 2);
+        assert_eq!(result.swept, 0);
+        assert!(history_store.get_one(&root.bytes()).unwrap().is_some());
+    }
+
+    #[test]
+    fn empty_roots_list_is_a_total_sweep() {
+        // Edge case: caller passes no retained roots. Everything is
+        // unreachable, so everything in the store is swept. This is the
+        // honest answer to "nothing is retained" — callers who do not
+        // want this must not pass an empty list.
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        let n1 = put_node(&history_store, &empty_node());
+        let n2 = put_node(&history_store, &pointer_node(1, n1.bytes()));
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+        let result = repo.prune_history_atomic(&[]).expect("atomic prune");
+
+        assert_eq!(result.marked, 0);
+        assert_eq!(result.swept, 2);
+        assert!(history_store.get_one(&n1.bytes()).unwrap().is_none());
+        assert!(history_store.get_one(&n2.bytes()).unwrap().is_none());
+    }
+}

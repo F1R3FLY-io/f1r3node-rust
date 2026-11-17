@@ -123,6 +123,17 @@ pub enum RadixTreeError {
     PrefixError(String),
     CollisionError(String),
     SerializationError(String),
+    /// A trie node whose hash is referenced by an in-walk `NodePtr` is not
+    /// held in the underlying store. Carried typed so callers that walk from
+    /// a retention-pruned root (block-report replay, `exploratory-deploy`,
+    /// `get-data-at-par`, merge of a sibling below the state floor) can
+    /// surface a precise "pruned subtree" answer to their own callers
+    /// instead of panicking. Before issue #923 Option D this path used an
+    /// `assert!` in `radix_tree.rs::load_node_arc`; the assert crashed the
+    /// node when a sweep raced a new write.
+    MissingNode {
+        ptr: crate::rspace::hashing::blake2b256_hash::Blake2b256Hash,
+    },
 }
 
 impl std::fmt::Display for RadixTreeError {
@@ -133,6 +144,9 @@ impl std::fmt::Display for RadixTreeError {
             RadixTreeError::PrefixError(err) => write!(f, "Prefix Error: {}", err),
             RadixTreeError::CollisionError(err) => write!(f, "Collision Error: {}", err),
             RadixTreeError::SerializationError(err) => write!(f, "Serialization Error: {}", err),
+            RadixTreeError::MissingNode { ptr } => {
+                write!(f, "Missing trie node: ptr={}", hex::encode(ptr.bytes()))
+            }
         }
     }
 }
