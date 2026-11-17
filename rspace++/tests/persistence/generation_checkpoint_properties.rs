@@ -758,6 +758,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("durable_rspace_checkpoint.rs"),
         include_str!("preimage_index.rs"),
         include_str!("durable_gc_wal_admission.rs"),
+        include_str!("durable_rspace_reset.rs"),
     ]
     .concat();
     for (id, target) in PROPERTY_BINDINGS {

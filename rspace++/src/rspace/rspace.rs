@@ -25,7 +25,6 @@ use super::errors::{HistoryRepositoryError, RSpaceError};
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::hashing::stable_hash_provider::StableHashSerialize;
 use super::history::history_reader::HistoryReader;
-use super::history::instances::radix_history::RadixHistory;
 use super::hot_store::{
     AcceptedMatch, AcceptedMatchOutcome, ContinuationVersion, StoredContinuationCommit,
 };
@@ -322,6 +321,9 @@ where
     async fn reset(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
         let _operation_guard = self.operation_gate.write().await;
         let _span = tracing::info_span!(target: "f1r3fly.rspace", RESET_SPAN).entered();
+        if let Some(view) = self.durable_view.as_deref() {
+            return self.reset_durable_view(view, root);
+        }
         let next_history = self.get_history_repository().reset(root)?;
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 
@@ -378,7 +380,8 @@ where
     }
 
     async fn clear(&self) -> Result<(), RSpaceError> {
-        self.reset(&RadixHistory::empty_root_node_hash()).await
+        let empty_root = self.get_history_repository().empty_root();
+        self.reset(&empty_root).await
     }
 
     async fn get_root(&self) -> Blake2b256Hash { self.get_history_repository().root() }
@@ -921,6 +924,28 @@ where
         self.restore_installs();
         event!(Level::DEBUG, mark = "finished-create-checkpoint", "create_checkpoint");
         Ok(Checkpoint { root, log })
+    }
+
+    fn reset_durable_view(
+        &self,
+        view: &DurableViewV1<C, P, A, K>,
+        root: &Blake2b256Hash,
+    ) -> Result<(), RSpaceError> {
+        let next_history = self.get_history_repository().reset(root)?;
+        let (base, next_store) = view.view_at(&next_history.root())?;
+        *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
+        self.event_log.lock().expect("event log lock").clear();
+        self.produce_counter
+            .lock()
+            .expect("produce counter lock")
+            .clear();
+        self.phase_a_locks.clear();
+        self.phase_b_locks.clear();
+        *self.store.write().expect("store write lock") = Arc::new(next_store);
+        self.retained_set_automata.clear();
+        view.record_base(base);
+        self.restore_installs();
+        Ok(())
     }
 
     fn produce_counters(&self, produce_refs: &[Produce]) -> BTreeMap<Produce, i32> {

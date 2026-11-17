@@ -512,6 +512,9 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("PI-03", "a_forged_entry_is_refused_at_append_and_at_lookup"),
     ("PI-04", "two_orders_of_one_channel_set_share_a_bucket_key"),
     ("PI-05", "lookups_on_other_threads_see_only_whole_entries"),
+    ("OG-33", "a_reset_to_each_retained_root_reads_that_state_and_keeps_its_generation_lease"),
+    ("OG-34", "a_reset_that_does_not_succeed_changes_nothing"),
+    ("OG-43", "a_reset_and_a_clear_write_and_sync_nothing_and_a_clear_returns_the_store_genesis"),
 ];
 
 pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {

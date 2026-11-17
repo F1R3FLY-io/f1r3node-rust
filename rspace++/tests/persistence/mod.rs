@@ -84,3 +84,4 @@ mod durable_rspace_checkpoint;
 mod preimage_index;
 #[cfg(unix)]
 mod durable_gc_wal_admission;
+mod durable_rspace_reset;

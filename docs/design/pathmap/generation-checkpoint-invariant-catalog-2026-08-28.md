@@ -7931,7 +7931,7 @@ that no test binds.
 | `PermitProvenance`, `NoViewMutationWhilePending` | OG-09 | G08, in [checkpoint views](#durable-owner-checkpoint-views-under-caller-held-permits-2026-11-01) |
 | `CapturedPredecessorIsOwnerRoot` | OG-10 | G08, in the same section |
 | `PublishedSuccessorIsOfViewBase`, `NeverPublishedAcrossBases` | XB-01, whose seeded scenarios must publish from another base, and OG-42 | Task 14349, in [cross-base view checkpoint](#cross-base-view-checkpoint-through-the-durable-owner-2026-11-12); leaf G15, `rspace-hard-checkpoint-durable-wiring` (task 12424), adds OG-42 on the hard checkpoint path, in [durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13) |
-| `OwnerRootIsLastPublication` | None yet | Leaf G17, `rspace-reset-durable-wiring`, adds its row when the durable reset becomes view-local |
+| `OwnerRootIsLastPublication` | OG-43 | Leaf G17, `rspace-reset-durable-wiring` (task 12426), in [durable reset and clear](#durable-reset-and-clear-as-view-local-operations-2026-11-17) |
 | `LockOrder` | OG-11 and OG-31 | G08, in the same section; leaf G15 (task 12424) adds OG-31 on the hard checkpoint path, in [durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13) |
 | `NoViewOperationOnSupersededStore`, `NeverInstalledAnswer` | OG-47 | Leaf G15, `rspace-hard-checkpoint-durable-wiring` (task 12424), in [durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13) |
 | `AckOnce` | JO-13 | G08 migrated the owner's acknowledgement tests |
@@ -14387,6 +14387,303 @@ in debug and removed:
 | PI-04 | `ordered_groups` returns both (a,b) and (b,a) for their shared bucket key, in append order. | `two_orders_of_one_channel_set_share_a_bucket_key` |
 | PI-05 | Readers on other threads never see a partial entry while one writer appends. | `lookups_on_other_threads_see_only_whole_entries` |
 
+### Durable reset and clear as view-local operations (2026-11-17)
+
+Task 12426, leaf G17 `rspace-reset-durable-wiring`, gives `reset` and `clear`
+of a durable space their durable mode. Before it, `ISpace::reset` of a
+durable space reset the space's
+[durable history repository](#durable-history-repository-2026-11-11),
+installed the result, emptied the event log, the produce counters and the
+phase-lock maps, and only then asked the repository for a history reader,
+which the durable repository refuses with
+`HistoryError::BackendMismatch(History)`: every reset of a durable space
+returned that refusal after it had changed the space. `clear` reset to the
+legacy empty radix root, which no durable store holds, and was refused with
+`UnknownRootError`. Under ruling Q1 option A (the user, 2026-11-12) a reset is
+local to the space: it writes nothing and leaves the store's current state as
+it is. `ISpace::reset` and `ISpace::clear` in
+[`rspace.rs`](../../../rspace++/src/rspace/rspace.rs) now do that for every
+space that holds a durable view. This section builds on the
+[durable hard checkpoint](#durable-hard-checkpoint-through-the-owner-2026-11-13)
+section and uses its terms.
+
+No persisted byte, record kind, root, identity or wire message changes, and
+the crate gains no dependency. A space whose prefix kept the LMDB backend,
+the in-memory backend, and a durable space that `apply` built without
+`create` run the same statements of `reset` as before: `reset` tests one
+`Option` field and then takes the legacy path. `clear` now resets to the root
+that `HistoryRepository::empty_root()` of the space's repository names. The
+durable repository names the store-genesis state; every other repository
+answers with the trait's provided method, which returns
+`RadixHistory::empty_root_node_hash()`, the root that `clear` used before, so
+the clear of an LMDB or in-memory space is unchanged.
+
+**Terms.**
+
+| Term | Meaning |
+|---|---|
+| Durable space | An `RSpace` that `RSpace::create` built over a store whose prefix selected the durable backend. It holds a `DurableViewV1`: the owner handle and the base. |
+| View gate | The space's `operation_gate`, a `tokio::sync::RwLock<()>`. `produce`, `consume`, `install`, `remove_all_data` and `remove_all_continuations` take a read permit; `reset`, the hard and the soft checkpoint, `take_event_log` and `revert_to_soft_checkpoint` take the write permit. |
+| Read handle | What the owner's published core hands out for one durable state: the state resolved in the published core, and one generation lease. A history repository value holds one; the lazy hot store that `view_at` builds holds another. |
+| Generation lease | An entry of the store's generation-lease registry that names the catalog generation current when it was taken. Reclamation does not retire a range of packs that the range of a held lease overlaps. Dropping the handle releases the lease. |
+| Store genesis | The state of three empty namespace roots that `DurableStateRootV1::store_genesis` computes for the store's semantic profile. A new store starts at it, and it is the durable repository's `empty_root()`. |
+| Phase-lock maps | `phase_a_locks` and `phase_b_locks`: one `tokio::sync::Mutex<()>` per channel hash that a produce or a consume has locked. They grow with the channels a space uses, and only a reset empties them. |
+
+**How a durable reset runs.** `reset` takes the view gate for writing as its
+first statement, as before, and holds the guard until it returns. If the
+space holds a durable view, it then runs `reset_durable_view`, and the legacy
+statements do not run:
+
+```text
+reset_durable_view(view, root):          -- under the write guard of the view gate
+  history′ ← history.reset(root)          -- read handle 1: check the length, lease the
+                                          --   current generation, resolve root there as
+                                          --   the current or a retained state;
+                                          --   a refusal returns here, nothing changed
+  (base′, store′) ← view_at(history′.root())
+                                          -- read handle 2 on the same state, and a lazy
+                                          --   hot store over it with a detached journal;
+                                          --   a refusal returns here, history′ is dropped
+  install history′                        -- from here on no step returns an error
+  empty the event log and the produce counters
+  empty the phase-lock maps
+  install store′; clear the cache of retained-set automata
+  record base′ as the view's base         -- the view's owner incarnation, unchanged
+  restore the installed continuations
+  return Ok(())
+
+clear():
+  root ← history.empty_root()             -- the store genesis of a durable store
+  return reset(root)
+```
+
+Both read handles come from the owner's published core, as "The published
+core" in the
+[durable history repository](#durable-history-repository-2026-11-11)
+section describes: each pins the generation that is current when it is
+taken, with one lease, and resolves the target in that generation's catalog
+as the current state or a retained one. Neither takes the owner mutex, and
+neither writes or syncs a file. `view_at` is given the root that the
+repository resolved; it names the same state as `root`, since resolution
+compares the stored manifest's digest with the root. The steps after the two
+handles are those of `create_durable_checkpoint` after its owner call, with
+two differences: the event log is emptied, not returned, and the phase-lock
+maps are emptied as the legacy reset empties them. The owner is asked for
+nothing, so no permit comes back from it; the reset is traced under the same
+span as the legacy reset.
+
+**A reset that does not succeed changes nothing.** The two steps that can
+refuse come before the first installation step, and both build new values
+without touching the space: the repository's reset returns a new repository
+value, and `view_at` returns a new base and a new hot store. A refusal of
+either is returned unchanged, and what was built is dropped with its lease.
+The steps after `view_at` return no error; they can only panic, on a
+poisoned lock or on the broken invariant that *Not covered* below names.
+
+```text
+reset(r) of a space with a durable view
+
+  take the view gate for writing
+        │
+        ▼
+  history′ ← history.reset(r) ───── refused ────► return the refusal; the space is unchanged
+        │ resolved
+        ▼
+  (base′, store′) ← view_at(r′) ─── refused ────► return the refusal; the space is unchanged,
+        │ built                                    history′ and its lease are dropped
+        ▼
+  install history′, the empty event log, counters and phase-lock maps,
+  store′ with an empty automata cache, base′, and the installed continuations
+        │
+        ▼
+  return Ok(()); the view gate is released on every path
+```
+
+| Refusal | Step | Error of the reset |
+|---|---|---|
+| A hash of another length than 32 bytes | the repository's reset | `HistoryError::RootError(InvalidRootHash)` |
+| A root that is neither the current state nor a retained one, the legacy empty radix root among them | the repository's reset | `HistoryError::RootError(UnknownRootError)` |
+| A manifest that cannot be read or does not match its root | either read handle | `HistoryError::RootError(KvStoreError)` or `HistoryError::RootError(CorruptRootCatalog)` |
+| A generation lease refused: a poisoned registry, a retired generation, or the overflow of the lease counter | either read handle | `HistoryError::RootError(KvStoreError)` with the text of the lease refusal |
+| A hot store that cannot be built over the handle | `view_at` | `RSpaceError::DataIndexError` |
+
+The last row cannot occur for a reset: `create_from_durable_reader` returns
+an error only for a datum of its initial snapshot, and `view_at` passes it an
+empty one. The lease row can occur at `view_at` after the repository's handle
+was granted, since each handle takes its own lease; OG-34 forces that case
+through the lease counter.
+
+**Installation under the view gate.** The whole durable branch runs under
+the write guard that `reset` takes as its first statement. The operations
+that take a read permit of the same gate do so before they read or write the
+space's repository, hot store, event log, produce counters, phase locks,
+automata cache, base or installed continuations, so none of them runs on a
+space whose reset is under way, and a reset does not start while one of them
+runs. The durable branch contains no await point: once `reset` holds the
+guard, the branch runs to its end in the same poll of the future, so a reset
+is either cancelled while it waits for the gate, before it has changed
+anything, or not at all. Besides the gate, the reset takes the
+standard-library locks of the space's own fields, as the legacy reset does,
+and the short locks that the two read handles take inside the published core
+and the lease registry. It never takes the owner mutex, so the order that
+`LockOrder` prescribes for the view gate and the owner mutex is not involved.
+The operations that take no gate are outside this, on the durable route as
+on the legacy path and as in the hard checkpoint: `get_data`,
+`get_waiting_continuations`, `get_joins`, `get_root` and `to_map` each read
+one field, so a sequence of them can observe a reset under way, for example
+the target root together with the superseded store, and `update_produce`
+rewrites matching produce events of the event log in place. `spawn` reads
+only the repository, an `Arc` that a reset replaces whole, so it starts from
+the repository before the reset or from the one after it; a durable
+repository then refuses its history reader, as *Not covered* below says.
+
+**Model.** In the model of the
+[view gates](#view-gates-owner-mutex-and-incarnations-2026-11-01) section the
+reset is the single step `ResetView(view, target)`. With the view's caller
+idle and its own gate free, the view's base becomes the target, and the
+owner, the owner mutex, the pending record and `lastPublished` stay as they
+are. Its enabling condition does not mention the owner mutex, so the step is
+enabled while another view holds the mutex. The invariant
+`OwnerRootIsLastPublication` requires the owner's root to be the target of
+the last publication, and the fault "reset-moves-owner", in which
+`ResetView` also sets the owner's root, violates it in one step. The Rust
+reset is one step under the reduction argument that the hard checkpoint
+section gives for its installation: its statements run under the write
+guard, every other statement that writes the space's state waits for the
+gate, and what it reads outside the space, a retained state named by its
+root and leased while it is read, does not change. OG-43 checks the
+executable side of `OwnerRootIsLastPublication`: no reset and no clear moves
+the published state, writes a store file or syncs one.
+
+**Leases.** A durable space holds two generation leases, one for its
+repository's read handle and one for its store's. A reset replaces both, and
+dropping the space releases both. Each names the generation that was current
+when its handle was taken, not a generation in which the target was
+published: the target is resolved in the catalog of the current generation,
+which retains it. The two handles of one reset are taken one after the
+other, so a publication of another view in between can make them name two
+generations; both resolve the same retained state, whose contents do not
+change.
+
+**Cost.** Above the legacy reset's steps after its history reset, a durable
+reset takes two read handles, each one lease and one resolution of the
+target: one lookup in the closure ledger of the pinned generation, one read
+of the state's manifest, bounded by `SEMANTIC_MANIFEST_MAX_CANONICAL_LEN`, and
+its parse. It builds one hot store with an empty cache. No state is
+enumerated: the new hot store reads the state on demand, so neither the time
+nor the memory of a reset grows with the contents of the state.
+
+| ID | Required property | Test |
+|---|---|---|
+| OG-33 | Reset to retained roots. One space of a durable store publishes four states. Opening a second space adds two leases to the store's generation-lease registry, and a reset of it to the first state keeps that count and the store's generation. After the publishing space has published the third state, the generation that was current at that reset is still leased, until the second space resets to the third state; after the fourth state is published, the generation of that reset is still leased until the second space is dropped, which returns the lease count to its value before the space was opened. A third space with an installed continuation and an unpublished produce is reset in turn to the first, the second, the store-genesis, the third, the fourth, again the fourth and the first state. After each reset it names the target root, its data, continuations and joins are the model's contents of the target state, which a read handle of the store also reads under that root, and it still holds the installed continuation. Its event log is then empty, and the published state is still the fourth. The publishing space resets to the second state and back to the fourth. The reset space then publishes the second state's journal from the first state and returns the second state's root, and after a reset to the fourth state it publishes a produce, whose state becomes the published state with the modelled contents. On a current-thread runtime, while another task holds the owner mutex, a space opened at the current state resets to the third state within 30 seconds, names its root and reads its contents, and the owner mutex is still held when the reset has returned. | `a_reset_to_each_retained_root_reads_that_state_and_keeps_its_generation_lease` |
+| OG-34 | A reset that does not succeed changes nothing. Two spaces of one durable store hold unpublished journals: one at the published state, with an installed continuation, and one at an older state. Each is reset to five roots that the store does not hold (a digest absent from the store, the legacy empty radix root, another store's published root, the shared empty trie node and the data-bag node of a retained state), each refused with `UnknownRootError` (CA-11), and to hashes of 0, 31 and 33 bytes, each refused with `InvalidRootHash`. With the lease counter one below its maximum, a reset of each space to the other's retained state is refused with `KvStoreError` holding the text of the counter's overflow, and the counter shows that the repository's read handle took the last lease: the target resolved, and the read handle of the new hot store was refused. No lease is left behind. After each group, each space's root, reads and installed continuation, the store's files and the published state are as they were. At the end each space's event log holds exactly its journal's events, and each space publishes its journal from its own base. | `a_reset_that_does_not_succeed_changes_nothing` |
+| OG-43 | Reset and clear write nothing; clear reaches the store genesis. A new durable store is at the store-genesis root, and its first publication changes the directory image, which shows that the image detects a write. With the store at its second published state, a second space with an installed continuation and an unpublished produce runs five resets to retained roots, the store genesis among them, one reset to an absent digest and one clear; the outcome, the root and the reads after each equal the model's. The same sequence then runs once in its own thread under each of the sixteen directory failpoints, with the same outcomes, and each failpoint is still armed afterwards. After a reset and an unpublished produce, a clear names the store-genesis root, reads no datum, continuation or join, and keeps the installed continuation; a hard checkpoint with no operation then returns the store-genesis root with an empty event log. The store directory, the published state and the publishing space are then as they were before the first reset. The cleared space next publishes the first state's journal from the store genesis and reaches the first state's root. On a second store, which has never published, a clear of a space with an unpublished journal and a checkpoint with no operation return the store-genesis root, leave it the published state and change no file. Last, a publishing hard checkpoint in a thread with `PhysicalWrite` armed is refused with the injected failure and clears the failpoint, which shows that a write reaches the failpoints. | `a_reset_and_a_clear_write_and_sync_nothing_and_a_clear_returns_the_store_genesis` |
+
+The tests are in
+[`durable_rspace_reset.rs`](../../../rspace++/tests/persistence/durable_rspace_reset.rs).
+They reuse the model of contents, the operations and the observation of
+reads of the hard checkpoint's tests, so the expected contents of a state
+come from the model and not from the code under test. OG-33 repeats the
+repository-level HR-01 and HR-04 through `RSpace::reset`, and OG-34 and OG-43
+repeat HR-02 and HR-03, with the space's event log, installed continuation
+and published state added to what is compared.
+
+**Not covered.**
+
+- A target state that holds a datum which an installed continuation of the
+  space matches. Restoring that continuation then finds a match, which
+  `locked_install_internal` reports as `BugFoundError`, and
+  `restore_installs` panics after the space has been installed. The legacy
+  reset and both hard checkpoints restore the installed continuations in the
+  same way.
+- A durable space without a view, which `apply` builds from the repository
+  and hot store that `create_history_repo` returns, as a test of the hard
+  checkpoint does. No constructor of the crate returns one: `spawn` and
+  `create_with_replay` of a durable space are refused with
+  `BackendMismatch(History)` before they return a space. Its reset takes the
+  legacy statements and returns `BackendMismatch(History)` after it has
+  changed the space, as before. Its clear takes the same statements with the
+  store genesis as target, which the repository resolves, so it now also
+  returns `BackendMismatch(History)` after it has installed the
+  store-genesis repository and emptied the event log, the produce counters
+  and the phase-lock maps, with its hot store unchanged. Before, its clear
+  was refused with `UnknownRootError` and changed nothing. Task
+  `rspace-spawn-durable-attachment` attaches spawned spaces to the owner.
+- `ReplayRSpace` and `ReportingRSpace` keep their own `reset` and `clear`;
+  the replay space's clear still resets to the legacy empty radix root.
+- The operations that take no gate, as described above.
+- Whether reclamation can remove the store genesis from the retained states
+  is not established. If it can, a later clear of a durable space is refused
+  with `UnknownRootError` and changes nothing.
+
+**Red controls.** A red control puts one fault into the reset. The tests
+that state the faulted property must then fail, and every other test of the
+run must pass. Six faults were each applied to a copy of the candidate tree,
+run once in debug against the three tests of this section, and removed. The
+failing tests of each run were predicted before the first run, and each
+prediction held. After each run the faulted file was restored and compared
+byte for byte with its content before the fault.
+
+| # | Fault | Tests that failed | Failure text |
+|---|---|---|---|
+| 1 | `reset_durable_view` drops the hot store that it has built instead of installing it. | OG-33, OG-43 | OG-33: `after a reset to a retained root the view names that root and reads that state's contents`. OG-43: `each reset reads the state of its target, a refused reset reads the state before it, and a clear reads the empty state`. |
+| 2 | `view_at`, which builds the reset's hot store from the owner's published core, waits for the owner mutex, trying it every millisecond, and holds it while it builds the store. | OG-33 | `a durable reset while another task holds the owner mutex did not complete within 30 s` |
+| 3 | `reset_durable_view` resets the repository to its present root, not to the target, so the target is never resolved. | OG-33, OG-34, OG-43 | OG-33 as under fault 1. OG-34: `a digest absent from the store must be refused with UnknownRootError: Ok(())`. OG-43: `the resets include a refused root`. |
+| 4 | `reset_durable_view` installs the repository before `view_at` builds the store. | OG-34 | `a reset whose store was not built kept a generation lease` |
+| 5 | `clear` resets to `RadixHistory::empty_root_node_hash()`. | OG-43 | `each reset reads the state of its target, a refused reset reads the state before it, and a clear reads the empty state` |
+| 6 | `reset_durable_view` does not record the new base. | OG-33, OG-43 | `the durable view's hard checkpoint publishes: JournalConflict("catalog slot names another state than the durable journal's base")` |
+
+Fault 1 shows that a reset's reads come from the store that it installs:
+the space names the target, whose root the repository gives, and reads the
+state before the reset. Fault 2 shows why the reset must not take the owner
+mutex. In the case of OG-33 under a held owner mutex, another task of the
+same current-thread runtime holds the mutex until the reset has returned,
+so a reset that waits for it blocks the only thread, neither completes, and
+the watchdog reports it after 30 seconds. Fault 3 is the reset that skips
+the resolution of its target: it accepts every unknown root. Fault 4 breaks
+the order of the installation. Under it the first of the two refusals that
+OG-34 forces through the lease counter keeps the repository that it
+installed before the refusal, and with it the lease of the repository's
+read handle. The count that fails is one lower, not one higher, because the
+test sets the counter one below its maximum before each of the two
+refusals, so both repositories receive the lease `u64::MAX`, and the
+registry, a map from lease to generation, keeps one entry for the two. The
+correct reset drops that lease at the refusal, before the second one.
+Fault 5 shows the target of `clear`: a durable store refuses the legacy
+empty radix root with `UnknownRootError`. Fault 6 shows the base record:
+without it the next hard checkpoint of a reset space names the base that
+the space had before the reset, while its journal was recorded on the
+reset's target, and the owner refuses it. OG-34 passes under faults 1, 5
+and 6, which act only on resets and clears that succeed, of which it has
+none, and under fault 2, because no task holds the owner mutex in it. OG-33
+and OG-43 pass under fault 4: each of their resets is either refused before
+anything is built or builds its store, so the order of the installation is
+not observable in them.
+
+**Verification record.** Each command ran once on the candidate tree:
+
+- the focused list, `cargo test --locked --offline -j 8 -p rspace_plus_plus
+  --lib` with the filters `durable_rspace_checkpoint::`,
+  `durable_authority_backend::`, the manifest test,
+  `durable_history_repository::`, `durable_read_handle::`,
+  `durable_state_root::`, `durable_view_reader::` and
+  `durable_rspace_reset::`: 44 passed, 0 failed, 0 ignored, in debug and in
+  release;
+- the whole library target of `rspace_plus_plus`: 1120 tests, 1107 passed,
+  0 failed, 13 ignored, in debug and in release;
+- `cargo clippy --locked --offline -j 8 -p rspace_plus_plus --all-targets`:
+  exit status 0 and no diagnostic in a file that this task changes;
+- `cargo test --locked --offline -j 8 -p rspace_plus_plus --test
+  concurrent_rspace_architecture_repro_tests`: 6 passed;
+- the property registry: 322 bindings in 38 families, each ID bound once,
+  each with a row of this catalog and a row of the derivation matrix.
+
+The owner model is unchanged and was not run for this task. The derivation
+row of OG-43 cites the result for the fault "reset-moves-owner" that the
+table of faults of the
+[view gates](#view-gates-owner-mutex-and-incarnations-2026-11-01) section
+records.
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -14712,6 +15009,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | PI-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14425): an entry whose value does not hash to its key is refused at append, and one written past that check is refused at lookup. No model of this matrix has the preimage index; the re-hash at append and at lookup is a property of the Rust index. |
 | PI-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14425): (a,b) and (b,a) share the bucket key of `hash_from_hashes`, and `ordered_groups` returns both lists in append order, also after a reopen. No model of this matrix has the preimage index. |
 | PI-05 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14425): lookups on other threads never see a partial entry while one writer appends, because offsets are published with release stores only after the bytes of their batch are written. Memory ordering, the record arena and the table generations are properties of the Rust index; no model of this matrix has the index. |
+| OG-33 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12426): after a durable reset to each retained root a space reads that state's contents, and its two read handles hold their generation leases until its next reset or its drop. The owner model has no contents, read handles or leases. Its step `ResetView` is enabled whatever view holds the owner mutex; that the Rust reset does not wait for that mutex is checked by the test, not by the model. |
+| OG-34 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12426): a reset to an unknown or malformed root, and a reset whose target resolves but whose hot store cannot be built, returns its refusal and leaves the space's root, reads, installed continuation and event log, the store files and the published state as they were. The model's `ResetView` draws its target from the model's roots, so a refused target has no counterpart there. The test witnesses the caller registry's CA-11, `unknown_target_cannot_be_admitted`, through `RSpace::reset`. |
+| OG-43 | `OwnerRootIsLastPublication` | `EXEC_ONLY` | P | Partially entailed (task 12426): `OwnerRootIsLastPublication` requires the owner's root to be the target of the last publication, and `ResetView` changes only the base of its view; the fault "reset-moves-owner", in which a reset also moves the owner's root, violates the invariant in one step. That a durable reset and a clear perform no write and no sync under each of the sixteen directory failpoints and leave the store directory and the published state unchanged, and that a checkpoint with no operation after a clear returns the store-genesis root without a write, are the executable refinement obligation. The model has no store files, syncs or store genesis. |
 
 ## Generator discipline
 
@@ -16207,7 +16507,7 @@ for another.
 |---|---|---|
 | Current and known roots | `history/history_repository.rs` and `state/rspace_state_authority.rs`: exact `CurrentRoot`; private known-root capability bound to the authority. `HistoryRepository::root()` is view-local. | One backend-discriminated authority; preserve explicit view-local versus backend-current distinction. Never consult an independently current legacy repository. |
 | Hard checkpoint and reset | `rspace.rs::create_checkpoint/reset`, `replay_rspace.rs`, `history/history_repository_impl.rs::checkpoint/checkpoint_at/reset`, `state/rspace_state_authority.rs::commit_local_checkpoint`. Reset checks that its target is a known verified root and resets only the view's history: it writes nothing and leaves the current root and the publication generation unchanged. A checkpoint publishes the successor of the view's own verified base at the next publication generation, whatever root is current, with its objects and membership under one lock or one LMDB write transaction; a base that is not a verified root is refused with nothing written, and a checkpoint that changes nothing writes nothing and keeps the generation. `checkpoint_at` stays a same-base entry point: it refuses with `RootCatalogConflict` unless the current root and generation equal the expected pair. | Reset is view-local: it resolves its target to a retained, semantically admitted state and leases it, with no write, no sync and no owner mutex. A checkpoint names the view's base and publishes that base's successor in one durable transaction built on the current state, after checking that the base is still retained. Reuse the existing no-op and ABA proofs/tests. |
-| Clear | `RSpace::clear` and replay clear reset to the legacy empty-root identity. | Resolve the agreed empty-state bridge under the selected authority; never manufacture an empty legacy history as a durable fallback. Root/epoch policy is task 7941's contract, not silently selected here. |
+| Clear | `RSpace::clear` resets to its repository's `empty_root()`, the legacy empty-root identity on LMDB and the store genesis on the durable route; replay clear resets to the legacy empty-root identity. | Resolve the agreed empty-state bridge under the selected authority; never manufacture an empty legacy history as a durable fallback. Root/epoch policy is task 7941's contract, not silently selected here. |
 | Spawn and runtime pools | `rspace.rs::spawn`, `replay_rspace.rs::spawn`, and `casper/src/rust/util/rholang/runtime_manager.rs::spawn_runtime/spawn_replay_runtime`. Spawn calls reset on the source view's root; that reset writes nothing, so spawn leaves the shared current root and publication generation unchanged. Its new hot view currently has a separate gate. | Model full spawn as view attachment to the same owner followed by a view-local reset to the source's history root, with no publication. Reuse the one writer/commit owner; do not acquire an independent writer lease. Attachment preserves owner identity and source history, and full spawn preserves the publication generation. |
 | Soft capture and restoration | `checkpoint.rs::SoftCheckpoint`, both space implementations, `reporting_rspace.rs`, and `rho_runtime.rs`. Cache, log, produce counter and five journal domains are captured. Restore uses the receiving view's current history, not the capture-time durable root. | Transferable retained payload is data, not mutation authority. Fresh receiving-owner permission, an authenticated receiving-view reader and complete journal refinement are required. No public same-base or same-generation precondition is added. |
 | Replay and reporting | Casper `rholang/runtime.rs`, `replay_runtime.rs`, and `ReportingRSpace` delegate reset/checkpoint/soft operations. `RuntimeOps::with_soft_transaction` rolls back the explicit false result, but its `?` error return does not itself promise rollback. | Preserve actual error, replay-log, COMM and post-state behavior. A replay reset is view-local and writes nothing; a replay checkpoint publishes the successor of its own recorded base at the next publication generation, whatever root is current, also when that successor is the play's target, whose stored objects it reuses. |

@@ -68,7 +68,7 @@ const RACED_CHANNEL: &str = "c";
 const RACED_VALUE: &str = "v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Receive {
+pub(super) struct Receive {
     group: usize,
     patterns: Patterns,
     body: usize,
@@ -98,7 +98,7 @@ impl Receive {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Operation {
+pub(super) enum Operation {
     Produce { channel: usize, value: usize },
     Consume(Receive),
 }
@@ -110,7 +110,7 @@ enum Refusal {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Contents {
+pub(super) struct Contents {
     data: [[u64; VALUES.len()]; CHANNELS.len()],
     receives: BTreeSet<Receive>,
 }
@@ -195,7 +195,7 @@ impl Contents {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Observed {
+pub(super) struct Observed {
     contents: Contents,
     joins: BTreeSet<(usize, usize)>,
 }
@@ -281,15 +281,15 @@ impl Match<String, String, String> for EqualStrings {
     }
 }
 
-struct DurableStore {
-    view: Space,
-    slot: Slot,
-    authority: Arc<RSpaceStateAuthority>,
+pub(super) struct DurableStore {
+    pub(super) view: Space,
+    pub(super) slot: Slot,
+    pub(super) authority: Arc<RSpaceStateAuthority>,
     scratch: PersistenceTrialDir,
 }
 
 impl DurableStore {
-    fn open(prefix: &str) -> Self {
+    pub(super) fn open(prefix: &str) -> Self {
         let scratch = trial_scratch(prefix);
         let authority = durable_authority(scratch.path());
         let view = open_view(&authority);
@@ -302,7 +302,7 @@ impl DurableStore {
         }
     }
 
-    fn path(&self) -> &Path { self.scratch.path() }
+    pub(super) fn path(&self) -> &Path { self.scratch.path() }
 }
 
 fn position_of(names: &[&str], name: &str) -> usize {
@@ -340,14 +340,14 @@ fn patterns_of<T: AsRef<str>>(values: &[T]) -> Patterns {
     patterns
 }
 
-fn produce(channel_name: &str, value_name: &str) -> Operation {
+pub(super) fn produce(channel_name: &str, value_name: &str) -> Operation {
     Operation::Produce {
         channel: position_of(&CHANNELS, channel_name),
         value: position_of(&VALUES, value_name),
     }
 }
 
-fn consume(channel_names: &[&str], pattern_names: &[&str], body_name: &str) -> Operation {
+pub fn consume(channel_names: &[&str], pattern_names: &[&str], body_name: &str) -> Operation {
     assert_eq!(channel_names.len(), pattern_names.len(), "a receive names one pattern per channel");
     Operation::Consume(Receive::new(
         group_of(channel_names),
@@ -358,7 +358,7 @@ fn consume(channel_names: &[&str], pattern_names: &[&str], body_name: &str) -> O
 
 fn matcher() -> Arc<Box<dyn Match<String, String, String>>> { Arc::new(Box::new(EqualStrings)) }
 
-fn first_poll<T>(operation: impl Future<Output = T>) -> T {
+pub(super) fn first_poll<T>(operation: impl Future<Output = T>) -> T {
     let mut operation = std::pin::pin!(tokio::task::unconstrained(operation));
     match operation
         .as_mut()
@@ -369,16 +369,16 @@ fn first_poll<T>(operation: impl Future<Output = T>) -> T {
     }
 }
 
-fn durable_authority(directory: &Path) -> Arc<RSpaceStateAuthority> {
+pub(super) fn durable_authority(directory: &Path) -> Arc<RSpaceStateAuthority> {
     RSpaceStateAuthority::durable(directory, view_limits())
 }
 
-fn open_view(authority: &Arc<RSpaceStateAuthority>) -> Space {
+pub(super) fn open_view(authority: &Arc<RSpaceStateAuthority>) -> Space {
     Space::create(RSpaceStore::new(Arc::clone(authority)), matcher())
         .expect("RSpace::create opens a view of the durable store")
 }
 
-fn owner_slot(authority: &RSpaceStateAuthority) -> Slot {
+pub(super) fn owner_slot(authority: &RSpaceStateAuthority) -> Slot {
     match authority.route() {
         AuthorityRouteV1::Durable(backend) => backend
             .owner_slot::<String, String, String, String>()
@@ -387,11 +387,11 @@ fn owner_slot(authority: &RSpaceStateAuthority) -> Slot {
     }
 }
 
-fn published_root(slot: &Slot) -> Blake2b256Hash {
+pub(super) fn published_root(slot: &Slot) -> Blake2b256Hash {
     Blake2b256Hash::from(slot.published_core().current_root())
 }
 
-fn hard_checkpoint(view: &Space) -> Checkpoint {
+pub(super) fn hard_checkpoint(view: &Space) -> Checkpoint {
     first_poll(view.create_checkpoint()).expect("the durable view's hard checkpoint publishes")
 }
 
@@ -462,7 +462,7 @@ fn perform<S: ISpace<String, String, String, String>>(
     }
 }
 
-fn run(view: &Space, contents: &mut Contents, operations: &[Operation]) {
+pub(super) fn run(view: &Space, contents: &mut Contents, operations: &[Operation]) {
     for &operation in operations {
         let modelled = contents
             .apply(operation)
@@ -525,14 +525,14 @@ fn observe(
     Observed { contents, joins }
 }
 
-fn expected(contents: &Contents) -> Observed {
+pub(super) fn expected(contents: &Contents) -> Observed {
     Observed {
         contents: contents.clone(),
         joins: contents.joins(),
     }
 }
 
-fn observe_root(slot: &Slot, root: &Blake2b256Hash) -> Observed {
+pub(super) fn observe_root(slot: &Slot, root: &Blake2b256Hash) -> Observed {
     let target =
         DurableStateRootV1::try_from(root).expect("a checkpoint root is a durable state root");
     let (resolved, handle) = slot
@@ -547,7 +547,7 @@ fn observe_root(slot: &Slot, root: &Blake2b256Hash) -> Observed {
     )
 }
 
-fn observe_view(view: &Space) -> Observed {
+pub(super) fn observe_view(view: &Space) -> Observed {
     observe(
         |key| first_poll(view.get_data(key)),
         |key| first_poll(view.get_waiting_continuations(key.to_vec())),
