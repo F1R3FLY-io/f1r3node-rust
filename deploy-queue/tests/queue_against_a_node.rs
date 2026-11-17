@@ -189,7 +189,9 @@ async fn release_keeps_the_validators_pool_at_what_its_next_block_takes() {
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
     for number in 0..12 {
-        queue.handle.intake(numbered_deploy(10, number))
+        queue
+            .handle
+            .intake(numbered_deploy(10, number))
             .await
             .unwrap();
     }
@@ -350,7 +352,9 @@ async fn finality_past_the_citable_depth_holds_release_and_intake_until_it_catch
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
     for number in 0..3 {
-        queue.handle.intake(numbered_deploy(10, number))
+        queue
+            .handle
+            .intake(numbered_deploy(10, number))
             .await
             .unwrap();
     }
@@ -466,7 +470,9 @@ async fn a_backlog_past_the_citable_depth_waits_within_its_window() {
     let fitting = last - 10 - 25;
     assert!(fitting > 25, "the window, not the depth, bounds the line");
     for number in 0..fitting {
-        queue.handle.intake(numbered_deploy(10, number))
+        queue
+            .handle
+            .intake(numbered_deploy(10, number))
             .await
             .unwrap_or_else(|error| panic!("deploy {} of {} refused: {}", number, fitting, error));
     }
@@ -487,7 +493,9 @@ async fn one_deployer_cannot_take_the_room_another_needs() {
     // At one deploy per height, a 49-height fresh window less the 25-height
     // depth holds 24 deploys; one deployer alone may hold half.
     for number in 0..12 {
-        queue.handle.intake(one_deployers_deploy(10, number))
+        queue
+            .handle
+            .intake(one_deployers_deploy(10, number))
             .await
             .unwrap();
     }
@@ -512,7 +520,9 @@ async fn a_deploy_without_time_to_reach_the_validators_next_block_is_not_release
     let queue = Queue::start(&url, dir.path()).await;
     // Six deploys whose window runs out at block 69.
     for number in 0..6 {
-        queue.handle.intake(numbered_deploy(10, number))
+        queue
+            .handle
+            .intake(numbered_deploy(10, number))
             .await
             .unwrap();
     }
@@ -645,9 +655,7 @@ async fn queue_with_a_released_deploy(seed: u8) -> (FakeNode, Queue, tempfile::T
     let url = node.clone().serve().await;
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
-    let sig = queue.handle.intake(deploy(5, "root", seed))
-        .await
-        .unwrap();
+    let sig = queue.handle.intake(deploy(5, "root", seed)).await.unwrap();
     eventually("the deploy is released", || async {
         queue.state(&sig).await == Some(QueueState::Submitted)
     })
@@ -748,4 +756,31 @@ async fn queued_deploys_survive_a_restart_and_are_released_after_it() {
     .await;
     assert_eq!(queue.state(&sig).await, Some(QueueState::Submitted));
     queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_decided_deploy_keeps_its_record_on_disk_without_its_payload() {
+    let node = FakeNode::new(10, 9);
+    let url = node.clone().serve().await;
+    let dir = tempfile::tempdir().unwrap();
+    let queue = Queue::start(&url, dir.path()).await;
+    let decided = queue.handle.intake(deploy(5, "root", 1)).await.unwrap();
+    let held = queue.handle.intake(deploy(30, "root", 2)).await.unwrap();
+    eventually("the node receives the due deploy", || async {
+        node.received().len() == 1
+    })
+    .await;
+    node.emit(block_added(11, VALIDATOR, &[&decided]));
+    node.emit(finalized_verdict(&decided, 11));
+    eventually("the verdict lands", || async {
+        queue.state(&decided).await == Some(QueueState::Finalized)
+    })
+    .await;
+    queue.stop();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let store = deploy_queue::store::QueueStore::open(dir.path()).unwrap();
+    assert_eq!(store.load().unwrap().len(), 2);
+    assert_eq!(store.payload(&decided).unwrap(), None);
+    assert!(store.payload(&held).unwrap().is_some());
 }

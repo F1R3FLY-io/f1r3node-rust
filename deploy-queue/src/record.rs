@@ -60,9 +60,6 @@ impl QueueState {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueRecord {
-    /// The signed deploy, protobuf-encoded. Its signature was verified at
-    /// intake.
-    pub deploy: Vec<u8>,
     pub deployer: Vec<u8>,
     pub valid_after: i64,
     /// Intake order; release order within one deployer follows it.
@@ -85,7 +82,6 @@ pub struct QueueRecord {
 impl QueueRecord {
     pub fn new(deploy: &Signed<DeployData>, sequence: u64, accepted_at_ms: i64) -> Self {
         Self {
-            deploy: DeployData::to_proto_ref(deploy).encode_to_vec(),
             deployer: deploy.pk.bytes.to_vec(),
             valid_after: deploy.data.valid_after_block_number,
             sequence,
@@ -101,14 +97,6 @@ impl QueueRecord {
         }
     }
 
-    /// The stored deploy. Its signature was verified at intake, so it is not
-    /// verified again.
-    pub fn signed_deploy(&self) -> Result<Signed<DeployData>, String> {
-        let proto = DeployDataProto::decode(&self.deploy[..])
-            .map_err(|e| format!("stored deploy does not decode: {}", e))?;
-        DeployData::from_proto_unverified(proto)
-    }
-
     pub fn view(&self) -> DeployView {
         DeployView {
             state: self.state,
@@ -117,6 +105,19 @@ impl QueueRecord {
             detail: self.detail.clone(),
         }
     }
+}
+
+/// The signed deploy as the queue stores it: protobuf-encoded.
+pub fn encode_deploy(deploy: &Signed<DeployData>) -> Vec<u8> {
+    DeployData::to_proto_ref(deploy).encode_to_vec()
+}
+
+/// A stored deploy. Its signature was verified at intake, so it is not
+/// verified again.
+pub fn decode_deploy(bytes: &[u8]) -> Result<Signed<DeployData>, String> {
+    let proto = DeployDataProto::decode(bytes)
+        .map_err(|e| format!("stored deploy does not decode: {}", e))?;
+    DeployData::from_proto_unverified(proto)
 }
 
 /// What a client is told about a deploy.
@@ -136,7 +137,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_record_returns_the_deploy_it_stored() {
+    fn a_stored_deploy_decodes_to_the_deploy_and_its_record_keeps_its_keys() {
         let deploy = Signed::create(
             DeployData {
                 term: "Nil".to_string(),
@@ -152,8 +153,8 @@ mod tests {
             PrivateKey::from_bytes(&[2; 32]),
         )
         .unwrap();
+        assert_eq!(decode_deploy(&encode_deploy(&deploy)).unwrap(), deploy);
         let record = QueueRecord::new(&deploy, 1, 0);
-        assert_eq!(record.signed_deploy().unwrap(), deploy);
         assert_eq!(record.valid_after, 9);
         assert_eq!(record.deployer, deploy.pk.bytes.to_vec());
     }

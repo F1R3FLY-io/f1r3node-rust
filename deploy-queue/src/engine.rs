@@ -16,8 +16,8 @@ use crate::health::{Health, ShardView, ValidatorView};
 use crate::node::{
     ChainSnapshot, NodeDeployStatus, NodeError, NodeHttp, ShardValues, SubmitOutcome,
 };
-use crate::record::{DeployView, QueueRecord, QueueState, Sig};
-use crate::store::{QueueStore, StoreError};
+use crate::record::{decode_deploy, encode_deploy, DeployView, QueueRecord, QueueState, Sig};
+use crate::store::{Batch, QueueStore, StoreError};
 
 const RETRY_FLOOR: Duration = Duration::from_secs(1);
 const RETRY_CEILING: Duration = Duration::from_secs(30);
@@ -259,6 +259,11 @@ pub struct Engine {
     dirty: HashSet<Sig>,
     /// Records deleted since the last commit.
     removed: Vec<Sig>,
+    /// Signed deploys accepted since the last commit, until the store holds
+    /// them.
+    new_payloads: HashMap<Sig, Vec<u8>>,
+    /// Signed deploys of decided deploys, dropped at the next commit.
+    dropped_payloads: Vec<Sig>,
     /// Intake answers waiting for the commit of what they acknowledge.
     intake_replies: Vec<(oneshot::Sender<IntakeResult>, IntakeResult)>,
     /// Broadcasts, replies and node requests waiting for the commit.
@@ -321,6 +326,8 @@ impl Engine {
             transitions,
             dirty: HashSet::new(),
             removed: Vec::new(),
+            new_payloads: HashMap::new(),
+            dropped_payloads: Vec::new(),
             intake_replies: Vec::new(),
             effects: Vec::new(),
         };
@@ -364,17 +371,26 @@ impl Engine {
     /// Commits every change since the last commit, then answers, broadcasts
     /// and sends what waited for it.
     fn commit(&mut self) -> Result<(), StoreError> {
-        if !self.dirty.is_empty() || !self.removed.is_empty() {
-            let puts: Vec<(&Sig, &QueueRecord)> = self
-                .dirty
-                .iter()
-                .map(|sig| {
-                    self.records
-                        .get_key_value(sig)
-                        .expect("a dirty record is held; a deleted one leaves the dirty set")
-                })
-                .collect();
-            if let Err(e) = self.store.commit(&puts, &self.removed) {
+        if !self.dirty.is_empty() || !self.removed.is_empty() || !self.dropped_payloads.is_empty() {
+            let batch = Batch {
+                records: self
+                    .dirty
+                    .iter()
+                    .map(|sig| {
+                        self.records
+                            .get_key_value(sig)
+                            .expect("a dirty record is held; a deleted one leaves the dirty set")
+                    })
+                    .collect(),
+                payloads: self
+                    .new_payloads
+                    .iter()
+                    .map(|(sig, bytes)| (sig, bytes.as_slice()))
+                    .collect(),
+                removed_records: &self.removed,
+                removed_payloads: &self.dropped_payloads,
+            };
+            if let Err(e) = self.store.commit(&batch) {
                 for (reply, _) in self.intake_replies.drain(..) {
                     let _ = reply.send(Err(IntakeError::Store(e.to_string())));
                 }
@@ -382,6 +398,8 @@ impl Engine {
             }
             self.dirty.clear();
             self.removed.clear();
+            self.new_payloads.clear();
+            self.dropped_payloads.clear();
         }
         for (reply, result) in self.intake_replies.drain(..) {
             // A client that hung up does not undo an accepted deploy.
@@ -579,6 +597,8 @@ impl Engine {
         }
 
         let record = QueueRecord::new(&deploy, self.next_sequence, now_ms);
+        self.new_payloads
+            .insert(sig.clone(), encode_deploy(&deploy));
         self.next_sequence += 1;
         self.enter(QueueState::Queued);
         self.reindex(&sig, None, Some(IndexKeys::of(&record)));
@@ -990,12 +1010,18 @@ impl Engine {
     }
 
     fn request_for(&self, sig: &Sig) -> Result<DeployRequest, StoreError> {
-        let deploy = self.records[sig]
-            .signed_deploy()
-            .map_err(|reason| StoreError::Corrupt {
-                sig: hex::encode(sig),
-                reason,
-            })?;
+        let corrupt = |reason: String| StoreError::Corrupt {
+            sig: hex::encode(sig),
+            reason,
+        };
+        let stored = match self.new_payloads.get(sig) {
+            Some(bytes) => bytes.clone(),
+            None => self
+                .store
+                .payload(sig)?
+                .ok_or_else(|| corrupt("an undecided deploy has no stored payload".to_string()))?,
+        };
+        let deploy = decode_deploy(&stored).map_err(corrupt)?;
         Ok(DeployRequest::from_signed(&deploy))
     }
 
@@ -1254,6 +1280,8 @@ impl Engine {
                 }
             }
         });
+        self.new_payloads.remove(sig);
+        self.dropped_payloads.push(sig.clone());
         metrics::counter!("deploy_queue.terminal", "state" => state.name()).increment(1);
     }
 
