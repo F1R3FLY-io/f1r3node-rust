@@ -405,6 +405,11 @@ name = "epm1_map_value_lookup_validation"
 path = "benches/epm1_map_value_lookup_validation.rs"
 harness = false
 
+[[bench]]
+name = "encode_trie_path_cells"
+path = "benches/encode_trie_path_cells.rs"
+harness = false
+
 [dev-dependencies]
 blake2 = "0.10.6"
 proc-macro2 = "1"

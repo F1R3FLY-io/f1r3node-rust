@@ -161,6 +161,9 @@ use std::sync::Arc;
 #[cfg(test)]
 #[path = "../../tests/support/split_carrier_prefilter.rs"]
 mod split_prefilter_tests;
+#[cfg(test)]
+#[path = "../../tests/support/encode_trie_path_stored_bytes_differential.rs"]
+mod encode_trie_path_differential_tests;
 
 use pathmap::PathMap;
 #[cfg(test)]
@@ -477,6 +480,152 @@ fn epathmap_carrier(repr: EPathMapRepr<Par>) -> Par {
     expr_carrier(ExprInstance::EPathmapBody(map))
 }
 
+#[derive(Clone, Copy)]
+enum StoredComponent<'a> {
+    Expr(&'a [u8]),
+    Unforgeable(&'a [u8]),
+}
+
+struct StoredChildren<'a> {
+    cursor: super::rholang::protobuf_cursor::CanonicalFieldCursor<'a>,
+    closes_split_list: bool,
+}
+
+fn stored_single_field(
+    message: &[u8],
+) -> Option<super::rholang::protobuf_cursor::CanonicalField<'_>> {
+    use super::rholang::protobuf_cursor::CanonicalFieldCursor;
+    let mut cursor = CanonicalFieldCursor::new(message);
+    match cursor.next_field() {
+        Ok(Some(field)) if cursor.is_empty() => Some(field),
+        _ => None,
+    }
+}
+
+fn stored_par_component(par: &[u8]) -> Option<StoredComponent<'_>> {
+    use super::rholang::protobuf_cursor::{CanonicalField, CanonicalFieldValue};
+    match stored_single_field(par)? {
+        CanonicalField {
+            number: 5,
+            value: CanonicalFieldValue::LengthDelimited(expr),
+            ..
+        } => Some(StoredComponent::Expr(expr)),
+        CanonicalField {
+            number: 7,
+            value: CanonicalFieldValue::LengthDelimited(unforgeable),
+            ..
+        } => Some(StoredComponent::Unforgeable(unforgeable)),
+        _ => None,
+    }
+}
+
+fn stored_collection_child_count(collection: &[u8]) -> Option<u64> {
+    use super::rholang::protobuf_cursor::{
+        CanonicalField, CanonicalFieldCursor, CanonicalFieldValue,
+    };
+    let mut cursor = CanonicalFieldCursor::new(collection);
+    let mut count = 0u64;
+    loop {
+        match cursor.next_field() {
+            Ok(None) => return Some(count),
+            Ok(Some(CanonicalField {
+                number: 1,
+                value: CanonicalFieldValue::LengthDelimited(_),
+                ..
+            })) => count += 1,
+            _ => return None,
+        }
+    }
+}
+
+fn stored_private_id(unforgeable: &[u8]) -> Option<&[u8]> {
+    use super::rholang::protobuf_cursor::{CanonicalField, CanonicalFieldValue};
+    match stored_single_field(unforgeable)? {
+        CanonicalField {
+            number: 1,
+            value: CanonicalFieldValue::LengthDelimited([]),
+            ..
+        } => Some(&[]),
+        CanonicalField {
+            number: 1,
+            value: CanonicalFieldValue::LengthDelimited(private),
+            ..
+        } => match stored_single_field(private)? {
+            CanonicalField {
+                number: 1,
+                value: CanonicalFieldValue::LengthDelimited(id @ [_, ..]),
+                ..
+            } => Some(id),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn stored_big_rational_parts(rational: &[u8]) -> Option<(&[u8], &[u8])> {
+    use super::rholang::protobuf_cursor::{
+        CanonicalField, CanonicalFieldCursor, CanonicalFieldValue,
+    };
+    let mut cursor = CanonicalFieldCursor::new(rational);
+    let mut next = cursor.next_field();
+    let mut numerator: &[u8] = &[];
+    if let Ok(Some(CanonicalField {
+        number: 1,
+        value: CanonicalFieldValue::LengthDelimited(bytes @ [_, ..]),
+        ..
+    })) = next
+    {
+        numerator = bytes;
+        next = cursor.next_field();
+    }
+    let mut denominator: &[u8] = &[];
+    if let Ok(Some(CanonicalField {
+        number: 2,
+        value: CanonicalFieldValue::LengthDelimited(bytes @ [_, ..]),
+        ..
+    })) = next
+    {
+        denominator = bytes;
+        next = cursor.next_field();
+    }
+    match next {
+        Ok(None) => Some((numerator, denominator)),
+        _ => None,
+    }
+}
+
+fn stored_fixed_point_parts(fixed: &[u8]) -> Option<(&[u8], u64)> {
+    use super::rholang::protobuf_cursor::{
+        CanonicalField, CanonicalFieldCursor, CanonicalFieldValue,
+    };
+    let mut cursor = CanonicalFieldCursor::new(fixed);
+    let mut next = cursor.next_field();
+    let mut unscaled: &[u8] = &[];
+    if let Ok(Some(CanonicalField {
+        number: 1,
+        value: CanonicalFieldValue::LengthDelimited(bytes @ [_, ..]),
+        ..
+    })) = next
+    {
+        unscaled = bytes;
+        next = cursor.next_field();
+    }
+    let mut scale = 0u64;
+    if let Ok(Some(CanonicalField {
+        number: 2,
+        value: CanonicalFieldValue::Varint(value @ 1..=0xFFFF_FFFF),
+        ..
+    })) = next
+    {
+        scale = value;
+        next = cursor.next_field();
+    }
+    match next {
+        Ok(None) => Some((unscaled, scale)),
+        _ => None,
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The iterative encoder (explicit op + context stacks — no recursion)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -614,6 +763,9 @@ impl<'p> EncMachine<'p> {
                     return Ok(());
                 }
             }
+            if self.emit_stored_stable_par(par_ref, true)? {
+                return Ok(());
+            }
         }
         if let Some(list) = split_carrier_list(par_ref) {
             // Split form: per-element segments + the terminator. LIFO push:
@@ -641,6 +793,185 @@ impl<'p> EncMachine<'p> {
                 top_level: true,
             });
         }
+    }
+
+    fn emit_stored_stable_par(
+        &mut self,
+        par: &Par,
+        split_top_level_list: bool,
+    ) -> Result<bool, CodecError> {
+        let mut outcome = Ok(false);
+        match (
+            par.family_cardinality::<Expr>(),
+            par.family_cardinality::<GUnforgeable>(),
+        ) {
+            (1, 0) => par.visit_encoded::<Expr>(|entry| {
+                if entry.multiplicity().get() == 1 {
+                    outcome = self.emit_stored_stable_component(
+                        StoredComponent::Expr(entry.payload()),
+                        split_top_level_list,
+                    );
+                }
+            }),
+            (0, 1) => par.visit_encoded::<GUnforgeable>(|entry| {
+                if entry.multiplicity().get() == 1 {
+                    outcome = self.emit_stored_stable_component(
+                        StoredComponent::Unforgeable(entry.payload()),
+                        false,
+                    );
+                }
+            }),
+            _ => {}
+        }
+        outcome
+    }
+
+    fn emit_stored_stable_component(
+        &mut self,
+        component: StoredComponent<'_>,
+        split_top_level_list: bool,
+    ) -> Result<bool, CodecError> {
+        use super::rholang::protobuf_cursor::{CanonicalField, CanonicalFieldValue};
+        let start = self.root.len();
+        let mut pending = Vec::new();
+        let mut translated =
+            self.emit_stored_component_header(component, split_top_level_list, &mut pending)?;
+        while translated {
+            let Some(children) = pending.last_mut() else {
+                return Ok(true);
+            };
+            translated = match children.cursor.next_field() {
+                Ok(None) => {
+                    let closes_split_list = children.closes_split_list;
+                    pending.pop();
+                    if closes_split_list {
+                        self.emit_byte(tag::TERM)?;
+                    }
+                    true
+                }
+                Ok(Some(CanonicalField {
+                    number: 1,
+                    value: CanonicalFieldValue::LengthDelimited(child),
+                    ..
+                })) => match stored_par_component(child) {
+                    Some(child_component) => {
+                        self.emit_stored_component_header(child_component, false, &mut pending)?
+                    }
+                    None => false,
+                },
+                _ => false,
+            };
+        }
+        self.root.truncate(start);
+        Ok(false)
+    }
+
+    fn emit_stored_component_header<'a>(
+        &mut self,
+        component: StoredComponent<'a>,
+        split_top_level_list: bool,
+        pending: &mut Vec<StoredChildren<'a>>,
+    ) -> Result<bool, CodecError> {
+        use super::rholang::protobuf_cursor::{
+            CanonicalField, CanonicalFieldCursor, CanonicalFieldValue,
+        };
+        let expr = match component {
+            StoredComponent::Unforgeable(unforgeable) => {
+                let Some(id) = stored_private_id(unforgeable) else {
+                    return Ok(false);
+                };
+                self.emit_byte(tag::GPRIVATE)?;
+                self.emit_uv(id.len() as u64)?;
+                self.emit(id)?;
+                return Ok(true);
+            }
+            StoredComponent::Expr(expr) => expr,
+        };
+        let Some(CanonicalField { number, value, .. }) = stored_single_field(expr) else {
+            return Ok(false);
+        };
+        match (number, value) {
+            (1, CanonicalFieldValue::Varint(0)) => self.emit_byte(tag::GBOOL_FALSE)?,
+            (1, CanonicalFieldValue::Varint(1)) => self.emit_byte(tag::GBOOL_TRUE)?,
+            (2, CanonicalFieldValue::Varint(encoded)) => {
+                self.emit_byte(tag::GINT)?;
+                self.emit_uv(encoded)?;
+            }
+            (3, CanonicalFieldValue::LengthDelimited(text))
+                if std::str::from_utf8(text).is_ok() =>
+            {
+                self.emit_byte(tag::GSTRING)?;
+                self.emit_uv(text.len() as u64)?;
+                self.emit(text)?;
+            }
+            (4, CanonicalFieldValue::LengthDelimited(uri)) if std::str::from_utf8(uri).is_ok() => {
+                self.emit_byte(tag::GURI)?;
+                self.emit_uv(uri.len() as u64)?;
+                self.emit(uri)?;
+            }
+            (25, CanonicalFieldValue::LengthDelimited(bytes)) => {
+                self.emit_byte(tag::GBYTE_ARRAY)?;
+                self.emit_uv(bytes.len() as u64)?;
+                self.emit(bytes)?;
+            }
+            (34, CanonicalFieldValue::Fixed64(little_endian)) => {
+                let Ok(bits) = <[u8; 8]>::try_from(little_endian) else {
+                    return Ok(false);
+                };
+                self.emit_byte(tag::GDOUBLE)?;
+                self.emit(&u64::from_le_bytes(bits).to_be_bytes())?;
+            }
+            (35, CanonicalFieldValue::LengthDelimited(bytes)) => {
+                self.emit_byte(tag::GBIG_INT)?;
+                self.emit_uv(bytes.len() as u64)?;
+                self.emit(bytes)?;
+            }
+            (36, CanonicalFieldValue::LengthDelimited(rational)) => {
+                let Some((numerator, denominator)) = stored_big_rational_parts(rational) else {
+                    return Ok(false);
+                };
+                self.emit_byte(tag::GBIG_RAT)?;
+                self.emit_uv(numerator.len() as u64)?;
+                self.emit(numerator)?;
+                self.emit_uv(denominator.len() as u64)?;
+                self.emit(denominator)?;
+            }
+            (37, CanonicalFieldValue::LengthDelimited(fixed)) => {
+                let Some((unscaled, scale)) = stored_fixed_point_parts(fixed) else {
+                    return Ok(false);
+                };
+                self.emit_byte(tag::GFIXED_POINT)?;
+                self.emit_uv(unscaled.len() as u64)?;
+                self.emit(unscaled)?;
+                self.emit_uv(scale)?;
+            }
+            (20, CanonicalFieldValue::LengthDelimited(list)) => {
+                let Some(count) = stored_collection_child_count(list) else {
+                    return Ok(false);
+                };
+                if !split_top_level_list {
+                    self.emit_byte(tag::ELIST)?;
+                    self.emit_uv(count)?;
+                }
+                pending.push(StoredChildren {
+                    cursor: CanonicalFieldCursor::new(list),
+                    closes_split_list: split_top_level_list,
+                });
+            }
+            (21, CanonicalFieldValue::LengthDelimited(tuple)) => {
+                let Some(count) = stored_collection_child_count(tuple) else {
+                    return Ok(false);
+                };
+                self.emit_byte(tag::ETUPLE)?;
+                self.emit_uv(count)?;
+                pending.push(StoredChildren {
+                    cursor: CanonicalFieldCursor::new(tuple),
+                    closes_split_list: false,
+                });
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
     }
 
     fn run(&mut self) -> Result<(), CodecError> {
@@ -745,6 +1076,9 @@ impl<'p> EncMachine<'p> {
         }
         if let Some((depth, terminal)) = encoded_unary_etuple_parts(par_ref) {
             return self.emit_unary_etuple_segment(depth, terminal);
+        }
+        if self.emit_stored_stable_par(par_ref, false)? {
+            return Ok(());
         }
         match (
             par_ref.family_cardinality::<Expr>(),
