@@ -10,6 +10,7 @@ pub mod event_converter;
 pub mod mergeable_channels_gc;
 pub mod proto_util;
 pub mod rholang;
+pub mod rspace_history_gc;
 pub mod rspace_history_horizon;
 pub mod rspace_util;
 pub mod token_metadata_check;

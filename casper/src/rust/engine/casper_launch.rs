@@ -205,6 +205,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,
             mergeable_channels_gc_depth_buffer: conf.mergeable_channels_gc_depth_buffer,
             enable_block_store_gc: conf.enable_block_store_gc,
+            enable_history_pruning: conf.enable_history_pruning,
             synchrony_recovery_stall_window: conf.synchrony_recovery_stall_window,
             synchrony_recovery_cooldown: conf.synchrony_recovery_cooldown,
             synchrony_recovery_max_bypasses: conf.synchrony_recovery_max_bypasses,
@@ -212,6 +213,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             synchrony_finalized_baseline_max_distance: conf
                 .synchrony_finalized_baseline_max_distance,
             max_user_deploys_per_block: conf.max_user_deploys_per_block,
+            deploy_admission: conf.deploy_admission,
             native_token_name: conf.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.genesis_block_data.native_token_decimals,

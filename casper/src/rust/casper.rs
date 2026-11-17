@@ -11,7 +11,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
 };
 use block_storage::rust::deploy::key_value_deploy_storage::{
-    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+    DeployPoolLimits, KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::signatures::signed::Signed;
@@ -56,6 +56,17 @@ pub enum DeployError {
     UnknownSignatureAlgorithm(String),
     SignatureVerificationFailed,
     DuplicateDeploy(DeployId),
+    InvalidFreshness,
+    RecordTooLarge {
+        record_bytes: u64,
+        limit: u64,
+    },
+    PoolBusy {
+        resource: &'static str,
+        required: u64,
+        limit: u64,
+    },
+    AdmissionBusy,
 }
 
 impl DeployError {
@@ -76,6 +87,12 @@ impl Display for DeployError {
         match self {
             DeployError::ParsingError(details) => write!(f, "Parsing error: {}", details),
             DeployError::MissingUser => write!(f, "Missing user"),
+            DeployError::InvalidFreshness => write!(f, "invalid_deploy_window: deploy validity height is beyond the admission horizon. Retry the same deploy after the chain advances."),
+            DeployError::RecordTooLarge { record_bytes, limit } => write!(
+                f,
+                "deploy_too_large: deploy record size {} exceeds the configured pool byte limit {}",
+                record_bytes, limit
+            ),
             DeployError::UnknownSignatureAlgorithm(alg) => {
                 write!(f, "Unknown signature algorithm '{}'", alg)
             }
@@ -83,6 +100,15 @@ impl Display for DeployError {
             DeployError::DuplicateDeploy(deploy_id) => {
                 write!(f, "Deploy already known: {}", hex::encode(deploy_id))
             }
+            DeployError::PoolBusy { resource, required, limit } => write!(
+                f,
+                "deploy_pool_busy: {} would require {}, above the configured limit {}. Retry later or submit to another validator.",
+                resource, required, limit
+            ),
+            DeployError::AdmissionBusy => write!(
+                f,
+                "deploy_admission_busy: admission state changed during retries. Deploy was not accepted. Retry later."
+            ),
         }
     }
 }
@@ -577,12 +603,21 @@ pub struct CasperShardConf {
     /// validator can still cite them. Shares the mergeable-channel GC
     /// horizon and predicate; requires `enable_mergeable_channel_gc = true`.
     pub enable_block_store_gc: bool,
+    /// Mark-and-sweep the `rspace/history` radix-trie LMDB env, deleting
+    /// nodes no retained state root can reach. Issue #923, Option D.
+    /// Default off: enabling mutates the trie-node store, and the sweep's
+    /// correctness envelope assumes a stable `compute_forward_horizon_roots`
+    /// enumeration — a soak run should confirm no `UnknownRootError`
+    /// regressions before flipping on by default. File does not shrink
+    /// after sweeping (LMDB holds freed pages for reuse).
+    pub enable_history_pruning: bool,
     pub synchrony_recovery_stall_window: Duration,
     pub synchrony_recovery_cooldown: Duration,
     pub synchrony_recovery_max_bypasses: u32,
     pub synchrony_finalized_baseline_enabled: bool,
     pub synchrony_finalized_baseline_max_distance: u64,
     pub max_user_deploys_per_block: u32,
+    pub deploy_admission: DeployPoolLimits,
     /// Native token metadata baked into the TokenMetadata contract at genesis.
     /// Present on every node (joiner, validator, ceremony master, observer, standalone)
     /// so each path can log the effective values at startup.
@@ -623,12 +658,14 @@ impl CasperShardConf {
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_depth_buffer: 10,
             enable_block_store_gc: false,
+            enable_history_pruning: false,
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),
             synchrony_recovery_max_bypasses: 2,
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
             max_user_deploys_per_block: 128,
+            deploy_admission: DeployPoolLimits::default(),
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
