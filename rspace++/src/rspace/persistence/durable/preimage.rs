@@ -572,6 +572,20 @@ impl PreimageLookupV1 {
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PreimageWriteCountsV1 {
+    pub(crate) appended_batches: u64,
+    pub(crate) file_syncs: u64,
+}
+
+#[cfg(test)]
+impl PreimageWriteCountsV1 {
+    fn count_appended_batch(&mut self) { self.appended_batches += 1; }
+
+    fn count_file_sync(&mut self) { self.file_syncs += 1; }
+}
+
 struct PreimageWriterStateV1 {
     end: u64,
     needs_header: bool,
@@ -580,6 +594,8 @@ struct PreimageWriterStateV1 {
     records: usize,
     channel_keys: usize,
     group_keys: usize,
+    #[cfg(test)]
+    counts: PreimageWriteCountsV1,
 }
 
 impl PreimageWriterStateV1 {
@@ -592,6 +608,11 @@ impl PreimageWriterStateV1 {
             records: 0,
             channel_keys: 0,
             group_keys: 0,
+            #[cfg(test)]
+            counts: PreimageWriteCountsV1 {
+                appended_batches: 0,
+                file_syncs: 0,
+            },
         }
     }
 }
@@ -706,6 +727,8 @@ impl PreimageIndexV1 {
         }
         writer.end = end;
         writer.needs_header = false;
+        #[cfg(test)]
+        writer.counts.count_appended_batch();
         Ok(true)
     }
 
@@ -718,6 +741,8 @@ impl PreimageIndexV1 {
             return Ok(());
         };
         validate_authority_file(file, DurableIoOperation::SyncFile, &self.path)?;
+        #[cfg(test)]
+        writer.counts.count_file_sync();
         file.sync_all()
             .map_err(io_error(DurableIoOperation::SyncFile, &self.path))?;
         if writer.directory_unsynced {
@@ -759,6 +784,14 @@ impl PreimageIndexV1 {
             groups.push(value.as_chunks::<PREIMAGE_KEY_LEN>().0.to_vec());
         }
         Ok(groups)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn write_counts_for_test(&self) -> PreimageWriteCountsV1 {
+        match self.writer.lock() {
+            Ok(writer) => writer.counts,
+            Err(poisoned) => poisoned.into_inner().counts,
+        }
     }
 
     fn holds(&self, entry: &PreimageEntryV1) -> Result<bool, PreimageIndexError> {

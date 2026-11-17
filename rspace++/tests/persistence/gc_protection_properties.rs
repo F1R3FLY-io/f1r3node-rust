@@ -1621,6 +1621,7 @@ fn only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_cras
         ("catalog.v1".to_owned(), FileWrite::Rewritten),
         (pack_file_name(PackId::GENESIS), FileWrite::Appended),
         (index_file_name(IndexGenerationV1::FIRST), FileWrite::Appended),
+        ("preimage.v1".to_owned(), FileWrite::Created),
     ]);
     let requests = Vec::from(RUNTIME_VIEW_REQUESTS.map(|request| RequestWrites {
         request,

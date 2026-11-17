@@ -421,6 +421,7 @@ fn store_names(key: GenerationLeaseKeyV1) -> BTreeSet<String> {
         generation_file_names(key).expect("a recorded generation key names valid files");
     names.insert("catalog.v1".to_owned());
     names.insert("writer.lock.v1".to_owned());
+    names.insert("preimage.v1".to_owned());
     names
 }
 
@@ -668,7 +669,7 @@ fn another_process_reclaims_unblocked_by_a_live_or_killed_reader_and_leaves_noth
         first.names_after,
         store_names(first.successor),
         "GC-17: process B's compaction must reclaim A's generation within the call while A is \
-         alive, leaving no old file and no reclaim.v1"
+         alive, leaving no old file and no reclaim.v1, and keep the preimage index"
     );
     assert_eq!(
         (record.termination_signal, &record.lock_after_death, second.old),
@@ -681,13 +682,14 @@ fn another_process_reclaims_unblocked_by_a_live_or_killed_reader_and_leaves_noth
         record.names_after_death,
         store_names(first.successor),
         "GC-17: the death of process A must leave no file or record beyond the catalog, the lock \
-         file and the current generation"
+         file, the preimage index and the current generation"
     );
     assert_eq!(
         second.names_after,
         store_names(second.successor),
         "GC-17: process B's compaction after A's death must reclaim the generation that A's \
-         handles held within the call, leaving no old file and no reclaim.v1"
+         handles held within the call, leaving no old file and no reclaim.v1, and keep the \
+         preimage index"
     );
 }
 

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::Infallible;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -16,10 +16,13 @@ pub(crate) mod hooks;
 
 use super::admission::{
     DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableAuthorityCoreV1,
-    DurableIndexedObjectStoreV1, DurableTransactionPreparationError, TrustedSuccessorPolicyV1,
-    admit_physical_source,
+    DurableIndexedObjectStoreV1, DurableTransactionPreparationError,
+    SemanticallyAdmittedDurableWriterV1, TrustedSuccessorPolicyV1, admit_physical_source,
 };
-use super::io::DurableWriterLeaseV1;
+use super::io::{DurableDirectoryV1, DurableWriterLeaseV1};
+#[cfg(test)]
+use super::preimage::PreimageWriteCountsV1;
+use super::preimage::{PreimageEntryV1, PreimageIndexError, PreimageIndexV1};
 use super::publication::{IncrementalPublicationErrorV1, publish_trusted_incremental_v1};
 use super::startup::recover_physical_from_lease_v1;
 use super::state_root::{
@@ -47,6 +50,7 @@ use crate::rspace::persistence::{
     RSpaceMutationBatchV1, SemanticProfile, SemanticProfileId, SemanticStateManifestView,
     StateVersionV1,
 };
+use crate::rspace::rho_path::RhoPathV1;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DurableRSpacePublicationLimitsV1 {
@@ -94,6 +98,7 @@ pub(crate) enum DurableRSpaceTransactionError {
         base: ManifestInheritanceV1,
     },
     Rebase(ClosureError<DurableObjectReadErrorV1>),
+    Preimage(PreimageIndexError),
 }
 
 impl From<MutationError> for DurableRSpaceTransactionError {
@@ -147,6 +152,10 @@ impl From<ViewAttachmentRefusalV1> for DurableRSpaceTransactionError {
 
 impl From<ClosureError<DurableObjectReadErrorV1>> for DurableRSpaceTransactionError {
     fn from(error: ClosureError<DurableObjectReadErrorV1>) -> Self { Self::Rebase(error) }
+}
+
+impl From<PreimageIndexError> for DurableRSpaceTransactionError {
+    fn from(error: PreimageIndexError) -> Self { Self::Preimage(error) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -264,12 +273,62 @@ pub(crate) enum ViewAttachmentRefusalV1 {
 enum OwnerLifecycleV1 {
     Live {
         incarnation: OwnerIncarnationV1,
+        preimages: OwnerPreimageIndexV1,
         lease: DurableWriterLeaseV1,
         generation_lease: GenerationLeaseV1,
     },
     Closed {
         generation: GenerationLeaseKeyV1,
     },
+}
+
+const PREIMAGE_KEY_LEN: usize = 32;
+
+type PreimageCellV1 = Arc<std::sync::RwLock<Option<PreimageIndexV1>>>;
+
+#[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "the refusal of the index is diagnostic context read only by the derived Debug impl"
+)]
+pub(crate) enum PreimageLookupErrorV1 {
+    Unavailable,
+    Index(PreimageIndexError),
+}
+
+struct OwnerPreimageIndexV1 {
+    published: PreimageCellV1,
+    profile: SemanticProfileId,
+    sync_owed: bool,
+}
+
+impl OwnerPreimageIndexV1 {
+    fn holding(index: PreimageIndexV1, profile: SemanticProfileId) -> Self {
+        Self {
+            published: Arc::new(std::sync::RwLock::new(Some(index))),
+            profile,
+            sync_owed: false,
+        }
+    }
+
+    fn release(&self) -> Option<PreimageIndexV1> {
+        match self.published.write() {
+            Ok(mut held) => held.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        }
+    }
+
+    fn install(&self, index: PreimageIndexV1) {
+        let mut held = match self.published.write() {
+            Ok(held) => held,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *held = Some(index);
+    }
+}
+
+impl Drop for OwnerPreimageIndexV1 {
+    fn drop(&mut self) { drop(self.release()); }
 }
 
 type OwnerHotStoreV1<P> = Arc<
@@ -286,6 +345,7 @@ type OwnerHotStoreV1<P> = Arc<
 pub(crate) struct DurablePublishedCoreV1<P: SemanticProfile> {
     core: Arc<std::sync::RwLock<Arc<DurableAuthorityCoreV1<P>>>>,
     registry: GenerationLeaseRegistryV1,
+    preimages: PreimageCellV1,
 }
 
 impl<P: SemanticProfile> Clone for DurablePublishedCoreV1<P> {
@@ -293,16 +353,50 @@ impl<P: SemanticProfile> Clone for DurablePublishedCoreV1<P> {
         Self {
             core: Arc::clone(&self.core),
             registry: self.registry.clone(),
+            preimages: Arc::clone(&self.preimages),
         }
     }
 }
 
 impl<P: SemanticProfile> DurablePublishedCoreV1<P> {
-    fn new(core: Arc<DurableAuthorityCoreV1<P>>, registry: GenerationLeaseRegistryV1) -> Self {
+    fn new(
+        core: Arc<DurableAuthorityCoreV1<P>>,
+        registry: GenerationLeaseRegistryV1,
+        preimages: PreimageCellV1,
+    ) -> Self {
         const { require_shareable_read_handle::<Self>() };
         Self {
             core: Arc::new(std::sync::RwLock::new(core)),
             registry,
+            preimages,
+        }
+    }
+
+    pub(crate) fn channel_preimage(
+        &self,
+        hash: &[u8; PREIMAGE_KEY_LEN],
+    ) -> Result<Option<Vec<u8>>, PreimageLookupErrorV1> {
+        self.with_preimages(|index| index.channel(hash))
+    }
+
+    pub(crate) fn ordered_group_preimages(
+        &self,
+        bucket: &[u8; PREIMAGE_KEY_LEN],
+    ) -> Result<Vec<Vec<[u8; PREIMAGE_KEY_LEN]>>, PreimageLookupErrorV1> {
+        self.with_preimages(|index| index.ordered_groups(bucket))
+    }
+
+    fn with_preimages<T>(
+        &self,
+        lookup: impl FnOnce(&PreimageIndexV1) -> Result<T, PreimageIndexError>,
+    ) -> Result<T, PreimageLookupErrorV1> {
+        let held = match self.preimages.read() {
+            Ok(held) => held,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        match held.as_ref() {
+            Some(index) => lookup(index).map_err(PreimageLookupErrorV1::Index),
+            None => Err(PreimageLookupErrorV1::Unavailable),
         }
     }
 
@@ -379,11 +473,19 @@ impl<P: SemanticProfile> DurablePublishedCoreV1<P> {
         core: Arc<DurableAuthorityCoreV1<P>>,
         registry: GenerationLeaseRegistryV1,
     ) -> Self {
-        Self::new(core, registry)
+        Self::new(core, registry, Arc::new(std::sync::RwLock::new(None)))
     }
 
     pub(crate) fn install_for_test(&self, core: Arc<DurableAuthorityCoreV1<P>>) {
         self.install(core);
+    }
+
+    pub(crate) fn preimage_write_counts_for_test(&self) -> Option<PreimageWriteCountsV1> {
+        let held = match self.preimages.read() {
+            Ok(held) => held,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        held.as_ref().map(PreimageIndexV1::write_counts_for_test)
     }
 }
 
@@ -604,12 +706,34 @@ where P::Channel: Clone + Hash + Eq
             _generation_lease,
         } = view;
         let (lease, source) = writer.into_parts();
+        let opened = PreimageIndexV1::open(lease.directory(), P::ID)
+            .and_then(|index| index.sync().map(|()| index));
+        let index = match opened {
+            Ok(index) => index,
+            Err(error) => {
+                let writer = SemanticallyAdmittedDurableWriterV1::from_parts(lease, source)
+                    .expect("a writer's own lease and source admit each other again");
+                return Err(Box::new((
+                    DurableAuthorityViewV1 {
+                        writer,
+                        _generation_lease,
+                    },
+                    error.into(),
+                )));
+            }
+        };
         let registry = lease.generation_leases();
         let source = source.into_core();
-        let published = DurablePublishedCoreV1::new(Arc::clone(&source), registry.clone());
+        let preimages = OwnerPreimageIndexV1::holding(index, P::ID);
+        let published = DurablePublishedCoreV1::new(
+            Arc::clone(&source),
+            registry.clone(),
+            Arc::clone(&preimages.published),
+        );
         Ok(Self {
             lifecycle: OwnerLifecycleV1::Live {
                 incarnation,
+                preimages,
                 lease,
                 generation_lease: _generation_lease,
             },
@@ -1003,13 +1127,17 @@ where P::Channel: Clone + Hash + Eq
             )?,
         }
         let sealed = transaction.seal()?;
-        let OwnerLifecycleV1::Live { lease, .. } = &mut self.lifecycle else {
+        let OwnerLifecycleV1::Live {
+            preimages, lease, ..
+        } = &mut self.lifecycle
+        else {
             return Err(DurableRSpaceTransactionError::Closed);
         };
         let sealed = self
             .source
             .bind_trusted_transaction(lease, sealed, limits.trusted)?;
         let sequence = pending.predecessor.commit_sequence().successor()?;
+        record_channel_preimages(preimages, lease.directory(), view)?;
         let prepared = self
             .source
             .prepare_transaction(lease, &sealed, sequence, limits.wal)?;
@@ -1246,5 +1374,92 @@ fn stage_rebased_continuation_sources<P: SemanticProfile>(
             .into());
         }
     }
+    Ok(())
+}
+
+fn record_channel_preimages(
+    preimages: &mut OwnerPreimageIndexV1,
+    directory: &DurableDirectoryV1,
+    batch: MutationBatchViewV1<'_>,
+) -> Result<(), DurableRSpaceTransactionError> {
+    let (data, continuations, joins) = (batch.data(), batch.continuations(), batch.joins());
+    let paths = data.len() + continuations.len() + joins.len();
+    let mut recorded = HashSet::with_capacity(paths);
+    let mut entries = Vec::with_capacity(paths + continuations.len());
+    let mut record_channel = |entries: &mut Vec<PreimageEntryV1>, identity: Vec<u8>| {
+        let key: [u8; PREIMAGE_KEY_LEN] = Blake2b::<U32>::digest(&identity).into();
+        if recorded.insert(key) {
+            entries.push(PreimageEntryV1::Channel { key, identity });
+        }
+        key
+    };
+    for entry in data {
+        let path =
+            RhoPathV1::parse_datum(entry.key).map_err(|source| MutationError::InvalidKey {
+                namespace: SemanticNamespace::DataBag,
+                source,
+            })?;
+        record_channel(&mut entries, path.channel_identity());
+    }
+    let mut last_group = None;
+    for entry in continuations {
+        let identities = RhoPathV1::parse_continuation(entry.key)
+            .map_err(|source| MutationError::InvalidKey {
+                namespace: SemanticNamespace::ContinuationMap,
+                source,
+            })?
+            .channel_identities();
+        let mut channels = Vec::with_capacity(identities.len());
+        for identity in identities {
+            channels.push(record_channel(&mut entries, identity));
+        }
+        let repeated = matches!(
+            last_group.and_then(|position: usize| entries.get(position)),
+            Some(PreimageEntryV1::OrderedGroup { channels: previous, .. }) if *previous == channels
+        );
+        if repeated {
+            continue;
+        }
+        let mut sorted = channels.clone();
+        sorted.sort_unstable();
+        let mut bucket = Blake2b::<U32>::new();
+        for hash in &sorted {
+            bucket.update(hash);
+        }
+        last_group = Some(entries.len());
+        entries.push(PreimageEntryV1::OrderedGroup {
+            key: bucket.finalize().into(),
+            channels,
+        });
+    }
+    for entry in joins {
+        let path =
+            RhoPathV1::parse_join(entry.key).map_err(|source| MutationError::InvalidKey {
+                namespace: SemanticNamespace::JoinBag,
+                source,
+            })?;
+        record_channel(&mut entries, path.indexed_channel_identity());
+    }
+    if preimages.sync_owed {
+        drop(preimages.release());
+        let recovered = PreimageIndexV1::open(directory, preimages.profile)?;
+        recovered.sync()?;
+        preimages.install(recovered);
+        preimages.sync_owed = false;
+    }
+    preimages.sync_owed = true;
+    {
+        let held = match preimages.published.read() {
+            Ok(held) => held,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let index = held
+            .as_ref()
+            .expect("an owner that owes no sync of its preimage index holds the index");
+        if index.append(&entries)? {
+            index.sync()?;
+        }
+    }
+    preimages.sync_owed = false;
     Ok(())
 }

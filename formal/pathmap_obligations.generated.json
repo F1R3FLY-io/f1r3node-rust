@@ -9056,7 +9056,7 @@
       "checker": "scripts/check-workspace-regression-obligations.py",
       "family": "workspace_regression",
       "manifest": "formal/workspace_regression_obligations.generated.json",
-      "manifest_sha256": "bcf80ab07eb08da847145d2b69dccf019a5384f1bfa6150713cfaa48c822c786",
+      "manifest_sha256": "58f04bdb5ccacec607b3ab1313167382783b302087700cfe3bb87b7f50b98d3a",
       "obligations": {
         "controls": [
           {
@@ -9445,8 +9445,8 @@
           "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs": "ac5176ca7b1d2072457afd81e61e5262ac3732eb39e82742c121a587bf2ff159",
           "rspace++/src/rspace/persistence/mod.rs": "511abb3f1521d9df4f8ae82221e76446ffc865a64aaf0d2d4d31db1395d124da",
           "rspace++/src/rspace/state/rspace_state_authority.rs": "f638e8d439ccf4578209d5e0dfe0bee2bed51d6c8ca4839f56cc9bcaff0bac52",
-          "rspace++/tests/persistence/generation_checkpoint_properties.rs": "fa4c538738bf75ece4a72ea636b43bdd52f15d91cef37eaee8c62ab27ff4e222",
-          "rspace++/tests/persistence/mod.rs": "4a8bbfd7ab43c6d8f91b81cb720bdf753ecb29d85aa8e584502f7c219c4cbd97",
+          "rspace++/tests/persistence/generation_checkpoint_properties.rs": "cd2325cde49e05ce056e8afb95b672915ab9f1b25f85748301428aa20aa4bc38",
+          "rspace++/tests/persistence/mod.rs": "e9682c6dc7227e7093e6415463a16e12bfd19cc9c4c900d4baacfe55c705c9a7",
           "rspace++/tests/state/atomic_state_authority.rs": "60204064e8d40908db50346e5df00fd9ab1da49b65fc12f4262816c955fc8181",
           "shared/Cargo.toml": "eb329b1f634d0cfbc623f9a28007d221b4f6100cb6d12638023072d73dd229c0",
           "shared/tests/workspace_regression_formal_bindings.rs": "0cc934d3b6d274c80df8bf3b093afffd3e7d3a8cc0f3cb983dac5d67e0f05946"

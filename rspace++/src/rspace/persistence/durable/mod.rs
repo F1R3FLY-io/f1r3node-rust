@@ -22,14 +22,6 @@ mod io;
 mod layout;
 mod limits;
 mod pack;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "only unit tests open the preimage index until task \
-                  rspace-preimage-index-publication syncs it before each publication"
-    )
-)]
 mod preimage;
 mod publication;
 mod reclaim;
@@ -107,7 +99,7 @@ pub use pack::{PackFormatError, PackHeaderV1, PackTerminalIdentityV1};
 #[cfg(test)]
 pub(crate) use preimage::{
     PREIMAGE_FILE_NAME_V1, PreimageEntryV1, PreimageIndexError, PreimageIndexV1, PreimageKindV1,
-    arm_preimage_partial_write_hook,
+    PreimageWriteCountsV1, arm_preimage_partial_write_hook,
 };
 #[cfg(all(test, unix))]
 pub(crate) use publication::IncrementalAppendErrorV1;
@@ -142,7 +134,7 @@ pub(crate) use rspace_authority::{
 #[cfg(test)]
 pub(crate) use rspace_authority::{
     JournalPublicationPhaseV1, OwnerIncarnationAllocatorV1, OwnerIncarnationExhaustedV1,
-    ViewAttachmentRefusalV1,
+    PreimageLookupErrorV1, ViewAttachmentRefusalV1,
 };
 #[cfg(test)]
 pub(crate) use startup::{

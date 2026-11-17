@@ -8685,7 +8685,7 @@ derivation matrix must cite.
 | GC-06 | Known lease at publication (`KnownPublicationClosureProtected`). In each of nine trials a Known lease, registered through the admitted writer on an object of its generation, is active while that generation is compacted. Whenever the compaction publishes, the catalog selects the successor and the successor holds the closure of the leased root: the root object with its exact length and, read through the admitted successor, the structural closure of the state it names or of every state that the retention object lists. The trials lease the current state manifest, a historical state manifest, the appointed retention object (a V1 manifest or a V2 anchor) and a retention object that a data successor superseded, under both retention writers, with and without an earlier checkpoint and data successors. Every root but the superseded one is carried by the checkpoint, and its compaction publishes. A superseded retention object is present in the generation and carried by no checkpoint of it: its compaction is refused with `RetainedRootNotCarried`, which names the row of the lease, changes no byte of the store directory and leaves the catalog on the old generation; after the release the re-admitted store compacts, and the successor does not hold the object. | `a_known_lease_active_at_publication_is_carried_by_the_successor_or_refuses_the_compaction` |
 | GC-07 | Known lease and its exact generation (`KnownExactGenerationProtected`). In every observed state of four trials, a Known lease on the old generation implies that the old generation is wholly present with its original bytes, and a Known lease on the successor implies that the successor holds the closure of its root. A trial registers the lease through the writer and observes at the registration, at each of the 18 publication points of the compaction, after the publication, after a reclamation request, after a re-admission, after the release and after a second reclamation request. It then asks for a Known lease on the reclaimed generation and, through the writer admitted on the successor, for the carried root, for a reference to an object that no generation holds and for a retention object that a data successor superseded. Required in each trial: the first reclamation request is deferred under the lease and the second reclaims; the reclaimed generation is refused with `Retired`; the carried root is granted on the successor's exact key; each root that the successor does not hold is refused with `Absent`, which names the root and the successor; the lease is held on the old generation at all 18 points and under the successor's catalog. | `a_known_lease_keeps_its_exact_generation_and_is_refused_for_roots_outside_it` |
 | GC-08 | Sound overlap-witness history (`OverlapWitnessHistorySound`). Six schedules of the model's actions `AcquireOldPin`, `AcquireNewPin`, `ReleaseOldPin` and `ReleaseNewPin` for the tokens `known0` and `reader0`, `Publish`, `Reclaim`, `Crash` and `Recover` run against the store and against an executable projection of the model. At every step the store takes the action exactly when the projection enables it, and the state then observed equals the projection's state: crashed or not, the catalog, the old generation's presence, the reclamation intent, the generation that each token leases, and the history latches `knownAtPublish`, `overlapAtPublish`, `crashedAfterOverlap` and `knownAfterReclaim`, which the test computes by the model's update rules from the leases and files that the store shows at that step. Every observed state satisfies the three conjuncts of the invariant. Observed: a publication under both leases, under a Known lease alone and under no Known lease; a crash after the overlap with the old generation present and with it reclaimed; a new Known lease after the crash, the recovery and the reclamation, and one that no crash after an overlap preceded; and a refused step of each of `Reclaim`, `AcquireOldPin` for either token and `AcquireNewPin` for `known0`. | `the_overlap_witness_history_of_the_runtime_is_a_history_of_the_model` |
-| GC-09 | No durable replay or rollback obligation (`DurableExactGenerationProtected`). In the obligation trial only the owner's checkpoint makes durable writes, and they are exactly its publication: `catalog.v1` is rewritten and the pack and the index of the generation are appended to. A replay, a reset, a rollback, a `clear` and a spawn view each resolve their target, make no durable write and add exactly one generation lease. `ReclamationCandidateV1::new` accepts no ordered pair of the keys that the views read, so `reclaim.v1` stays absent: the only durable record of the store that names an old generation names it as reclaimable, never as protected. | `only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash` |
+| GC-09 | No durable replay or rollback obligation (`DurableExactGenerationProtected`). In the obligation trial only the owner's checkpoint makes durable writes, and they are exactly its publication: `catalog.v1` is rewritten, the pack and the index of the generation are appended to, and `preimage.v1` is created. A replay, a reset, a rollback, a `clear` and a spawn view each resolve their target, make no durable write and add exactly one generation lease. `ReclamationCandidateV1::new` accepts no ordered pair of the keys that the views read, so `reclaim.v1` stays absent: the only durable record of the store that names an old generation names it as reclaimable, never as protected. | `only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash` |
 | GC-10 | The successor holds the published closure (`PublishedClosureProtected`). In every trial of the shared sample in which the catalog selects the successor, every admission, re-admission and recovery that follows succeeds. Each of them reads the current state and every retained state through the successor's live packs and its index alone, and a refused one halts the trial, which fails the test. Observed: the recovery after a crash after the catalog swap, and the settling re-admission of every trial, after which no old file remains. | `crash_before_publication_keeps_the_old_generation_for_retry` |
 | GC-11 | Crash-phase quiescence (`CrashPhaseQuiescence`). In the obligation trial, a crash with live views on the old generation, after the publication of the successor, leaves no lease in the registry and changes neither `reclaim.v1` nor the old generation. The recovery that follows selects the successor, reclaims the old generation and removes the intent before the first lease is taken; the authority then holds one lease and its view a second. This is the order of the model's witness: `Crash`, `Recover`, `Reclaim`, then `AcquireNewPin`. | `only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash` |
 | GC-12 | No request holds a WAL start (`WalFrontierProtected`). In each of nine trials a generation checkpoint publishes while one request holds the old generation: none, the five views of the runtime requests R1 and R3 together, each of five durable views, an exact pin or a Known lease. Under every request, as under none, the successor's one live pack is the pack directly after the pack of the old recovery tail, its header names that tail as its predecessor, and crash recovery of the successor reads that pack alone, from its generation checkpoint to its durable tail. The old generation stays wholly present while a request holds it, outside the successor's WAL, and a reclamation request after the release reclaims it whole; with no request the publication reclaims it. | `the_wal_frontier_is_the_recovery_tail_and_no_request_holds_a_wal_start` |
@@ -8693,7 +8693,7 @@ derivation matrix must cite.
 | GC-14 | An object-only pin does not block the WAL (`ObjectOnlyPinDoesNotBlockWal`). An older-epoch generation lease on the pack range of the old generation, taken through an independently opened directory, blocks no generation checkpoint. The first checkpoint selects the successor while the old pack, the old index and `reclaim.v1` stay, and an incremental publication and a re-admission keep them. A second and a third generation checkpoint then publish while the lease lives: each leaves `reclaim.v1` and the old pack and index byte for byte and deletes the pack and the index of the generation that it supersedes, so that the directory holds the old generation and the selected one and no other. After the third checkpoint the older key is refused with `Retired` while the lease on it is still held, and the key of the selected generation is granted. After the release a re-admission deletes the old pack and index and removes the intent, and a further generation checkpoint leaves its own generation alone in the directory. | `an_object_only_pin_blocks_no_later_generation_checkpoint` |
 | GC-15 | A Known lease holds no WAL position (`KnownWalOrthogonal`). In the Known trial of GC-12, a Known lease on the appointed retention object, registered through the admitted writer on a store with an earlier generation checkpoint and a data successor, holds the old generation through a generation checkpoint as the other requests do: the successor's WAL opens directly after the old recovery tail and follows it, and the old generation stays wholly present only until the lease is released, after which a reclamation request reclaims it whole. | `the_wal_frontier_is_the_recovery_tail_and_no_request_holds_a_wal_start` |
 | GC-16 | Pinned reads survive a foreign unlink (`PinnedReadReturnsAdmittedBytes`). In the cross-process trial, process A's two handles read the manifest, one datum, one continuation and one join when they are admitted. A closes its owner; process B then publishes onto the pack and the index of A's generation and reclaims that generation with a compaction, and the names of its files are absent before and after A reads again. Every read through A's handles after the reclamation, once with the handles alone and once beside the owner that A reopened at B's successor, returns exactly the admitted reads. A handle on the successor reads B's second datum, so the admitted state is not the current one. | `a_pinned_read_handle_returns_its_admitted_bytes_after_another_process_reclaims_its_packs` |
-| GC-17 | A live or dead reader of another process holds nothing back (`DeadProcessHoldsNothing`). In the cross-process trial, B's writer lock is granted while A holds only handles, and B's compaction of A's generation reclaims it within the call while A runs: right after the call the directory holds exactly `catalog.v1`, `writer.lock.v1` and the successor's pack and index. A then reopens the store and is killed with `SIGKILL` while it holds its owner, two handles on the current generation and its first two handles. B's first lock attempt after the death is granted, the directory holds exactly `catalog.v1`, `writer.lock.v1` and the current generation's pack and index, and B's next compaction reclaims the generation that A's handles held within the call, again leaving exactly the catalog, the lock file and the successor's files. | `another_process_reclaims_unblocked_by_a_live_or_killed_reader_and_leaves_nothing_stale` |
+| GC-17 | A live or dead reader of another process holds nothing back (`DeadProcessHoldsNothing`). In the cross-process trial, B's writer lock is granted while A holds only handles, and B's compaction of A's generation reclaims it within the call while A runs: right after the call the directory holds exactly `catalog.v1`, `writer.lock.v1`, `preimage.v1` and the successor's pack and index. A then reopens the store and is killed with `SIGKILL` while it holds its owner, two handles on the current generation and its first two handles. B's first lock attempt after the death is granted, the directory holds exactly `catalog.v1`, `writer.lock.v1`, `preimage.v1` and the current generation's pack and index, and B's next compaction reclaims the generation that A's handles held within the call, again leaving exactly the catalog, the lock file, the preimage index and the successor's files. | `another_process_reclaims_unblocked_by_a_live_or_killed_reader_and_leaves_nothing_stale` |
 | GC-18 | One owner at a time across processes (`TypeInvariant` of the pack-lease model, its conjunct on `lock`). In the cross-process trial, while A's owner is open, after A's first open and again after A reopened the store, B's `try_acquire_writer` and B's `recover_read_authority` are each refused with `WriterLockContended`, and the store's files other than `writer.lock.v1` keep their bytes. Once A has closed its owner, B's lock attempt is granted. | `an_owner_open_in_another_process_refuses_the_writer_lock_as_contended` |
 | GC-19 | An append is acknowledged only inside the recovery window (`WalAdmissionBounded`). The recovery window of a generation is its WAL as crash recovery measures it against eight limits of `DurableLimits`: live packs, pack bytes, transactions, object records, scanned bytes, physical read bytes, index bytes and index records. For the trusted and for the cold-checked incremental publication, three appends go onto one store, whose mutations record one, two and three new data on one channel. Before each append, a twin store publishes the same append under ample limits, and crash recovery of the twin measures the successor's demand on the eight limits. For each limit whose demand exceeds one, under limits that equal the demand except that this limit is one lower, crash recovery refuses the twin with `Exceeded` for that limit, and the publication on the store under test is refused with `IncrementalPublicationErrorV1::Limit` and the same limit, bound and demand, is classified `DefinitelyNotPublished`, and changes no byte of the store directory, no generation lease and no retained root, while a Known lease and a pin on the generation are held. Under limits that equal the demand, the append is acknowledged, the store directory equals the twin's, the window that the successor's authority carries equals the measured demand, and crash recovery under those limits accepts the store. Observed: 40 refusals, namely pack bytes, object records, scanned bytes, physical read bytes, index bytes and index records at every append and transactions at the second and the third; and a prior key that recovery reads again, in the appends that record several data. The live-pack limit and the sealed packs' share of the pack-byte limit are not reachable through a writer; see the section on WAL admission inside the recovery window. | `an_append_is_acknowledged_only_inside_the_recovery_window` |
 
@@ -14116,18 +14116,17 @@ It answers gap U3 of the ruling of 2026-11-10 (item 9). Casper names a
 channel by its hash (`dag_merger.rs`, `state_change.rs` and
 `runtime_manager.rs`), while a durable state is keyed by the identity bytes
 of the channel (`RhoPathV1::datum_prefix` in `rho_path.rs`), so a hash has to
-be resolved back to the channel that it hashes. Nothing calls the index yet:
-the leaf `rspace-preimage-index-publication` syncs it before each
-publication, and until then the module declaration carries a dead-code
-expectation that names that leaf. The index is part of no manifest and of no
+be resolved back to the channel that it hashes. The durable owner records the
+channels and ordered groups of each publication in it before the publication's
+first write to the pack; the next section describes this hook of the leaf
+`rspace-preimage-index-publication`. The index is part of no manifest and of no
 state root, and no existing file format changes. On 2026-11-16 the owner
 chose a file of its own beside the catalog, with no catalog field and no
 authenticated tail, over entries in the log pack. On the same day the owner
 decided how open treats damage: it cuts the file at the first damaged entry
 and never refuses to open because of damage. Telling damage inside the
 synced part from a torn tail is left to later hardening, and the consumer of
-the index, the leaf `rspace-preimage-index-publication`, treats a missing
-preimage as a refusal.
+the index treats a missing preimage as a refusal.
 
 **Terms.**
 
@@ -14965,6 +14964,259 @@ restored and compared byte for byte with its content before the fault.
 - the property registry: 324 bindings in 38 families, each ID bound once,
   each with a row of this catalog and a row of the derivation matrix.
 
+### Channel preimages recorded before each publication (2026-11-17)
+
+Task 14426, leaf `rspace-preimage-index-publication`, makes the durable owner
+`DurableRSpaceAuthorityV1` in
+[`rspace_authority.rs`](../../../rspace++/src/rspace/persistence/durable/rspace_authority.rs)
+the one writer of the index of the previous section. The owner opens
+`preimage.v1` when it is built and syncs it once, shares the handle with its
+published core, and before each publication records the preimage of every
+channel and every ordered group that the publication's mutation batch names.
+Every state that the owner publishes is therefore covered by the index before
+a recovery can select it, and a reader of the published core resolves its
+channel hashes and bucket keys. No file format changes, and the declaration
+of the module `preimage` no longer carries a dead-code expectation.
+
+**Terms.** The identity bytes $`\iota(c)`$, the channel hash $`h(c)`$ and the
+bucket key $`\beta`$ are those of the previous section.
+
+- The **batch** $`M`$ of a publication is the mutation batch that
+  `publish_captured` hands to `prepare_transaction`; for a view behind the
+  current state it already holds the endpoints that the difference walk
+  added. A path of $`M`$ names channels by the grammar that the batch was
+  built with, `RhoPathV1`: a datum path names its channel (`parse_datum`,
+  `channel_identity`), a join path the channel that it indexes (`parse_join`,
+  `indexed_channel_identity`), and a continuation path the ordered group of
+  its receive and every channel of that group (`parse_continuation`,
+  `channel_identities`). The identity bytes are taken from the path as they
+  stand: nothing is decoded to a typed channel and no state is read.
+- $`\mathrm{Ch}(M)`$ is the set of channels that the paths of $`M`$ name, and
+  $`\mathrm{Gr}(M)`$ is the set of ordered groups $`(c_1, \ldots, c_k)`$ of its
+  continuation paths. The **entries** of $`M`$, each written as (kind, key,
+  value), are
+
+  ```math
+  E(M) = \left\{ \left(1,\ h(c),\ \iota(c)\right) : c \in \mathrm{Ch}(M) \right\} \cup \left\{ \left(2,\ \beta\left(h(c_1), \ldots, h(c_k)\right),\ h(c_1) \Vert \cdots \Vert h(c_k)\right) : (c_1, \ldots, c_k) \in \mathrm{Gr}(M) \right\}
+  ```
+
+- A channel is **present** in a state when the state holds a datum or a join
+  on it, or a continuation whose group contains it; an ordered group is
+  present when the state holds a continuation under it. The index **covers**
+  a state when it holds the kind-1 entry of every channel and the kind-2
+  entry of every ordered group present in the state.
+
+**The hook.** `record_channel_preimages`, a private function of the owner,
+runs in `publish_captured` after the batch is final and directly before
+`prepare_transaction`. It builds $`E(M)`$ in batch order, the data paths
+first, then the continuation paths, then the join paths: a channel is
+recorded at its first occurrence, the entry of a group follows the entries of
+its channels, and a continuation path whose group equals the group of the
+previous continuation path adds no second group entry, because the paths of
+one group are adjacent in the sorted batch. It hands the list to `append`,
+which skips the entries that the index already holds, and syncs `preimage.v1`
+only when `append` wrote something, so a publication whose channels and
+groups the index holds appends nothing and adds no sync. A path that does not
+parse refuses the publication with `MutationError::InvalidKey`, as the
+validation of a batch reports it.
+
+```text
+ checkpoint_view (bound store)          checkpoint_view_from_base (view)
+         │                                         │
+         └────────────────────┬────────────────────┘
+                              ▼
+ capture the journal; pending record ← Captured ───────── test hook AfterCapture
+                              ▼
+ publish_captured
+   ├─ M ← the final batch; the transaction is staged, sealed, bound to the lease
+   ├─ record_channel_preimages(M)
+   │     ├─ a sync is owed: drop the handle, reopen, sync, install the new one
+   │     ├─ append E(M) less the entries the index holds
+   │     └─ sync preimage.v1 when the append wrote something
+   ├─ prepare_transaction ─────────────────────────────── test hook AfterPreparation
+   ├─ pending record ← RecoveryRequired
+   └─ publish_trusted_incremental_v1: prepare record, store index, commit
+      record, directory sync, catalog compare-and-swap, slot write, syncs
+      (13 test points, AfterPrepareWrite … AfterCatalogSyncBeforeRecovery)
+                              ▼
+ acknowledge: the published core installs the successor; readers reach it
+```
+
+**Every published state is covered.** Claim: when the state of the store at
+the construction of the owner is covered, every state that the owner
+publishes is covered before a recovery can select it and before a reader of
+the published core can reach it, as long as open cuts no entry from the file.
+
+1. Let $`S_0`$ be the predecessor of a publication and $`S_1`$ its target.
+   $`S_1`$ is $`S_0`$ with the paths of $`M`$ applied, so every path of
+   $`S_1`$ is a path of $`S_0`$ or a path of $`M`$.
+2. A channel or group present in $`S_1`$ is named by a path of $`S_1`$. When
+   that path is a path of $`S_0`$, the channel or group is present in $`S_0`$
+   and its entry is held by the induction hypothesis, since the index only
+   grows. When it is a path of $`M`$, its entry is in $`E(M)`$.
+3. When the hook returns, every entry of $`E(M)`$ is held and synced: the
+   entries it appended by its own sync, the others by an earlier sync or by
+   the owed sync that precedes the append. Every write of the publication to
+   the pack, the store index and the catalog follows `prepare_transaction`;
+   the catalog slot write is the step that lets a recovery select $`S_1`$;
+   and `acknowledge`, the only step that installs $`S_1`$ in the published
+   core, follows the publication.
+
+By induction over the publications, every state that the owner published is
+covered, retained or not. An entry for a state that is never published, left
+by a crash after the hook or by a publication refused after it, is harmless:
+it is a true preimage of its key.
+
+**One handle, one writer, and the readers.** The owner and its published core
+share one cell, `Arc<std::sync::RwLock<Option<PreimageIndexV1>>>`. The lookups
+of the core, `channel_preimage(hash)` and `ordered_group_preimages(bucket)`,
+take its read lock and answer through the handle, so they run concurrently
+with each other and with an append, which the index serializes with its own
+mutex. The owner's live state holds the cell through a guard,
+`OwnerPreimageIndexV1`, declared before the writer lease, so closing or
+dropping the owner empties the cell before the lease releases
+`writer.lock.v1`: the handle is closed before the lock that excludes a second
+owner is released, and the index of one store never has two handles. A
+lookup through a core whose owner is closed or dropped, or whose index is
+being reopened, is refused with `PreimageLookupErrorV1::Unavailable`; a
+refusal of the index itself is `PreimageLookupErrorV1::Index`. Two
+publications never append at once, because the owner publishes under
+`&mut self`, and no reader reaches a published state before the entries of
+its channels are appended and synced, because the hook precedes the
+installation of the state in the published core (step 3).
+
+**A failed sync.** The owner keeps a flag that a sync is owed: it is set
+before an append and cleared when the append and its sync succeed. A
+publication that finds the flag set first takes the handle out of the cell
+and drops it, opens the index again under the held lease, which reads every
+entry back and cuts a damaged tail, syncs it, puts the new handle in the
+cell, and only then appends. A failed append or sync refuses the publication
+while its pending record is `Captured`, before `prepare_transaction`, so the
+record is dropped, the journal stays, and nothing was written to the pack,
+the store index or the catalog; the next publication pays the owed sync on a
+fresh handle. The owner also syncs the index once when it opens it, so
+entries that an earlier owner appended before a failure are durable before
+this owner publishes. This applies the store's rule for a failed sync of its
+own files: every failed `sync_all` propagates as an error, a failure after
+the first durable write leaves the pending record `RecoveryRequired`, and
+`reconcile` then runs `recover_physical_from_lease_v1`, which reads the
+authority that the catalog appoints, scans the pack within the appointed
+extents, and rebuilds the store index whenever its length differs from the
+appointed tail; the next trusted publication cuts the pack back to its
+appointed tail (`truncate_incremental_pack`) before it appends. No durable
+record appoints a length of `preimage.v1`, so the reopened index keeps every
+whole entry that the file holds.
+
+The rule does not cover a sync that reports success after an earlier sync of
+the same file failed. The reopened index reads entries whose sync failed back
+from the page cache and does not write them again, so the owed sync can
+succeed although they never reached the disk. The catalog slot of the store
+has the same exposure, because a slot whose sync failed is read back by
+`reconcile` and not written again. The pack and the store index do not: a
+publication syncs both before the catalog appoints their new tails, and the
+bytes of a failed publication beyond the appointed tails are never read back,
+because the store index is rebuilt to its appointed length and the pack is
+cut back to its appointed tail before the next append.
+
+**Stores whose states the index does not cover.** The owner never scans a
+state and never backfills the index: entries exist only for the batches of
+publications that passed the hook. Two kinds of store therefore hold
+channels without an entry: a store written by the low-level writer that the
+publication tests call, which publishes through the functions of
+`publication.rs` without an owner, and a store into which an image was
+installed, until an adoption of the image records its channels (task 14435).
+In such a store the claim above holds for the channels and groups that later
+publications of an owner name; a channel carried over from the installed
+state keeps no entry.
+
+**Tests that list the files of a store.** A store into which an owner has
+published holds `preimage.v1` besides the catalog, the lock file and the
+pack and index of its generation. The rows GC-09 and GC-17 and their tests
+count it: in
+`only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash`
+the owner's checkpoint creates it, and in
+`another_process_reclaims_unblocked_by_a_live_or_killed_reader_and_leaves_nothing_stale`
+it stays through both compactions and the death of process A.
+
+**Tests.** The module
+[`preimage_publication.rs`](../../../rspace++/tests/persistence/preimage_publication.rs)
+holds three tests over the universe of the cross-base checkpoint tests: the
+channels a, b and c, the ordered groups (a), (a,b), (b,a) and (c,a,b), and
+the trial, steps and views of `owner_cross_base_checkpoint.rs`. The present
+channels and groups of a state are found with typed reads through a read
+handle of the published core. A channel resolves when the index returns its
+identity bytes and they hash to its key; a group resolves when its bucket
+lists its hashes in its own order and every list under the bucket hashes to
+the bucket.
+
+1. `every_channel_and_group_of_a_retained_state_resolves_through_the_index`:
+   two seeded scenarios and 16 generated ones, each of one to three
+   publications of the bound store followed by one to three view checkpoints
+   from retained bases. After every publication every retained state is
+   checked. The test asserts that the seeds publish from the bound store,
+   from a view at the current state and from views behind it, and that they
+   check states that hold both (a,b) and (b,a) and states that hold (c,a,b).
+2. `a_crash_at_each_owner_hook_leaves_the_index_covering_the_selected_state`:
+   two publications, then a view checkpoint behind the current state whose
+   successor adds the channel c and the group (c,a,b). The checkpoint stops
+   by a panic at one of 15 points, one point per trial: `AfterCapture`,
+   `AfterPreparation`, and the 13 test points of the trusted publication
+   from `AfterPrepareWrite` to `AfterCatalogSyncBeforeRecovery`. At the stop
+   every file of the store directory, `preimage.v1` included, is copied; the
+   copy, each file readable and writable by its owner only, is recovered and
+   opened by a new owner. Recovery selects the predecessor at the 11 points
+   before `AfterCatalogSlotWrite` and the successor at the 4 points from it
+   on, and the index of the copy covers the selected state.
+3. `a_publication_of_known_channels_appends_nothing_and_adds_no_sync`: counts
+   through test-only counters of the index handle, the batches that it
+   appended and the syncs of the file that it executed, read through the
+   published core. An owner over a store without `preimage.v1` counts
+   (0, 0). A publication of a, b and (a,b) counts (1, 1); a publication of
+   known channels and of a second continuation under (a,b) leaves (1, 1);
+   the new order (b,a) of known channels counts (2, 2), and the bucket lists
+   (a,b) and then (b,a). With `preimage.v1` readable by its group (mode
+   `0o640`), a publication of the new channel c is refused with
+   `Preimage(Io(UnsafePermissions))` after its append, at (3, 2); the
+   current state is unchanged and lookups still answer. With the mode
+   restored, the retry reopens the index, pays the owed sync and appends
+   nothing, (0, 1) on the new handle, and its state is covered. After
+   `close`, a lookup through the old core is refused with `Unavailable`. A
+   second owner over the same directory syncs the index once at open,
+   (0, 1), and its publication of a known channel leaves (0, 1).
+
+**Controls.** Three faults were applied, one at a time, to
+`rspace_authority.rs` in the candidate tree, each run against the
+`preimage_publication` module in debug and removed, and the file was then
+compared byte for byte with its copy from before the fault:
+
+- with the call of `record_channel_preimages` moved from directly before
+  `prepare_transaction` to directly after `publish_trusted_incremental_v1`,
+  tests 2 and 3 failed. Test 2 passed the 11 stops at which recovery selects
+  the predecessor and failed at the first stop at which it selects the
+  successor, with the message `a channel of the recovered state has no
+  preimage entry: "c" (a stop at Publication(AfterCatalogSlotWrite))`. Test 3
+  failed at its retry: the publication refused by the unsafe mode was now
+  refused after `publish_trusted_incremental_v1`, so its pending record stayed
+  `RecoveryRequired` and kept the view gate, and the retry failed with
+  `the view gate is free`;
+- with only the first ordered group of a batch recorded, only test 1 failed,
+  at the seeded batch that installs (a,b) and (b,a) together, with the message
+  `an ordered group of a retained state has no preimage entry: ["b", "a"]
+  (retained state 1)`;
+- with `preimage.v1` synced after every append, whether or not the append
+  wrote anything, only test 3 failed, at the publication of known channels,
+  which counted (1, 2) instead of (1, 1), with the message `a publication
+  whose channels and ordered groups the index holds must append nothing and
+  add no sync`.
+
+**The PI rows of the publication hook.**
+
+| ID | Required property | Test |
+|---|---|---|
+| PI-06 | After generated sequences of publications of the bound store and of view checkpoints at and behind the current state, every channel and every ordered group present in any retained state resolves through the index, and the resolved bytes hash to the key. | `every_channel_and_group_of_a_retained_state_resolves_through_the_index` |
+| PI-07 | An unwind at each owner test hook point of a publication (`AfterCapture`, `AfterPreparation`) and at each of the 13 test points of the trusted publication, followed by the recovery of a copy of every file of the store, gives a store whose index covers the state that recovery selects. | `a_crash_at_each_owner_hook_leaves_the_index_covering_the_selected_state` |
+| PI-08 | A publication whose channels and ordered groups the index holds appends nothing and adds no sync, counted through the append and sync counters of the index handle; a sync owed after a failed one is paid once, on a reopened handle, before the next append; and an owner syncs the index once when it opens it. | `a_publication_of_known_channels_appends_nothing_and_adds_no_sync` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -15295,6 +15547,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | OG-43 | `OwnerRootIsLastPublication` | `EXEC_ONLY` | P | Partially entailed (task 12426): `OwnerRootIsLastPublication` requires the owner's root to be the target of the last publication, and `ResetView` changes only the base of its view; the fault "reset-moves-owner", in which a reset also moves the owner's root, violates the invariant in one step. That a durable reset and a clear perform no write and no sync under each of the sixteen directory failpoints and leave the store directory and the published state unchanged, and that a checkpoint with no operation after a clear returns the store-genesis root without a write, are the executable refinement obligation. The model has no store files, syncs or store genesis. |
 | OG-32 | `PublishedSuccessorIsOfViewBase` | `EXEC_ONLY` | P | Partially entailed (task 12425): the invariant requires the target of a pending record to be `Succ(base, view)`, a function of the record's own base and view; on the replay path the base is the one that the replay space recorded at `create_with_replay` or at its previous hard checkpoint, and the view is the journal of the replayed operations. That a replay space whose operations have the play's effects returns the play's root from a base that the play has just superseded, from the published state, from a base that another view has superseded, and from the owner's memo, is the executable refinement obligation. That a replay uses every COMM of its log, that a log naming a COMM which is not enabled is refused, and that the replay's operations have the play's effects are properties of the Rust replay space, which the owner model does not represent. |
 | OG-48 | `NoViewOperationOnSupersededStore` | `EXEC_ONLY` | P | Partially entailed (task 12425): `NoViewOperationOnSupersededStore` requires a view whose checkpoint is acknowledged to hold its own gate until `InstallView`; the replay space's `create_durable_checkpoint` takes its view gate as an owned permit, receives it back from `checkpoint_view_from_base` with every state that the owner answers, and holds it until the answer is installed. As for OG-47, the model takes the installation as one step, and that its statements commute with every concurrent step is argued by reduction, not checked. That a produce of the same replay space, started on a worker thread after the owner has answered and before the installation, waits for the view gate at each of six owner exits, then runs on the installed store, and is returned by the next replay checkpoint, is the executable refinement obligation. The model has no counterpart of the two exits of an empty journal and of the memo hits. |
+| PI-06 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14426): every channel and ordered group present in a state that the owner published resolves through the preimage index. No model of this matrix has channel hashes or the index; that the entries of the hook cover the batch, and that every path of a successor is a path of its predecessor or of its batch, are properties of the Rust owner and of the mutation batch. |
+| PI-07 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14426): a crash at each owner hook point and at each test point of the trusted publication leaves files whose recovered state the index of the same files covers. No model of this matrix has the preimage file, so the order of its sync before `prepare_transaction` is a property of the Rust owner. |
+| PI-08 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14426): a publication of held channels and groups appends nothing and adds no sync, and a sync owed after a failure is paid once, on a reopened handle, before the next append. No model of this matrix counts the writes and syncs of one file. |
 
 ## Generator discipline
 
@@ -16769,6 +17024,37 @@ regenerated with this slice. No Rocq file changed, and no proof was run for
 this slice. No persisted byte, record kind, root, identity or wire message
 changed, and the crate has no new dependency. See the section on WAL
 admission inside the recovery window.
+
+The 2026-11-17 publication hook slice of task 14426 adds PI-06 to PI-08, so
+the catalog/derivation/binding registry now contains **327** IDs. The
+manifest test's executable sources gain the module `preimage_publication.rs`.
+The durable owner opens `preimage.v1` when it is built, shares the handle
+with its published core, and records the channels and ordered groups of each
+publication before `prepare_transaction`; the declaration of the module
+`preimage` no longer carries a dead-code expectation. No file other than
+`rspace_authority.rs`, the declaration and the test re-exports of `preimage`
+in `durable/mod.rs`, the test-only write counters of `preimage.rs`, the new
+test module and the lines of `tests/persistence/mod.rs` that declare it, the
+manifest test's file, the list of property bindings, the file lists that the
+tests of GC-09 and GC-17 expect, and this catalog changes. On the candidate
+tree, the three tests of `preimage_publication`, the tests of the owner
+modules, of `preimage_index` and of the owner's hook points, the manifest
+test and the whole library test target passed in debug and in release. The
+three controls of the section on the publication hook were applied one at a
+time to `rspace_authority.rs`, each run against `preimage_publication` in
+debug and removed, and each failed exactly the tests that the section names,
+with its messages. Each faulted file was restored and compared with the
+candidate tree after the run. Clippy of `rspace_plus_plus` with every target
+lists no finding in the files of this slice, and `rustfmt --check` passes on
+its Rust files. The workspace-regression registry hashes the manifest test's
+file and `tests/persistence/mod.rs`, which both change, so that registry and
+the PathMap aggregate, which holds the same file digests, are regenerated
+when this slice lands. No Rocq or TLA+ file changed, and no proof or model
+was run for this slice. No persisted format changed: the owner writes entries
+of the format of `preimage.v1` that task 14425 defined, no existing persisted
+byte, record kind, root, identity or wire message changed, and the crate has
+no new dependency. See the section on channel preimages recorded before each
+publication.
 
 ## Caller-authority contract (2026-09-06)
 

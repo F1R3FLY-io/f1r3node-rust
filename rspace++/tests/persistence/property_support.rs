@@ -517,6 +517,9 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("OG-43", "a_reset_and_a_clear_write_and_sync_nothing_and_a_clear_returns_the_store_genesis"),
     ("OG-32", "a_durable_replay_returns_the_plays_root_at_every_checkpoint"),
     ("OG-48", "a_concurrent_replay_operation_waits_until_every_owner_exit_is_installed"),
+    ("PI-06", "every_channel_and_group_of_a_retained_state_resolves_through_the_index"),
+    ("PI-07", "a_crash_at_each_owner_hook_leaves_the_index_covering_the_selected_state"),
+    ("PI-08", "a_publication_of_known_channels_appends_nothing_and_adds_no_sync"),
 ];
 
 pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {
