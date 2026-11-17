@@ -88,25 +88,10 @@ impl KeyValueStoreManager for LmdbStoreManager {
     }
 
     async fn shutdown(&mut self) -> Result<(), heed::Error> {
-        // Drop our Arc<Env> clones. The env_cache holds Weak refs, so when
-        // the last consumer drops, the cache entry auto-evicts on the next
-        // lookup and heed closes the LMDB file handles.
         let mut dbs = self.dbs.lock().await;
         dbs.clear();
         let mut env_slot = self.env.lock().await;
         *env_slot = None;
         Ok(())
-    }
-}
-
-// Ensures LMDB environment is closed when the manager is dropped.
-impl Drop for LmdbStoreManager {
-    fn drop(&mut self) {
-        if let Ok(mut dbs) = self.dbs.try_lock() {
-            dbs.clear();
-        }
-        if let Ok(mut env_slot) = self.env.try_lock() {
-            *env_slot = None;
-        }
     }
 }

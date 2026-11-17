@@ -185,6 +185,17 @@ fn eval_expr_to_par(expr: &Expr, env: &Env<Par>) -> Result<Par, EvalError> {
         ExprInstance::EZipperBody(_) => Err(EvalError::UnsupportedExpression {
             kind: "EZipperBody",
         }),
+        // CoC Phase 1a: pure-eval (used by match guards) does not reduce
+        // lambdas or applications. Those are evaluated by the main
+        // interpreter reducer. Phase 4 (type patterns) will revisit.
+        ExprInstance::ELambdaBody(_) => Err(EvalError::UnsupportedExpression {
+            kind: "ELambdaBody",
+        }),
+        ExprInstance::EAppBody(_) => Err(EvalError::UnsupportedExpression { kind: "EAppBody" }),
+        // CoC Phase 2a: Pi types flow through pure-eval as opaque values
+        // until the typechecker phase. Match guards that happen to have a
+        // Pi in scope will error here.
+        ExprInstance::EPiBody(_) => Err(EvalError::UnsupportedExpression { kind: "EPiBody" }),
     }
 }
 

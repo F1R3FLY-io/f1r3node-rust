@@ -13,7 +13,7 @@
 #   docs/casper/theory/slashing/slashing-specification.md  (normative spec)
 #   docs/casper/theory/slashing/slashing-verification.md   (proofs in math + Rocq pointers)
 #
-# 28 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
+# 27 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
 #
 # Module dependency graph (→ = "depends on"):
 #
@@ -44,8 +44,6 @@
 #                                  embedding of PoSState; withdrawer/reward
 #                                  maps; safety + total-funds preservation
 #                                  + parallel-fold order-independence)
-#   BugFixAtomicBufferDagTransition → (standalone; T-9.20 atomic buffer DAG
-#                                  transition bug fix #17)
 #   Bisimulation           → PoSContract, ForkChoice (the headline relations)
 #   MainTheorem            → all of the above (composition)
 #
@@ -80,6 +78,5 @@ theories/BugFixDuplicateJustifications.v
 theories/BugFixSlashAuthorization.v
 theories/BugFixUnbondedProposer.v
 theories/BugFixWithdrawTransferFailure.v
-theories/BugFixAtomicBufferDagTransition.v
 theories/Bisimulation.v
 theories/MainTheorem.v

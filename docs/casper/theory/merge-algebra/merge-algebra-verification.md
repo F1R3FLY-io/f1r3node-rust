@@ -9,9 +9,10 @@
 > **Finding A**, the non-associative per-channel `combine` — is **disclosed and rendered
 > benign** by the Finding-B fix (a canonical fold order), **not** silently changed (that
 > would alter merge *semantics*). Two dropped/split checks are **confirmed sound** (**GAP-3**,
-> **P2**), and a produce-only single-value-cell **over-fill** (**§3c**, the finality-halt RCA
-> a produce that does *not* consume the base leaves a NUMBER cell holding two values) is
-> **guarded and proven** — `ConflictSoundness.v` **Section Overfill**, safety **S7**.
+> **P2**). Safety **S7** (a tagged number cell holding two values) is held by tag-based
+> classification: every write to a tagged channel records its tag and is folded, and an
+> untagged write to a folded channel is rejected. The §3c shape guard that preceded it, and
+> its `ConflictSoundness.v` **Section Overfill** proofs, are superseded (see §3c below).
 > Verification is **local-only** — no Rocq/Z3 step is wired into CI.
 
 This document is written so the design and its verification can be reconstructed from
@@ -119,21 +120,17 @@ prime suspect (**Finding B**) is a **real, live fork hazard** and is **fixed**.
   the retained double-consume / same-IO-event race detector (`conflicts` Check #1), **except**
   number/foldable channels, which are intrinsically mergeable and correctly left unflagged by
   both. Nothing is lost.
-- **§3c — the produce-only single-value-cell over-fill (RCA-asi-devnet-finality-halt):
-  CONFIRMED, GUARDED.** GAP-3's soundness argument models a cell update as
-  `svc_update = consumes ∧ produces` — an update that *always* consumes the base. But a
-  **produce-only write** (a produce that does **not** consume the base) also lands in the
-  cell: producing `5e9` onto a single NUMBER cell `[0]` **without** consuming the base leaves
-  it holding `[0, 5e9]`, tripping the RhoVM IntegerAdd single-value invariant at read →
-  **finalization halt**. Because `svc_update` needs `consumes = true`, GAP-3's model is
-  **vacuous** for it and the retained double-consume detector is **blind** (`produces_consumed`
-  is never populated by a produce-only write). The fix,
-  `check_single_value_cell_not_overfilled` (`rholang_merging_logic.rs:194`), runs on the
-  **non-mergeable** else-path (`dag_merger.rs:965`) and rejects any merge whose post-state
-  single-value NUMBER cell would hold `result_len = |multiset_diff(base, removed)| + |added|
-  > 1`; non-numeric registry / `TreeHashMap` bases are exempt. Proven end-to-end in
-  `ConflictSoundness.v` **Section Overfill** (and shown NOT redundant with the retained
-  detector by `svc_guard_not_subsumed_exhibit`) — safety **S7**.
+- **§3c — the produce-only over-fill (RCA-asi-devnet-finality-halt): SUPERSEDED by tag-based
+  classification.** A produce-only write consumes no base, so the retained double-consume
+  detector does not flag it. The §3c guard (`check_single_value_cell_not_overfilled`, with
+  `numeric_cell_would_overfill` and the keep-one splitter) closed that by classifying any
+  channel holding one numeric datum as a single-value cell, which also rejected ordinary
+  repeated sends to untagged channels (the shared-shard starvation, TASK-016-1). It is
+  removed. S7 now rests on the tag: a channel is a single-value cell only when its name
+  carries a registered mergeable tag; every write to one records the tag (the `ContractCall`
+  reply path included) and is folded by its merge type; and
+  `split_untagged_writes_to_folded_channels` rejects any write to a folded channel that did
+  not record the tag. Untagged channels keep every produce-only write.
 - **P2 — the user/system event-log split hides no conflict: CONFIRMED.** `DeployChainIndex::new`
   folds deploys into a user and a system `EventLogIndex` and `combine`s them (`:70-88`).
   `EventLogIndex::combine` (`:343`) is a field-wise **set-union monoid** (commutative,
@@ -146,7 +143,7 @@ prime suspect (**Finding B**) is a **real, live fork hazard** and is **fixed**.
 | **B** | **High** (live fork) | `deploy_chain_index.rs` 4-key `cmp` + `Eq` on `deploys_with_cost` only | `cmp` could return `Equal` for two **distinct** chains ⟹ reseeded-`HashSet` `min_by`/`sort` winner ⟹ node-dependent rejected set ⟹ **fork**. |
 | **A** | Disclosed | `channel_change.rs:17,25` max-union `combine` | `combine` is commutative but **non-associative**; the fold order matters. Benign **only** under the Finding-B fix; a semantics-changing fix is disclosed, not made. The assumption that no order-dependent survivor pair reaches apply is now **runtime-enforced** by `OrderDependenceGuard` (`conflict_set_merger.rs`; sound by `ChannelNetting.v combine_max_order_independent_under_no_dup`). |
 | **GAP-3** | Sound | `merging_logic.rs:262` retained `conflicts` detector; commit `f3360e84` | The removed single-value-cell check is fully subsumed by the retained double-consume detector ∪ the number-channel exemption. |
-| **§3c** | **High** (finality halt) | `rholang_merging_logic.rs:194`; `dag_merger.rs:965` | A **produce-only** write over-fills a single-value NUMBER cell (`[0]`→`[0,5e9]`) → IntegerAdd invariant trips at read → **finalization halt**. The retained detector is blind (no consume); the §3c guard closes it (S7). |
+| **§3c** | Superseded | `dag_merger.rs` `split_untagged_writes_to_folded_channels`; `reduce.rs` `produce_inner` tag recording | A two-datum **IntegerAdd** cell trips the IntegerAdd single-value invariant at read → **finalization halt** (S7). Held by tag recording + fold + the folded-channel check; the former shape guard rejected ordinary sends to untagged channels and is removed. |
 | **P2** | Sound | `event_log_index.rs:343` `combine` (set union) | The user/system split recombines to the monolithic index; it hides no conflict. |
 
 ---
@@ -179,16 +176,15 @@ prime suspect (**Finding B**) is a **real, live fork hazard** and is **fixed**.
   `channel_change.rs:136`) so it documents the hazard without a semantics change (§6).
 - **GAP-3 — the check stays removed (commit `f3360e84`), its soundness proved.** The removal
   is discharged by `ConflictSoundness.conflict_removal_sound`.
-- **§3c — the produce-only over-fill guard (the finality-halt fix).**
-  `check_single_value_cell_not_overfilled` rejects a non-mergeable single-value NUMBER cell
-  merge whose `result_len = |multiset_diff(base, removed)| + |added| > 1`. Discharged by
-  `ConflictSoundness.svc_guard_catches_overfill` (the guard fires on **every** over-fill),
-  `overfill_not_retained` (it is **not** redundant with the retained detector — a
-  produce-only write consumes no base), and `svc_invariant_iff_both_detectors` (the two
-  detectors together are **exactly** complete), plus the constant witness
-  `svc_guard_not_subsumed_exhibit`. Rust proptests: `svc_guard_rejects_iff_result_len_gt_one`
-  (rholang) and `produce_only_overfill_escapes_retained_detector` (rspace++). The
-  `merge_algebra_conflict_correct` capstone now carries both GAP-3 (Part A) and §3c (Part B).
+- **§3c — superseded.** The shape guard is removed; S7 is held by tag-based classification
+  (§3c above). `ConflictSoundness.v` Section Overfill (`svc_guard_catches_overfill`,
+  `overfill_not_retained`, `svc_invariant_iff_both_detectors`,
+  `svc_guard_not_subsumed_exhibit`) and Part B of `merge_algebra_conflict_correct` model the
+  removed guard and await retirement by the formal-verification owner. Rust coverage:
+  `a_system_process_reply_onto_a_tagged_channel_is_reported_mergeable` (rholang),
+  `an_untagged_write_to_a_folded_number_channel_is_rejected` and
+  `integer_sends_onto_an_untagged_channel_holding_an_integer_are_all_kept` (casper
+  `dag_merger`), `produce_only_writes_are_not_conflicts` (rspace++).
 - **P2 — the split stays, its soundness proved** by `EventLogSplit.event_log_split_sound`.
 
 Verified: `scripts/check-merge-algebra-ALL.sh` ⟹ **ALL GATES OK** — Rocq build + 4 axiom-free
@@ -209,8 +205,8 @@ Every catalog item maps to a concrete artifact — no "assumed"/"prose-only" row
 | **T-FOLD** | merged-state fold order-independent under the canonical (total-order) sort (S3) | Rocq `KeepOneOrder.output_indep_of_input_perm` + `ChannelNetting.combine_not_assoc_exhibit` (why the sort is required) + **`ChannelNetting.deployed_fold_canonical_deterministic`** (the shipped non-assoc `combine_max` folded over a permutation-invariant `canon` is a function of the SET); Rust `fixed_net_is_order_independent` |
 | **T-NET** | shipped `combine` commutative but non-associative (Finding A); it is a **semilattice JOIN with a DEFERRED single cancel** whose canonical-order fold is node-identical (the DEPLOYED no-fork property); the sum-union fix is the associative deferred-cancel operator (documented context) | Rocq **`ChannelNetting.channel_netting_deployed_deterministic`** (`combine_max = cancel ∘ vunion`, `vunion_{comm,assoc,idem}`, `vunion_fold_perm`, `deployed_fold_canonical_deterministic`, `net_cancel`), `combine_max_comm`, `combine_not_assoc_exhibit`, `channel_netting_fixed_deterministic`, `netting_fold_perm`; Z3 `channel_netting_monoid.py` (semilattice-join assoc/comm/idem + `cmax = cancel ∘ vunion`); Rust `combine_is_commutative_as_multiset`, `finding_a_max_union_combine_is_non_associative` (`#[ignore]` pin) |
 | **T-CONFLICT** | removed single-value-cell check ⊆ retained double-consume detector ∪ number-channel exemption (S4) | Rocq `ConflictSoundness.removed_subset_retained`, `conflict_removal_sound`; Rust `removed_predicate_is_subsumed_by_retained_or_number_channel` |
-| **T-SVC** | the §3c guard rejects a single-value NUMBER cell merge **iff** it would over-fill it (`result_len > 1`); non-number bases exempt (S7) | Rocq `ConflictSoundness.svc_guard_catches_overfill`, `svc_invariant_iff_both_detectors` (Section Overfill); Rust `svc_guard_rejects_iff_result_len_gt_one` (rholang) |
-| **T-OVERFILL** | a **produce-only** over-fill escapes the retained detector (consumes no base) ⟹ §3c is a separate, non-subsumed detector; the two together are exactly complete (S7) | Rocq `ConflictSoundness.overfill_not_retained`, `svc_guard_not_subsumed_exhibit`; Rust `produce_only_overfill_escapes_retained_detector` (rspace++) |
+| **T-SVC** | **Superseded** — stated the removed §3c shape guard's rejection condition; S7 is now tag-based | Rocq `ConflictSoundness.svc_guard_catches_overfill`, `svc_invariant_iff_both_detectors` (Section Overfill, awaiting retirement) |
+| **T-OVERFILL** | a **produce-only** write consumes no base, so the retained detector does not flag it; on an untagged channel both messages are kept | Rust `produce_only_writes_are_not_conflicts` (rspace++); Rocq `ConflictSoundness.overfill_not_retained`, `svc_guard_not_subsumed_exhibit` (awaiting retirement) |
 | **T-SPLIT** | `combine(fold user, fold system) = fold all` ⟹ the split hides no conflict (S5) | Rocq `EventLogSplit.combine_split_eq`, `conflicts_split_complete`, `event_log_split_sound`; Rust `split_then_recombine_equals_monolithic_for_conflicts` |
 | **T-RECOMPUTE** | validation recomputes the merge and rejects on any `(pre-state \| rejected-set)` mismatch | Rust `interpreter_util.rs:268` (`compute_parents_post_state` recompute), `:309` (pre-state mismatch ⟹ reject/no-replay), `:319` (rejected-set mismatch ⟹ `invalid_rejected_deploy` `:352`); Rust test `validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_deploy_tampering` (honest baseline ⟹ `Right(Some)`; pre-state byte-flip ⟹ `Right(None)` no-replay; bogus `rejected_deploys` sig ⟹ `InvalidRejectedDeploy`) |
 | **T-APPEND** | the fix is append-only over `v0.4.16` ⟹ rolling-upgrade-safe (S6) | `deploy_chain_index.rs:210-228` (the KEPT key-4 comment); `git show origin/master` (4-key `cmp` terminating at `post_state_hash`); commit `c0b7609e` |
@@ -302,15 +298,13 @@ Modality companions run by the gate (`scripts/check-merge-algebra-ALL.sh` steps 
   `finding_a_max_union_combine_is_non_associative` (an `#[ignore]`d pin of Finding A, run
   explicitly with `cargo test -- --ignored`); `merging_logic.rs`:
   `removed_predicate_is_subsumed_by_retained_or_number_channel` (GAP-3) and
-  `produce_only_overfill_escapes_retained_detector` (§3c / T-OVERFILL — a produce-only write
-  yields an empty `conflicts` set, so the retained detector is blind to it);
+  `produce_only_writes_are_not_conflicts` (T-OVERFILL — a produce-only write yields an empty
+  `conflicts` set);
   `event_log_index.rs`: `split_then_recombine_equals_monolithic_for_conflicts` (P2).
-- **`rholang merging::rholang_merging_logic`** — the §3c guard
-  (`check_single_value_cell_not_overfilled`): the proptest
-  `svc_guard_rejects_iff_result_len_gt_one` (T-SVC — the guard errors **iff**
-  `result_len > 1`) plus Kevin's unit witnesses `single_value_cell_produce_only_is_rejected`,
-  `single_value_cell_read_modify_write_is_allowed`, `non_numeric_base_registry_merges_freely`,
-  `no_produce_is_allowed`. Wired into the gate at step [3/4].
+- **`rholang mergeable_channels_spec`** — tag recording:
+  `a_system_process_reply_onto_a_tagged_channel_is_reported_mergeable` (a `ContractCall`
+  reply onto a tagged channel records the tag). The former §3c guard tests in
+  `rholang_merging_logic` are removed with the guard.
 
 ---
 

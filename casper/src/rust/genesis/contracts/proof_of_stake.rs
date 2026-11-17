@@ -1,5 +1,7 @@
 // See casper/src/main/scala/coop/rchain/casper/genesis/contracts/ProofOfStake.scala
 
+use shared::rust::token_amount::TokenAmount;
+
 use super::validator::Validator;
 
 // TODO: Eliminate validators argument if unnecessary. - OLD
@@ -7,8 +9,8 @@ use super::validator::Validator;
 // TODO: Remove hardcoded keys from standard deploys: https://rchain.atlassian.net/browse/RCHAIN-3321?atlOrigin=eyJpIjoiNDc0NjE4YzYxOTRkNDcyYjljZDdlOWMxYjE1NWUxNjIiLCJwIjoiaiJ9 - OLD
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ProofOfStake {
-    pub minimum_bond: i64,
-    pub maximum_bond: i64,
+    pub minimum_bond: TokenAmount,
+    pub maximum_bond: TokenAmount,
     pub validators: Vec<Validator>,
     pub epoch_length: i32,
     pub quarantine_length: i32,
@@ -16,7 +18,7 @@ pub struct ProofOfStake {
     pub fault_tolerance_threshold_ppm: i64,
     pub max_parent_depth: i32,
     pub deploy_lifespan: i64,
-    pub min_phlo_price: i64,
+    pub min_phlo_price: TokenAmount,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
 }
@@ -37,7 +39,7 @@ impl ProofOfStake {
             .iter()
             .map(|validator| {
                 let pk_string = hex::encode(validator.pk.bytes.clone());
-                format!(" \"{}\".hexToBytes() : {}", pk_string, validator.stake)
+                format!(" \"{}\".hexToBytes() : {}n", pk_string, validator.stake)
             })
             .collect::<Vec<String>>()
             .join(", ");

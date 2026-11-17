@@ -544,8 +544,7 @@ pub async fn enumerate_and_enqueue_missing_snapshots(
 }
 
 /// Default tick period between outbound-request rounds.  Tuned to
-/// give peers time to respond before we re-request; matches
-/// BlockRetriever's REQUEST_INTERVAL scale.
+/// give peers time to respond before we re-request.
 pub const TICK_PERIOD_MS: u64 = 5_000;
 
 /// Spawn a periodic tick task that calls

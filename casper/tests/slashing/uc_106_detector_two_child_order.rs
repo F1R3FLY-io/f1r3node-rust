@@ -15,7 +15,7 @@ use super::detector_totality_helpers::{
 #[tokio::test]
 async fn uc_106_two_distinct_children_are_required() {
     let fixture = DetectorFixture::new().await;
-    fixture.add_record(0, 0, &[]);
+    fixture.add_equivocation(0, 0);
 
     let child_a = block(
         10,

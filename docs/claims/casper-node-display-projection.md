@@ -2,16 +2,17 @@
 
 This claim registered the pending Batch E obligations. The named maintainer `jltatbeach` accepted it on 2026-10-01 at revision `1a9839b0e` on the evidence package `docs/cbc-evidence/runs/casper-node-display-projection-batch-e-01` ([PR #447 comment 5924422936](https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5924422936)). Decisions: E1, E14, and E17 are bounded by design. The construction gaps E7, E11, and E15 and the other stated limits are accepted as recorded. The 12 late source registrations are acknowledged.
 
+**Revised for self-contained equivocation evidence ([PR #963](https://github.com/F1R3FLY-io/f1r3node-rust/pull/963)).** The equivocation tracker is removed. The display reads the equivocations from the invalid block metadata of the detached capture, so no second store, row limit or equivocation digest remains. Properties 7 and 12 are withdrawn, and properties 2 to 6, 8, 9, 11 and 15 to 17 are restated. The 2026-10-01 acceptance covers the earlier text only. This revision needs re-acceptance.
+
 ```yaml
 claim_id: CLAIM-CASPER-NODE-OBSERVATION-005
-status: accepted
+status: pending
 adapter: null
 scope: batch-e-detached-display-projection
 implementation_baseline: 3ab092cc58fb30f4da39e6c8b28b8d25206c661b
 registered_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
 registered_at: 2026-09-30T17:42:17.769798+00:00
 artifacts:
-  - block-storage/src/rust/dag/soak_equivocations.rs
   - block-storage/src/rust/dag/mod.rs
   - block-storage/src/rust/dag/soak_snapshot.rs
   - block-storage/src/rust/dag/block_dag_key_value_storage.rs
@@ -75,25 +76,25 @@ Batch E does not change the Batch B2 digest test or the fork-choice digest contr
 ## Required properties
 
 1. A request with no display option gives the current response. The display projection stays unavailable, with the reason `equivocation_snapshot_unavailable`.
-2. A display request requires an explicit positive tracker-row limit of at most 4,096.
-   The observer rejects invalid limits and explicit null before store access.
-3. The capture reads the tracker rows in the guards and in the DAG read transaction of the detached capture. It makes one capture for each request.
-4. The capture checks each raw row length before the copy. It checks each count field before the typed decode.
-5. A tracker commit in the capture interval changes the transaction identity and rejects the capture. An equal insertion generation does not replace that check.
-6. The capture reads the tracker store and does not write it. The production store bytes are equal before and after each capture.
-7. The canonical encoding of the equivocation inputs sorts the rows and covers each retained field. The digest is SHA-256 of that encoding.
-8. The authority digest of a display request binds the snapshot digest and the equivocation digest. The display projection uses the target input digest.
-9. The display calculation reads captured data only. It does not call the Casper instance, the live tracker, or the public block API.
+2. A display request has no parameters.
+   The observer rejects explicit null, duplicate and unknown display fields before store access.
+3. The equivocation inputs are the invalid block metadata of the detached capture, read in its DAG read transaction. It makes one capture for each request.
+4. The capture checks each metadata length and count field before the typed decode.
+5. A DAG commit in the capture interval changes the transaction identity and rejects the capture. An equal insertion generation does not replace that check.
+6. The capture does not write any store. The production store bytes are equal before and after each capture.
+7. Withdrawn. The equivocation inputs are captured block metadata and have no encoding separate from the snapshot.
+8. The authority digest of a display request binds the snapshot digest, which covers the equivocation inputs. The display projection uses the target input digest.
+9. The display calculation reads captured data only. It does not call the Casper instance, the live DAG, or the public block API.
 10. The base value is the persisted value for a finalized target. The base value is the original oracle result for other targets.
 11. The live and detached paths share initial-fault and final-subtraction helpers.
     Equal accepted inputs give equal display bits.
-    The calculation has one term for each tracker record.
-12. The observer refuses a weight sum that is larger than the `u64` range. It does not report a wrapped value.
+    The calculation has one term for each captured equivocation.
+12. Withdrawn. Weights are arbitrary-precision integers, so the weight sum has no range to refuse.
 13. Each refusal gives an unavailable or failed result with a reason. A refusal has no fabricated value and no zero value.
 14. The display inputs, the display bits, the original bits, and the persisted bits have separate fields and separate availability states.
-15. The snapshot wire schema does not change. The schema version stays 2, and the snapshot has no new tag.
-16. The helper extraction preserves public block API values and ordinary unchecked sum behavior.
-17. The display calculation charges its work before each bounded operation. The response contains counts and digests, and no tracker rows.
+15. The snapshot schema version is 4. Version 4 encodes the metadata invalid flag as the optional sibling of an equivocation, and the snapshot has no new tag.
+16. The helper extraction preserves public block API values.
+17. The display calculation charges its work before each bounded operation. The response contains counts and digests, and no equivocation records.
 
 Properties 15 and 16 apply to the approved guarded capture and shared arithmetic.
 
@@ -103,18 +104,17 @@ Properties 15 and 16 apply to the approved guarded capture and shared arithmetic
 - The paired fork-choice observation. Batch D owns that work.
 - Equality between a detached value and a public API response. The live value is not atomic.
 - The correctness of the live initial-fault rule, which includes the rule of one term for each record.
-- The correctness of the equivocation detector or of the tracker write path.
-- A wire proof for the canonical encoding of the equivocation inputs.
+- The correctness of the equivocation detector or of the path that records an equivocation.
 - The floating-point behavior of a target that the tests do not run on.
 - The qualification of a live authority profile.
-- Tracker rows of a storage backend that is not LMDB.
+- Block metadata of a storage backend that is not LMDB.
 - A DAG that is larger than the explicit capture limits.
 
 ## Trust and evidence boundaries
 
 The pinned LMDB library and its transaction identity counter stay trusted inputs.
 
-The `bincode` layout of a tracker row is a trusted input of the row parser. The tests must show that layout with rows that production code writes.
+The `bincode` layout of a block metadata row is a trusted input of the capture parser. The tests must show that layout with rows that production code writes.
 
 The `f32` division and subtraction follow the IEEE 754 rules of the Rust target. No model in this claim shows that arithmetic.
 
@@ -127,11 +127,11 @@ The formal gate requires a clean positive run and exact invariant violations fro
 
 | Bounded invariant | Negative control | Property |
 |----------------------|-----------------------------|----------|
-| `NoFabrication`: an available value requires a captured tracker and an available base value | `MC_DisplayProjection_fabricated_unsafe` | 1, 13 |
+| `NoFabrication`: an available value requires captured equivocation inputs and an available base value | `MC_DisplayProjection_fabricated_unsafe` | 1, 13 |
 | `BaseSource`: a finalized target uses the persisted value | `MC_DisplayProjection_source_unsafe` | 10 |
-| `OneInterval`: the tracker rows and the snapshot have one transaction identity | `MC_DisplayProjection_interval_unsafe` | 3, 5 |
+| `OneInterval`: the equivocation inputs and the snapshot have one transaction identity | `MC_DisplayProjection_interval_unsafe` | 3, 5 |
 
-Properties 3, 5, and 6 also extend the accepted `BoundedCapture` model. The tracker store is in the DAG environment of that model.
+Properties 3, 5, and 6 also extend the accepted `BoundedCapture` model. The model still names the equivocation inputs a separate tracker store in the DAG environment. The inputs are now the captured invalid metadata, so `OneInterval` holds by construction. The model is to be updated with the formal layer.
 
 The model uses Boolean values for the arithmetic result. It does not show `f32` bits.
 
@@ -155,7 +155,7 @@ The formal gate checks all twenty-two NodeAuthority assumption sets.
 
 Properties 3 and 5 inherit the accepted capture theorems `capture_no_interference` and `capture_generation_stable`.
 
-Properties 7 and 15 keep pending construction. The approved scope includes no tracker wire proof in this batch.
+Property 15 keeps pending construction. The canonical wire of version 4 is checked against the B11 Rocq schema by the wire correspondence of the formal gate.
 
 Property 11 keeps pending construction for the `f32` operations. The theorems cover the integer inputs only.
 
@@ -163,7 +163,7 @@ Properties 1, 14, and 17 can use a proposed bounded-by-design classification. Th
 
 ## Binding evidence obligations
 
-The [binding manifest](../../formal/tlaplus/node_observation/bindings.json) maps all seventeen properties to twenty-six named tests.
+The [binding manifest](../../formal/tlaplus/node_observation/bindings.json) maps the fifteen properties that are not withdrawn to twenty-two named tests.
 The [applicability review](../../formal/tlaplus/node_observation/README.md#batch-e-applicability-review) records the evidence and limits for each property.
 The map includes frozen arithmetic, parser controls, consistency failures, both finalized sources, typed refusals, and resource limits.
 

@@ -23,6 +23,7 @@ use prost::Message;
 use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 use crate::util::rholang::resources::{
     generate_scope_id, mk_runtime_manager_at, mk_test_rnode_store_manager_shared,
+    new_key_value_dag_representation,
 };
 use crate::util::test_mocks::MockKeyValueStore;
 
@@ -74,7 +75,7 @@ fn create_sender_and_validator() -> (String, Bytes, Bond) {
     let sender = Bytes::from(sender);
     let bonds_validator = Bond {
         validator: sender.clone(),
-        stake: 1,
+        stake: 1.into(),
     };
     (sender_string.to_string(), sender, bonds_validator)
 }
@@ -165,9 +166,7 @@ async fn empty_effects(
         None,
         Arc::new(runtime_manager),
         block_store.clone(),
-        block_dag_storage
-            .get_representation()
-            .expect("dag representation"),
+        new_key_value_dag_representation(),
         shared_kvm_data,
     );
 

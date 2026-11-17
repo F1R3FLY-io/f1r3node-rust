@@ -11,6 +11,7 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use humantime::parse_duration;
+use shared::rust::token_amount::TokenAmount;
 
 use super::cli_static_provisioning::{
     parse_cli_static_dir, parse_cli_static_file, CliStaticDirArg, CliStaticFileArg,
@@ -102,7 +103,8 @@ pub enum OptionsSubCommand {
     Repl,
     Deploy {
         phlo_limit: i64,
-        phlo_price: i64,
+        #[arg(value_parser = TokenAmount::parse)]
+        phlo_price: TokenAmount,
         valid_after_block: i64,
         #[arg(value_parser = ValueParser::new(PrivateKeyConverter::parse))]
         private_key: Option<PrivateKey>,
@@ -360,13 +362,9 @@ pub struct RunOptions {
     #[arg(long = "validator-private-key-path")]
     pub validator_private_key_path: Option<PathBuf>,
 
-    /// Interval for the casper loop to maintain requested blocks and missing dependent blocks
+    /// Interval of the engine tick that runs until casper is initialized
     #[arg(long = "casper-loop-interval", value_parser = ValueParser::new(parse_duration))]
     pub casper_loop_interval: Option<Duration>,
-
-    /// Timeout for blocks requests
-    #[arg(long = "requested-blocks-timeout", value_parser = ValueParser::new(parse_duration))]
-    pub requested_blocks_timeout: Option<Duration>,
 
     /// Finalization is called every `n` blocks
     #[arg(long = "finalization-rate")]
@@ -436,16 +434,16 @@ pub struct RunOptions {
     pub wallets_file: Option<String>,
 
     /// Minimum bond accepted by the PoS contract in the genesis block
-    #[arg(long = "bond-minimum")]
-    pub bond_minimum: Option<i64>,
+    #[arg(long = "bond-minimum", value_parser = TokenAmount::parse)]
+    pub bond_minimum: Option<TokenAmount>,
 
     /// Configure genesis blockNumber for hard fork
     #[arg(long = "genesis-block-number")]
     pub genesis_block_number: Option<i64>,
 
     /// Maximum bond accepted by the PoS contract in the genesis block
-    #[arg(long = "bond-maximum")]
-    pub bond_maximum: Option<i64>,
+    #[arg(long = "bond-maximum", value_parser = TokenAmount::parse)]
+    pub bond_maximum: Option<TokenAmount>,
 
     /// The length of the validation epoch in blocks
     #[arg(long = "epoch-length")]
@@ -528,7 +526,8 @@ pub struct RunOptions {
 
     /// MinPhloPrice
     #[arg(long = "min-phlo-price")]
-    pub min_phlo_price: Option<i64>,
+    #[arg(value_parser = TokenAmount::parse)]
+    pub min_phlo_price: Option<TokenAmount>,
 
     /// Enable ceremony master mode (creates genesis block if none found)
     #[arg(long = "ceremony-master-mode", action = ArgAction::SetTrue)]
@@ -693,7 +692,8 @@ pub struct DeployOptions {
 
     /// The price of phlo for this transaction in units dust/phlo
     #[arg(long = "phlo-price")]
-    pub phlo_price: u64,
+    #[arg(value_parser = TokenAmount::parse)]
+    pub phlo_price: TokenAmount,
 
     /// Set this value to one less than the current block height
     #[arg(long = "valid-after-block-number")]

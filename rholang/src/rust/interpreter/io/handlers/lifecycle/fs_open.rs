@@ -167,29 +167,47 @@ impl FsHandler for FsOpenHandler {
             // Phase-2 real-open: Consensus + non-append.  Under
             // any other combination (Oracular, or Consensus +
             // append — rejected leader-side), the shadow's
-            // `file` slot stays None.
+            // `file` slot stays None.  Root resolution routes
+            // through the gated resolver with the same cmode as
+            // the leader (`Consensus` here — we're inside the
+            // Consensus arm).  The dispatch path's gated-resolver
+            // call (`open_impl_via_table`, helpers/open_impl.rs)
+            // means the leader can only have cached `[true, fd]`
+            // when its gated resolve succeeded, so the Err arm is
+            // unreachable in practice; it still falls through to
+            // `file: None` so the shadow insert can proceed
+            // metadata-only instead of panicking.
             let file: Option<std::sync::Arc<std::fs::File>> = if cmode == ConsensusMode::Consensus {
                 match intent {
                     Some(intent) if intent.policy != ExistPolicy::CreateOrAppend => {
                         let root_pb = std::path::PathBuf::from(&root);
-                        let (root_pb, expected_root_id) =
-                            ctx.handles.root_registry.resolve_or_identity(&root_pb);
-                        let rel_for_open = rel.clone();
-                        let intent_copy = intent;
-                        let opened = tokio::task::spawn_blocking(move || {
-                            let (flags, mode_bits) = fopen_flags(intent_copy);
-                            safe_open_verified(
+                        match ctx
+                            .handles
+                            .root_registry
+                            .resolve_or_identity_gated_for_consensus(
                                 &root_pb,
-                                &rel_for_open,
-                                flags,
-                                mode_bits,
-                                expected_root_id,
-                            )
-                        })
-                        .await;
-                        match opened {
-                            Ok(Ok(f)) => Some(std::sync::Arc::new(f)),
-                            _ => None,
+                                ConsensusMode::Consensus,
+                            ) {
+                            Ok((root_pb, expected_root_id)) => {
+                                let rel_for_open = rel.clone();
+                                let intent_copy = intent;
+                                let opened = tokio::task::spawn_blocking(move || {
+                                    let (flags, mode_bits) = fopen_flags(intent_copy);
+                                    safe_open_verified(
+                                        &root_pb,
+                                        &rel_for_open,
+                                        flags,
+                                        mode_bits,
+                                        expected_root_id,
+                                    )
+                                })
+                                .await;
+                                match opened {
+                                    Ok(Ok(f)) => Some(std::sync::Arc::new(f)),
+                                    _ => None,
+                                }
+                            }
+                            Err(_) => None,
                         }
                     }
                     _ => None,

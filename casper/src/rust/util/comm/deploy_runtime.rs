@@ -108,7 +108,7 @@ impl DeployRuntime {
     pub async fn deploy_file_program<S: DeployService>(
         svc: &mut S,
         phlo_limit: i64,
-        phlo_price: i64,
+        phlo_price: shared::rust::token_amount::TokenAmount,
         valid_after_block: i64,
         private_key: &PrivateKey,
         file: &str,
@@ -137,6 +137,7 @@ impl DeployRuntime {
                 parameters: Vec::new(),
             };
 
+            d.validate_amounts().map_err(|error| vec![error])?;
             // Signed(d, Secp256k1, privateKey)
             let signed = match Signed::create(
                 d,

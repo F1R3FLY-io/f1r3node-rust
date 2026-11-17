@@ -2291,18 +2291,14 @@ mod merge_algebra_gap3_tests {
             );
         }
 
-        // §3c PRODUCE-ONLY BLIND SPOT (RCA-asi-devnet-finality-halt). A produce
-        // that does NOT consume the base (a produce-only write) never lands in
-        // produces_consumed, so the retained double-consume race detector cannot
-        // see it: with no consumes and no base-join touches, `conflicts` is EMPTY
-        // even though BOTH branches produce onto the SAME single-value cell (an
-        // over-fill). This is the gap the Rocq `overfill_not_retained` /
-        // `svc_guard_not_subsumed_exhibit` (ConflictSoundness.v Section Overfill)
-        // capture and the §3c `check_single_value_cell_not_overfilled` guard
-        // closes on the non-mergeable path (dag_merger.rs:965). It proves §3c is a
-        // SEPARATE, non-subsumed detector -- the retained detector alone is blind.
+        // Produce-only writes are not conflicts. A produce that does not consume
+        // the base never lands in produces_consumed, so two branches producing
+        // onto the same channel without consuming anything leave `conflicts`
+        // empty, and the merge keeps both messages, as running the two branches
+        // one after the other would. A channel that must hold one value carries
+        // a mergeable tag and is folded by its merge type instead.
         #[test]
-        fn produce_only_overfill_escapes_retained_detector(
+        fn produce_only_writes_are_not_conflicts(
             ids in prop::collection::vec(any::<u8>(), 1..6),
         ) {
             // Both branches PRODUCE the shared base datum(s) but neither CONSUMES
@@ -2315,15 +2311,11 @@ mod merge_algebra_gap3_tests {
             a.produces_linear = HashableSet(produced.clone());
             b.produces_linear = HashableSet(produced);
 
-            // The retained detector finds NO conflict -- the produce-only
-            // over-fill is invisible to it (Check #1 needs a shared CONSUMED base;
-            // Check #2 needs a consume; Check #3 needs a base-join touch -- all
-            // empty here). Hence the §3c guard is required and non-redundant.
+            // Check #1 needs a shared CONSUMED base, Check #2 a consume and
+            // Check #3 a base-join touch -- all empty here.
             prop_assert!(
                 conflicts(&a, &b).0.is_empty(),
-                "produce-only writes must ESCAPE the retained detector (that is why \
-                 the §3c single-value-cell guard is a separate, non-subsumed \
-                 mechanism); ids={:?}",
+                "produce-only writes must not conflict; ids={:?}",
                 ids
             );
         }

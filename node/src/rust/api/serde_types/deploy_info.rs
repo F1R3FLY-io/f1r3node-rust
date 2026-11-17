@@ -18,7 +18,7 @@ pub struct TransferInfoSerde {
     pub from_addr: String,
     #[serde(rename = "toAddr")]
     pub to_addr: String,
-    pub amount: i64,
+    pub amount: String,
     pub success: bool,
     #[serde(rename = "failReason")]
     pub fail_reason: String,
@@ -29,7 +29,7 @@ impl From<TransferInfo> for TransferInfoSerde {
         Self {
             from_addr: t.from_addr,
             to_addr: t.to_addr,
-            amount: t.amount,
+            amount: t.amount_raw,
             success: t.success,
             fail_reason: t.fail_reason,
         }
@@ -41,7 +41,7 @@ impl From<TransferInfoSerde> for TransferInfo {
         TransferInfo {
             from_addr: t.from_addr,
             to_addr: t.to_addr,
-            amount: t.amount,
+            amount_raw: t.amount,
             success: t.success,
             fail_reason: t.fail_reason,
         }
@@ -57,7 +57,7 @@ pub struct DeployInfoSerde {
     #[serde(rename = "sigAlgorithm")]
     pub sig_algorithm: String,
     #[serde(rename = "phloPrice")]
-    pub phlo_price: i64,
+    pub phlo_price: String,
     #[serde(rename = "phloLimit")]
     pub phlo_limit: i64,
     #[serde(rename = "validAfterBlockNumber")]
@@ -143,7 +143,7 @@ impl Default for DeployInfoSerde {
             timestamp: 0,
             sig: String::new(),
             sig_algorithm: String::new(),
-            phlo_price: 0,
+            phlo_price: (0).to_string(),
             phlo_limit: 0,
             valid_after_block_number: 0,
             cost: 0,
@@ -206,7 +206,7 @@ mod tests {
         let deploy = DeployData {
             term: "Nil".into(),
             time_stamp: 1,
-            phlo_price: 1,
+            phlo_price: (1).into(),
             phlo_limit: 100_000,
             valid_after_block_number: 0,
             shard_id: "root".into(),
@@ -361,6 +361,23 @@ mod tests {
         let json = serde_json::to_vec(&deploy).unwrap();
         let restored: DeployInfoSerde = serde_json::from_slice(&json).unwrap();
         assert_eq!(restored.parameters, parameters);
+    }
+
+    #[test]
+    fn deploy_info_phlo_price_is_a_decimal_string() {
+        for price in [
+            "0".to_string(),
+            "1".to_string(),
+            ((1u64 << 53) + 1).to_string(),
+            u64::MAX.to_string(),
+            shared::rust::token_amount::TokenAmount::max().to_string(),
+        ] {
+            let mut info = deploy_info(Vec::new());
+            info.phlo_price = price.clone();
+            let deploy = DeployInfoSerde::try_from(info).unwrap();
+            let json = serde_json::to_value(&deploy).unwrap();
+            assert_eq!(json["phloPrice"], price);
+        }
     }
 
     #[test]

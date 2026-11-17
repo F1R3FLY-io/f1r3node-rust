@@ -20,7 +20,7 @@ use crate::rust::peer_node::PeerNode;
 use crate::rust::rp::rp_conf::RPConf;
 use crate::rust::transport::communication_response::CommunicationResponse;
 use crate::rust::transport::grpc_transport_receiver::{
-    GrpcTransportReceiver, MessageHandlers, PeerBufferSlot,
+    GrpcTransportReceiver, MessageHandlers, PeerBufferSlot, TransportBind,
 };
 use crate::rust::transport::packet_ops::StreamCache;
 use crate::rust::transport::stream_handler::StreamHandler;
@@ -64,8 +64,8 @@ pub struct GrpcTransportServer {
     pub local_peer: RPConf,
     /// Network identifier for this node
     pub network_id: String,
-    /// Port number to bind the gRPC server to
-    pub port: u16,
+    /// Where the gRPC server accepts connections
+    pub bind: TransportBind,
     /// TLS certificate in PEM format
     pub cert: String,
     /// TLS private key in PEM format
@@ -95,7 +95,7 @@ impl GrpcTransportServer {
         Self {
             local_peer,
             network_id,
-            port,
+            bind: TransportBind::Port(port),
             cert,
             key,
             max_message_size,
@@ -104,6 +104,15 @@ impl GrpcTransportServer {
             // Create cache for storing received partial data (streaming packets)
             cache: Arc::new(dashmap::DashMap::new()),
         }
+    }
+
+    /// Serve from a socket the caller already bound instead of binding a port
+    pub fn with_listener(mut self, listener: std::net::TcpListener) -> Result<Self, CommError> {
+        listener.set_nonblocking(true).map_err(|e| {
+            CommError::ConfigError(format!("Failed to make listener non-blocking: {}", e))
+        })?;
+        self.bind = TransportBind::Listener(Arc::new(listener));
+        Ok(self)
     }
 
     /// Create a GrpcTransportServer by reading certificate and key from files
@@ -334,7 +343,7 @@ impl TransportLayerServer for GrpcTransportServer {
         let server_task = GrpcTransportReceiver::create(
             self.network_id.clone(),
             self.local_peer.clone(),
-            self.port,
+            &self.bind,
             self.cert.clone(),
             self.key.clone(),
             self.max_message_size,

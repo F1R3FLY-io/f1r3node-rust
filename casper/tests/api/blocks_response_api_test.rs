@@ -29,15 +29,15 @@ fn create_validators_and_bonds() -> (Validator, Validator, Validator, Bond, Bond
 
     let v1_bond = Bond {
         validator: v1.clone(),
-        stake: 25,
+        stake: 25.into(),
     };
     let v2_bond = Bond {
         validator: v2.clone(),
-        stake: 20,
+        stake: 20.into(),
     };
     let v3_bond = Bond {
         validator: v3.clone(),
-        stake: 15,
+        stake: 15.into(),
     };
 
     let bonds = vec![v1_bond.clone(), v2_bond.clone(), v3_bond.clone()];
@@ -286,7 +286,7 @@ async fn show_main_chain_should_return_only_blocks_in_the_main_chain() {
     let tips = Estimator::apply()
         .tips_with_latest_messages(
             &mut dag,
-            &BlockMetadata::from_block(&genesis, false, None, None),
+            &BlockMetadata::from_block(&genesis, None, None, None),
             latest_messages,
             Estimator::UNLIMITED_PARENTS,
             None,
@@ -342,7 +342,7 @@ async fn get_blocks_should_return_all_blocks() {
     let tips = Estimator::apply()
         .tips_with_latest_messages(
             &mut dag,
-            &BlockMetadata::from_block(&genesis, false, None, None),
+            &BlockMetadata::from_block(&genesis, None, None, None),
             latest_messages,
             Estimator::UNLIMITED_PARENTS,
             None,
@@ -396,7 +396,7 @@ async fn get_blocks_should_return_until_depth() {
     let tips = Estimator::apply()
         .tips_with_latest_messages(
             &mut dag,
-            &BlockMetadata::from_block(&genesis, false, None, None),
+            &BlockMetadata::from_block(&genesis, None, None, None),
             latest_messages,
             Estimator::UNLIMITED_PARENTS,
             None,
@@ -455,7 +455,7 @@ async fn get_blocks_by_heights_should_return_blocks_between_start_and_end() {
     let tips = Estimator::apply()
         .tips_with_latest_messages(
             &mut dag,
-            &BlockMetadata::from_block(&genesis, false, None, None),
+            &BlockMetadata::from_block(&genesis, None, None, None),
             latest_messages,
             Estimator::UNLIMITED_PARENTS,
             None,

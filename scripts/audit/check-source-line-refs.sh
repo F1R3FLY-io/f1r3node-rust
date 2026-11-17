@@ -54,7 +54,6 @@ declare -a SOURCE_FILES=(
     "${REPO}/casper/src/rust/blocks/proposer/block_creator.rs"
     "${REPO}/casper/src/rust/util/rholang/costacc/slash_deploy.rs"
     "${REPO}/block-storage/src/rust/dag/block_dag_key_value_storage.rs"
-    "${REPO}/block-storage/src/rust/dag/equivocations_access.rs"
     # finalized-floor / fork-choice / merge-algebra surface (added 2026-07-15 with the
     # DOCS_DIR widening above): every source the non-slashing models cite by line.
     "${REPO}/casper/src/rust/safety/clique_oracle.rs"

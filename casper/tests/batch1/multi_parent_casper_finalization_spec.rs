@@ -33,8 +33,14 @@ async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriat
     }
 
     // Bonds function: _.map(pk => pk -> 10L).toMap
-    fn bonds_function(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
-        validators.into_iter().map(|pk| (pk, 10i64)).collect()
+    fn bonds_function(
+        validators: Vec<PublicKey>,
+    ) -> HashMap<PublicKey, shared::rust::token_amount::TokenAmount> {
+        validators
+            .into_iter()
+            .map(|pk| (pk, 10u64))
+            .map(|(key, stake)| (key, stake.into()))
+            .collect()
     }
 
     let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(
@@ -116,8 +122,14 @@ async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriat
 /// that all validators agree on the last finalized block at the end.
 #[tokio::test]
 async fn multi_parent_casper_should_advance_finalization_monotonically_in_round_robin() {
-    fn bonds_function(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
-        validators.into_iter().map(|pk| (pk, 10i64)).collect()
+    fn bonds_function(
+        validators: Vec<PublicKey>,
+    ) -> HashMap<PublicKey, shared::rust::token_amount::TokenAmount> {
+        validators
+            .into_iter()
+            .map(|pk| (pk, 10u64))
+            .map(|(key, stake)| (key, stake.into()))
+            .collect()
     }
 
     let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(

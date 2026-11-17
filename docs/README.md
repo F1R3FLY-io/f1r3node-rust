@@ -12,7 +12,7 @@ The Cargo workspace contains 10 crates:
 | [`rspace++`](../rspace++/) | Tuple space engine: produce/consume matching, LMDB-backed trie history | [docs](./rspace/) |
 | [`rholang`](../rholang/) | Rholang interpreter: parser, normalizer, reducer, cost accounting, system processes | [docs](./rholang/) |
 | [`casper`](../casper/) | CBC Casper consensus: block creation/validation, DAG, safety oracle, finalization | [docs](./casper/) |
-| [`block-storage`](../block-storage/) | Block persistence, DAG storage (imbl), casper buffer, deploy index | [docs](./block-storage/) |
+| [`block-storage`](../block-storage/) | Block persistence, DAG storage (imbl), pending blocks, deploy index | [docs](./block-storage/) |
 | [`comm`](../comm/) | P2P networking: Kademlia DHT, TLS transport, connection management | [docs](./comm/) |
 | [`node`](../node/) | Binary entry point: boot sequence, gRPC/HTTP servers, CLI, diagnostics | [docs](./node/) |
 | [`graphz`](../graphz/) | Graphviz DOT generation for DAG visualization | [docs](./graphz/) |

@@ -87,7 +87,10 @@ async fn foreign_chain_blocks_are_not_accepted_by_main_network() {
         rogue_to_main_status
     );
     assert!(
-        !main_nodes[0].casper.dag_contains(&rogue_block.block_hash),
+        !main_nodes[0]
+            .casper
+            .dag_contains(&rogue_block.block_hash)
+            .unwrap(),
         "foreign block must not be present in the main network's DAG"
     );
 
@@ -118,7 +121,10 @@ async fn foreign_chain_blocks_are_not_accepted_by_main_network() {
         main_to_rogue_status
     );
     assert!(
-        !rogue_node.casper.dag_contains(&main_block.block_hash),
+        !rogue_node
+            .casper
+            .dag_contains(&main_block.block_hash)
+            .unwrap(),
         "main-network block must not be present in the rogue node's DAG"
     );
 }

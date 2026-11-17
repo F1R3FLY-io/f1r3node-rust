@@ -212,44 +212,44 @@ fn yanked_index(d: &toml::Value, spec: &str) -> usize {
 #[test]
 fn yanked_crates_require_matching_review_records_reasons_and_exact_versions() {
     let p = policy();
-    assert!(p.yanked.contains_key("zip@3.0.0"));
+    assert!(p.yanked.contains_key("zip@0.6.6"));
     let mut d = deny();
-    let index = yanked_index(&d, "zip@3.0.0");
+    let index = yanked_index(&d, "zip@0.6.6");
     d["advisories"]["ignore"]
         .as_array_mut()
         .unwrap()
         .remove(index);
     assert!(policy::validate(&p, &d, today()).is_err());
     let mut d = deny();
-    let index = yanked_index(&d, "zip@3.0.0");
+    let index = yanked_index(&d, "zip@0.6.6");
     d["advisories"]["ignore"][index]["reason"] = toml::Value::String(" ".into());
     assert!(policy::validate(&p, &d, today()).is_err());
     for spec in [
         "zip",
-        "zip@3",
+        "zip@0",
         "zip@*",
-        "@3.0.0",
-        " zip@3.0.0",
-        "zip @3.0.0",
-        "zip@ 3.0.0",
+        "@0.6.6",
+        " zip@0.6.6",
+        "zip @0.6.6",
+        "zip@ 0.6.6",
     ] {
         let mut d = deny();
-        let index = yanked_index(&d, "zip@3.0.0");
+        let index = yanked_index(&d, "zip@0.6.6");
         d["advisories"]["ignore"][index]["crate"] = toml::Value::String(spec.into());
         assert!(policy::validate(&p, &d, today()).is_err(), "{spec}");
     }
     let mut d = deny();
-    let index = yanked_index(&d, "zip@3.0.0");
+    let index = yanked_index(&d, "zip@0.6.6");
     d["advisories"]["ignore"][index]
         .as_table_mut()
         .unwrap()
         .insert("id".into(), toml::Value::String("RUSTSEC-2026-0258".into()));
     assert!(policy::validate(&p, &d, today()).is_err());
     let mut p = policy();
-    p.yanked.get_mut("zip@3.0.0").unwrap().owner = " ".into();
+    p.yanked.get_mut("zip@0.6.6").unwrap().owner = " ".into();
     assert!(policy::validate(&p, &deny(), today()).is_err());
     let mut p = policy();
-    p.yanked.get_mut("zip@3.0.0").unwrap().review_by = "2026-09-06".parse().unwrap();
+    p.yanked.get_mut("zip@0.6.6").unwrap().review_by = "2026-09-06".parse().unwrap();
     assert!(policy::validate(&p, &deny(), today()).is_err());
 }
 
@@ -262,10 +262,10 @@ fn yanked_crate_reviews_are_reported_when_due() {
     for entry in p.yanked.values_mut() {
         entry.review_by = "2026-12-01".parse().unwrap();
     }
-    p.yanked.get_mut("zip@3.0.0").unwrap().review_by = "2026-09-10".parse().unwrap();
+    p.yanked.get_mut("zip@0.6.6").unwrap().review_by = "2026-09-10".parse().unwrap();
     let due = policy::reviews_due(&p, today(), scan::REVIEW_WARNING_DAYS).unwrap();
     let ids: Vec<&str> = due.iter().map(|(id, _)| id.as_str()).collect();
-    assert_eq!(ids, ["zip@3.0.0"]);
+    assert_eq!(ids, ["zip@0.6.6"]);
 }
 
 fn package(name: &str, version: &str, source: Value) -> Value {
@@ -278,12 +278,13 @@ fn crates_io() -> Value { json!("registry+https://github.com/rust-lang/crates.io
 fn yanked_crates_are_present_only_as_exact_registry_packages() {
     let p = policy();
     let metadata = json!({"packages":[
-        package("zip", "3.0.0", crates_io()),
+        package("zip", "0.6.6", crates_io()),
         package("zip", "0.6.7", crates_io()),
-        package("zip", "0.6.6", Value::Null),
     ]});
     let present: Vec<String> = scan::yanked_present(&metadata, &p).into_iter().collect();
-    assert_eq!(present, ["zip@3.0.0"]);
+    assert_eq!(present, ["zip@0.6.6"]);
+    let unregistered = json!({"packages":[package("zip", "0.6.6", Value::Null)]});
+    assert!(scan::yanked_present(&unregistered, &p).is_empty());
     assert!(scan::yanked_present(&json!({"packages":[]}), &p).is_empty());
 }
 
@@ -293,7 +294,7 @@ fn unused_yanked_exceptions_fail_only_when_no_manifest_uses_them() {
         let dir = tempfile::tempdir().unwrap();
         let mut p = policy();
         p.exceptions.clear();
-        p.yanked.retain(|spec, _| spec == "zip@3.0.0");
+        p.yanked.retain(|spec, _| spec == "zip@0.6.6");
         fs::create_dir_all(dir.path().join("supply-chain")).unwrap();
         fs::write(dir.path().join("deny.toml"), "").unwrap();
         fs::write(dir.path().join("supply-chain/policy.toml"), "").unwrap();
@@ -303,7 +304,7 @@ fn unused_yanked_exceptions_fail_only_when_no_manifest_uses_them() {
             fs::create_dir_all(lock.parent().unwrap()).unwrap();
             fs::write(lock, "version = 4\n").unwrap();
             let packages = if index == 0 && !unused_everywhere {
-                vec![package("zip", "3.0.0", crates_io())]
+                vec![package("zip", "0.6.6", crates_io())]
             } else {
                 vec![]
             };

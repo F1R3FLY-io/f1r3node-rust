@@ -18,6 +18,8 @@ use casper::rust::api::deploy_finalization_status::{self, DeployFinalizationStat
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
+use casper::rust::finality::floor::floor_of_block;
+use casper::rust::safety::clique_oracle::FtThreshold;
 use crypto::rust::public_key::PublicKey;
 
 use crate::helper::test_node::{ShardOverrides, TestNode};
@@ -29,10 +31,13 @@ struct TestContext {
 
 impl TestContext {
     async fn new() -> Self {
-        fn bonds_function(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
+        fn bonds_function(
+            validators: Vec<PublicKey>,
+        ) -> HashMap<PublicKey, shared::rust::token_amount::TokenAmount> {
             validators
                 .into_iter()
-                .zip(vec![10i64, 10i64, 10i64])
+                .zip(vec![10u64, 10u64, 10u64])
+                .map(|(key, stake)| (key, stake.into()))
                 .collect()
         }
 
@@ -532,8 +537,9 @@ async fn an_advance_persisted_without_its_settle_is_settled_by_the_next_cycle() 
 }
 
 /// End to end on a real node: the cycle that puts the deploy's effect on the
-/// adopted LFB's state lineage also writes its Finalized verdict. No later
-/// block is needed for the verdict to appear, and the API reports it.
+/// state lineage of the adopted LFB's floor also writes its Finalized
+/// verdict. No later block is needed for the verdict to appear, and the API
+/// reports it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_finalizer_cycle_writes_the_verdict_it_decides() {
     use casper::rust::util::construct_deploy;
@@ -585,9 +591,17 @@ async fn a_finalizer_cycle_writes_the_verdict_it_decides() {
             .expect("proposal");
         let lfb = nodes[0].casper.finalize().await.expect("finalizer cycle");
         let dag = nodes[0].casper.block_dag().await.expect("dag");
-        let covered = lfb.block_hash == carrier.block_hash
+        let floor = floor_of_block(
+            &dag,
+            nodes[0].casper.block_store(),
+            &lfb.block_hash,
+            FtThreshold::from_ppm(100_000),
+        )
+        .await
+        .expect("floor of the LFB");
+        let covered = floor.hash == carrier.block_hash
             || dag
-                .is_dag_ancestor(&carrier.block_hash, &lfb.block_hash)
+                .is_dag_ancestor(&carrier.block_hash, &floor.hash)
                 .expect("ancestry");
         let state =
             deploy_finalization_status::resolve(&dag, nodes[0].casper.block_store(), &sig, None)
@@ -596,8 +610,8 @@ async fn a_finalizer_cycle_writes_the_verdict_it_decides() {
         assert_eq!(
             covered,
             state == DeployFinalizationState::Finalized,
-            "the verdict must be Finalized exactly when the cycle's LFB covers \
-             the single-parent carrier: covered={covered}, state={state:?}"
+            "the verdict must be Finalized exactly when the floor of the cycle's \
+             LFB covers the single-parent carrier: covered={covered}, state={state:?}"
         );
         if covered {
             finalized = true;
@@ -606,7 +620,7 @@ async fn a_finalizer_cycle_writes_the_verdict_it_decides() {
     }
     assert!(
         finalized,
-        "the carrier must reach the LFB within the driven rounds"
+        "the carrier must reach the LFB's floor within the driven rounds"
     );
 
     let api_status =

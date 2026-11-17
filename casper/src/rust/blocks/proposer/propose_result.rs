@@ -41,6 +41,10 @@ pub enum ProposeFailure {
     /// peers and the heartbeat retries at normal cadence (no backoff
     /// escalation) until the gap heals.
     MissingBlock(Bytes),
+    /// The merge would exceed the floor-distance cap and no single-parent
+    /// witness could be built. A hold until finality advances, not a bug: the
+    /// heartbeat retries at normal cadence.
+    FloorDistanceHold,
     CheckConstraintsFailure(CheckProposeConstraintsFailure),
 }
 
@@ -174,6 +178,11 @@ impl fmt::Display for ProposeStatus {
                     f,
                     "Proposal failed: MissingBlock {} — requested from peers, retrying",
                     hex::encode(&hash[..hash.len().min(8)])
+                ),
+                ProposeFailure::FloorDistanceHold => write!(
+                    f,
+                    "Proposal held: the merge exceeds the floor-distance cap and no witness \
+                     block could be built; retrying once finality advances"
                 ),
                 ProposeFailure::CheckConstraintsFailure(check_failure) => match check_failure {
                     CheckProposeConstraintsFailure::NotBonded => {

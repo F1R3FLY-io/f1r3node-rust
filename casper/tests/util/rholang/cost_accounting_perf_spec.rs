@@ -171,7 +171,7 @@ async fn measure_precharge_and_refund_cost() {
                 // PreChargeDeploy
                 let before = snapshot_rspace_counts(snapshotter);
                 let mut precharge = PreChargeDeploy {
-                    charge_amount: 100_000,
+                    charge_amount: (100_000).into(),
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[i as u8, 0]),
                 };
@@ -191,7 +191,7 @@ async fn measure_precharge_and_refund_cost() {
                 // RefundDeploy
                 let before = snapshot_rspace_counts(snapshotter);
                 let mut refund = RefundDeploy {
-                    refund_amount: 50_000,
+                    refund_amount: (50_000).into(),
                     rand: Blake2b512Random::create_from_bytes(&[i as u8, 1]),
                 };
                 let (state_after_refund, refund_time) = play_system_deploy_timed(

@@ -21,11 +21,11 @@ pub async fn mint_on_parents(
 ) -> BlockMessage {
     for p in &parents {
         assert!(
-            node.casper.dag_contains(&p.block_hash),
+            node.casper.dag_contains(&p.block_hash).unwrap(),
             "staging[{label}]: parent {} must be IN THE DAG of the minting \
-             node (buffered: {})",
+             node (held by block ingest: {})",
             hex::encode(&p.block_hash[..6]),
-            node.casper.buffer_contains(&p.block_hash),
+            node.ingest_view.is_held(&p.block_hash),
         );
     }
     let mut snapshot = node.casper.get_snapshot().await.expect("snapshot");

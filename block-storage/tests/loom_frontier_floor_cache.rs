@@ -28,8 +28,7 @@
 //
 // We model the index as `loom::sync::Mutex<HashMap<Hash, Hash>>` (the loom
 // analog of the production store's atomic single-key get/put). `u64` stands in
-// for `BlockHash` exactly as the sibling `loom_equivocations_tracker.rs` uses a
-// `u64` counter as its observation point.
+// for `BlockHash`.
 //
 // Properties model-checked on every interleaving:
 //   (1) DOMAIN     — any value observed for key `x` is in {absent, canonical};
@@ -40,12 +39,9 @@
 //                    observe `absent` (or anything else). The memo is write-once
 //                    and never removed, so presence is monotone.
 //
-// Run with (matches how `loom_equivocations_tracker` is invoked — the tests use
-// `loom::sync::*` types directly, so no `--cfg loom` flag is required):
+// Run with (the tests use `loom::sync::*` types directly, so no `--cfg loom`
+// flag is required):
 //   cargo test -p block-storage --test loom_frontier_floor_cache
-//
-// See `block-storage/tests/loom_equivocations_tracker.rs` for the broader loom
-// harness rationale (why the model lives in `block-storage`, next to the store).
 
 use std::collections::HashMap;
 

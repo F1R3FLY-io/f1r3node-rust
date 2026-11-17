@@ -11,6 +11,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONFIG="${1:-$ROOT/.mergify.yml}"
 
+if awk '
+  /^  - name:/ { canary = ($0 ~ /^  - name: ca-(item|daily)$/) }
+  canary && /^[[:space:]]*-[[:space:]]/ && /ca-soak|Soak Gate/ { found = 1 }
+  END { exit !found }
+' "$CONFIG"; then
+  printf 'FAIL: a ca-canary queue requires a soak before merge\n' >&2
+  exit 1
+fi
+
 DEV_REQUIRED='Static Checks|Script Tests|Soak Harness Tests|cargo-deny|Test (block-storage)|Test (comm)|Test (crypto)|Test (graphz)|Test (models)|Test (rholang)|Test (node)|Test (shared)|Integration Gate (amd64)|Integration Gate (arm64)|Test (casper 1/2)|Test (casper 2/2)|Test (rspace_plus_plus)|Commit Policy'
 MASTER_REQUIRED='Static Checks|Script Tests|Soak Harness Tests|Test Gate (casper)|Test (rspace_plus_plus)|Test (rholang)|Test (shared)|Test (node)|Test (models)|Test (crypto)|Test (block-storage)|Test (comm)|Test (graphz)|cargo-deny|Commit Policy|Promotion Source'
 
@@ -37,6 +46,18 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
   mq = doc["merge_queue"] || {}
   errors << "the merge queue is not serial" unless mq["mode"] == "serial"
   errors << "the merge queue checks more than one pull request at a time" unless mq["max_parallel_checks"] == 1
+  errors << "the initial queue checkbox is not enabled" unless mq["queue_controls_comment"] == true
+  errors << "merge queue status comments are not enabled for all pull requests" unless mq["status_comments"] == "all"
+  automatic = doc.dig("merge_protections_settings", "auto_merge_conditions")
+  errors << "repository auto-merge would bypass explicit queue requests" unless automatic.nil? || automatic == false
+
+  automatic_rules = rules.select { |r| r.fetch("actions", {}).key?("queue") }
+  daily_conditions = ["base=ca-canary", "head~=^backmerge/ca-release-[0-9a-f]{12}$", "author=f1r3node-promotion[bot]",
+    "body~=created by the scheduled Release Train Daily Back-merge workflow"]
+  if automatic_rules.size != 1 || automatic_rules.first.dig("actions", "queue", "name") != "ca-daily" ||
+      automatic_rules.first["conditions"] != daily_conditions
+    errors << "only the promotion app daily release back-merge may queue automatically"
+  end
 
   queues.each do |name, q|
     errors << "queue #{name} does not check one pull request at a time" unless q["batch_size"] == 1
@@ -109,10 +130,6 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
    "ca-daily" => "base=ca-canary", "ca-release" => "base=ca-release"}.each do |name, base|
     q = queues[name] or next
     errors << "queue #{name} does not require #{base}" unless conds.(q).include?(base)
-    routed = rules.any? do |r|
-      r.dig("actions", "queue", "name") == name && Array(r["conditions"]).map(&:to_s).include?(base)
-    end
-    errors << "no pull request rule queues #{base} into #{name}" unless routed
   end
 
   if (q = queues["master"])
@@ -209,4 +226,4 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
   abort errors.map { |e| "FAIL: #{e}" }.join("\n") unless errors.empty?
 ' "$CONFIG"
 
-printf 'PASS: Mergify has a queue and a queue rule for dev, master, ca-canary, and ca-release. The queue is serial, and each queue checks one pull request in place, without retries, and with identical queue and merge conditions. Each queue merges with a merge commit. The dev and master queues require every ruleset check. The ca-release queue requires ci-heavy and both Integration gates. The dev, master, and ca-item queues require them or a ci-heavy-waived label with a ci-maintainers author. Each heavy queue requires a review and a head of this repository. One rule adds ci-heavy to every pull request, except a protected head, a ca-canary pull request that is not a ca/ item, and a waived pull request of a ci-maintainers author into dev, master, or ca-canary. The priority rules rank security fixes first, then fix/ into dev and hotfix/ into master, the release flow, perf/, ci/, and every other head, and only security fixes interrupt running checks.\n'
+printf 'PASS: manual queue controls are enabled. Only the promotion app daily release back-merge queues automatically. Existing eligibility, checks, reviews, merge methods, and priorities pass.\n'

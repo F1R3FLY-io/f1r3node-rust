@@ -1,7 +1,7 @@
 //! Block admission, deploy intake, valid-block handling.
 //!
 //! Phase 3 Step 5 — extracted from `engine::multi_parent_casper`. Each
-//! function takes the casper instance as a `&MultiParentCasperImpl<T>`
+//! function takes the casper instance as a `&MultiParentCasperImpl`
 //! reference; the trait method is a one-line delegate in `traits.rs`.
 
 use std::collections::HashSet;
@@ -9,9 +9,11 @@ use std::collections::HashSet;
 use block_storage::rust::dag::block_dag_key_value_storage::{
     DeployId, InsertMode, KeyValueDagRepresentation,
 };
-use comm::rust::transport::transport_layer::TransportLayer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    DeployPreparationError, PreparedInsertResult,
+};
 use crypto::rust::signatures::signed::Signed;
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use models::rust::normalizer_env::normalizer_env_from_deploy;
@@ -24,56 +26,21 @@ use crate::rust::casper::{Casper, CasperSnapshot, DeployError};
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::interpreter_util;
 
-pub(crate) fn admit_contains<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) fn admit_dag_contains(
+    this: &MultiParentCasperImpl,
     hash: &BlockHash,
-) -> bool {
-    admit_buffer_contains(this, hash) || admit_dag_contains(this, hash)
+) -> Result<bool, CasperError> {
+    Ok(this.block_dag_storage.contains(hash)?)
 }
 
-pub(crate) fn admit_dag_contains<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
-    hash: &BlockHash,
-) -> bool {
-    // Bootstrap-window safety (P1-2): if the DAG representation is not yet
-    // initialized (no approved/last-finalized block), report `false` rather
-    // than panicking. Returning `false` here matches the trait's
-    // pre-existing semantics for "block not present".
-    match this.block_dag_storage.get_representation() {
-        Ok(dag) => dag.contains(hash),
-        Err(_) => false,
-    }
-}
-
-pub(crate) fn admit_buffer_contains<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
-    hash: &BlockHash,
-) -> bool {
-    let block_hash_serde = BlockHashSerde(hash.clone());
-    this.casper_buffer_storage.contains(&block_hash_serde)
-}
-
-pub(crate) fn admit_buffer_waits_on_dependency<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
-    hash: &BlockHash,
-) -> bool {
-    this.casper_buffer_storage
-        .get_parents(&BlockHashSerde(hash.clone()))
-        .is_some_and(|parents| {
-            parents
-                .iter()
-                .any(|parent| !admit_dag_contains(this, &BlockHash::from(parent.0.clone())))
-        })
-}
-
-pub(crate) fn admit_get_approved_block<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) fn admit_get_approved_block(
+    this: &MultiParentCasperImpl,
 ) -> Result<&BlockMessage, CasperError> {
     Ok(&this.approved_block)
 }
 
-pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) fn admit_deploy(
+    this: &MultiParentCasperImpl,
     deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
@@ -117,8 +84,8 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
     }
 }
 
-fn deploy_is_known<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+fn deploy_is_known(
+    this: &MultiParentCasperImpl,
     deploy_id: &DeployId,
 ) -> Result<bool, CasperError> {
     if this.deploy_storage.contains_sig(deploy_id)? {
@@ -131,58 +98,68 @@ fn deploy_is_known<T: TransportLayer + Send + Sync>(
     {
         return Ok(true);
     }
-    this.rejected_deploy_buffer
-        .lock()?
-        .contains_sig(deploy_id)
-        .map_err(Into::into)
+    let rejected_deploys = this.rejected_deploy_buffer.lock()?.clone();
+    rejected_deploys.contains_sig(deploy_id).map_err(Into::into)
 }
 
-fn reserve_deploy<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
-    deploy: Signed<DeployData>,
-) -> Result<bool, CasperError> {
+fn reserve_deploy(
+    this: &MultiParentCasperImpl,
+    deploy: &Signed<DeployData>,
+) -> Result<Option<DeployError>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
-    if this
-        .block_dag_storage
-        .deploy_canonical_appearance(&deploy_id)?
-        .is_some()
-    {
-        return Ok(false);
+    let preparation = this.deploy_storage.prepare_checked(deploy);
+    loop {
+        let rejected_store = this.rejected_deploy_buffer.lock()?.clone();
+        if this
+            .block_dag_storage
+            .deploy_canonical_appearance(&deploy_id)?
+            .is_some()
+        {
+            return Ok(Some(DeployError::duplicate_deploy(deploy_id)));
+        }
+        let pool = this.deploy_storage.inspect_sig(&deploy_id)?;
+        let rejected = rejected_store.inspect_sig(&deploy_id)?;
+        if pool.is_present() || rejected.is_present() {
+            return Ok(Some(DeployError::duplicate_deploy(deploy_id)));
+        }
+        let prepared = match preparation {
+            Ok(ref prepared) => prepared,
+            Err(DeployPreparationError::InvalidSignature) => {
+                return Ok(Some(DeployError::signature_verification_failed()));
+            }
+            Err(DeployPreparationError::UnsupportedAlgorithm(algorithm)) => {
+                return Ok(Some(DeployError::unknown_signature_algorithm(algorithm)));
+            }
+            Err(DeployPreparationError::Serialization(error)) => return Err(error.into()),
+        };
+        let rejected_guard = this.rejected_deploy_buffer.lock()?;
+        if !rejected_guard.matches_snapshot(&rejected)? {
+            continue;
+        }
+        match this
+            .deploy_storage
+            .add_prepared_if_unchanged(prepared, &pool)?
+        {
+            PreparedInsertResult::Inserted => return Ok(None),
+            PreparedInsertResult::AlreadyPresent => {
+                return Ok(Some(DeployError::duplicate_deploy(deploy_id)));
+            }
+            PreparedInsertResult::Changed => continue,
+        }
     }
-
-    let rejected_deploys = this.rejected_deploy_buffer.lock()?;
-    if rejected_deploys.contains_sig(&deploy_id)? {
-        return Ok(false);
-    }
-    this.deploy_storage
-        .add_if_absent(deploy)
-        .map_err(Into::into)
 }
 
-pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) async fn admit_handle_valid_block(
+    this: &MultiParentCasperImpl,
     block: &BlockMessage,
 ) -> Result<KeyValueDagRepresentation, CasperError> {
-    // Bug #17 / T-9.20: atomic (DAG insert, casper-buffer remove) pair
-    // via the helper. See
-    // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
-    //
     // User deploys are intentionally NOT purged from pending storage on mere
     // DAG acceptance. They are retained until the finalizer writes their
     // terminal verdict, so an accepted-but-orphaned deploy can be re-proposed
     // via the canonical-won record before it is lost.
     this.block_store.persist_block(block)?;
-    let block_hash_serde = BlockHashSerde(block.block_hash.clone());
     let insert_start = std::time::Instant::now();
-    let updated_dag = block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
-        &this.block_dag_storage,
-        block,
-        InsertMode::Normal,
-        &this.casper_buffer_storage,
-        block_storage::rust::dag::buffer_dag_transition::BufferTransition::RemoveFromBuffer(
-            block_hash_serde,
-        ),
-    )?;
+    let updated_dag = this.block_dag_storage.insert(block, InsertMode::Normal)?;
     let insert_ms = insert_start.elapsed().as_millis();
     if insert_ms >= 1_000 {
         tracing::warn!(
@@ -217,13 +194,13 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     Ok(updated_dag)
 }
 
-pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) fn add_deploy(
+    this: &MultiParentCasperImpl,
     deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
-    if !reserve_deploy(this, deploy.clone())? {
-        return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
+    if let Some(error) = reserve_deploy(this, &deploy)? {
+        return Ok(Either::Left(error));
     }
 
     // Log the received deploy
@@ -302,10 +279,8 @@ fn stored_deploy_is_queued(
 /// trait delegates (one-line `super::<module>::<fn>` calls); the
 /// 60-line body of this method belongs with the other admission /
 /// deploy-pool helpers in this module.
-pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
-    T: TransportLayer + Send + Sync,
->(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot(
+    this: &MultiParentCasperImpl,
     snapshot: &CasperSnapshot,
 ) -> Result<bool, CasperError> {
     let latest_block_number = snapshot.dag.latest_block_number();
@@ -366,8 +341,8 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
 /// ahead of the tip, a block-expired one, and a time-expired one are each
 /// excluded. A signature that sits in both pools is emitted once, with
 /// `is_rejected = true` (the buffer dedups storage in its first clause).
-pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) async fn admit_list_pending_deploys(
+    this: &MultiParentCasperImpl,
 ) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
     let snapshot = this.get_snapshot().await?;
     let latest_block_number = snapshot.dag.latest_block_number();

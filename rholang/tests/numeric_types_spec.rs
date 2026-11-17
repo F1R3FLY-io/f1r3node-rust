@@ -1221,3 +1221,105 @@ async fn out_of_range_small_uint_is_a_reduce_error() {
         "out of range for u8"
     );
 }
+
+// ============================================================================
+// Type-connective patterns (source-level round-trip through parser + normalizer)
+// ============================================================================
+
+#[test]
+fn type_connective_patterns_parse_for_every_numeric_type() {
+    // Each source uses the type connective in pattern position (as a match
+    // case pattern, which accepts arbitrary spatial patterns including
+    // connectives). Compile-time success here means the parser recognizes
+    // the keyword and the normalizer maps it to the corresponding
+    // ConnectiveInstance variant. Runtime semantics are covered by the
+    // matcher tests.
+    for keyword in [
+        "Int",
+        "Int64",
+        "Int32",
+        "UInt64",
+        "UInt32",
+        "UInt16",
+        "UInt8",
+        "Float64",
+        "Float32",
+        "BigInt",
+        "BigRat",
+        "Bool",
+        "String",
+        "Uri",
+        "ByteArray",
+    ] {
+        let source = format!("match 1 {{ {keyword} => Nil _ => Nil }}");
+        assert!(
+            Compiler::source_to_adt(&source).is_ok(),
+            "expected {keyword} to parse and normalize: {source}"
+        );
+    }
+}
+
+#[test]
+fn int_and_int64_normalize_to_the_same_connective() {
+    use models::rhoapi::connective::ConnectiveInstance;
+    use models::rhoapi::Par;
+
+    fn case_pattern(par: &Par) -> &Par {
+        // Compiler emits the match tree; the first case's pattern sits at
+        // matches[0].cases[0].pattern.
+        par.matches[0].cases[0].pattern.as_ref().unwrap()
+    }
+
+    let int_par = Compiler::source_to_adt("match 1 { Int => Nil _ => Nil }").unwrap();
+    let int64_par = Compiler::source_to_adt("match 1 { Int64 => Nil _ => Nil }").unwrap();
+
+    let int_case_pat = case_pattern(&int_par);
+    let int64_case_pat = case_pattern(&int64_par);
+
+    assert_eq!(int_case_pat.connectives.len(), 1);
+    assert_eq!(int64_case_pat.connectives.len(), 1);
+    assert!(matches!(
+        int_case_pat.connectives[0].connective_instance,
+        Some(ConnectiveInstance::ConnInt(_))
+    ));
+    assert!(matches!(
+        int64_case_pat.connectives[0].connective_instance,
+        Some(ConnectiveInstance::ConnInt(_))
+    ));
+}
+
+#[test]
+fn fixed_point_pattern_parses_in_all_three_forms() {
+    use models::rhoapi::connective::ConnectiveInstance;
+
+    // Bare FixedPoint
+    let bare = Compiler::source_to_adt("match 1 { FixedPoint => Nil _ => Nil }").unwrap();
+    let pat = bare.matches[0].cases[0].pattern.as_ref().unwrap();
+    assert_eq!(pat.connectives.len(), 1);
+    assert!(matches!(
+        pat.connectives[0].connective_instance,
+        Some(ConnectiveInstance::ConnFixedPointBody(_))
+    ));
+
+    // FixedPoint(2) — exact scale literal
+    let exact = Compiler::source_to_adt("match 1 { FixedPoint(2) => Nil _ => Nil }").unwrap();
+    let pat = exact.matches[0].cases[0].pattern.as_ref().unwrap();
+    assert_eq!(pat.connectives.len(), 1);
+    if let Some(ConnectiveInstance::ConnFixedPointBody(body)) =
+        &pat.connectives[0].connective_instance
+    {
+        let scale = body.scale.as_ref().unwrap();
+        assert_eq!(scale.exprs.len(), 1);
+    } else {
+        panic!("expected ConnFixedPointBody");
+    }
+
+    // FixedPoint(_) — explicit wildcard
+    let wild = Compiler::source_to_adt("match 1 { FixedPoint(_) => Nil _ => Nil }").unwrap();
+    let pat = wild.matches[0].cases[0].pattern.as_ref().unwrap();
+    assert_eq!(pat.connectives.len(), 1);
+    assert!(matches!(
+        pat.connectives[0].connective_instance,
+        Some(ConnectiveInstance::ConnFixedPointBody(_))
+    ));
+}
