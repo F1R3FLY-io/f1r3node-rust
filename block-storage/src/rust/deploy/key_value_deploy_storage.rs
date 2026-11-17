@@ -12,7 +12,7 @@ use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::{BitVector, ByteString};
 
-use super::deploy_record_quarantine::DeployRecordQuarantine;
+use super::deploy_record_quarantine::{DeployRecordQuarantine, StoredSizes};
 
 pub const DEPLOY_STORAGE_DB: &str = "deploy_storage";
 pub const DEPLOY_STORAGE_QUARANTINE_DB: &str = "deploy_storage_quarantine";
@@ -20,7 +20,69 @@ pub const REJECTED_DEPLOY_BUFFER_DB: &str = "rejected_deploy_buffer";
 pub const REJECTED_DEPLOY_BUFFER_QUARANTINE_DB: &str = "rejected_deploy_buffer_quarantine";
 
 const DEPLOY_STORE_SIZE_METRIC: &str = "deploy.store.size";
+const DEPLOY_STORE_BYTES_METRIC: &str = "deploy.store.bytes";
 const DEPLOY_STORE_READ_ALL_DECODED_METRIC: &str = "deploy-store.read-all.decoded";
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Deserialize,
+    serde::Serialize
+)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
+pub struct DeployPoolLimits {
+    pub max_records: usize,
+    pub max_bytes: u64,
+}
+
+impl Default for DeployPoolLimits {
+    fn default() -> Self {
+        Self {
+            max_records: 512,
+            max_bytes: 16 * 1024 * 1024,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PoolRefusal {
+    TooLarge {
+        record_bytes: u64,
+        limit: u64,
+    },
+    Full {
+        resource: &'static str,
+        required: u64,
+        limit: u64,
+    },
+}
+
+impl DeployPoolLimits {
+    fn refusal(&self, sizes: &StoredSizes, record_bytes: u64) -> Option<PoolRefusal> {
+        if record_bytes > self.max_bytes {
+            return Some(PoolRefusal::TooLarge {
+                record_bytes,
+                limit: self.max_bytes,
+            });
+        }
+        if sizes.records() >= self.max_records {
+            return Some(PoolRefusal::Full {
+                resource: "records",
+                required: sizes.records() as u64 + 1,
+                limit: self.max_records as u64,
+            });
+        }
+        let required = sizes.bytes().saturating_add(record_bytes);
+        (required > self.max_bytes).then_some(PoolRefusal::Full {
+            resource: "bytes",
+            required,
+            limit: self.max_bytes,
+        })
+    }
+}
 
 pub trait DeployStoreName {
     const NAME: &'static str;
@@ -72,6 +134,7 @@ pub enum PreparedInsertResult {
     Inserted,
     AlreadyPresent,
     Changed,
+    Refused(PoolRefusal),
 }
 
 #[derive(Debug)]
@@ -129,6 +192,25 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         Ok(storage)
     }
 
+    fn sizes(&self) -> Result<parking_lot::MutexGuard<'_, StoredSizes>, KvStoreError> {
+        let mut sizes = self.quarantine.sizes().lock();
+        sizes.load(&self.store)?;
+        Ok(sizes)
+    }
+
+    fn publish(sizes: &StoredSizes) {
+        metrics::gauge!(DEPLOY_STORE_SIZE_METRIC, "store" => N::NAME).set(sizes.records() as f64);
+        metrics::gauge!(DEPLOY_STORE_BYTES_METRIC, "store" => N::NAME).set(sizes.bytes() as f64);
+    }
+
+    pub fn refusal(
+        &self,
+        deploy: &PreparedDeploy,
+        limits: DeployPoolLimits,
+    ) -> Result<Option<PoolRefusal>, KvStoreError> {
+        Ok(limits.refusal(&*self.sizes()?, deploy.value.len() as u64))
+    }
+
     pub fn add(&self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
         let prepared = deploys
             .iter()
@@ -163,21 +245,40 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
     }
 
     pub fn add_prepared(&self, deploys: Vec<PreparedDeploy>) -> Result<(), KvStoreError> {
-        let records = deploys
+        let records: Vec<_> = deploys
             .into_iter()
             .map(|deploy| (deploy.key, deploy.value))
             .collect();
-        self.store.raw_store().put(records)
+        let sized: Vec<_> = records
+            .iter()
+            .map(|(key, value)| (key.clone(), value.len() as u64))
+            .collect();
+        let mut sizes = self.sizes()?;
+        self.store.raw_store().put(records)?;
+        for (key, len) in sized {
+            sizes.insert(key, len);
+        }
+        Self::publish(&sizes);
+        Ok(())
     }
 
     pub fn add_prepared_if_absent(&self, deploy: PreparedDeploy) -> Result<bool, KvStoreError> {
         if self.quarantine.contains(&self.store, &deploy.key)? {
             return Ok(false);
         }
-        let inserted = self
-            .store
-            .raw_store()
-            .put_one_if_absent(deploy.key.clone(), deploy.value)?;
+        let inserted = {
+            let mut sizes = self.sizes()?;
+            let len = deploy.value.len() as u64;
+            let inserted = self
+                .store
+                .raw_store()
+                .put_one_if_absent(deploy.key.clone(), deploy.value)?;
+            if inserted {
+                sizes.insert(deploy.key.clone(), len);
+                Self::publish(&sizes);
+            }
+            inserted
+        };
         if !inserted && !self.quarantine.contains(&self.store, &deploy.key)? {
             return Err(KvStoreError::InvalidArgument(
                 "Deploy insertion was blocked by an invalid or concurrently changed record"
@@ -215,12 +316,14 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         &self,
         deploy: &PreparedDeploy,
         snapshot: &DeployRecordSnapshot,
+        limits: DeployPoolLimits,
     ) -> Result<PreparedInsertResult, KvStoreError> {
         if deploy.key != snapshot.key {
             return Err(KvStoreError::InvalidArgument(
                 "Deploy snapshot belongs to a different signature".to_string(),
             ));
         }
+        let mut sizes = self.sizes()?;
         if !self.matches_snapshot(snapshot)? {
             return Ok(PreparedInsertResult::Changed);
         }
@@ -232,15 +335,20 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
                 "Deploy insertion was blocked by an invalid record".to_string(),
             ));
         }
+        let len = deploy.value.len() as u64;
+        if let Some(refusal) = limits.refusal(&sizes, len) {
+            return Ok(PreparedInsertResult::Refused(refusal));
+        }
         let inserted = self
             .store
             .raw_store()
             .put_one_if_absent(deploy.key.clone(), deploy.value.clone())?;
-        Ok(if inserted {
-            PreparedInsertResult::Inserted
-        } else {
-            PreparedInsertResult::Changed
-        })
+        if !inserted {
+            return Ok(PreparedInsertResult::Changed);
+        }
+        sizes.insert(deploy.key.clone(), len);
+        Self::publish(&sizes);
+        Ok(PreparedInsertResult::Inserted)
     }
 
     /// The signature of every stored deploy, read from the keys without
@@ -254,14 +362,23 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
             .iter()
             .map(|deploy| self.store.encode_key(&deploy.sig.to_vec()))
             .collect::<Result<Vec<_>, _>>()?;
-        self.store.raw_store().delete(keys.clone())?;
+        self.delete_keys(keys)?;
         Ok(())
     }
 
     pub fn remove_by_sig(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
         let key: ByteString = sig.to_vec();
         let key = self.store.encode_key(&key)?;
-        let removed = self.store.raw_store().delete(vec![key.clone()])? > 0;
+        Ok(self.delete_keys(vec![key])? > 0)
+    }
+
+    fn delete_keys(&self, keys: Vec<BitVector>) -> Result<usize, KvStoreError> {
+        let mut sizes = self.sizes()?;
+        let removed = self.store.raw_store().delete(keys.clone())?;
+        for key in &keys {
+            sizes.remove(key);
+        }
+        Self::publish(&sizes);
         Ok(removed)
     }
 
@@ -461,6 +578,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn writes_publish_the_totals_of_every_stored_record_after_a_reopen() {
+        let mut kvm = InMemoryStoreManager::new();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        storage.add(vec![deploy(1), deploy(2)]).unwrap();
+        buffer.add(vec![deploy(3)]).unwrap();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        let bytes =
+            |store: &KeyValueDeployStorage, ts| store.prepare(&deploy(ts)).unwrap().value.len();
+        let buffer_bytes = buffer.prepare(&deploy(3)).unwrap().value.len()
+            + buffer.prepare(&deploy(4)).unwrap().value.len();
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            storage.add(vec![deploy(5)]).unwrap();
+            buffer.add(vec![deploy(4)]).unwrap();
+        });
+
+        let gauges: HashMap<(String, String), f64> = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter_map(|(key, _, _, value)| match value {
+                DebugValue::Gauge(value) => key
+                    .key()
+                    .labels()
+                    .find(|label| label.key() == "store")
+                    .map(|label| {
+                        (
+                            (key.key().name().to_string(), label.value().to_string()),
+                            value.into_inner(),
+                        )
+                    }),
+                _ => None,
+            })
+            .collect();
+        let gauge = |name: &str, store: &str| gauges[&(name.to_string(), store.to_string())];
+        assert_eq!(gauge(DEPLOY_STORE_SIZE_METRIC, "deploy_storage"), 3.0);
+        assert_eq!(
+            gauge(DEPLOY_STORE_BYTES_METRIC, "deploy_storage"),
+            (bytes(&storage, 1) + bytes(&storage, 2) + bytes(&storage, 5)) as f64
+        );
+        assert_eq!(
+            gauge(DEPLOY_STORE_SIZE_METRIC, "rejected_deploy_buffer"),
+            2.0
+        );
+        assert_eq!(
+            gauge(DEPLOY_STORE_BYTES_METRIC, "rejected_deploy_buffer"),
+            buffer_bytes as f64
+        );
+    }
+
+    #[tokio::test]
     async fn read_all_counts_each_decoded_deploy_of_each_store() {
         let mut kvm = InMemoryStoreManager::new();
         let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
@@ -540,7 +712,11 @@ mod tests {
         storage.add(vec![candidate.clone()]).unwrap();
         assert_eq!(
             storage
-                .add_prepared_if_unchanged(&storage.prepare(&candidate).unwrap(), &absent)
+                .add_prepared_if_unchanged(
+                    &storage.prepare(&candidate).unwrap(),
+                    &absent,
+                    DeployPoolLimits::default()
+                )
                 .unwrap(),
             PreparedInsertResult::Changed
         );
@@ -548,7 +724,11 @@ mod tests {
         assert!(present.is_present());
         assert_eq!(
             storage
-                .add_prepared_if_unchanged(&storage.prepare(&candidate).unwrap(), &present)
+                .add_prepared_if_unchanged(
+                    &storage.prepare(&candidate).unwrap(),
+                    &present,
+                    DeployPoolLimits::default()
+                )
                 .unwrap(),
             PreparedInsertResult::AlreadyPresent
         );
@@ -566,14 +746,22 @@ mod tests {
         assert!(!damaged.is_present());
         assert_eq!(
             storage
-                .add_prepared_if_unchanged(&storage.prepare(&candidate).unwrap(), &damaged)
+                .add_prepared_if_unchanged(
+                    &storage.prepare(&candidate).unwrap(),
+                    &damaged,
+                    DeployPoolLimits::default()
+                )
                 .unwrap(),
             PreparedInsertResult::Changed
         );
         let absent = storage.inspect_sig(&candidate.sig).unwrap();
         assert_eq!(
             storage
-                .add_prepared_if_unchanged(&storage.prepare(&candidate).unwrap(), &absent)
+                .add_prepared_if_unchanged(
+                    &storage.prepare(&candidate).unwrap(),
+                    &absent,
+                    DeployPoolLimits::default()
+                )
                 .unwrap(),
             PreparedInsertResult::Inserted
         );
@@ -599,7 +787,7 @@ mod tests {
         );
         assert_eq!(
             storage
-                .add_prepared_if_unchanged(&prepared, &present)
+                .add_prepared_if_unchanged(&prepared, &present, DeployPoolLimits::default())
                 .unwrap(),
             PreparedInsertResult::AlreadyPresent
         );
@@ -706,5 +894,199 @@ mod tests {
 
         assert_eq!(inserted, 1);
         assert_eq!(storage.read_all().unwrap().len(), 1);
+    }
+
+    fn in_memory_storage() -> KeyValueDeployStorage {
+        KeyValueDeployStorage::from_stores(
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+        .unwrap()
+    }
+
+    fn admit(
+        storage: &KeyValueDeployStorage,
+        candidate: &Signed<DeployData>,
+        limits: DeployPoolLimits,
+    ) -> PreparedInsertResult {
+        let snapshot = storage.inspect_sig(&candidate.sig).unwrap();
+        storage
+            .add_prepared_if_unchanged(&storage.prepare(candidate).unwrap(), &snapshot, limits)
+            .unwrap()
+    }
+
+    fn totals(storage: &KeyValueDeployStorage) -> (usize, u64) {
+        let sizes = storage.sizes().unwrap();
+        (sizes.records(), sizes.bytes())
+    }
+
+    fn record_bytes(storage: &KeyValueDeployStorage, candidate: &Signed<DeployData>) -> u64 {
+        storage.prepare(candidate).unwrap().value.len() as u64
+    }
+
+    #[test]
+    fn totals_follow_inserts_overwrites_and_deletions() {
+        let storage = in_memory_storage();
+        let (d1, d2) = (deploy(1), deploy(2));
+        let (b1, b2) = (record_bytes(&storage, &d1), record_bytes(&storage, &d2));
+        storage.add(vec![d1.clone(), d2.clone()]).unwrap();
+        assert_eq!(totals(&storage), (2, b1 + b2));
+        storage.add(vec![d1.clone()]).unwrap();
+        assert_eq!(totals(&storage), (2, b1 + b2));
+        assert!(storage.remove_by_sig(&d1.sig).unwrap());
+        assert!(!storage.remove_by_sig(&d1.sig).unwrap());
+        assert_eq!(totals(&storage), (1, b2));
+        storage.remove(vec![d2]).unwrap();
+        assert_eq!(totals(&storage), (0, 0));
+    }
+
+    #[test]
+    fn the_record_limit_refuses_the_next_deploy_and_a_duplicate_comes_first() {
+        let storage = in_memory_storage();
+        let limits = DeployPoolLimits {
+            max_records: 2,
+            max_bytes: u64::MAX,
+        };
+        assert_eq!(
+            admit(&storage, &deploy(1), limits),
+            PreparedInsertResult::Inserted
+        );
+        assert_eq!(
+            admit(&storage, &deploy(2), limits),
+            PreparedInsertResult::Inserted
+        );
+        assert_eq!(
+            admit(&storage, &deploy(3), limits),
+            PreparedInsertResult::Refused(PoolRefusal::Full {
+                resource: "records",
+                required: 3,
+                limit: 2,
+            })
+        );
+        assert_eq!(
+            admit(&storage, &deploy(1), limits),
+            PreparedInsertResult::AlreadyPresent
+        );
+        assert!(!storage.contains_sig(&deploy(3).sig).unwrap());
+        assert!(storage.remove_by_sig(&deploy(1).sig).unwrap());
+        assert_eq!(
+            admit(&storage, &deploy(3), limits),
+            PreparedInsertResult::Inserted
+        );
+    }
+
+    #[test]
+    fn the_byte_limit_refuses_the_total_and_an_oversized_record_even_when_empty() {
+        let storage = in_memory_storage();
+        let one = record_bytes(&storage, &deploy(1));
+        let limits = DeployPoolLimits {
+            max_records: 128,
+            max_bytes: one,
+        };
+        assert_eq!(
+            admit(&storage, &deploy(1), DeployPoolLimits {
+                max_bytes: one - 1,
+                ..limits
+            }),
+            PreparedInsertResult::Refused(PoolRefusal::TooLarge {
+                record_bytes: one,
+                limit: one - 1,
+            })
+        );
+        assert_eq!(
+            admit(&storage, &deploy(1), limits),
+            PreparedInsertResult::Inserted
+        );
+        assert!(matches!(
+            admit(&storage, &deploy(2), limits),
+            PreparedInsertResult::Refused(PoolRefusal::Full {
+                resource: "bytes",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn concurrent_submissions_admit_exactly_one_into_the_last_slot() {
+        let storage = in_memory_storage();
+        let limits = DeployPoolLimits {
+            max_records: 1,
+            max_bytes: u64::MAX,
+        };
+        let barrier = Arc::new(Barrier::new(16));
+        let handles = (0..16)
+            .map(|index| {
+                let storage = storage.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let candidate = deploy(100 + index);
+                    barrier.wait();
+                    admit(&storage, &candidate, limits)
+                })
+            })
+            .collect::<Vec<_>>();
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| **result == PreparedInsertResult::Inserted)
+                .count(),
+            1
+        );
+        assert!(results.iter().all(|result| matches!(
+            result,
+            PreparedInsertResult::Inserted | PreparedInsertResult::Refused(_)
+        )));
+        assert_eq!(totals(&storage).0, 1);
+    }
+
+    #[tokio::test]
+    async fn a_reopened_store_counts_every_stored_record_and_refuses_above_a_lowered_limit() {
+        let mut kvm = InMemoryStoreManager::new();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        storage.add(vec![deploy(1), deploy(2), deploy(3)]).unwrap();
+        let expected = totals(&storage);
+        let reopened = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        assert_eq!(totals(&reopened), expected);
+        let lowered = DeployPoolLimits {
+            max_records: 2,
+            max_bytes: u64::MAX,
+        };
+        assert!(matches!(
+            admit(&reopened, &deploy(4), lowered),
+            PreparedInsertResult::Refused(PoolRefusal::Full {
+                resource: "records",
+                ..
+            })
+        ));
+        assert_eq!(reopened.read_all().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_quarantined_record_releases_its_charge() {
+        let live: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let storage = KeyValueDeployStorage::from_stores(
+            live.clone(),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+        .unwrap();
+        storage.add(vec![deploy(1)]).unwrap();
+        let damaged = deploy(2);
+        let key = storage.store.encode_key(&damaged.sig.to_vec()).unwrap();
+        let reopened = KeyValueDeployStorage::from_stores(
+            live.clone(),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+        .unwrap();
+        live.put_one(key, vec![0xff]).unwrap();
+        let counted =
+            KeyValueDeployStorage::from_stores(live, Arc::new(InMemoryKeyValueStore::new()))
+                .unwrap();
+        assert_eq!(totals(&counted).0, 2);
+        assert_eq!(counted.read_all().unwrap(), HashSet::from([deploy(1)]));
+        assert_eq!(totals(&counted), totals(&reopened));
     }
 }

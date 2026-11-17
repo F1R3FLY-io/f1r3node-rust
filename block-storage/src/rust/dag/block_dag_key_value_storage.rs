@@ -1439,6 +1439,12 @@ impl BlockDagKeyValueStorage {
             .map(BlockHash::from))
     }
 
+    pub fn record_deploy_admitted(&self, sig: &[u8], valid_after: i64) -> Result<(), KvStoreError> {
+        self.lifecycle
+            .write()
+            .append_events(sig, Some(valid_after), Vec::new())
+    }
+
     /// Startup carrier-index initialization (next to the LFB-migration
     /// precedent). On a database that already holds blocks, coverage starts at
     /// the next insert: max height + 1. Blocks below W are never claimed — the

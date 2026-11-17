@@ -29,6 +29,18 @@ pub fn is_past_expiration_cutoff(
     Ok(valid_after_block_number < earliest_valid_after(reference_block_number, deploy_lifespan)?)
 }
 
+pub fn latest_valid_after(next_block_number: i64, max_parent_depth: i32) -> i64 {
+    next_block_number.saturating_add(i64::from(max_parent_depth))
+}
+
+pub fn is_too_far_ahead(
+    valid_after_block_number: i64,
+    next_block_number: i64,
+    max_parent_depth: i32,
+) -> bool {
+    valid_after_block_number > latest_valid_after(next_block_number, max_parent_depth)
+}
+
 pub fn repeat_scan_start(
     tip_scan_start: i64,
     floor_block_number: i64,
@@ -85,6 +97,13 @@ mod tests {
     #[test]
     fn repeat_scan_rejects_a_negative_lifespan() {
         assert!(repeat_scan_start(6, 4, -1, 2).is_err());
+    }
+
+    #[test]
+    fn the_horizon_admits_its_boundary_and_refuses_the_next_height() {
+        assert!(!is_too_far_ahead(35, 10, 25));
+        assert!(is_too_far_ahead(36, 10, 25));
+        assert!(!is_too_far_ahead(i64::MAX, i64::MAX, 25));
     }
 
     #[test]

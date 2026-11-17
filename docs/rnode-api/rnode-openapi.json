@@ -706,12 +706,15 @@
             }
           },
           "400": {
-            "description": "Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, unbonded validator, shard ID mismatch, forbidden key, phlo price below minimum, or expired deploy.",
+            "description": "Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, unbonded validator, shard ID mismatch, forbidden key, or phlo price below minimum. A closed validity window or a past expiration timestamp causes `deploy_expired`. A validity height beyond the admission horizon causes `invalid_deploy_window`.",
             "schema": {"$ref": "#/definitions/ApiErrorResponse"},
             "examples": {
               "application/json": {"error": "illegal_argument", "message": "Invalid signature: the signature does not verify for this deployer and deploy data"}
             }
           },
+          "409": {"description": "Deploy is already known (duplicate_deploy)", "schema": {"$ref": "#/definitions/ApiErrorResponse"}},
+          "413": {"description": "Deploy record exceeds the configured pool byte limit (deploy_too_large)", "schema": {"$ref": "#/definitions/ApiErrorResponse"}},
+          "503": {"description": "Deploy pool is at its record or byte limit, or admission changed during its attempts or the submission limit is reached (deploy_pool_busy, deploy_admission_busy)", "schema": {"$ref": "#/definitions/ApiErrorResponse"}},
           "500": {"description": "Internal node failure, including unknown_error", "schema": {"$ref": "#/definitions/ApiErrorResponse"}}
         },
         "deprecated": false
