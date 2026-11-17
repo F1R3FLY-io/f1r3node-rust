@@ -24,6 +24,7 @@ pub enum NodeEvent {
     /// The node's validator created a block, before validating it.
     Created {
         number: i64,
+        hash: String,
         creator: String,
         deploys: Vec<String>,
         admission: Option<Admission>,
@@ -68,6 +69,7 @@ struct BlockPayload {
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct CreatedPayload {
+    block_hash: String,
     block_number: i64,
     creator: String,
     deploys: Vec<DeployPayload>,
@@ -126,6 +128,7 @@ pub fn parse_event(text: &str) -> Result<NodeEvent, serde_json::Error> {
             let block: CreatedPayload = serde_json::from_value(envelope.payload)?;
             NodeEvent::Created {
                 number: block.block_number,
+                hash: block.block_hash,
                 creator: block.creator,
                 deploys: block.deploys.into_iter().map(|d| d.id).collect(),
                 admission: block.deploy_admission,
@@ -275,6 +278,7 @@ mod tests {
         .unwrap();
         assert_eq!(event, NodeEvent::Created {
             number: 7,
+            hash: "ab".to_string(),
             creator: "c".to_string(),
             deploys: vec!["01".to_string()],
             admission: Some(Admission {

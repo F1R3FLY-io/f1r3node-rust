@@ -235,6 +235,47 @@ async fn release_keeps_the_validators_pool_at_what_its_next_block_takes() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn health_learns_an_own_block_once_and_only_after_the_node_adds_it() {
+    let node = FakeNode::new(10, 9);
+    let url = node.clone().serve().await;
+    let dir = tempfile::tempdir().unwrap();
+    let queue = Queue::start(&url, dir.path()).await;
+    let own_blocks = || async {
+        queue
+            .handle
+            .snapshot()
+            .await
+            .unwrap()
+            .validator
+            .map_or(0, |validator| validator.own_blocks)
+    };
+
+    let mut discarded = block_created(11, 8, false, false, &[]);
+    discarded["payload"]["block-hash"] = json!(format!("{:064x}", 0xdead_u64));
+    node.emit(discarded);
+    advance(&node, 11, 11);
+    reaches_tip(&queue, 11).await;
+    assert_eq!(
+        own_blocks().await,
+        0,
+        "a created block self-validation discarded"
+    );
+
+    node.emit(block_created(12, 8, false, false, &[]));
+    node.emit(block_added(12, VALIDATOR, &[]));
+    reaches_tip(&queue, 12).await;
+    assert_eq!(own_blocks().await, 1);
+
+    node.emit(block_created(12, 8, false, false, &[]));
+    node.emit(block_added(12, VALIDATOR, &[]));
+    node.emit(block_created(13, 8, false, false, &[]));
+    node.emit(block_added(13, VALIDATOR, &[]));
+    reaches_tip(&queue, 13).await;
+    assert_eq!(own_blocks().await, 2, "a replayed block counts once");
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_refusal_names_the_validator_or_the_shard() {
     let node = FakeNode::new(10, 9);
     let url = node.clone().serve().await;

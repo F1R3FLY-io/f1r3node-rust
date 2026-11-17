@@ -11,7 +11,7 @@ use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::error::{Congestion, EngineStopped, IntakeError};
-use crate::events::{NodeEvent, VerdictState};
+use crate::events::{Admission, NodeEvent, VerdictState};
 use crate::health::{Health, ShardView, ValidatorView};
 use crate::node::{
     ChainSnapshot, NodeDeployStatus, NodeError, NodeHttp, ShardValues, SubmitOutcome,
@@ -204,6 +204,15 @@ impl IndexKeys {
 type Effect = Box<dyn FnOnce() + Send>;
 type IntakeResult = Result<Sig, IntakeError>;
 
+struct CreatedSample {
+    number: i64,
+    creator: String,
+    admission: Option<Admission>,
+    took: usize,
+    left: usize,
+    at: Instant,
+}
+
 /// The single owner of the queue's state. Changes are committed to the
 /// store in batches; nothing is acknowledged, broadcast or sent to the node
 /// before the change behind it is committed.
@@ -235,6 +244,12 @@ pub struct Engine {
     chain: Option<ChainSnapshot>,
     connected: bool,
     health: Option<Health>,
+    /// Samples of the validator's own blocks, by block hash, from
+    /// `block-created`: health learns each one only when the same block is
+    /// added, because self-validation can still discard a created block.
+    created: HashMap<String, CreatedSample>,
+    /// Own blocks health already learned, by block hash, with their height.
+    learned: HashMap<String, i64>,
     held_for_finality: bool,
     next_sequence: u64,
     retry_at: Option<Instant>,
@@ -297,6 +312,8 @@ impl Engine {
             chain: None,
             connected: false,
             health: None,
+            created: HashMap::new(),
+            learned: HashMap::new(),
             held_for_finality: false,
             next_sequence,
             retry_at: None,
@@ -631,14 +648,31 @@ impl Engine {
                 if let Some(health) = self.health.as_mut() {
                     health.on_block(number, &creator, Instant::now());
                 }
+                if let Some(sample) = self.created.remove(&hash) {
+                    if let Some(health) = self.health.as_mut() {
+                        health.on_own_block(
+                            sample.number,
+                            &sample.creator,
+                            sample.admission,
+                            sample.took,
+                            sample.left,
+                            sample.at,
+                        );
+                    }
+                    self.learned.insert(hash, sample.number);
+                }
                 self.observe_tip(number)?;
             }
             NodeEvent::Created {
                 number,
+                hash,
                 creator,
                 deploys,
                 admission,
             } => {
+                if self.learned.contains_key(&hash) || self.created.contains_key(&hash) {
+                    return self.release();
+                }
                 // The block is announced before the node adds it, so this
                 // queue's deploys it carries are still pooled. Of those it
                 // left, only deploys sent before its parent height were
@@ -658,10 +692,14 @@ impl Engine {
                     .range(..(number - 1, 0))
                     .filter(|(_, sig)| !carried.contains(*sig))
                     .count();
-                let took = carried.len();
-                if let Some(health) = self.health.as_mut() {
-                    health.on_own_block(number, &creator, admission, took, left, Instant::now());
-                }
+                self.created.insert(hash, CreatedSample {
+                    number,
+                    creator,
+                    admission,
+                    took: carried.len(),
+                    left,
+                    at: Instant::now(),
+                });
             }
             NodeEvent::Finalised { number } => self.observe_lfb(number),
             NodeEvent::Verdicts(verdicts) => {
@@ -994,6 +1032,9 @@ impl Engine {
         }
         self.close_expired(number);
         self.resubmit_stale(number)?;
+        let horizon = number - citable_depth(&self.chain.as_ref().expect("a known chain").shard);
+        self.created.retain(|_, sample| sample.number >= horizon);
+        self.learned.retain(|_, height| *height >= horizon);
         self.prune(number)
     }
 
