@@ -413,14 +413,15 @@ env:
   #   tests. Verified: descends from 6afe9a0 and contains #175's head 6df28f3;
   #   588 unit tests pass; system-integration CI passed except the two compose
   #   smoke jobs, which need a node image that ships the deploy-queue binary.
-  # 2026-11-17: 5717054 -> 35b910a (system-integration PR #187 head, on dev).
-  #   test_prepare_deploy and test_preview_private_names send the valid-after
-  #   block number, and pyf1r3fly is pinned to #13 (distinct per-key deploy
-  #   timestamps, valid-after block in previewPrivateNames). Verified: dev
-  #   586c634 has 5717054's tree, and 35b910a differs from it only in those
-  #   tests, node.py, the test catalog, pyproject.toml and poetry.lock; unit
-  #   tests pass.
-  SYSTEM_INTEGRATION_REF: 35b910a7b35d14bcbc28c53bc22885a627916f00
+  # 2026-11-17: 5717054 -> 3867a22 (system-integration main, PR #187 merged
+  #   through promotion #189). test_prepare_deploy and
+  #   test_preview_private_names send the valid-after block number, and
+  #   pyf1r3fly is pinned to 9ec3da8 (#13: distinct per-key deploy timestamps,
+  #   valid-after block in previewPrivateNames; #14: responses log on the
+  #   client's own logger). Verified: descends from 5717054, and differs from
+  #   it only in those tests, node.py, the test catalog, pyproject.toml and
+  #   poetry.lock; unit tests pass.
+  SYSTEM_INTEGRATION_REF: 3867a22c6fc0d34cc744a5973d296dcb719f417a
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
