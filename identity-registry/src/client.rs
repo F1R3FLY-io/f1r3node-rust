@@ -1,22 +1,24 @@
-// Thin wrapper over F1r3flyApi for deploying the identity registry contract
-// and invoking its operations.
+// Thin wrapper over F1r3flyApi for invoking the identity registry contract
+// operations.
+
+use std::time::Duration;
+
+use node_cli::{DeployOptions, Endpoint, F1r3flyApi, ProposeResult, SigningKey};
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 use crate::error::IdentityRegistryError;
 use crate::payload::{
-    NAME_LEN, NONCE_LEN, PK_LEN, admin_relink_payload, register_payload, rotate_payload,
+    admin_relink_payload, register_payload, rotate_payload, NAME_LEN, NONCE_LEN, PK_LEN,
 };
 use crate::reply::{
-    extract_elist, extract_emap, extract_gbytearray, extract_gint, extract_gstring, extract_guri,
-    fetch_reply, parse_tagged_reply,
+    extract_elist, extract_emap, extract_gbytearray, extract_gint, extract_gstring, fetch_reply,
+    parse_tagged_reply,
 };
-use crate::signing::{signature_der, sign_payload, uncompressed_pk_bytes};
+use crate::signing::{admin_sign, sign_payload, signature_der, uncompressed_pk_bytes};
 use crate::term::{
     admin_relink_term, new_reply_slot, register_term, resolve_current_term, resolve_history_term,
     rotate_term,
 };
-use node_cli::{DeployOptions, Endpoint, F1r3flyApi, ProposeResult, SigningKey};
-use secp256k1::{PublicKey, Secp256k1, SecretKey};
-use std::time::Duration;
 
 /// What `resolve_current` returns on success.
 #[derive(Debug, Clone)]
@@ -36,6 +38,7 @@ pub struct HistoryEntry {
     /// Block height at which this entry was recorded.
     pub block_height: u64,
     pub admin_evidence: Option<Vec<u8>>,
+    pub admin_signers: Option<Vec<[u8; PK_LEN]>>,
 }
 
 pub struct IdentityRegistryClient {
@@ -51,9 +54,8 @@ pub struct IdentityRegistryClient {
 
 impl IdentityRegistryClient {
     /// Builds a client against a running F1R3FLY validator node.
-    /// `registry_uri` is `None` when the contract has not been deployed yet
-    /// (used by the deploy helper) and `Some(uri)` for calls that operate on
-    /// an already-deployed registry.
+    /// `registry_uri` is the registry to address, usually
+    /// `rho:system:identityRegistry`.
     pub fn new(
         signing_key: &str,
         node_host: &str,
@@ -61,8 +63,8 @@ impl IdentityRegistryClient {
         registry_uri: Option<String>,
     ) -> Result<Self, IdentityRegistryError> {
         let url = format!("http://{node_host}:{grpc_port}");
-        let endpoint = Endpoint::parse(&url)
-            .map_err(|e| IdentityRegistryError::Node(format!("{e:?}")))?;
+        let endpoint =
+            Endpoint::parse(&url).map_err(|e| IdentityRegistryError::Node(format!("{e:?}")))?;
         let key = SigningKey::from_hex(signing_key)
             .map_err(|e| IdentityRegistryError::Node(format!("{e:?}")))?;
         let api = F1r3flyApi::new(endpoint)
@@ -75,24 +77,6 @@ impl IdentityRegistryClient {
             registry_uri,
             post_deploy_wait: Duration::ZERO,
         })
-    }
-
-    /// Deploys the identity registry contract and returns the finalised
-    /// block hash together with the URI the registry published under. The
-    /// contract template contains a `{{uri_slot}}` placeholder that this
-    /// method substitutes with a fresh forgeable slot name, so each deploy
-    /// publishes to its own slot and the URI can be fetched back
-    /// programmatically.
-    pub async fn deploy_contract(
-        &self,
-        rho_template: &str,
-    ) -> Result<(String, String), IdentityRegistryError> {
-        let slot = new_reply_slot();
-        let rho_source = rho_template.replace("{{uri_slot}}", &slot);
-        let block_hash = self.deploy(&rho_source).await?;
-        let uri_par = fetch_reply(&self.node_host, self.grpc_port, &slot, &block_hash).await?;
-        let uri = extract_guri(&uri_par)?;
-        Ok((block_hash, uri))
     }
 
     fn require_uri(&self) -> Result<&str, IdentityRegistryError> {
@@ -155,14 +139,32 @@ impl IdentityRegistryClient {
         gint_as_u64(&value, "new_seq")
     }
 
-    /// Signs and submits an admin_relink call. `admin_sk` is the admin's
-    /// secret key, which in the prototype equals the deployer's key.
-    /// `new_sk` signs the payload a second time as proof the new key
-    /// holder has consented to taking over the identity. Returns the new
-    /// seq on success.
+    /// Signs the admin_relink payload with each of `admin_sks` and submits it
+    /// with `admin_relink_with_sigs`. Returns the new seq.
     pub async fn admin_relink(
         &self,
-        admin_sk: &SecretKey,
+        admin_sks: &[SecretKey],
+        name: &[u8; NAME_LEN],
+        new_sk: &SecretKey,
+        seq: u64,
+        admin_evidence: &[u8],
+    ) -> Result<u64, IdentityRegistryError> {
+        let new_pk_bytes =
+            uncompressed_pk_bytes(&PublicKey::from_secret_key(&Secp256k1::new(), new_sk));
+        let admin_sigs: Vec<_> = admin_sks
+            .iter()
+            .map(|sk| admin_sign(sk, name, &new_pk_bytes, seq, admin_evidence))
+            .collect();
+        self.admin_relink_with_sigs(&admin_sigs, name, new_sk, seq, admin_evidence)
+            .await
+    }
+
+    /// Submits an admin_relink call with admin `(pk, sig)` pairs, for example
+    /// from `admin_sign`. `new_sk` signs the payload as proof of consent
+    /// (IR-D5). The deployer key only pays for the deploy. Returns the new seq.
+    pub async fn admin_relink_with_sigs(
+        &self,
+        admin_sigs: &[([u8; PK_LEN], Vec<u8>)],
         name: &[u8; NAME_LEN],
         new_sk: &SecretKey,
         seq: u64,
@@ -172,10 +174,11 @@ impl IdentityRegistryClient {
         let new_pk = PublicKey::from_secret_key(&Secp256k1::new(), new_sk);
         let new_pk_bytes = uncompressed_pk_bytes(&new_pk);
         let payload = admin_relink_payload(name, &new_pk_bytes, seq, admin_evidence);
-        let sig = sign_payload(&payload, admin_sk);
-        let sig_der = signature_der(&sig);
-        let new_sig = sign_payload(&payload, new_sk);
-        let new_sig_der = signature_der(&new_sig);
+        let admin_sig_refs: Vec<(&[u8], &[u8])> = admin_sigs
+            .iter()
+            .map(|(pk, sig)| (pk.as_slice(), sig.as_slice()))
+            .collect();
+        let new_sig_der = signature_der(&sign_payload(&payload, new_sk));
 
         let slot = new_reply_slot();
         let term = admin_relink_term(
@@ -184,7 +187,7 @@ impl IdentityRegistryClient {
             &new_pk_bytes,
             seq,
             admin_evidence,
-            &sig_der,
+            &admin_sig_refs,
             &new_sig_der,
             &slot,
         );
@@ -272,10 +275,7 @@ fn bytes_to_array<const N: usize>(
     Ok(arr)
 }
 
-fn gint_as_u64(
-    par: &models::rhoapi::Par,
-    label: &str,
-) -> Result<u64, IdentityRegistryError> {
+fn gint_as_u64(par: &models::rhoapi::Par, label: &str) -> Result<u64, IdentityRegistryError> {
     let n = extract_gint(par)?;
     if n < 0 {
         return Err(IdentityRegistryError::ResponseParse(format!(
@@ -298,9 +298,10 @@ fn decode_resolve_current(
             .as_ref()
             .ok_or_else(|| IdentityRegistryError::ResponseParse("map key missing".into()))?;
         let key = extract_gstring(key_par)?;
-        let value = kv.value.as_ref().ok_or_else(|| {
-            IdentityRegistryError::ResponseParse("map value missing".into())
-        })?;
+        let value = kv
+            .value
+            .as_ref()
+            .ok_or_else(|| IdentityRegistryError::ResponseParse("map value missing".into()))?;
         match key.as_str() {
             "pk" => pk = Some(extract_gbytearray(value)?),
             "seq" => seq = Some(extract_gint(value)?),
@@ -330,37 +331,44 @@ fn decode_resolve_current(
     })
 }
 
-fn decode_history(
-    value: models::rhoapi::Par,
-) -> Result<Vec<HistoryEntry>, IdentityRegistryError> {
+fn decode_history(value: models::rhoapi::Par) -> Result<Vec<HistoryEntry>, IdentityRegistryError> {
     let list = extract_elist(&value)?;
     list.ps.iter().map(decode_history_entry).collect()
 }
 
-fn decode_history_entry(
-    par: &models::rhoapi::Par,
-) -> Result<HistoryEntry, IdentityRegistryError> {
+fn decode_history_entry(par: &models::rhoapi::Par) -> Result<HistoryEntry, IdentityRegistryError> {
     let map = extract_emap(par)?;
     let mut pk: Option<Vec<u8>> = None;
     let mut op: Option<String> = None;
     let mut seq: Option<i64> = None;
     let mut block_height: Option<i64> = None;
     let mut admin_evidence: Option<Vec<u8>> = None;
+    let mut admin_signers: Option<Vec<[u8; PK_LEN]>> = None;
     for kv in &map.kvs {
         let key_par = kv
             .key
             .as_ref()
             .ok_or_else(|| IdentityRegistryError::ResponseParse("map key missing".into()))?;
         let key = extract_gstring(key_par)?;
-        let value = kv.value.as_ref().ok_or_else(|| {
-            IdentityRegistryError::ResponseParse("map value missing".into())
-        })?;
+        let value = kv
+            .value
+            .as_ref()
+            .ok_or_else(|| IdentityRegistryError::ResponseParse("map value missing".into()))?;
         match key.as_str() {
             "pk" => pk = Some(extract_gbytearray(value)?),
             "op" => op = Some(extract_gstring(value)?),
             "seq" => seq = Some(extract_gint(value)?),
             "blockHeight" => block_height = Some(extract_gint(value)?),
             "admin_evidence" => admin_evidence = Some(extract_gbytearray(value)?),
+            "admin_signers" => {
+                admin_signers = Some(
+                    extract_elist(value)?
+                        .ps
+                        .iter()
+                        .map(|p| bytes_to_array::<PK_LEN>(extract_gbytearray(p)?, "admin_signer"))
+                        .collect::<Result<_, _>>()?,
+                )
+            }
             _ => {}
         }
     }
@@ -385,5 +393,6 @@ fn decode_history_entry(
         seq: seq_val as u64,
         block_height: block_height_val as u64,
         admin_evidence,
+        admin_signers,
     })
 }

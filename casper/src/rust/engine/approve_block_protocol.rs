@@ -109,6 +109,8 @@ impl ApproveBlockProtocolFactory {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        identity_registry_admin_public_keys: Vec<String>,
+        identity_registry_admin_quorum: u32,
         fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
         runtime_manager: &RuntimeManager,
         last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
@@ -172,6 +174,8 @@ impl ApproveBlockProtocolFactory {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            identity_registry_admin_public_keys,
+            identity_registry_admin_quorum,
             fs_bundle,
             consensus_fs_snapshot_cadence: None,
         };

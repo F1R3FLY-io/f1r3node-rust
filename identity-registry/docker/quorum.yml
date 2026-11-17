@@ -1,0 +1,12 @@
+# Overlay for docker/shard.yml. Paths resolve against docker/.
+x-quorum-conf: &quorum-conf
+  volumes:
+    - ./conf/default.conf:/var/lib/rnode/default.conf
+    - ../identity-registry/docker/quorum.conf:/var/lib/rnode/rnode.conf
+
+services:
+  boot: *quorum-conf
+  validator1: *quorum-conf
+  validator2: *quorum-conf
+  validator3: *quorum-conf
+  readonly: *quorum-conf

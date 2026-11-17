@@ -1,40 +1,45 @@
 // Integration tests for the identity registry.
 // Requires:
-//   - A running F1R3FLY cluster on 127.0.0.1:40422 (gRPC internal)
+//   - A running F1R3FLY cluster on 127.0.0.1:40422 (gRPC internal), or on
+//     the port in F1R3FLY_GRPC_PORT
 //   - F1R3FLY_SIGNING_KEY env var set to a 32-byte hex secp256k1 key with
-//     REV balance on that cluster
+//     REV balance on that cluster. It signs the deploys only.
+//   - The genesis identity registry admin set of docker/quorum.conf: 2 of
+//     ADMIN_SKS (`make firefly`).
 //
 // Run with: cargo test --features integration_tests -- --nocapture
 
 #![cfg(feature = "integration_tests")]
 
-use rand::RngCore;
-use secp256k1::{PublicKey, Secp256k1, SecretKey};
-use identity_registry::{IdentityRegistryClient, IdentityRegistryError};
-use identity_registry::payload::{
-    NAME_LEN, NONCE_LEN, derive_name, register_payload,
-};
-use identity_registry::reply::{fetch_reply, parse_tagged_reply};
-use identity_registry::signing::{sign_payload, signature_der, uncompressed_pk_bytes};
-use identity_registry::term::{new_reply_slot, register_term};
 use std::env;
-use std::fs;
 use std::sync::OnceLock;
 use std::time::Duration;
-use tokio::sync::OnceCell;
+
+use identity_registry::payload::{derive_name, register_payload, NAME_LEN, NONCE_LEN};
+use identity_registry::reply::{fetch_reply, parse_tagged_reply};
+use identity_registry::signing::{admin_sign, sign_payload, signature_der, uncompressed_pk_bytes};
+use identity_registry::term::{new_reply_slot, register_term};
+use identity_registry::{IdentityRegistryClient, IdentityRegistryError};
+use rand::RngCore;
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 const NODE_HOST: &str = "127.0.0.1";
-const GRPC_PORT: u16 = 40422;
-const CONTRACT_PATH: &str = "rholang/identity_registry.rho";
+const DEFAULT_GRPC_PORT: u16 = 40422;
+const REGISTRY_URI: &str = "rho:system:identityRegistry";
 
 // --- Harness -----------------------------------------------------------------
 
+/// F1R3FLY_GRPC_PORT overrides the port, for CI's remapped host ports.
+fn grpc_port() -> u16 {
+    env::var("F1R3FLY_GRPC_PORT")
+        .map(|p| p.parse().expect("F1R3FLY_GRPC_PORT must be a port number"))
+        .unwrap_or(DEFAULT_GRPC_PORT)
+}
+
 fn signing_key() -> &'static str {
     static SK: OnceLock<String> = OnceLock::new();
-    SK.get_or_init(|| {
-        env::var("F1R3FLY_SIGNING_KEY").expect("F1R3FLY_SIGNING_KEY must be set")
-    })
-    .as_str()
+    SK.get_or_init(|| env::var("F1R3FLY_SIGNING_KEY").expect("F1R3FLY_SIGNING_KEY must be set"))
+        .as_str()
 }
 
 /// 5s between deploys so each test op lands in its own block. Avoids the
@@ -42,35 +47,21 @@ fn signing_key() -> &'static str {
 /// several pending deploys into one block.
 const POST_DEPLOY_WAIT: Duration = Duration::from_secs(5);
 
-/// Deploys the identity registry contract exactly once per test process and
-/// caches the URI. Every test shares the same registry but operates on its
-/// own fresh keypair/name so they don't interfere.
-async fn shared_uri() -> &'static str {
-    static URI: OnceCell<String> = OnceCell::const_new();
-    URI.get_or_init(|| async {
-        let mut client = IdentityRegistryClient::new(signing_key(), NODE_HOST, GRPC_PORT, None)
-            .expect("init client");
-        client.post_deploy_wait = POST_DEPLOY_WAIT;
-        let rho = fs::read_to_string(CONTRACT_PATH).expect("read contract source");
-        let (_block_hash, uri) =
-            client.deploy_contract(&rho).await.expect("deploy identity registry");
-        uri
-    })
-    .await
-    .as_str()
-}
-
+/// Every test shares the genesis registry but operates on its own fresh
+/// keypair/name so they do not interfere.
 async fn test_client() -> IdentityRegistryClient {
-    let uri = shared_uri().await.to_string();
-    let mut client = IdentityRegistryClient::new(signing_key(), NODE_HOST, GRPC_PORT, Some(uri))
-        .expect("init client");
+    let mut client = IdentityRegistryClient::new(
+        signing_key(),
+        NODE_HOST,
+        grpc_port(),
+        Some(REGISTRY_URI.into()),
+    )
+    .expect("init client");
     client.post_deploy_wait = POST_DEPLOY_WAIT;
     client
 }
 
-fn fresh_keypair() -> (SecretKey, PublicKey) {
-    Secp256k1::new().generate_keypair(&mut rand::rng())
-}
+fn fresh_keypair() -> (SecretKey, PublicKey) { Secp256k1::new().generate_keypair(&mut rand::rng()) }
 
 fn fresh_nonce() -> [u8; NONCE_LEN] {
     let mut buf = [0u8; NONCE_LEN];
@@ -78,10 +69,21 @@ fn fresh_nonce() -> [u8; NONCE_LEN] {
     buf
 }
 
-fn admin_sk() -> SecretKey {
-    let bytes = hex::decode(signing_key()).expect("F1R3FLY_SIGNING_KEY is not valid hex");
-    let arr: [u8; 32] = bytes.try_into().expect("F1R3FLY_SIGNING_KEY must be 32 bytes");
-    SecretKey::from_byte_array(arr).expect("F1R3FLY_SIGNING_KEY is not a valid secp256k1 key")
+/// The bootstrap, validator1 and validator2 dev keys of docker/.env.example.
+/// docker/quorum.conf makes their public keys the admin set, quorum 2.
+const ADMIN_SKS: [&str; 3] = [
+    "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657",
+    "357cdc4201a5650830e0bc5a03299a30038d9934ba4c7ab73ec164ad82471ff9",
+    "2c02138097d019d263c1d5383fcaddb1ba6416a0f4e64e3a617fe3af45b7851d",
+];
+
+fn admin_sk(i: usize) -> SecretKey {
+    let arr: [u8; 32] = hex::decode(ADMIN_SKS[i]).unwrap().try_into().unwrap();
+    SecretKey::from_byte_array(arr).unwrap()
+}
+
+fn admin_pk(sk: &SecretKey) -> [u8; 65] {
+    uncompressed_pk_bytes(&PublicKey::from_secret_key(&Secp256k1::new(), sk))
 }
 
 // --- REG-AC1 -----------------------------------------------------------------
@@ -188,10 +190,7 @@ async fn rotate_accepts_new_rejects_old_name_stable() {
     let name = client.register(&sk1, &nonce).await.expect("register");
 
     let (sk2, pk2) = fresh_keypair();
-    let new_seq = client
-        .rotate(&sk1, &name, &sk2, 0)
-        .await
-        .expect("rotate");
+    let new_seq = client.rotate(&sk1, &name, &sk2, 0).await.expect("rotate");
     assert_eq!(new_seq, 1);
 
     // The name is unchanged, and resolve now returns pk2.
@@ -233,10 +232,7 @@ async fn rotation_adds_key_not_identity() {
     assert_eq!(history_before.len(), 1);
 
     let (sk2, _pk2) = fresh_keypair();
-    client
-        .rotate(&sk1, &name, &sk2, 0)
-        .await
-        .expect("rotate");
+    client.rotate(&sk1, &name, &sk2, 0).await.expect("rotate");
 
     let history_after = client.resolve_history(&name).await.expect("history after");
     // Same name throughout. Key count grew by exactly one.
@@ -245,9 +241,7 @@ async fn rotation_adds_key_not_identity() {
     // A rotation not signed by the current key is rejected.
     let (sk_stranger, _) = fresh_keypair();
     let (sk3, _pk3) = fresh_keypair();
-    let result = client
-        .rotate(&sk_stranger, &name, &sk3, 1)
-        .await;
+    let result = client.rotate(&sk_stranger, &name, &sk3, 1).await;
     assert!(
         matches!(result, Err(IdentityRegistryError::Rejected(ref r)) if r == "bad_signature"),
         "expected bad_signature when rotating with a stranger key, got {result:?}"
@@ -299,15 +293,9 @@ async fn record_is_append_only() {
     let name = client.register(&sk1, &nonce).await.expect("register");
 
     let (sk2, pk2) = fresh_keypair();
-    client
-        .rotate(&sk1, &name, &sk2, 0)
-        .await
-        .expect("rotate 1");
+    client.rotate(&sk1, &name, &sk2, 0).await.expect("rotate 1");
     let (sk3, pk3) = fresh_keypair();
-    client
-        .rotate(&sk2, &name, &sk3, 1)
-        .await
-        .expect("rotate 2");
+    client.rotate(&sk2, &name, &sk3, 1).await.expect("rotate 2");
 
     let history = client.resolve_history(&name).await.expect("history");
     assert_eq!(history.len(), 3);
@@ -331,9 +319,10 @@ async fn record_is_append_only() {
 
 // --- REG-AC9 -----------------------------------------------------------------
 
-/// The administrator key can link a new key to an identity whose current
-/// key cannot sign, recording the evidence offered. The same operation
-/// signed by any other key is rejected.
+/// A quorum of genesis admins can relink an identity, also with offline
+/// admin_sign signatures. History records the evidence and the signers. A
+/// stranger's signature does not count toward the quorum, also under an
+/// admin pk.
 #[cfg_attr(not(feature = "integration_tests"), ignore)]
 #[tokio::test]
 async fn admin_relink_works_and_is_bounded() {
@@ -342,13 +331,12 @@ async fn admin_relink_works_and_is_bounded() {
     let nonce = fresh_nonce();
     let name = client.register(&sk1, &nonce).await.expect("register");
 
-    // The deployer of the contract is the admin (REG-D3). Signing with that
-    // key succeeds and records the evidence.
-    let admin = admin_sk();
+    // Two admin keys meet the 2-of-3 quorum (REG-D3).
+    let admins = [admin_sk(0), admin_sk(1)];
     let (sk_new, pk_new) = fresh_keypair();
     let evidence = b"out_of_band_proof".to_vec();
     let new_seq = client
-        .admin_relink(&admin, &name, &sk_new, 0, &evidence)
+        .admin_relink(&admins, &name, &sk_new, 0, &evidence)
         .await
         .expect("admin relink");
     assert_eq!(new_seq, 1);
@@ -358,15 +346,99 @@ async fn admin_relink_works_and_is_bounded() {
     assert_eq!(history[1].op, "admin_relink");
     assert_eq!(history[1].pk, uncompressed_pk_bytes(&pk_new));
     assert_eq!(history[1].admin_evidence.as_deref(), Some(&evidence[..]));
+    let mut signers = history[1].admin_signers.clone().expect("admin signers");
+    signers.sort();
+    let mut expected: Vec<_> = admins.iter().map(admin_pk).collect();
+    expected.sort();
+    assert_eq!(signers, expected);
 
-    // Signed by any other key: rejected.
+    // Offline path: each admin signs with admin_sign, and the deploy carries
+    // only the (pk, sig) pairs.
+    let (sk_newer, pk_newer) = fresh_keypair();
+    let pairs: Vec<_> = admins
+        .iter()
+        .map(|sk| {
+            admin_sign(
+                sk,
+                &name,
+                &uncompressed_pk_bytes(&pk_newer),
+                1,
+                b"evidence2",
+            )
+        })
+        .collect();
+    let new_seq = client
+        .admin_relink_with_sigs(&pairs, &name, &sk_newer, 1, b"evidence2")
+        .await
+        .expect("admin relink with offline signatures");
+    assert_eq!(new_seq, 2);
+
+    // One admin plus a stranger's key, and one admin plus a pair that claims
+    // the other admin pk but carries a stranger's signature: both rejected.
     let (sk_stranger, _) = fresh_keypair();
-    let (sk_newer, _pk_newer) = fresh_keypair();
-    let result = client
-        .admin_relink(&sk_stranger, &name, &sk_newer, 1, b"evidence2")
-        .await;
-    assert!(
-        matches!(result, Err(IdentityRegistryError::Rejected(ref r)) if r == "bad_signature"),
-        "expected bad_signature when admin-relinking with a non-admin key, got {result:?}"
-    );
+    let (sk_newest, pk_newest) = fresh_keypair();
+    let pk_newest_bytes = uncompressed_pk_bytes(&pk_newest);
+    let admin_pair = admin_sign(&admins[0], &name, &pk_newest_bytes, 2, b"evidence3");
+    let (_, stranger_sig) = admin_sign(&sk_stranger, &name, &pk_newest_bytes, 2, b"evidence3");
+    for (label, result) in [
+        (
+            "admin and stranger key",
+            client
+                .admin_relink(
+                    &[admins[0], sk_stranger],
+                    &name,
+                    &sk_newest,
+                    2,
+                    b"evidence3",
+                )
+                .await,
+        ),
+        (
+            "admin and admin pk with stranger sig",
+            client
+                .admin_relink_with_sigs(
+                    &[admin_pair, (admin_pk(&admins[1]), stranger_sig)],
+                    &name,
+                    &sk_newest,
+                    2,
+                    b"evidence3",
+                )
+                .await,
+        ),
+    ] {
+        assert!(
+            matches!(result, Err(IdentityRegistryError::Rejected(ref r)) if r == "bad_signature"),
+            "expected bad_signature for {label}, got {result:?}"
+        );
+    }
+}
+
+/// Fewer than quorum distinct admin signatures relink nothing. A repeated
+/// admin counts once.
+#[cfg_attr(not(feature = "integration_tests"), ignore)]
+#[tokio::test]
+async fn admin_relink_below_quorum_is_rejected() {
+    let client = test_client().await;
+    let (sk1, pk1) = fresh_keypair();
+    let nonce = fresh_nonce();
+    let name = client.register(&sk1, &nonce).await.expect("register");
+
+    let admin = admin_sk(0);
+    let (sk_new, _) = fresh_keypair();
+    for (label, admin_sks) in [
+        ("one admin", vec![admin]),
+        ("one admin twice", vec![admin, admin]),
+    ] {
+        let result = client
+            .admin_relink(&admin_sks, &name, &sk_new, 0, b"evidence")
+            .await;
+        assert!(
+            matches!(result, Err(IdentityRegistryError::Rejected(ref r)) if r == "bad_signature"),
+            "expected bad_signature for {label}, got {result:?}"
+        );
+    }
+
+    let resolved = client.resolve_current(&name).await.expect("resolve");
+    assert_eq!(resolved.pk, uncompressed_pk_bytes(&pk1));
+    assert_eq!(resolved.seq, 0);
 }

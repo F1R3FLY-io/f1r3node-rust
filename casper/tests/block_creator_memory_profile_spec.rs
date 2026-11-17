@@ -224,6 +224,8 @@ async fn run_block_creator_create_memory_profile() {
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
+        identity_registry_admin_public_keys: casper::rust::genesis::contracts::standard_deploys::DEV_IDENTITY_REGISTRY_ADMIN_PUBLIC_KEYS.map(String::from).to_vec(),
+        identity_registry_admin_quorum: casper::rust::genesis::contracts::standard_deploys::DEV_IDENTITY_REGISTRY_ADMIN_QUORUM,
         fs_bundle: Vec::new(),
         consensus_fs_snapshot_cadence: None,
     };
@@ -473,6 +475,8 @@ async fn run_block_creator_phase_split_memory_profile() {
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
+        identity_registry_admin_public_keys: casper::rust::genesis::contracts::standard_deploys::DEV_IDENTITY_REGISTRY_ADMIN_PUBLIC_KEYS.map(String::from).to_vec(),
+        identity_registry_admin_quorum: casper::rust::genesis::contracts::standard_deploys::DEV_IDENTITY_REGISTRY_ADMIN_QUORUM,
         fs_bundle: Vec::new(),
         consensus_fs_snapshot_cadence: None,
     };

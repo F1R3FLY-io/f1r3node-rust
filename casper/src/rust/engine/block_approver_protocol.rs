@@ -46,6 +46,8 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     pub native_token_name: String,
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
+    pub identity_registry_admin_public_keys: Vec<String>,
+    pub identity_registry_admin_quorum: u32,
 
     /// Operator-declared fs cap bundle (projected from the local
     /// HOCON's `storage.{oracle,consensus}-static-*` entries by
@@ -92,6 +94,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        identity_registry_admin_public_keys: Vec<String>,
+        identity_registry_admin_quorum: u32,
         fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
         consensus_fs_snapshot_cadence: Option<u64>,
         transport: Arc<T>,
@@ -135,6 +139,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            identity_registry_admin_public_keys,
+            identity_registry_admin_quorum,
             fs_bundle,
             consensus_fs_snapshot_cadence,
             transport,
@@ -196,6 +202,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
+        identity_registry_admin_public_keys: &[String],
+        identity_registry_admin_quorum: u32,
         fs_bundle: &[crate::rust::genesis::contracts::fs_genesis::BundleEntry],
         consensus_fs_snapshot_cadence: Option<u64>,
     ) -> Result<(), String> {
@@ -290,6 +298,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
                 native_token_name,
                 native_token_symbol,
                 native_token_decimals,
+                identity_registry_admin_public_keys,
+                identity_registry_admin_quorum,
                 fs_bundle,
                 consensus_fs_snapshot_cadence,
             );
@@ -391,6 +401,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             &self.native_token_name,
             &self.native_token_symbol,
             self.native_token_decimals,
+            &self.identity_registry_admin_public_keys,
+            self.identity_registry_admin_quorum,
             &self.fs_bundle,
             self.consensus_fs_snapshot_cadence,
         )

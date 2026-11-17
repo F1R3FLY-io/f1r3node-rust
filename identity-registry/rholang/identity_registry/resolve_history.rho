@@ -1,7 +1,7 @@
 new ret, lookup(`rho:registry:lookup`), registryCh in {
   lookup!(`{{uri}}`, *registryCh) |
-  for (registry <- registryCh) {
-    @[*registry, "resolve_history"]!(
+  for (@(_, registry) <- registryCh) {
+    @[registry, "resolve_history"]!(
       "{{name_hex}}".hexToBytes(),
       *ret
     ) |

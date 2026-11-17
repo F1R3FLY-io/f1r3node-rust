@@ -8,6 +8,7 @@
   - [IR-D4. The identities store is backed by the system TreeHashMap at depth 3](#ir-d4-the-identities-store-is-backed-by-the-system-treehashmap-at-depth-3)
   - [IR-D5. Rotate and admin relink require a signature by the new key](#ir-d5-rotate-and-admin-relink-require-a-signature-by-the-new-key)
   - [IR-D6. Register serializes through a global lock](#ir-d6-register-serializes-through-a-global-lock)
+  - [IR-D7. Admin relink takes M-of-N admin signatures in one call](#ir-d7-admin-relink-takes-m-of-n-admin-signatures-in-one-call)
   - [Notes on defaults from the spec](#notes-on-defaults-from-the-spec)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
@@ -76,8 +77,8 @@ Decision. Each record is a map with three fields.
   "history": a list of every key ever linked to this identity, in order,
              each entry carrying the key, the operation that added it,
              the sequence number at that point, the height of the block
-             that recorded it, and admin evidence when the operation was
-             an admin relink,
+             that recorded it, and admin evidence and admin signers when the
+             operation was an admin relink,
   "seq":     the sequence number, incremented once per mutation
 }
 ```
@@ -175,15 +176,40 @@ acceptable because registration is rare compared to resolve and rotate.
 The lock should be removed once the fresh-leaf race is caught by the
 merger upstream.
 
+## IR-D7. Admin relink takes M-of-N admin signatures in one call
+
+Context. A single admin key is a single point of failure. The spec asks
+for a quorum that changes the signer set and nothing else. A quorum can
+collect its signatures in one call, or it can collect them over several
+calls with pending state in the contract.
+
+Decision. The genesis config gives a set of admin public keys and a
+quorum M. One admin relink call carries a list of `(admin_pk, sig)`
+pairs. Each admin signs the same payload as before, so the payload and
+the signing scheme do not change. The contract counts the set of admin
+keys that are in the admin set and whose signature verifies. The call
+succeeds when that set has at least M keys and the new key signature
+verifies. The new history entry records the signers in `admin_signers`.
+
+Reasoning. One call keeps the contract free of pending state. Each
+signature comes with its key, so the contract verifies each signature
+once, against that key only. A set counts a repeated key once, so one
+admin cannot meet the quorum alone. A key outside the admin set counts for
+nothing. The `admin_signers` field shows who authorized each relink.
+
+Impact. The admins collect their signatures off chain. Each admin runs
+`admin-sign` with their own key, which prints `<admin_pk>:<sig>` and does
+not deploy. The submitter passes each pair to `admin-relink --admin-sig`,
+so no machine needs more than one admin secret key. `--admin-sk` signs
+locally and can be mixed with `--admin-sig`. The default is 1-of-1.
+
 ## Notes on defaults from the spec
 
 These are not independent decisions, but recording them here keeps
 surprise off the page.
 
-- The administrator for the prototype is the party who deployed the
-  contract. The contract reads the administrator key from the deployer
-  identity at deploy time. The spec allows this to become a quorum later.
-  Only the admin relink signature check would need to change.
+- The administrator is a quorum of M of N keys set at genesis (IR-D7).
+  The contract has no operation that changes the admin set.
 - The administrator evidence supplied with an admin relink is stored
   exactly as the caller sent it. The contract does not validate it, per
   the spec.

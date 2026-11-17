@@ -10,8 +10,7 @@ use uuid::Uuid;
 
 const REGISTER_TEMPLATE: &str = include_str!("../rholang/identity_registry/register.rho");
 const ROTATE_TEMPLATE: &str = include_str!("../rholang/identity_registry/rotate.rho");
-const ADMIN_RELINK_TEMPLATE: &str =
-    include_str!("../rholang/identity_registry/admin_relink.rho");
+const ADMIN_RELINK_TEMPLATE: &str = include_str!("../rholang/identity_registry/admin_relink.rho");
 const RESOLVE_CURRENT_TEMPLATE: &str =
     include_str!("../rholang/identity_registry/resolve_current.rho");
 const RESOLVE_HISTORY_TEMPLATE: &str =
@@ -51,23 +50,35 @@ pub fn rotate_term(
         .replace("{{reply_slot}}", reply_slot)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn admin_relink_term(
     uri: &str,
     name: &[u8],
     new_pk: &[u8],
     seq: u64,
     admin_evidence: &[u8],
-    sig: &[u8],
+    admin_sigs: &[(&[u8], &[u8])],
     new_sig: &[u8],
     reply_slot: &str,
 ) -> String {
+    let admin_sigs = admin_sigs
+        .iter()
+        .map(|(pk, sig)| {
+            format!(
+                "(\"{}\".hexToBytes(), \"{}\".hexToBytes())",
+                hex::encode(pk),
+                hex::encode(sig)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
     ADMIN_RELINK_TEMPLATE
         .replace("{{uri}}", uri)
         .replace("{{name_hex}}", &hex::encode(name))
         .replace("{{new_pk_hex}}", &hex::encode(new_pk))
         .replace("{{seq}}", &seq.to_string())
         .replace("{{admin_evidence_hex}}", &hex::encode(admin_evidence))
-        .replace("{{sig_hex}}", &hex::encode(sig))
+        .replace("{{admin_sigs}}", &format!("[{admin_sigs}]"))
         .replace("{{new_sig_hex}}", &hex::encode(new_sig))
         .replace("{{reply_slot}}", reply_slot)
 }

@@ -1,9 +1,10 @@
 // Canonical byte builders mirroring the layouts enforced by
-// rholang/identity_registry.rho. Any change here must be matched in the
+// casper/src/main/resources/IdentityRegistry.rhox. Any change here must be matched in the
 // contract and vice versa.
 
 use blake2::{Blake2b, Digest};
-use models::rhoapi::{Expr, Par, expr::ExprInstance};
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::{Expr, Par};
 use prost::Message;
 use typenum::U32;
 
@@ -55,9 +56,8 @@ pub fn admin_relink_payload(
     admin_evidence: &[u8],
 ) -> Vec<u8> {
     let seq_bytes = int_par_bytes(seq as i64);
-    let mut buf = Vec::with_capacity(
-        1 + NAME_LEN + PK_LEN + seq_bytes.len() + admin_evidence.len(),
-    );
+    let mut buf =
+        Vec::with_capacity(1 + NAME_LEN + PK_LEN + seq_bytes.len() + admin_evidence.len());
     buf.push(TAG_ADMIN_RELINK);
     buf.extend_from_slice(name);
     buf.extend_from_slice(new_pk);
