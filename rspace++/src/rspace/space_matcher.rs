@@ -30,39 +30,44 @@ where
         data: &[(std::sync::Arc<Datum<A>>, i32)],
         pattern: &P,
     ) -> Option<MatchingDataCandidate<C, A>> {
-        for (idx, (datum, data_index)) in data.iter().enumerate() {
-            metrics::counter!("rspace.matcher.get_calls", "source" => "rspace").increment(1);
-            // Probe by reference — no whole-pattern/whole-datum clone per attempt.
-            let t_match = std::time::Instant::now();
-            let match_result = matcher.get(pattern, &datum.a);
-            metrics::counter!("rspace.matcher.fold_match_ns", "source" => "rspace")
-                .increment(t_match.elapsed().as_nanos() as u64);
+        let match_start = std::time::Instant::now();
+        let mut attempts: u64 = 0;
+        let found = data
+            .iter()
+            .enumerate()
+            .find_map(|(idx, (datum, data_index))| {
+                attempts += 1;
+                // Probe by reference — no whole-pattern/whole-datum clone per attempt.
+                matcher
+                    .get(pattern, &datum.a)
+                    .map(|mat| (idx, datum, data_index, mat))
+            });
+        metrics::counter!("rspace.matcher.get_calls", "source" => "rspace").increment(attempts);
+        metrics::counter!("rspace.matcher.fold_match_ns", "source" => "rspace")
+            .increment(match_start.elapsed().as_nanos() as u64);
 
-            if let Some(mat) = match_result {
-                let indexed_datums = if datum.persist {
-                    data.to_vec()
-                } else {
-                    let mut remaining = Vec::with_capacity(data.len() - 1);
-                    remaining.extend_from_slice(&data[..idx]);
-                    remaining.extend_from_slice(&data[idx + 1..]);
-                    remaining
-                };
-                return Some((
-                    ConsumeCandidate {
-                        channel,
-                        datum: Datum {
-                            a: mat,
-                            persist: datum.persist,
-                            source: datum.source.clone(),
-                        },
-                        removed_datum: datum.a.clone(),
-                        datum_index: *data_index,
-                    },
-                    indexed_datums,
-                ));
-            }
-        }
-        None
+        let (idx, datum, data_index, mat) = found?;
+        let indexed_datums = if datum.persist {
+            data.to_vec()
+        } else {
+            let mut remaining = Vec::with_capacity(data.len() - 1);
+            remaining.extend_from_slice(&data[..idx]);
+            remaining.extend_from_slice(&data[idx + 1..]);
+            remaining
+        };
+        Some((
+            ConsumeCandidate {
+                channel,
+                datum: Datum {
+                    a: mat,
+                    persist: datum.persist,
+                    source: datum.source.clone(),
+                },
+                removed_datum: datum.a.clone(),
+                datum_index: *data_index,
+            },
+            indexed_datums,
+        ))
     }
 
     /// Attempts to match all channel-pattern pairs against the data map.
