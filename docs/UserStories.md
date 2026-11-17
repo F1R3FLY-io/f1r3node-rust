@@ -36,10 +36,10 @@ I want an expiry outcome for an accepted deploy that no block includes.
 
 **Acceptance Criteria:**
 
-- Admission bounds all fresh pending work against three blocks of measured local service.
-- Overload and persistent snapshot contention return stable, retryable API errors without saving the candidate.
-- Concurrent requests cannot share a reserved slot.
-- Expiry removal first saves the lifecycle row.
+- The deploy pool is bounded by record count and encoded bytes.
+- A full pool and admission contention return stable, retryable API errors without saving the candidate.
+- Concurrent requests cannot share the last free slot.
+- Admission saves the lifecycle row before the pool insert.
 - Lifecycle evaluation preserves consensus bounds and terminal records.
 
 **Design:** [Deploy admission](designs/deploy-admission.md).

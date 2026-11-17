@@ -631,21 +631,6 @@ impl KeyValueDagRepresentation {
         self.lifecycle.write().discard_events_if(sig, discardable)
     }
 
-    pub fn open_dropped_deploy_lifecycle_row(
-        &self,
-        sig: &[u8],
-        valid_after: i64,
-    ) -> Result<bool, KvStoreError> {
-        self.lifecycle.write().open_dropped(sig, valid_after)
-    }
-
-    pub fn open_dropped_deploy_lifecycle_rows(
-        &self,
-        deploys: &[(Vec<u8>, i64)],
-    ) -> Result<(), KvStoreError> {
-        self.lifecycle.write().open_dropped_batch(deploys)
-    }
-
     /// Repeat-deploy carrier index: the height since which every insert
     /// has recorded carriers on this database. The fast path engages only
     /// for scan windows starting at or above this watermark; `None` means
@@ -1454,6 +1439,12 @@ impl BlockDagKeyValueStorage {
             .map(BlockHash::from))
     }
 
+    pub fn record_deploy_admitted(&self, sig: &[u8], valid_after: i64) -> Result<(), KvStoreError> {
+        self.lifecycle
+            .write()
+            .append_events(sig, Some(valid_after), Vec::new())
+    }
+
     /// Startup carrier-index initialization (next to the LFB-migration
     /// precedent). On a database that already holds blocks, coverage starts at
     /// the next insert: max height + 1. Blocks below W are never claimed — the
@@ -1747,10 +1738,6 @@ impl BlockDagKeyValueStorage {
     /// Current DAG generation — incremented on every block insert.
     /// Can be used by caches to detect whether the DAG has changed since the last snapshot.
     pub fn current_generation(&self) -> u64 { self.dag_generation.load(Ordering::Relaxed) }
-
-    pub fn deploy_status_revision(&self) -> Option<(usize, usize)> {
-        self.lifecycle.read().revision()
-    }
 
     pub(crate) fn soak_capture_access(
         &self,

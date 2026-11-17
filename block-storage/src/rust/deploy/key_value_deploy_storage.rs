@@ -6,15 +6,13 @@ use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
-use prost::Message;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
 use shared::rust::{BitVector, ByteString};
 
-use super::deploy_record_quarantine::{DeployRecordQuarantine, VerifiedMetadata};
+use super::deploy_record_quarantine::{DeployRecordQuarantine, StoredSizes};
 
 pub const DEPLOY_STORAGE_DB: &str = "deploy_storage";
 pub const DEPLOY_STORAGE_QUARANTINE_DB: &str = "deploy_storage_quarantine";
@@ -22,121 +20,67 @@ pub const REJECTED_DEPLOY_BUFFER_DB: &str = "rejected_deploy_buffer";
 pub const REJECTED_DEPLOY_BUFFER_QUARANTINE_DB: &str = "rejected_deploy_buffer_quarantine";
 
 const DEPLOY_STORE_SIZE_METRIC: &str = "deploy.store.size";
+const DEPLOY_STORE_BYTES_METRIC: &str = "deploy.store.bytes";
 const DEPLOY_STORE_READ_ALL_DECODED_METRIC: &str = "deploy-store.read-all.decoded";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DeployMetadata {
-    pub signature: Vec<u8>,
-    pub valid_after_block_number: i64,
-    pub timestamp: i64,
-    pub expiration_timestamp: Option<i64>,
-    pub record_bytes: usize,
-    pub phlo_limit: u64,
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Deserialize,
+    serde::Serialize
+)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
+pub struct DeployPoolLimits {
+    pub max_records: usize,
+    pub max_bytes: u64,
 }
 
-impl From<&Signed<DeployData>> for DeployMetadata {
-    fn from(deploy: &Signed<DeployData>) -> Self {
-        Self::from_record(
-            deploy,
-            Self::record_size(DeployData::to_proto_ref(deploy).encoded_len()),
-        )
-    }
-}
-
-impl DeployMetadata {
-    pub fn from_record(deploy: &Signed<DeployData>, record_bytes: usize) -> Self {
+impl Default for DeployPoolLimits {
+    fn default() -> Self {
         Self {
-            signature: deploy.sig.to_vec(),
-            valid_after_block_number: deploy.data.valid_after_block_number,
-            timestamp: deploy.data.time_stamp,
-            expiration_timestamp: deploy.data.expiration_timestamp,
-            record_bytes,
-            phlo_limit: deploy.data.phlo_limit.max(0) as u64,
+            max_records: 512,
+            max_bytes: 16 * 1024 * 1024,
         }
     }
-
-    pub fn record_size(payload_bytes: usize) -> usize {
-        payload_bytes.saturating_add(super::deploy_codec::RECORD_OVERHEAD)
-    }
 }
 
-pub fn store_revision(store: &Arc<dyn KeyValueStore>) -> Option<usize> {
-    store
-        .as_any()
-        .downcast_ref::<LmdbKeyValueStore>()
-        .and_then(LmdbKeyValueStore::revision)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PoolRefusal {
+    TooLarge {
+        record_bytes: u64,
+        limit: u64,
+    },
+    Full {
+        resource: &'static str,
+        required: u64,
+        limit: u64,
+    },
 }
 
-#[derive(Clone, Default)]
-pub struct MetadataSnapshot {
-    pub entries: imbl::HashMap<Vec<u8>, DeployMetadata>,
-    pub generation: u64,
-    pub parent_generation: Option<u64>,
-    pub additions: Vec<DeployMetadata>,
-    pub removals: Vec<Vec<u8>>,
-}
-
-#[derive(Default)]
-pub(super) struct MetadataCache {
-    pub revision: Option<usize>,
-    pub initialized: bool,
-    pub snapshot: MetadataSnapshot,
-    verified: std::collections::HashMap<ByteString, VerifiedMetadata>,
-}
-
-impl MetadataCache {
-    fn compact_verified(&mut self) {
-        let len = self.verified.len();
-        if self.verified.is_empty() {
-            self.verified.shrink_to_fit();
-        } else if self.verified.capacity() > len.saturating_mul(4).max(128) {
-            self.verified.shrink_to(len.saturating_mul(2));
+impl DeployPoolLimits {
+    fn refusal(&self, sizes: &StoredSizes, record_bytes: u64) -> Option<PoolRefusal> {
+        if record_bytes > self.max_bytes {
+            return Some(PoolRefusal::TooLarge {
+                record_bytes,
+                limit: self.max_bytes,
+            });
         }
-    }
-
-    pub fn update(
-        &mut self,
-        before: Option<usize>,
-        after: Option<usize>,
-        writes: usize,
-        additions: Vec<DeployMetadata>,
-        removals: Vec<Vec<u8>>,
-    ) {
-        if writes > 0 {
-            for deploy in &additions {
-                self.verified.remove(&deploy.signature);
-            }
-            for signature in &removals {
-                self.verified.remove(signature);
-            }
-            self.compact_verified();
+        if sizes.records() >= self.max_records {
+            return Some(PoolRefusal::Full {
+                resource: "records",
+                required: sizes.records() as u64 + 1,
+                limit: self.max_records as u64,
+            });
         }
-        let trusted = self.initialized
-            && before.is_some()
-            && before == self.revision
-            && before.and_then(|id| id.checked_add(writes)) == after;
-        self.revision = None;
-        self.snapshot.parent_generation = None;
-        self.snapshot.additions.clear();
-        self.snapshot.removals.clear();
-        if trusted {
-            self.revision = after;
-            if writes == 0 {
-                return;
-            }
-            self.snapshot.parent_generation = Some(self.snapshot.generation);
-            for deploy in &additions {
-                self.snapshot
-                    .entries
-                    .insert(deploy.signature.clone(), deploy.clone());
-            }
-            for signature in &removals {
-                self.snapshot.entries.remove(signature);
-            }
-            self.snapshot.additions = additions;
-            self.snapshot.removals = removals;
-        }
-        self.snapshot.generation = self.snapshot.generation.wrapping_add(1);
+        let required = sizes.bytes().saturating_add(record_bytes);
+        (required > self.max_bytes).then_some(PoolRefusal::Full {
+            resource: "bytes",
+            required,
+            limit: self.max_bytes,
+        })
     }
 }
 
@@ -167,18 +111,12 @@ impl DeployStoreName for RejectedDeployBufferName {
 pub struct KeyValueDeployStore<N: DeployStoreName> {
     pub store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
     quarantine: DeployRecordQuarantine,
-    metadata: Arc<parking_lot::Mutex<MetadataCache>>,
     _name: PhantomData<N>,
 }
 
 pub struct PreparedDeploy {
     key: BitVector,
     value: BitVector,
-    metadata: DeployMetadata,
-}
-
-impl PreparedDeploy {
-    pub fn metadata(&self) -> &DeployMetadata { &self.metadata }
 }
 
 pub struct DeployRecordSnapshot {
@@ -196,6 +134,7 @@ pub enum PreparedInsertResult {
     Inserted,
     AlreadyPresent,
     Changed,
+    Refused(PoolRefusal),
 }
 
 #[derive(Debug)]
@@ -247,49 +186,29 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
                 super::deploy_codec::decode,
             ),
             quarantine,
-            metadata: Arc::default(),
             _name: PhantomData,
         };
         storage.quarantine.restore_readable(&storage.store)?;
         Ok(storage)
     }
 
-    pub fn metadata_snapshot(&self) -> Result<MetadataSnapshot, KvStoreError> {
-        let mut cache = self.metadata.lock();
-        let before = store_revision(self.store.raw_store());
-        if cache.initialized && before.is_some() && cache.revision == before {
-            return Ok(cache.snapshot.clone());
-        }
-        let (entries, decoded) = self
-            .quarantine
-            .read_metadata(&self.store, &mut cache.verified)?;
-        cache.compact_verified();
-        metrics::gauge!(DEPLOY_STORE_SIZE_METRIC, "store" => N::NAME).set(entries.len() as f64);
-        if decoded > 0 {
-            metrics::counter!(DEPLOY_STORE_READ_ALL_DECODED_METRIC, "store" => N::NAME)
-                .increment(decoded as u64);
-        }
-        if let Some(limit) = N::SIZE_WARNING_THRESHOLD {
-            if entries.len() > limit {
-                tracing::warn!(
-                    store = N::NAME,
-                    size = entries.len(),
-                    limit,
-                    "deploy store above size warning threshold"
-                );
-            }
-        }
-        let after = store_revision(self.store.raw_store());
-        if !cache.initialized || entries != cache.snapshot.entries {
-            cache.snapshot.generation = cache.snapshot.generation.wrapping_add(1);
-            cache.snapshot.entries = entries;
-        }
-        cache.snapshot.parent_generation = None;
-        cache.snapshot.additions.clear();
-        cache.snapshot.removals.clear();
-        cache.initialized = true;
-        cache.revision = before.filter(|revision| Some(*revision) == after);
-        Ok(cache.snapshot.clone())
+    fn sizes(&self) -> Result<parking_lot::MutexGuard<'_, StoredSizes>, KvStoreError> {
+        let mut sizes = self.quarantine.sizes().lock();
+        sizes.load(&self.store)?;
+        Ok(sizes)
+    }
+
+    fn publish(sizes: &StoredSizes) {
+        metrics::gauge!(DEPLOY_STORE_SIZE_METRIC, "store" => N::NAME).set(sizes.records() as f64);
+        metrics::gauge!(DEPLOY_STORE_BYTES_METRIC, "store" => N::NAME).set(sizes.bytes() as f64);
+    }
+
+    pub fn refusal(
+        &self,
+        deploy: &PreparedDeploy,
+        limits: DeployPoolLimits,
+    ) -> Result<Option<PoolRefusal>, KvStoreError> {
+        Ok(limits.refusal(&*self.sizes()?, deploy.value.len() as u64))
     }
 
     pub fn add(&self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
@@ -319,61 +238,47 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         deploy: &Signed<DeployData>,
         value: BitVector,
     ) -> Result<PreparedDeploy, KvStoreError> {
-        let metadata = DeployMetadata::from_record(deploy, value.len());
         Ok(PreparedDeploy {
             key: self.store.encode_key(&deploy.sig.to_vec())?,
             value,
-            metadata,
         })
     }
 
     pub fn add_prepared(&self, deploys: Vec<PreparedDeploy>) -> Result<(), KvStoreError> {
-        let additions = deploys
-            .iter()
-            .map(|deploy| deploy.metadata.clone())
-            .collect();
-        let records = deploys
+        let records: Vec<_> = deploys
             .into_iter()
             .map(|deploy| (deploy.key, deploy.value))
             .collect();
-        let mut cache = self.metadata.lock();
-        let before = store_revision(self.store.raw_store());
-        let result = self.store.raw_store().put(records);
-        cache.update(
-            before,
-            store_revision(self.store.raw_store()),
-            1,
-            additions,
-            Vec::new(),
-        );
-        if result.is_err() {
-            cache.revision = None;
+        let sized: Vec<_> = records
+            .iter()
+            .map(|(key, value)| (key.clone(), value.len() as u64))
+            .collect();
+        let mut sizes = self.quarantine.sizes().lock();
+        self.store.raw_store().put(records)?;
+        for (key, len) in sized {
+            sizes.insert(key, len);
         }
-        result
+        Self::publish(&sizes);
+        Ok(())
     }
 
     pub fn add_prepared_if_absent(&self, deploy: PreparedDeploy) -> Result<bool, KvStoreError> {
         if self.quarantine.contains(&self.store, &deploy.key)? {
             return Ok(false);
         }
-        let mut cache = self.metadata.lock();
-        let before = store_revision(self.store.raw_store());
-        let result = self
-            .store
-            .raw_store()
-            .put_one_if_absent(deploy.key.clone(), deploy.value);
-        let writes = usize::from(matches!(result, Ok(true)));
-        cache.update(
-            before,
-            store_revision(self.store.raw_store()),
-            writes,
-            vec![deploy.metadata],
-            Vec::new(),
-        );
-        if result.is_err() {
-            cache.revision = None;
-        }
-        let inserted = result?;
+        let inserted = {
+            let mut sizes = self.quarantine.sizes().lock();
+            let len = deploy.value.len() as u64;
+            let inserted = self
+                .store
+                .raw_store()
+                .put_one_if_absent(deploy.key.clone(), deploy.value)?;
+            if inserted {
+                sizes.insert(deploy.key.clone(), len);
+                Self::publish(&sizes);
+            }
+            inserted
+        };
         if !inserted && !self.quarantine.contains(&self.store, &deploy.key)? {
             return Err(KvStoreError::InvalidArgument(
                 "Deploy insertion was blocked by an invalid or concurrently changed record"
@@ -383,6 +288,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         Ok(inserted)
     }
 
+    /// Atomically insert a deploy by signature, returning false when it already exists.
     pub fn add_if_absent(&self, deploy: Signed<DeployData>) -> Result<bool, KvStoreError> {
         self.add_prepared_if_absent(self.prepare(&deploy)?)
     }
@@ -410,12 +316,14 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         &self,
         deploy: &PreparedDeploy,
         snapshot: &DeployRecordSnapshot,
+        limits: DeployPoolLimits,
     ) -> Result<PreparedInsertResult, KvStoreError> {
         if deploy.key != snapshot.key {
             return Err(KvStoreError::InvalidArgument(
                 "Deploy snapshot belongs to a different signature".to_string(),
             ));
         }
+        let mut sizes = self.sizes()?;
         if !self.matches_snapshot(snapshot)? {
             return Ok(PreparedInsertResult::Changed);
         }
@@ -427,75 +335,51 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
                 "Deploy insertion was blocked by an invalid record".to_string(),
             ));
         }
-        let mut cache = self.metadata.lock();
-        let before = store_revision(self.store.raw_store());
-        let result = self
+        let len = deploy.value.len() as u64;
+        if let Some(refusal) = limits.refusal(&sizes, len) {
+            return Ok(PreparedInsertResult::Refused(refusal));
+        }
+        let inserted = self
             .store
             .raw_store()
-            .put_one_if_absent(deploy.key.clone(), deploy.value.clone());
-        let writes = usize::from(matches!(result, Ok(true)));
-        cache.update(
-            before,
-            store_revision(self.store.raw_store()),
-            writes,
-            vec![deploy.metadata.clone()],
-            Vec::new(),
-        );
-        if result.is_err() {
-            cache.revision = None;
+            .put_one_if_absent(deploy.key.clone(), deploy.value.clone())?;
+        if !inserted {
+            return Ok(PreparedInsertResult::Changed);
         }
-        Ok(if result? {
-            PreparedInsertResult::Inserted
-        } else {
-            PreparedInsertResult::Changed
-        })
+        sizes.insert(deploy.key.clone(), len);
+        Self::publish(&sizes);
+        Ok(PreparedInsertResult::Inserted)
     }
 
+    /// The signature of every stored deploy, read from the keys without
+    /// decoding a deploy.
     pub fn sigs(&self) -> Result<Vec<ByteString>, KvStoreError> {
         self.quarantine.sigs(&self.store)
     }
 
     pub fn remove(&self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
-        self.remove_signatures(deploys.into_iter().map(|d| d.sig.to_vec()).collect())
-    }
-
-    fn remove_signatures(&self, signatures: Vec<Vec<u8>>) -> Result<(), KvStoreError> {
-        let mut cache = self.metadata.lock();
-        let before = store_revision(self.store.raw_store());
-        let result = self.store.delete(signatures.clone());
-        cache.update(
-            before,
-            store_revision(self.store.raw_store()),
-            1,
-            Vec::new(),
-            signatures,
-        );
-        if result.is_err() {
-            cache.revision = None;
-        }
-        result
+        let keys = deploys
+            .iter()
+            .map(|deploy| self.store.encode_key(&deploy.sig.to_vec()))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.delete_keys(keys)?;
+        Ok(())
     }
 
     pub fn remove_by_sig(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
-        let mut cache = self.metadata.lock();
-        let before = store_revision(self.store.raw_store());
-        let key = self.store.encode_key(&sig.to_vec())?;
-        let result = self
-            .store
-            .raw_store()
-            .delete(vec![key])
-            .map(|count| count > 0);
-        cache.update(
-            before,
-            store_revision(self.store.raw_store()),
-            1,
-            Vec::new(),
-            vec![sig.to_vec()],
-        );
-        if result.is_err() {
-            cache.revision = None;
+        let key: ByteString = sig.to_vec();
+        let key = self.store.encode_key(&key)?;
+        Ok(self.delete_keys(vec![key])? > 0)
+    }
+
+    fn delete_keys(&self, keys: Vec<BitVector>) -> Result<usize, KvStoreError> {
+        let mut sizes = self.quarantine.sizes().lock();
+        let removed = self.store.raw_store().delete(keys.clone())?;
+        for key in &keys {
+            sizes.remove(key);
         }
-        result
+        Self::publish(&sizes);
+        Ok(removed)
     }
 
     pub fn any<F>(&self, predicate: F) -> Result<bool, KvStoreError>
@@ -555,55 +439,6 @@ mod tests {
             PrivateKey::from_bytes(&[1; 32]),
         )
         .unwrap()
-    }
-
-    #[tokio::test]
-    async fn resource_metadata_reuses_prepared_record_sizes_and_survives_reopen() {
-        let mut kvm = InMemoryStoreManager::new();
-        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
-        let source = deploy(1);
-        let prepared = storage.prepare_checked(&source).unwrap();
-        let metadata = prepared.metadata().clone();
-        assert_eq!(metadata.record_bytes, prepared.value.len());
-        assert_eq!(metadata.phlo_limit, 100_000);
-        assert_eq!(metadata, DeployMetadata::from(&source));
-        storage.add_prepared(vec![prepared]).unwrap();
-        assert_eq!(
-            storage.metadata_snapshot().unwrap().entries[&source.sig.to_vec()],
-            metadata
-        );
-        let reopened = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
-        assert_eq!(
-            reopened.metadata_snapshot().unwrap().entries[&source.sig.to_vec()],
-            metadata
-        );
-    }
-
-    #[tokio::test]
-    async fn resource_metadata_counts_encoded_parameters_in_the_stored_record() {
-        use models::rust::deploy_parameters::{DeployParameter, RholangValue};
-
-        let mut data = deploy(1).data;
-        data.parameters = vec![DeployParameter {
-            name: "payload".into(),
-            value: RholangValue::List(vec![
-                RholangValue::String("data".repeat(4096)),
-                RholangValue::Bytes(vec![1; 4096]),
-            ]),
-        }];
-        let source =
-            Signed::create(data, Box::new(Secp256k1), PrivateKey::from_bytes(&[1; 32])).unwrap();
-        let mut kvm = InMemoryStoreManager::new();
-        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
-        let prepared = storage.prepare_checked(&source).unwrap();
-        assert_eq!(prepared.metadata().record_bytes, prepared.value.len());
-        assert!(prepared.metadata().record_bytes > source.data.term.len() + 20_000);
-        storage.add_prepared(vec![prepared]).unwrap();
-        let reopened = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
-        assert_eq!(
-            reopened.metadata_snapshot().unwrap().entries[&source.sig.to_vec()],
-            DeployMetadata::from(&source)
-        );
     }
 
     #[tokio::test]
@@ -822,7 +657,11 @@ mod tests {
         storage.add(vec![candidate.clone()]).unwrap();
         assert_eq!(
             storage
-                .add_prepared_if_unchanged(&storage.prepare(&candidate).unwrap(), &absent)
+                .add_prepared_if_unchanged(
+                    &storage.prepare(&candidate).unwrap(),
+                    &absent,
+                    DeployPoolLimits::default()
+                )
                 .unwrap(),
             PreparedInsertResult::Changed
         );
@@ -830,7 +669,11 @@ mod tests {
         assert!(present.is_present());
         assert_eq!(
             storage
-                .add_prepared_if_unchanged(&storage.prepare(&candidate).unwrap(), &present)
+                .add_prepared_if_unchanged(
+                    &storage.prepare(&candidate).unwrap(),
+                    &present,
+                    DeployPoolLimits::default()
+                )
                 .unwrap(),
             PreparedInsertResult::AlreadyPresent
         );
@@ -848,14 +691,22 @@ mod tests {
         assert!(!damaged.is_present());
         assert_eq!(
             storage
-                .add_prepared_if_unchanged(&storage.prepare(&candidate).unwrap(), &damaged)
+                .add_prepared_if_unchanged(
+                    &storage.prepare(&candidate).unwrap(),
+                    &damaged,
+                    DeployPoolLimits::default()
+                )
                 .unwrap(),
             PreparedInsertResult::Changed
         );
         let absent = storage.inspect_sig(&candidate.sig).unwrap();
         assert_eq!(
             storage
-                .add_prepared_if_unchanged(&storage.prepare(&candidate).unwrap(), &absent)
+                .add_prepared_if_unchanged(
+                    &storage.prepare(&candidate).unwrap(),
+                    &absent,
+                    DeployPoolLimits::default()
+                )
                 .unwrap(),
             PreparedInsertResult::Inserted
         );
@@ -881,7 +732,7 @@ mod tests {
         );
         assert_eq!(
             storage
-                .add_prepared_if_unchanged(&prepared, &present)
+                .add_prepared_if_unchanged(&prepared, &present, DeployPoolLimits::default())
                 .unwrap(),
             PreparedInsertResult::AlreadyPresent
         );
@@ -990,453 +841,197 @@ mod tests {
         assert_eq!(storage.read_all().unwrap().len(), 1);
     }
 
-    mod metadata_cache {
-        use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
-            Db, LmdbDirStoreManager, LmdbEnvConfig,
-        };
+    fn in_memory_storage() -> KeyValueDeployStorage {
+        KeyValueDeployStorage::from_stores(
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+        .unwrap()
+    }
 
-        use super::{
-            deploy, KeyValueDeployStorage, KeyValueStoreManager, DEPLOY_STORAGE_DB,
-            DEPLOY_STORAGE_QUARANTINE_DB,
-        };
+    fn admit(
+        storage: &KeyValueDeployStorage,
+        candidate: &Signed<DeployData>,
+        limits: DeployPoolLimits,
+    ) -> PreparedInsertResult {
+        let snapshot = storage.inspect_sig(&candidate.sig).unwrap();
+        storage
+            .add_prepared_if_unchanged(&storage.prepare(candidate).unwrap(), &snapshot, limits)
+            .unwrap()
+    }
 
-        async fn storage(path: &std::path::Path) -> KeyValueDeployStorage {
-            let mapping = [DEPLOY_STORAGE_DB, DEPLOY_STORAGE_QUARANTINE_DB]
-                .into_iter()
-                .map(|name| {
-                    (
-                        Db::new(name.into(), None),
-                        LmdbEnvConfig::new("deploys".into(), 10 * 1024 * 1024),
-                    )
+    fn totals(storage: &KeyValueDeployStorage) -> (usize, u64) {
+        let sizes = storage.sizes().unwrap();
+        (sizes.records(), sizes.bytes())
+    }
+
+    fn record_bytes(storage: &KeyValueDeployStorage, candidate: &Signed<DeployData>) -> u64 {
+        storage.prepare(candidate).unwrap().value.len() as u64
+    }
+
+    #[test]
+    fn totals_follow_inserts_overwrites_and_deletions() {
+        let storage = in_memory_storage();
+        let (d1, d2) = (deploy(1), deploy(2));
+        let (b1, b2) = (record_bytes(&storage, &d1), record_bytes(&storage, &d2));
+        storage.add(vec![d1.clone(), d2.clone()]).unwrap();
+        assert_eq!(totals(&storage), (2, b1 + b2));
+        storage.add(vec![d1.clone()]).unwrap();
+        assert_eq!(totals(&storage), (2, b1 + b2));
+        assert!(storage.remove_by_sig(&d1.sig).unwrap());
+        assert!(!storage.remove_by_sig(&d1.sig).unwrap());
+        assert_eq!(totals(&storage), (1, b2));
+        storage.remove(vec![d2]).unwrap();
+        assert_eq!(totals(&storage), (0, 0));
+    }
+
+    #[test]
+    fn the_record_limit_refuses_the_next_deploy_and_a_duplicate_comes_first() {
+        let storage = in_memory_storage();
+        let limits = DeployPoolLimits {
+            max_records: 2,
+            max_bytes: u64::MAX,
+        };
+        assert_eq!(
+            admit(&storage, &deploy(1), limits),
+            PreparedInsertResult::Inserted
+        );
+        assert_eq!(
+            admit(&storage, &deploy(2), limits),
+            PreparedInsertResult::Inserted
+        );
+        assert_eq!(
+            admit(&storage, &deploy(3), limits),
+            PreparedInsertResult::Refused(PoolRefusal::Full {
+                resource: "records",
+                required: 3,
+                limit: 2,
+            })
+        );
+        assert_eq!(
+            admit(&storage, &deploy(1), limits),
+            PreparedInsertResult::AlreadyPresent
+        );
+        assert!(!storage.contains_sig(&deploy(3).sig).unwrap());
+        assert!(storage.remove_by_sig(&deploy(1).sig).unwrap());
+        assert_eq!(
+            admit(&storage, &deploy(3), limits),
+            PreparedInsertResult::Inserted
+        );
+    }
+
+    #[test]
+    fn the_byte_limit_refuses_the_total_and_an_oversized_record_even_when_empty() {
+        let storage = in_memory_storage();
+        let one = record_bytes(&storage, &deploy(1));
+        let limits = DeployPoolLimits {
+            max_records: 128,
+            max_bytes: one,
+        };
+        assert_eq!(
+            admit(&storage, &deploy(1), DeployPoolLimits {
+                max_bytes: one - 1,
+                ..limits
+            }),
+            PreparedInsertResult::Refused(PoolRefusal::TooLarge {
+                record_bytes: one,
+                limit: one - 1,
+            })
+        );
+        assert_eq!(
+            admit(&storage, &deploy(1), limits),
+            PreparedInsertResult::Inserted
+        );
+        assert!(matches!(
+            admit(&storage, &deploy(2), limits),
+            PreparedInsertResult::Refused(PoolRefusal::Full {
+                resource: "bytes",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn concurrent_submissions_admit_exactly_one_into_the_last_slot() {
+        let storage = in_memory_storage();
+        let limits = DeployPoolLimits {
+            max_records: 1,
+            max_bytes: u64::MAX,
+        };
+        let barrier = Arc::new(Barrier::new(16));
+        let handles = (0..16)
+            .map(|index| {
+                let storage = storage.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let candidate = deploy(100 + index);
+                    barrier.wait();
+                    admit(&storage, &candidate, limits)
                 })
-                .collect();
-            let mut manager = LmdbDirStoreManager::new(path.to_path_buf(), mapping);
-            let store = manager.store(DEPLOY_STORAGE_DB.into()).await.unwrap();
-            let quarantine = manager
-                .store(DEPLOY_STORAGE_QUARANTINE_DB.into())
-                .await
-                .unwrap();
-            KeyValueDeployStorage::from_stores(store, quarantine).unwrap()
-        }
-
-        thread_local! {
-            static ON_DECODE: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
-                const { std::cell::RefCell::new(None) };
-        }
-
-        struct DecodeHook;
-
-        impl DecodeHook {
-            fn install(pool: &mut KeyValueDeployStorage, hook: impl FnMut() + 'static) -> Self {
-                use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-
-                use crate::rust::deploy::deploy_codec;
-
-                ON_DECODE.with(|slot| {
-                    let mut slot = slot.borrow_mut();
-                    assert!(slot.is_none());
-                    *slot = Some(Box::new(hook));
-                });
-                pool.store = KeyValueTypedStoreImpl::with_value_codec(
-                    pool.store.raw_store().clone(),
-                    deploy_codec::encode,
-                    |bytes| {
-                        let deploy = deploy_codec::decode(bytes)?;
-                        ON_DECODE.with(|slot| {
-                            if let Some(hook) = slot.borrow_mut().as_mut() {
-                                hook();
-                            }
-                        });
-                        Ok(deploy)
-                    },
-                );
-                Self
-            }
-        }
-
-        impl Drop for DecodeHook {
-            fn drop(&mut self) { ON_DECODE.with(|slot| *slot.borrow_mut() = None); }
-        }
-
-        #[tokio::test]
-        async fn unrelated_writes_reuse_verified_records_without_decoding_again() {
-            use std::cell::Cell;
-            use std::rc::Rc;
-            use std::sync::Arc;
-
-            use shared::rust::store::key_value_store::KeyValueStore;
-            use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
-
-            let dir = tempfile::tempdir().unwrap();
-            let mut pool = storage(dir.path()).await;
-            let first = deploy(1);
-            pool.add(vec![first.clone()]).unwrap();
-
-            let store = pool
-                .store
-                .raw_store()
-                .as_any()
-                .downcast_ref::<LmdbKeyValueStore>()
-                .unwrap();
-            let mut txn = store.env.write_txn().unwrap();
-            let db = store
-                .env
-                .create_database(&mut txn, Some("unrelated"))
-                .unwrap();
-            txn.commit().unwrap();
-            let unrelated = Arc::new(LmdbKeyValueStore::new(store.env.clone(), db));
-            let writes = Rc::new(Cell::new(0_u64));
-            let observed = writes.clone();
-            let mutation = unrelated.clone();
-            let _hook = DecodeHook::install(&mut pool, move || {
-                let next = observed.get() + 1;
-                mutation
-                    .put(vec![(b"key".to_vec(), next.to_be_bytes().to_vec())])
-                    .unwrap();
-                observed.set(next);
-            });
-
-            let first_snapshot = pool.metadata_snapshot().unwrap();
-            for index in 100_u64..103 {
-                unrelated
-                    .put(vec![(b"key".to_vec(), index.to_be_bytes().to_vec())])
-                    .unwrap();
-                let snapshot = pool.metadata_snapshot().unwrap();
-                assert_eq!(snapshot.entries, first_snapshot.entries);
-                assert_eq!(snapshot.generation, first_snapshot.generation);
-                assert!(snapshot.entries.contains_key(&first.sig.to_vec()));
-            }
-            assert_eq!(writes.get(), 1);
-        }
-
-        #[tokio::test]
-        async fn a_changed_raw_record_is_decoded_before_reusing_metadata() {
-            use std::cell::Cell;
-            use std::rc::Rc;
-
-            let dir = tempfile::tempdir().unwrap();
-            let mut pool = storage(dir.path()).await;
-            let independent = storage(dir.path()).await;
-            let first = deploy(1);
-            let second = deploy(2);
-            pool.add(vec![first.clone()]).unwrap();
-            let decodes = Rc::new(Cell::new(0));
-            let observed = decodes.clone();
-            let _hook = DecodeHook::install(&mut pool, move || observed.set(observed.get() + 1));
-            let initial = pool.metadata_snapshot().unwrap();
-            assert_eq!(decodes.get(), 1);
-
-            independent
-                .store
-                .put_one(first.sig.to_vec(), second.clone())
-                .unwrap();
-            let changed = pool.metadata_snapshot().unwrap();
-            assert_eq!(decodes.get(), 2);
-            assert_ne!(changed.generation, initial.generation);
-            assert!(!changed.entries.contains_key(&first.sig.to_vec()));
-            assert!(!changed.entries.contains_key(&second.sig.to_vec()));
-            assert!(changed.entries.is_empty());
-
-            let temporary = deploy(3);
-            independent.add(vec![temporary.clone()]).unwrap();
-            independent.remove_by_sig(&temporary.sig).unwrap();
-            assert_eq!(pool.metadata_snapshot().unwrap().entries, changed.entries);
-            assert_eq!(decodes.get(), 2);
-        }
-
-        #[tokio::test]
-        async fn tampering_with_a_verified_record_still_quarantines_it() {
-            use std::sync::Arc;
-
-            use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
-            use shared::rust::store::key_value_store::KeyValueStore;
-
-            let dir = tempfile::tempdir().unwrap();
-            let persistent = storage(dir.path()).await;
-            let quarantine = Arc::new(InMemoryKeyValueStore::new());
-            let pool = KeyValueDeployStorage::from_stores(
-                persistent.store.raw_store().clone(),
-                quarantine.clone(),
-            )
-            .unwrap();
-            let first = deploy(1);
-            pool.add(vec![first.clone()]).unwrap();
-            assert_eq!(pool.metadata_snapshot().unwrap().entries.len(), 1);
-            let key = pool.store.encode_key(&first.sig.to_vec()).unwrap();
-            let mut bytes = crate::rust::deploy::deploy_codec::encode(&first).unwrap();
-            bytes[b"F1R3DEP\x02".len()] ^= 1;
-            persistent
-                .store
-                .raw_store()
-                .put(vec![(key.clone(), bytes.clone())])
-                .unwrap();
-
-            assert!(pool.metadata_snapshot().unwrap().entries.is_empty());
-            assert!(!pool.contains_sig(&first.sig).unwrap());
-            assert_eq!(quarantine.get_one(&key).unwrap(), Some(bytes));
-            assert!(pool.metadata.lock().verified.is_empty());
-        }
-
-        #[tokio::test]
-        async fn known_deletions_evict_verified_records_without_accumulating_history() {
-            let dir = tempfile::tempdir().unwrap();
-            let pool = storage(dir.path()).await;
-            let independent = storage(dir.path()).await;
-            for round in 0..3 {
-                let deploys: Vec<_> = (0..32).map(|i| deploy(round * 32 + i)).collect();
-                pool.add(deploys.clone()).unwrap();
-                independent
-                    .store
-                    .put_one(deploys[0].sig.to_vec(), deploys[0].clone())
-                    .unwrap();
-                pool.metadata_snapshot().unwrap();
-                assert_eq!(pool.metadata.lock().verified.len(), 32);
-                pool.remove(deploys).unwrap();
-                assert!(pool.metadata.lock().verified.is_empty());
-                assert_eq!(pool.metadata.lock().verified.capacity(), 0);
-                assert!(pool.metadata_snapshot().unwrap().entries.is_empty());
-            }
-        }
-
-        #[tokio::test]
-        async fn a_sparse_verified_cache_shrinks_and_preserves_remaining_records() {
-            use std::cell::Cell;
-            use std::rc::Rc;
-
-            let dir = tempfile::tempdir().unwrap();
-            let mut pool = storage(dir.path()).await;
-            let independent = storage(dir.path()).await;
-            let deploys: Vec<_> = (0..256).map(deploy).collect();
-            pool.add(deploys.clone()).unwrap();
-            pool.metadata_snapshot().unwrap();
-            let before = pool.metadata.lock().verified.capacity();
-            pool.remove(deploys[..240].to_vec()).unwrap();
-            {
-                let cache = pool.metadata.lock();
-                assert_eq!(cache.verified.len(), 16);
-                assert!(cache.verified.capacity() < before);
-                assert!(cache.verified.capacity() <= 4 * cache.verified.len());
-            }
-            let decodes = Rc::new(Cell::new(0));
-            let observed = decodes.clone();
-            let _hook = DecodeHook::install(&mut pool, move || observed.set(observed.get() + 1));
-            independent
-                .store
-                .put_one(deploys[240].sig.to_vec(), deploys[240].clone())
-                .unwrap();
-            let snapshot = pool.metadata_snapshot().unwrap();
-            assert_eq!(snapshot.entries.len(), 16);
-            for deploy in &deploys[240..] {
-                assert!(snapshot.entries.contains_key(&deploy.sig.to_vec()));
-            }
-            assert_eq!(decodes.get(), 0);
-        }
-
-        #[tokio::test]
-        async fn metadata_refresh_releases_capacity_reserved_for_damaged_records() {
-            for keep_valid in [false, true] {
-                let dir = tempfile::tempdir().unwrap();
-                let pool = storage(dir.path()).await;
-                if keep_valid {
-                    pool.add(vec![deploy(1)]).unwrap();
-                }
-                let damaged = (0_u8..128)
-                    .map(|index| (bincode::serialize(&vec![index; 64]).unwrap(), vec![255]))
-                    .collect();
-                pool.store.raw_store().put(damaged).unwrap();
-                let snapshot = pool.metadata_snapshot().unwrap();
-                let expected = usize::from(keep_valid);
-                assert_eq!(snapshot.entries.len(), expected);
-                let cache = pool.metadata.lock();
-                assert_eq!(cache.verified.len(), expected);
-                if keep_valid {
-                    assert!(cache.verified.capacity() <= 4);
-                } else {
-                    assert_eq!(cache.verified.capacity(), 0);
-                }
-            }
-        }
-
-        #[tokio::test]
-        async fn metadata_refresh_detects_pool_changes_during_decode() {
-            let dir = tempfile::tempdir().unwrap();
-            for insert in [true, false] {
-                let case = dir.path().join(if insert { "insert" } else { "remove" });
-                std::fs::create_dir(&case).unwrap();
-                let mut pool = storage(&case).await;
-                let independent = storage(&case).await;
-                let first = deploy(1);
-                let second = deploy(2);
-                pool.add(vec![first.clone()]).unwrap();
-                let signature = first.sig.clone();
-                let mut change = Some(second.clone());
-                let hook = DecodeHook::install(&mut pool, move || {
-                    if let Some(deploy) = change.take() {
-                        if insert {
-                            independent.add(vec![deploy]).unwrap();
-                        } else {
-                            independent.remove_by_sig(&signature).unwrap();
-                        }
-                    }
-                });
-
-                let initial = pool.metadata_snapshot().unwrap();
-                let refreshed = pool.metadata_snapshot().unwrap();
-                assert_eq!(refreshed.entries.len(), if insert { 2 } else { 0 });
-                assert_eq!(refreshed.entries.contains_key(&second.sig.to_vec()), insert);
-                if initial.entries != refreshed.entries {
-                    assert_ne!(initial.generation, refreshed.generation);
-                }
-                assert_eq!(
-                    pool.metadata_snapshot().unwrap().generation,
-                    refreshed.generation
-                );
-                drop(hook);
-            }
-        }
-
-        #[tokio::test]
-        async fn checked_conditional_insert_updates_warm_metadata() {
-            use crate::rust::deploy::key_value_deploy_storage::{
-                DeployMetadata, PreparedInsertResult,
-            };
-
-            let dir = tempfile::tempdir().unwrap();
-            let pool = storage(dir.path()).await;
-            let initial = pool.metadata_snapshot().unwrap();
-            let candidate = deploy(1);
-            let prepared = pool.prepare_checked(&candidate).unwrap();
-            let absent = pool.inspect_sig(&candidate.sig).unwrap();
-            assert_eq!(
-                pool.add_prepared_if_unchanged(&prepared, &absent).unwrap(),
-                PreparedInsertResult::Inserted
-            );
-            let added = pool.metadata_snapshot().unwrap();
-            assert_eq!(added.parent_generation, Some(initial.generation));
-            assert_eq!(
-                added.entries.get(&candidate.sig.to_vec()),
-                Some(&DeployMetadata::from(&candidate))
-            );
-            let present = pool.inspect_sig(&candidate.sig).unwrap();
-            assert_eq!(
-                pool.add_prepared_if_unchanged(&prepared, &present).unwrap(),
-                PreparedInsertResult::AlreadyPresent
-            );
-            assert_eq!(
-                pool.metadata_snapshot().unwrap().generation,
-                added.generation
-            );
-        }
-
-        #[tokio::test]
-        async fn metadata_tracks_writes_and_removals_from_cloned_handles() {
-            let dir = tempfile::tempdir().unwrap();
-            let pool = storage(dir.path()).await;
-            let proposer = pool.clone();
-            let initial = pool.metadata_snapshot().unwrap();
-            let first = deploy(1);
-            pool.add(vec![first.clone()]).unwrap();
-            let added = pool.metadata_snapshot().unwrap();
-            assert_eq!(added.entries.len(), 1);
-            assert_eq!(added.parent_generation, Some(initial.generation));
-            assert_eq!(
-                proposer.metadata_snapshot().unwrap().generation,
-                added.generation
-            );
-            assert!(!proposer.add_if_absent(first.clone()).unwrap());
-            assert_eq!(
-                pool.metadata_snapshot().unwrap().generation,
-                added.generation
-            );
-            proposer.remove_by_sig(&first.sig).unwrap();
-            let removed = pool.metadata_snapshot().unwrap();
-            assert!(removed.entries.is_empty());
-            assert_ne!(removed.generation, added.generation);
-            assert_eq!(removed.parent_generation, Some(added.generation));
-        }
-
-        #[tokio::test]
-        async fn raw_and_independently_opened_writes_force_a_metadata_refresh() {
-            let dir = tempfile::tempdir().unwrap();
-            let pool = storage(dir.path()).await;
-            let initial = pool.metadata_snapshot().unwrap();
-            let first = deploy(1);
-            pool.store
-                .put_one(first.sig.to_vec(), first.clone())
-                .unwrap();
-            let added = pool.metadata_snapshot().unwrap();
-            assert_eq!(added.entries.len(), 1);
-            assert_ne!(added.generation, initial.generation);
-            assert_eq!(added.parent_generation, None);
-            let independent = storage(dir.path()).await;
-            independent.add(vec![deploy(2)]).unwrap();
-            assert_eq!(pool.metadata_snapshot().unwrap().entries.len(), 2);
-            independent.remove_by_sig(&first.sig).unwrap();
-            assert!(!pool
-                .metadata_snapshot()
-                .unwrap()
-                .entries
-                .contains_key(&first.sig.to_vec()));
-        }
-
-        #[tokio::test]
-        async fn unchanged_metadata_keeps_its_generation_after_an_unrelated_write() {
-            let dir = tempfile::tempdir().unwrap();
-            let pool = storage(dir.path()).await;
-            let initial = pool.metadata_snapshot().unwrap();
-            let independent = storage(dir.path()).await;
-            let first = deploy(1);
-            independent.add(vec![first.clone()]).unwrap();
-            independent.remove_by_sig(&first.sig).unwrap();
-            let refreshed = pool.metadata_snapshot().unwrap();
-            assert!(refreshed.entries.is_empty());
-            assert_eq!(refreshed.generation, initial.generation);
-            assert_eq!(refreshed.parent_generation, None);
-        }
-
-        #[tokio::test]
-        async fn restart_rebuilds_metadata_from_the_persistent_pool() {
-            let dir = tempfile::tempdir().unwrap();
-            let signature = {
-                let pool = storage(dir.path()).await;
-                let first = deploy(1);
-                pool.add(vec![first.clone()]).unwrap();
-                pool.metadata_snapshot().unwrap();
-                first.sig.to_vec()
-            };
-            let pool = storage(dir.path()).await;
-            assert!(pool
-                .metadata_snapshot()
-                .unwrap()
-                .entries
-                .contains_key(&signature));
-        }
-
-        #[tokio::test]
-        async fn warm_metadata_does_not_decode_signed_pool_records() {
-            use metrics_util::debugging::DebuggingRecorder;
-            let dir = tempfile::tempdir().unwrap();
-            let pool = storage(dir.path()).await;
-            pool.add((0..24).map(deploy).collect()).unwrap();
-            pool.metadata_snapshot().unwrap();
-            let recorder = DebuggingRecorder::new();
-            let snapshots = recorder.snapshotter();
-            metrics::with_local_recorder(&recorder, || {
-                for timestamp in 24..32 {
-                    assert_eq!(
-                        pool.metadata_snapshot().unwrap().entries.len(),
-                        timestamp as usize
-                    );
-                    pool.add_if_absent(deploy(timestamp)).unwrap();
-                    pool.metadata_snapshot().unwrap();
-                }
-            });
-            assert!(snapshots
-                .snapshot()
-                .into_vec()
+            })
+            .collect::<Vec<_>>();
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert_eq!(
+            results
                 .iter()
-                .all(|(key, ..)| { key.key().name() != "deploy-store.read-all.decoded" }));
-            assert_eq!(pool.metadata_snapshot().unwrap().entries.len(), 32);
-        }
+                .filter(|result| **result == PreparedInsertResult::Inserted)
+                .count(),
+            1
+        );
+        assert!(results.iter().all(|result| matches!(
+            result,
+            PreparedInsertResult::Inserted | PreparedInsertResult::Refused(_)
+        )));
+        assert_eq!(totals(&storage).0, 1);
+    }
+
+    #[tokio::test]
+    async fn a_reopened_store_counts_every_stored_record_and_refuses_above_a_lowered_limit() {
+        let mut kvm = InMemoryStoreManager::new();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        storage.add(vec![deploy(1), deploy(2), deploy(3)]).unwrap();
+        let expected = totals(&storage);
+        let reopened = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        assert_eq!(totals(&reopened), expected);
+        let lowered = DeployPoolLimits {
+            max_records: 2,
+            max_bytes: u64::MAX,
+        };
+        assert!(matches!(
+            admit(&reopened, &deploy(4), lowered),
+            PreparedInsertResult::Refused(PoolRefusal::Full {
+                resource: "records",
+                ..
+            })
+        ));
+        assert_eq!(reopened.read_all().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_quarantined_record_releases_its_charge() {
+        let live: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let storage = KeyValueDeployStorage::from_stores(
+            live.clone(),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+        .unwrap();
+        storage.add(vec![deploy(1)]).unwrap();
+        let damaged = deploy(2);
+        let key = storage.store.encode_key(&damaged.sig.to_vec()).unwrap();
+        let reopened = KeyValueDeployStorage::from_stores(
+            live.clone(),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+        .unwrap();
+        live.put_one(key, vec![0xff]).unwrap();
+        let counted =
+            KeyValueDeployStorage::from_stores(live, Arc::new(InMemoryKeyValueStore::new()))
+                .unwrap();
+        assert_eq!(totals(&counted).0, 2);
+        assert_eq!(counted.read_all().unwrap(), HashSet::from([deploy(1)]));
+        assert_eq!(totals(&counted), totals(&reopened));
     }
 }

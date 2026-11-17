@@ -215,7 +215,6 @@ async fn premature_retry_is_rejected_by_every_validator() {
         block,
         _,
         _,
-        _,
     ) = &owner_attempt
     {
         assert!(

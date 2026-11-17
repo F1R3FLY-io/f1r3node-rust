@@ -11,7 +11,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
 };
 use block_storage::rust::deploy::key_value_deploy_storage::{
-    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+    DeployPoolLimits, KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::signatures::signed::Signed;
@@ -57,19 +57,14 @@ pub enum DeployError {
     SignatureVerificationFailed,
     DuplicateDeploy(DeployId),
     InvalidFreshness,
-    Expired,
     RecordTooLarge {
-        record_bytes: usize,
-        limit: u128,
+        record_bytes: u64,
+        limit: u64,
     },
     PoolBusy {
-        pending_ahead: usize,
-        capacity: usize,
-    },
-    PoolResourceBusy {
         resource: &'static str,
-        required: u128,
-        limit: u128,
+        required: u64,
+        limit: u64,
     },
     AdmissionBusy,
 }
@@ -93,7 +88,6 @@ impl Display for DeployError {
             DeployError::ParsingError(details) => write!(f, "Parsing error: {}", details),
             DeployError::MissingUser => write!(f, "Missing user"),
             DeployError::InvalidFreshness => write!(f, "invalid_deploy_window: deploy validity height is beyond the admission horizon. Retry the same deploy after the chain advances."),
-            DeployError::Expired => write!(f, "deploy_expired: deploy validity window or expiration timestamp has closed"),
             DeployError::RecordTooLarge { record_bytes, limit } => write!(
                 f,
                 "deploy_too_large: deploy record size {} exceeds the configured pool byte limit {}",
@@ -106,12 +100,7 @@ impl Display for DeployError {
             DeployError::DuplicateDeploy(deploy_id) => {
                 write!(f, "Deploy already known: {}", hex::encode(deploy_id))
             }
-            DeployError::PoolBusy { capacity, .. } => write!(
-                f,
-                "deploy_pool_busy: the fresh queue has reached the three-block capacity {}. Retry later or submit to another validator.",
-                capacity
-            ),
-            DeployError::PoolResourceBusy { resource, required, limit } => write!(
+            DeployError::PoolBusy { resource, required, limit } => write!(
                 f,
                 "deploy_pool_busy: {} would require {}, above the configured limit {}. Retry later or submit to another validator.",
                 resource, required, limit
@@ -193,13 +182,6 @@ pub trait Casper {
         &self,
         block: &BlockMessage,
     ) -> Result<KeyValueDagRepresentation, CasperError>;
-
-    fn observe_local_service(
-        &self,
-        _block: &BlockMessage,
-        _sample: crate::rust::deploy_admission::LocalServiceSample,
-    ) {
-    }
 
     fn handle_invalid_block(
         &self,
@@ -458,7 +440,6 @@ pub async fn hash_set_casper(
         block_store: finalization.block_store.clone(),
         block_dag_storage: finalization.block_dag_storage.clone(),
         deploy_storage: finalization.deploy_storage.clone(),
-        deploy_admission: Arc::new(crate::rust::deploy_admission::DeployAdmission::default()),
         rejected_deploy_buffer,
         validator_id,
         finalized_bond_cache,
@@ -628,7 +609,7 @@ pub struct CasperShardConf {
     pub synchrony_finalized_baseline_enabled: bool,
     pub synchrony_finalized_baseline_max_distance: u64,
     pub max_user_deploys_per_block: u32,
-    pub deploy_admission: Option<crate::rust::deploy_admission::RetainedPoolLimits>,
+    pub deploy_admission: DeployPoolLimits,
     /// Native token metadata baked into the TokenMetadata contract at genesis.
     /// Present on every node (joiner, validator, ceremony master, observer, standalone)
     /// so each path can log the effective values at startup.
@@ -675,7 +656,7 @@ impl CasperShardConf {
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
             max_user_deploys_per_block: 128,
-            deploy_admission: crate::rust::deploy_admission::default_retained_pool_limits(),
+            deploy_admission: DeployPoolLimits::default(),
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,

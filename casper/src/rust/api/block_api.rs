@@ -763,6 +763,15 @@ impl BlockAPI {
                     ),
                 }));
             }
+            if crate::rust::util::deploy_window::is_too_far_ahead(
+                d.data.valid_after_block_number,
+                next_block_number,
+                casper.casper_shard_conf().max_parent_depth,
+            ) {
+                return Err(eyre::Report::new(
+                    crate::rust::casper::DeployError::InvalidFreshness,
+                ));
+            }
             casper_deploy(casper, d, trigger_propose).await
         } else {
             log_warn(&log_error_message)

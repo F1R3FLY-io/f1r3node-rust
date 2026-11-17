@@ -128,7 +128,6 @@ impl BlockCreator for SelectionRecordingBlockCreator {
             get_random_block_default(),
             prost::bytes::Bytes::new(),
             prost::bytes::Bytes::new(),
-            None,
         ))
     }
 }
@@ -147,7 +146,6 @@ impl BlockCreator for TestBlockCreator {
             get_random_block_default(),
             prost::bytes::Bytes::new(),
             prost::bytes::Bytes::new(),
-            None,
         ))
     }
 }

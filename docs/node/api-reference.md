@@ -39,7 +39,7 @@ All HTTP endpoints return errors as structured JSON. Every non-2xx response body
 | `409` | Expected state conflict (empty mempool, propose refused) | `no_new_deploys`, `validator_not_bonded`, `not_enough_new_blocks`, `too_far_ahead_of_finalized` |
 | `500` | Node-side failure | `interpreter_internal_error`, `runtime_error`, `replay_failure`, `signing_error`, `kv_store_error`, `history_error`, `system_runtime_error`, `stream_error`, `lock_error`, `other_error`, `unknown_error` |
 | `502` | Upstream or peer communication failure | `comm_error`, `external_service_error` |
-| `503` | Node cannot serve the request yet, retry later | `observer_busy`, `block_not_held`, `history_incomplete`, `missing_block` |
+| `503` | Node cannot serve the request yet, retry later | `observer_busy`, `block_not_held`, `history_incomplete`, `missing_block`, `deploy_pool_busy`, `deploy_admission_busy` |
 
 ### JSON request validation
 
@@ -323,10 +323,13 @@ curl -X POST http://localhost:40413/api/deploy \
 |--------|-----------|
 | `200` | Deploy accepted; body is the deploy ID (hex string) |
 | `400` | Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, unbonded validator, shard ID mismatch, forbidden key, or phlo price below minimum. A closed validity window or a past expiration timestamp causes `deploy_expired`. A validity height beyond the admission horizon causes `invalid_deploy_window`. |
+| `409` | The node already holds the signature (`duplicate_deploy`) |
+| `413` | The deploy record is larger than `casper.deploy-admission.max-bytes` (`deploy_too_large`); do not retry |
 | `415` | Unsupported content type (`invalid_request_body`) |
 | `422` | Invalid JSON field type or value, including deploy parameter names and values, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`) |
 | `502` | Peer communication failure (`comm_error`) |
+| `503` | The deploy pool is at its record or byte limit (`deploy_pool_busy`), or admission changed during its attempts or the submission limit is reached (`deploy_admission_busy`); retry the same signed deploy later |
 
 Deploy admission checks the node's validator against the last finalized block's committee. Proposal checks the selected parent's committee. These sets can differ during the finality gap after a bond change.
 

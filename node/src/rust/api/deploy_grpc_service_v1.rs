@@ -176,10 +176,8 @@ impl DeployGrpcServiceV1Impl {
                         Some(
                             DeployError::DuplicateDeploy(_)
                                 | DeployError::PoolBusy { .. }
-                                | DeployError::PoolResourceBusy { .. }
                                 | DeployError::AdmissionBusy
                                 | DeployError::InvalidFreshness
-                                | DeployError::Expired
                                 | DeployError::RecordTooLarge { .. }
                         )
                     ) || cause
@@ -1654,8 +1652,9 @@ mod tests {
     #[test]
     fn pool_busy_uses_the_existing_deploy_service_error_envelope() {
         let error = eyre::Report::new(DeployError::PoolBusy {
-            pending_ahead: 24,
-            capacity: 24,
+            resource: "records",
+            required: 513,
+            limit: 512,
         });
         let response =
             DeployGrpcServiceV1Impl::create_error_deploy_response(error.into_service_error())
@@ -1696,7 +1695,6 @@ mod tests {
             message: "deploy_expired: validAfterBlockNumber 0 has expired".to_string(),
         };
         for (error, prefix) in [
-            (eyre::Report::new(DeployError::Expired), "deploy_expired:"),
             (eyre::Report::new(expired_api), "deploy_expired:"),
             (
                 eyre::Report::new(DeployError::InvalidFreshness),

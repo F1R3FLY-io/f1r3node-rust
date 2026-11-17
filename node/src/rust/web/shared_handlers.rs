@@ -292,12 +292,7 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         if let Some(DeployError::DuplicateDeploy(_)) = cause.downcast_ref::<DeployError>() {
             return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
         }
-        if cause.downcast_ref::<DeployExpiredError>().is_some()
-            || matches!(
-                cause.downcast_ref::<DeployError>(),
-                Some(DeployError::Expired)
-            )
-        {
+        if cause.downcast_ref::<DeployExpiredError>().is_some() {
             return (StatusCode::BAD_REQUEST, "deploy_expired", cause.to_string());
         }
         if let Some(DeployError::InvalidFreshness) = cause.downcast_ref::<DeployError>() {
@@ -307,9 +302,7 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
                 cause.to_string(),
             );
         }
-        if let Some(DeployError::PoolBusy { .. } | DeployError::PoolResourceBusy { .. }) =
-            cause.downcast_ref::<DeployError>()
-        {
+        if let Some(DeployError::PoolBusy { .. }) = cause.downcast_ref::<DeployError>() {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "deploy_pool_busy",
@@ -584,7 +577,7 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
         (status = 200, description = "Deploy accepted; returns the deploy ID (hex)", body = String),
         (status = 400, description = "Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, unbonded validator, shard ID mismatch, forbidden key, or phlo price below minimum. A closed validity window or a past expiration timestamp causes `deploy_expired`. A validity height beyond the admission horizon causes `invalid_deploy_window`.", body = ApiErrorResponse),
         (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
-        (status = 503, description = "Deploy queue is full or admission state changed during retries (`deploy_pool_busy`, `deploy_admission_busy`)", body = ApiErrorResponse),
+        (status = 503, description = "Deploy pool is at its record or byte limit, or admission changed during its attempts or the submission limit is reached (`deploy_pool_busy`, `deploy_admission_busy`)", body = ApiErrorResponse),
         (status = 413, description = "Deploy record exceeds the configured pool byte limit (`deploy_too_large`)", body = ApiErrorResponse),
         (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
         (status = 422, description = "Invalid JSON field type or value, including deploy parameter names and values (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
@@ -916,11 +909,7 @@ mod tests {
         }
 
         #[test]
-        fn expired_deploys_share_one_error_kind_for_api_and_admission_refusals() {
-            assert_eq!(
-                classify(DeployError::Expired),
-                (StatusCode::BAD_REQUEST, "deploy_expired".to_string())
-            );
+        fn an_expired_deploy_is_a_client_error() {
             assert_eq!(
                 classify(DeployExpiredError {
                     message: "expired".to_string()
@@ -948,30 +937,12 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn aggregate_retained_resource_exhaustion_keeps_the_busy_contract() {
-            let response = AppError(
-                DeployError::PoolResourceBusy {
-                    resource: "bytes",
-                    required: 250,
-                    limit: 200,
-                }
-                .into(),
-            )
-            .into_response();
-            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(body["error"], "deploy_pool_busy");
-        }
-
-        #[tokio::test]
         async fn deploy_pool_busy_returns_a_retryable_json_error() {
             let response = AppError(
                 DeployError::PoolBusy {
-                    pending_ahead: 24,
-                    capacity: 24,
+                    resource: "bytes",
+                    required: 250,
+                    limit: 200,
                 }
                 .into(),
             )

@@ -58,19 +58,16 @@ branch: fix/710-bounded-deploy-admission
 pr_base_branch: dev
 pull_request: 789
 acceptance:
-  - "Explicit count and byte limits include retained pool records and unwritten reservations without duplicate charges."
-  - "Expiry and inclusion do not release stored bytes before successful deletion."
-  - "Rollback, concurrent reservations, and storage reconciliation preserve exact resource accounting."
-  - "Configuration defaults to retained limits; only an explicit null selects the previous comparison policy."
+  - "The deploy store keeps record and byte totals of every stored record and checks the limits under the lock of the insert."
+  - "Only a deletion that removed the record, or a quarantine move, releases its charge."
+  - "Concurrent submissions for the last free slot admit exactly one."
+  - "Admission opens the lifecycle row before the pool insert; a never-included deploy settles Expired without a local proposal."
   - "An independent HTTP and gRPC submission limit applies before decoding and survives cancellation until blocking work completes."
-  - "Never-included expiry cleanup releases retained capacity and permits a replacement."
-  - "An accounting invariant failure rebuilds the reservation ledger from storage instead of blocking intake until restart."
-  - "API validation and admission use the same next block number as the proposer."
-  - "Test nodes use the retained defaults unless a test selects the comparison policy."
-  - "Focused tests, build, formatting, and Clippy pass on the final transferred revision."
+  - "The API refuses a validity height above the next block number plus max-parent-depth."
+  - "API validation uses the same next block number as the proposer."
+  - "Focused tests, build, formatting, and Clippy pass on the final revision."
 notes:
-  - "Default calibration and joint queue validation remain separate steps."
-  - "The expiry error kind waits for agreement with the external queue in #990."
+  - "Default calibration and joint queue validation with #990 remain separate steps."
 ```
 
 ### TASK-031-1: Complete unsigned 256-bit token amount support

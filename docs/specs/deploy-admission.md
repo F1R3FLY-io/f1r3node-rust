@@ -1,168 +1,90 @@
 # Deploy admission specification
 
-## Explicit retained-resource policy
+## Pool limits
 
-The retained-resource policy is the default.
-Use provisional pool limits of 512 records and 16777216 encoded bytes.
-Treat this profile as an initial engineering choice, without a measured optimum or a whole-node memory guarantee.
-Do not derive the profile from transport message limits, proposer block limits, or comparison-policy samples.
-Express the retained byte budget as integer bytes.
-Apply the existing three-height arrival horizon to both policies.
-For a nonempty DAG, calculate the next height as the highest stored block number plus one, without another increment.
-Use the same next height for the API expiry check, admission, and the proposer's expiry filter.
-Accept a new validity height only through that next height plus three, subject to the other freshness checks.
-Configuration can override each field through the embedded default object.
-Require `max-records` and `max-bytes` in `casper.deploy-admission`. Reject unknown fields in this object.
-Configure submission concurrency separately through `api-server.deploy-max-inflight`.
-Leave that setting null by default. Apply an additional concurrency ceiling only when explicitly configured.
-Reject a zero concurrency limit or a value above the semaphore limit before starting the API servers.
-An explicit null concurrency limit disables ingress limiting independently of the retained policy.
-Use retained defaults when the object is absent. Select the existing comparison policy only with an explicit null object.
-Do not derive these limits from service samples, declared phlo, or the proposer block limit.
-With sufficient byte capacity, an explicit record limit of 128 must admit 128 distinct deploys before any proposal.
-The next distinct deploy must receive a pool-busy refusal without persistence.
-Deleting one stored record must permit one replacement after metadata reconciliation.
+Use pool limits of 512 records and 16777216 encoded bytes by default.
+Read them from `casper.deploy-admission.max-records` and `casper.deploy-admission.max-bytes`.
+A missing field takes its default. Reject unknown fields in this object.
+Express the byte limit as integer bytes.
+Do not derive the limits from transport limits, the proposer block limit, or declared phlo.
 
-Count all verified pool records, including expired, included, rejected, and terminal copies until their removal.
-Count unwritten reservations against the same limits before persistence.
-Reconcile independent storage changes through the existing metadata generations and reservation revisions.
-Count a stored signature and its active reservation once.
-If another handle persists a reserved signature, preserve its resource charge when the original attempt rolls back.
-Do not release stored resources because a freshness window or terminal status changes.
-Reconstruct all occupancy after restart, even above the configured limits.
-Lower limits preserve accepted records and stop new admission until sufficient resources become available.
+Keep the record count and the encoded byte total in the deploy store.
+Compute both totals from the stored keys and value lengths at the first limit check, without decoding.
+Do not scan for the totals when the store opens or when it reads records.
+After that, update both totals under one store lock for each insert and each deletion.
+Release the charge of a deletion only for a key that the deletion removed.
+Release the charge of a record that the quarantine moves out of the live store.
+Count every stored record: fresh, included, rejected, expired, and terminal copies, until their removal.
+After a restart, count all stored records, even above lowered limits.
+Lower limits stop new admission. They do not delete stored records.
 
-Reject a candidate that exceeds the entire byte budget, including in an empty pool.
-Return HTTP 413 with `deploy_too_large` for this refusal.
-Start the gRPC service error with `deploy_too_large:` for the same permanent refusal.
-Start gRPC service errors with `deploy_expired:` for a closed validity window or expiration timestamp, and with `invalid_deploy_window:` for a height beyond the admission horizon.
-Return HTTP 503 with `deploy_pool_busy` when the aggregate count or byte budget is exhausted.
-Keep duplicate detection ahead of both resource refusals.
-An expired write remains charged until the storage removal succeeds and metadata reconciliation observes the removal.
-Keep block processing, proposal creation, and finalization independent of intake refusal.
+Under the store lock, in this order:
 
-This policy limits encoded pool records. It does not bound LMDB page allocation, total node RSS, or contract execution cost.
-Exclude storage keys and page overhead from encoded-value accounting.
-Preserve restored or independently written records above these limits, and refuse new intake until space becomes available.
-Share one submission semaphore across HTTP and both gRPC API servers.
-Acquire without waiting before JSON or protobuf decoding. Reject excess submissions through the existing admission-busy response.
-An ingress refusal precedes signature and duplicate checks. Retries must preserve the same signed deploy.
-Keep gRPC refusals in the existing service error envelope, including refusals before protobuf decoding.
-Hold the permit until blocking work completes, even when the request future is canceled.
-Release the permit after rejection, completion, or unwinding. Do not charge other endpoints or peer traffic.
-When ingress limiting is disabled, preserve the previous transport decoding execution placement.
-Publish retained record and byte occupancy, their limits, and current submission concurrency.
-Mark `pending_ahead` as unavailable in retained mode through `pending-ahead-measured = 0` and reset its value to zero.
-Use checked resource arithmetic. After an accounting invariant failure, rebuild the reservation ledger from stored records on the next attempt.
-Do not delete stored records because of the failure.
-Validation against the current dev and external queue remains a later step.
+1. Return `Changed` if the stored record for the signature differs from the admission snapshot.
+2. Return `AlreadyPresent` for a verified stored record.
+3. Refuse a record larger than `max-bytes` with `TooLarge`, at any occupancy.
+4. Refuse with `Full` when the record count is at `max-records`.
+5. Refuse with `Full` when the byte total plus the record exceeds `max-bytes`.
+6. Insert the record if absent, and add it to both totals.
 
-## Existing comparison policy
+With sufficient byte capacity, a record limit of N must admit N distinct deploys before any proposal.
+Deploy N + 1 must receive a pool-busy refusal without persistence.
+Removing one stored record must permit one replacement.
+Concurrent submissions for the last free slot must admit exactly one.
 
-Count every fresh pending signature against capacity, regardless of its selection position.
-Fresh entries exceed the earliest valid-after boundary and have not expired by time.
-Fresh entries have no terminal record, canonical appearance, or rejected-buffer entry.
-Future entries consume capacity.
-The deploy lifespan and time-expiry checks still apply.
-Keep previously stored future entries in queue accounting, even when they exceed the admission horizon.
-The proposer retains `(valid_after_block_number, time_stamp, sig)` selection order.
+This policy limits encoded pool records.
+It does not bound storage keys, LMDB page allocation, total node RSS, or contract execution cost.
 
-Keep at most eight demand samples from accepted local blocks, in sender sequence order.
-Sample only blocks that leave fresh local work eligible for that block waiting after their first inclusions.
-Capture eligible candidates during block selection. Count their actual inclusions after successful local proposal acceptance.
-Do not sample the pool at insertion time or count arrivals after selection.
-Future entries alone do not qualify a block for sampling.
-Ignore repeated or older sequences, peer blocks, idle blocks, and failed proposals.
-Count distinct first inclusions of fresh local signatures, including failed executions.
-Exclude recovery entries and signatures included before this block.
-Record zero when eligible fresh work waits but the block includes none.
+## Validity window
 
-Missing own blocks do not create samples or cause time-based decay.
+Use `latest_block_number()`, the highest stored block number plus one, as the next block number.
+Use the same number for the API expiry check and the proposer's expiry filter.
+Refuse a closed validity window or a past expiration timestamp with `deploy_expired`.
+Refuse a `validAfterBlockNumber` above the next block number plus `max-parent-depth` with `invalid_deploy_window`.
 
-With samples, capacity is `min(3 * shard_cap, floor(3 * sum(inclusions) / sample_count))`.
-Without samples, capacity is `3 * min(8, shard_cap)`.
-The following recovery rule can raise this baseline without adding drained blocks to the sample window.
-Let `B` be the larger of the baseline and recovery budgets before the configured block-limit clamp.
-For a drained block with `I` actual first inclusions, update recovery only if `3 * I > B`.
-Set the recovery budget to `min(3 * I, B + max(1, ceil(B / 3)))`, using saturating arithmetic.
-Capacity is the larger budget, capped at `3 * shard_cap`.
-A block with remaining eligible demand clears recovery before updating the eight-sample window.
-Repeated sequences, older sequences, and idle blocks cannot increase recovery.
-For zero measured capacity and an empty fresh queue, allow one probe if the shard cap is positive.
-A zero shard cap always disables admission.
-Accept a fresh candidate only when occupancy is below capacity.
-Capacity reductions preserve accepted work.
-Use integer arithmetic without overflow.
+## Admission
 
-Do not derive byte or declared-phlo budgets from comparison-policy samples.
-Keep this policy count-only for comparison with the retained resource guard.
+Refuse a signature that a block, the pool, or the rejected-deploy buffer already holds with `duplicate_deploy`.
+Check the limits before the lifecycle write, so that a refused deploy opens no lifecycle row.
+Open the lifecycle row with the deploy's `validAfterBlockNumber` before the pool insert.
+Retry when the pool or rejected-buffer record for the signature changes during admission.
+After three attempts, return `deploy_admission_busy` without persistence.
+Save no deploy and send no heartbeat or proposal signal after a refusal.
 
-Check duplicates before overload under the reservation lock.
-Reserve capacity before persistence.
-If the deploy remains eligible, change its marker to pending after a successful write.
-Release an uncommitted reservation after a write error or unwinding.
-Defer exclusion of a reserved entry until commit or rollback, with one release per entry.
+## Responses
 
-Refresh queue bounds, pool metadata, rejected-buffer metadata, DAG generation, and lifecycle revision.
-Retry when the pool, rejected buffer, DAG, or reservation state changes incompatibly with the snapshot.
-Use lifecycle revisions for cache invalidation between requests.
-Do not retry solely because concurrent terminal writes change lifecycle revisions.
-Terminal writes permanently exclude signatures, so an earlier queue snapshot can overcount but cannot create spare capacity.
-Recheck the candidate's terminal and canonical status before reservation.
-Read storage and prepare snapshot updates outside the reservation-cache mutex.
-Preserve active reservations when reconciling stored entries. Reject updates based on an obsolete reservation revision.
-Release the reservation-cache mutex before deploy persistence.
-Use at most three refresh attempts, without sleep or backoff.
-Release attempt guards before the next attempt.
-After refresh exhaustion, return `DeployError::AdmissionBusy` without persistence.
+| Condition | HTTP | gRPC service error prefix | Retry |
+|---|---|---|---|
+| Known signature | 409 `duplicate_deploy` | — | No |
+| Record larger than `max-bytes` | 413 `deploy_too_large` | `deploy_too_large:` | No |
+| Record or byte limit full | 503 `deploy_pool_busy` | `deploy_pool_busy:` | Yes, same signed deploy |
+| Admission contention, or submission limit reached | 503 `deploy_admission_busy` | `deploy_admission_busy:` | Yes, same signed deploy |
+| Closed validity window or expiration timestamp | 400 `deploy_expired` | `deploy_expired:` | No |
+| Validity height above the horizon | 400 `invalid_deploy_window` | `invalid_deploy_window:` | Yes, after the chain advances |
 
-Return `DeployError::PoolBusy` for overload.
-Save no deploy and send no heartbeat or proposal signal after refusal.
-HTTP returns status 503 with `deploy_pool_busy` or `deploy_admission_busy`.
-HTTP returns status 409 with `duplicate_deploy` for a known signature.
-HTTP returns status 400 with `deploy_expired` when the validity window or expiration timestamp has closed.
-HTTP returns status 400 with `invalid_deploy_window` when the validity height is beyond the admission horizon.
-gRPC retains the existing `DeployResponse` service error envelope.
-gRPC treats expiry and admission-horizon refusals as expected refusals and logs them at debug level.
-Clients must resubmit refused requests.
+gRPC keeps the existing `DeployResponse` service error envelope and logs these refusals at debug level.
 Unrelated storage errors propagate as errors.
-
-## Metadata
-
-Read raw records from one consistent LMDB snapshot.
-Use a shared write revision for each named LMDB database to detect committed writes, including independent handles.
-Account for batch writes and conditional mutations that change stored data.
-Do not advance the revision for a failed transaction or a conditional mutation that changes nothing.
-Conservatively invalidate named database revisions after writes through unnamed handles in the same environment.
-If the revision changes during the read, invalidate the cached revision.
-The method returns the consistent snapshot.
-Reconcile storage again on the next call.
-Preserve metadata generation when entries remain unchanged.
-
-Reuse decoded metadata only when its raw key and value match the verified Blake2b-256 fingerprint.
-Decode changed records with the existing quarantine rules.
-Controlled mutations invalidate affected fingerprints.
-Removal and reconciliation discard fingerprints for absent records.
-Compact an oversized fingerprint map and release its allocation when empty.
-Retain metadata and fingerprints without retaining complete deploy bodies.
 
 ## Expiry
 
-Before deletion, save an unknown signature as an open lifecycle row with its validity height and no events.
-The next lifecycle evaluation reads the persisted open row.
-Preserve existing rows and terminal records.
-Write new lifecycle rows in a batch.
-If the lifecycle write fails, log the failure and retain deploy copies without stopping proposal preparation.
+The finalizer settles every open lifecycle row.
+A row whose deploy no block carries settles `Expired` past its window end plus the citability horizon.
+Preserve existing rows and terminal records. Admission never reopens a row behind a terminal record.
+Persisted rows remain available after restart.
 
-Persisted open rows remain available after restart.
-Evaluation uses the existing adopted floor and citation horizon.
-With disabled depth checks, an unknown expiry remains pending under the existing lifecycle rule.
+## Submission concurrency
 
-## Verification
+Leave `api-server.deploy-max-inflight` null by default, which disables the limit.
+Reject zero or a value above the semaphore limit before starting the API servers.
+Share one semaphore across HTTP and both gRPC deploy services.
+Acquire without waiting before JSON or protobuf decoding.
+Hold the permit until blocking work completes, even when the request future is canceled.
+Release it after rejection, completion, or unwinding. Other endpoints and peer traffic take no permit.
 
-Regression tests cover arrival order, future entries, concurrent reservations, capacity reduction, zero-service recovery, rollback, and duplicate priority.
-Tests cover bounded snapshot retries, contention recovery, external writes, changed records, quarantine, reopen, fingerprint reuse, and map cleanup.
-Tests also cover API errors, expiry recording, warm scheduling, restart, peer inclusion, duplicate drops, and write failure.
-Historical performance and heartbeat measurements require separate evidence for each tested revision.
+## Metrics
+
+Publish `deploy.store.size` and `deploy.store.bytes` for each deploy store on every change.
+Count limit refusals in `deploy-admission.refused`.
+Publish `deploy.admission.inflight` and `deploy.admission.inflight-limit`.
 
 See the [design](../designs/deploy-admission.md).

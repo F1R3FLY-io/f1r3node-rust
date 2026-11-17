@@ -106,27 +106,6 @@ impl Casper for MultiParentCasperImpl {
         super::block_admission::admit_handle_valid_block(self, block).await
     }
 
-    fn observe_local_service(
-        &self,
-        block: &BlockMessage,
-        sample: crate::rust::deploy_admission::LocalServiceSample,
-    ) {
-        if self.casper_shard_conf.deploy_admission.is_some() {
-            return;
-        }
-        if self
-            .validator_id
-            .as_ref()
-            .is_some_and(|id| id.public_key.bytes == block.sender)
-            && matches!(
-                super::block_admission::admit_dag_contains(self, &block.block_hash),
-                Ok(true)
-            )
-        {
-            self.deploy_admission.observe_sample(block.seq_num, sample);
-        }
-    }
-
     fn handle_invalid_block(
         &self,
         block: &BlockMessage,
