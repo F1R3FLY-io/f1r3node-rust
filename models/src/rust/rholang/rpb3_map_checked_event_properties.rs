@@ -38,6 +38,7 @@ proptest! {
             after_scores: &scores,
             action: CheckedAdmissionAction::OtherContinue,
             map_source: Some(&map_source),
+            accepted_children: None,
         };
         prop_assert!(emit_checked_admission_event(event).is_ok());
         prop_assert_eq!(before.map_cursor, Some(field.cursor_before));
@@ -52,6 +53,7 @@ proptest! {
             after_scores: &scores,
             action: CheckedAdmissionAction::OtherContinue,
             map_source: Some(&map_source),
+            accepted_children: None,
         };
         prop_assert!(matches!(
             emit_checked_admission_event(changed),
@@ -100,6 +102,7 @@ proptest! {
                 request: &pushed_request,
             },
             map_source: Some(&map_source),
+            accepted_children: None,
         };
         prop_assert!(emit_checked_admission_event(event).is_ok());
         let shadow = [0x08, 0x01];
@@ -121,6 +124,7 @@ proptest! {
                 request: &forged_request,
             },
             map_source: Some(&map_source),
+            accepted_children: None,
         }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_))), "forged map child view must be rejected");
         let MapStepSource::Field(field) = &map_source else { unreachable!() };
         prop_assert_eq!(before.map_cursor, Some(field.cursor_before));
@@ -139,6 +143,7 @@ proptest! {
                 request: &pushed_request,
             },
             map_source: Some(&map_source),
+            accepted_children: None,
         };
         prop_assert!(matches!(
             emit_checked_admission_event(changed),
@@ -199,6 +204,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: Some(&map_source),
+            accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
         };
         prop_assert!(emit_checked_admission_event(event).is_ok());
         completion_source.score_len_before += 1;
@@ -213,6 +219,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: Some(&map_source),
+            accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
         }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_))), "mutated map completion score count must be rejected");
         completion_source.score_len_before -= 1;
 
@@ -228,6 +235,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: Some(&map_source),
+            accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
         };
         prop_assert!(matches!(
             emit_checked_admission_event(changed),
@@ -248,6 +256,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: Some(&map_source),
+            accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
         };
         prop_assert!(matches!(
             emit_checked_admission_event(changed),
@@ -268,6 +277,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: Some(&map_source),
+            accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
         };
         prop_assert!(matches!(
             emit_checked_admission_event(changed),
@@ -383,6 +393,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: Some(&map_source),
+            accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
         };
         prop_assert!(emit_checked_admission_event(event).is_ok());
         prop_assert!(matches!(emit_checked_admission_event(CheckedAdmissionEvent {
@@ -396,6 +407,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: Some(&map_source),
+            accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
         }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_))), "missing map completion effect must be rejected");
 
         let MapStepSource::Eof(eof) = &mut map_source else { unreachable!() };
@@ -411,6 +423,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: Some(&map_source),
+            accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
         };
         prop_assert!(matches!(
             emit_checked_admission_event(changed),
@@ -468,6 +481,7 @@ proptest! {
                 request: &pushed_request,
             },
             map_source: Some(&map_source),
+            accepted_children: None,
         };
         prop_assert!(emit_checked_admission_event(event).is_ok());
         let MapStepSource::Field(field) = &map_source else { unreachable!() };
@@ -489,6 +503,7 @@ proptest! {
                 request: &pushed_request,
             },
             map_source: Some(&map_source),
+            accepted_children: None,
         };
         prop_assert!(matches!(
             emit_checked_admission_event(changed),

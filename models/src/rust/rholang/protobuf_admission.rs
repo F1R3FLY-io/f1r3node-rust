@@ -16,6 +16,10 @@ use std::fmt;
 
 use pathmap::PathMap;
 use rspace_plus_plus::rspace::pathmap_codec::CanonicalCompactTrieLineDirection;
+use verified_score_store::admission_event_checker::{
+    MonitorRefusal, ObservedAcceptRecord, ObservedEvent, ObservedField, ObservedFrameRequest,
+    ObservedSnapshot,
+};
 use verified_score_store::{SlotAdmissionError, VerifiedMessageSlots};
 
 use super::canonical_bytes_arena::CanonicalByteProvenance;
@@ -165,6 +169,13 @@ pub(crate) enum CanonicalProtobufAdmissionError {
     },
     CutoverInvariant(&'static str),
     SizeOverflow,
+    VerifiedMonitorRefused {
+        step: u64,
+        refusal: MonitorRefusal,
+    },
+    VerifiedMonitorIncomplete {
+        checked_events: u64,
+    },
 }
 
 impl From<CanonicalScoreArenaError> for CanonicalProtobufAdmissionError {
@@ -233,6 +244,14 @@ impl fmt::Display for CanonicalProtobufAdmissionError {
                 )
             }
             Self::SizeOverflow => formatter.write_str("canonical protobuf admission size overflow"),
+            Self::VerifiedMonitorRefused { step, refusal } => write!(
+                formatter,
+                "verified admission monitor refused checked event {step}: {refusal:?}"
+            ),
+            Self::VerifiedMonitorIncomplete { checked_events } => write!(
+                formatter,
+                "verified admission monitor checked {checked_events} events without accepting every driver iteration"
+            ),
         }
     }
 }
@@ -246,7 +265,9 @@ impl std::error::Error for CanonicalProtobufAdmissionError {
             | Self::CanonicalPath { .. }
             | Self::ScoreMismatch { .. }
             | Self::CutoverInvariant(_)
-            | Self::SizeOverflow => None,
+            | Self::SizeOverflow
+            | Self::VerifiedMonitorRefused { .. }
+            | Self::VerifiedMonitorIncomplete { .. } => None,
         }
     }
 }
@@ -9397,12 +9418,48 @@ enum CheckedAdmissionProjection {
     },
 }
 
+#[derive(Clone, Copy)]
+enum CheckedChildSummaries<'step, 'src> {
+    MessageSlot {
+        slot: usize,
+        ordered: &'step [SemanticOccurrence<'src>],
+    },
+    MapValue,
+    Reduced,
+}
+
+impl<'step, 'src> CheckedChildSummaries<'step, 'src> {
+    fn from_completion(
+        outcome: &CompleteAdmissionOutcome<'src>,
+        after_frames: &'step [Frame<'src>],
+    ) -> Option<Self> {
+        match (outcome, after_frames.last()) {
+            (CompleteAdmissionOutcome::AcceptedMessage(receipt), Some(Frame::Message(parent))) => {
+                parent
+                    .semantic_slots
+                    .get(receipt.before.slot)
+                    .map(|ordered| Self::MessageSlot {
+                        slot: receipt.before.slot,
+                        ordered: ordered.as_slice(),
+                    })
+            }
+            (CompleteAdmissionOutcome::AcceptedOther, Some(Frame::Map(_))) => Some(Self::MapValue),
+            (
+                CompleteAdmissionOutcome::AcceptedOther,
+                Some(Frame::EPathMap(_) | Frame::CanonicalPath(_)),
+            ) => Some(Self::Reduced),
+            _ => None,
+        }
+    }
+}
+
 struct CheckedAdmissionEvent<'step, 'src> {
     before: &'step DriverStepSource<'src>,
     after_frames: &'step [Frame<'src>],
     after_scores: &'step CanonicalScoreArena<'src>,
     action: CheckedAdmissionAction<'step, 'src>,
     map_source: Option<&'step MapStepSource<'src>>,
+    accepted_children: Option<CheckedChildSummaries<'step, 'src>>,
 }
 
 impl CheckedAdmissionEvent<'_, '_> {
@@ -9508,7 +9565,7 @@ impl CheckedAdmissionEvent<'_, '_> {
 
 fn emit_checked_admission_event(
     event: CheckedAdmissionEvent<'_, '_>,
-) -> Result<(), CanonicalProtobufAdmissionError> {
+) -> Result<ObservedEvent, CanonicalProtobufAdmissionError> {
     let valid = match &event.action {
         CheckedAdmissionAction::MessageField {
             field,
@@ -9708,9 +9765,15 @@ fn emit_checked_admission_event(
             "checked admission event disagrees with its source transition",
         ));
     }
+    if !accepted_children_agree(&event) {
+        return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
+            "checked admission event disagrees with its accepted child summaries",
+        ));
+    }
+    let observed = observed_admission_event(&event)?;
     #[cfg(test)]
     rpb3_root_finish_trace::record_checked_admission_event(&event);
-    Ok(())
+    Ok(observed)
 }
 
 fn emit_checked_admission_event_from_core<'src>(
@@ -9718,7 +9781,7 @@ fn emit_checked_admission_event_from_core<'src>(
     ticket: &admission_live_core::PreStepTicket<'src>,
     epm_step_start: Option<&EPathMapLoopStateSource>,
     field_preimage: Option<&MessageFieldPreStepImage<'src>>,
-) -> Result<(), CanonicalProtobufAdmissionError> {
+) -> Result<ObservedEvent, CanonicalProtobufAdmissionError> {
     if !ticket.matches_checked_event(&event, epm_step_start) {
         return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
             "checked admission event disagrees with its live pre-step ticket",
@@ -9744,11 +9807,198 @@ fn emit_checked_admission_event_from_core<'src>(
         .then_some("checked message push iteration disagrees with its source image"),
         _ => None,
     };
-    emit_checked_admission_event(event)?;
+    let observed = emit_checked_admission_event(event)?;
     if let Some(detail) = invalid_source_detail {
         return Err(CanonicalProtobufAdmissionError::CutoverInvariant(detail));
     }
-    Ok(())
+    Ok(observed)
+}
+
+const MAP_ENTRY_SLOT_COUNT: usize = 2;
+
+fn accepted_children_agree(event: &CheckedAdmissionEvent<'_, '_>) -> bool {
+    let outcome = match &event.action {
+        CheckedAdmissionAction::MessageComplete { outcome, .. }
+        | CheckedAdmissionAction::OtherComplete { outcome, .. } => *outcome,
+        CheckedAdmissionAction::MessageField { .. }
+        | CheckedAdmissionAction::OtherContinue
+        | CheckedAdmissionAction::OtherPush { .. } => return event.accepted_children.is_none(),
+    };
+    match (event.accepted_children, outcome, event.after_frames.last()) {
+        (None, CompleteAdmissionOutcome::Root(_), None) => true,
+        (
+            Some(CheckedChildSummaries::MessageSlot { slot, ordered }),
+            CompleteAdmissionOutcome::AcceptedMessage(receipt),
+            Some(Frame::Message(parent)),
+        ) => {
+            slot == receipt.before.slot
+                && ordered.len() == receipt.occurrences_after
+                && parent
+                    .semantic_slots
+                    .get(slot)
+                    .is_some_and(|stored| std::ptr::eq(stored.as_slice(), ordered))
+                && ordered
+                    .last()
+                    .is_some_and(|occurrence| match &occurrence.body {
+                        Some(body) => receipt.before.child_body.same_view(body),
+                        None => receipt.before.child_kind == FrameRequestKind::Map,
+                    })
+        }
+        (
+            Some(CheckedChildSummaries::MapValue),
+            CompleteAdmissionOutcome::AcceptedOther,
+            Some(Frame::Map(_)),
+        )
+        | (
+            Some(CheckedChildSummaries::Reduced),
+            CompleteAdmissionOutcome::AcceptedOther,
+            Some(Frame::EPathMap(_) | Frame::CanonicalPath(_)),
+        ) => true,
+        _ => false,
+    }
+}
+
+fn observed_frame_kind(kind: FrameRequestKind) -> u8 {
+    match kind {
+        FrameRequestKind::Message => 1,
+        FrameRequestKind::Map => 2,
+        FrameRequestKind::EPathMap => 3,
+        FrameRequestKind::CanonicalPath => 4,
+    }
+}
+
+fn observed_frame_request(frame: &Frame<'_>) -> ObservedFrameRequest {
+    let (body_len, slot_count) = match frame {
+        Frame::Message(frame) => (frame.body.len(), frame.program.fields.len()),
+        Frame::Map(frame) => (frame.region.len(), MAP_ENTRY_SLOT_COUNT),
+        Frame::EPathMap(frame) => (frame.snapshot.len(), 0),
+        Frame::CanonicalPath(frame) => (frame.input.len(), 0),
+    };
+    ObservedFrameRequest {
+        kind: observed_frame_kind(frame.request_kind()),
+        body_len,
+        slot_count,
+    }
+}
+
+fn observed_snapshot_after(
+    frames: &[Frame<'_>],
+    scores: &CanonicalScoreArena<'_>,
+) -> ObservedSnapshot {
+    ObservedSnapshot {
+        depth: frames.len(),
+        top_kind: frames
+            .last()
+            .map(|frame| observed_frame_kind(frame.request_kind())),
+        score_len: scores.source_len(),
+    }
+}
+
+fn observed_message_field(field: &MessageFieldSourceReceipt<'_>) -> ObservedField {
+    ObservedField {
+        slot: field.resolved.slot(),
+        repeated: field.resolved.repeated(),
+        cursor_after: field.cursor_after.bytes_read,
+    }
+}
+
+fn observed_map_field(
+    map_source: Option<&MapStepSource<'_>>,
+) -> Result<Option<ObservedField>, CanonicalProtobufAdmissionError> {
+    match map_source {
+        None => Ok(None),
+        Some(MapStepSource::Field(field)) => {
+            let slot = usize::try_from(field.field_number)
+                .ok()
+                .and_then(|number| number.checked_sub(1))
+                .ok_or(CanonicalProtobufAdmissionError::CutoverInvariant(
+                    "checked map field number has no observable slot",
+                ))?;
+            Ok(Some(ObservedField {
+                slot,
+                repeated: false,
+                cursor_after: field.cursor_after.bytes_read,
+            }))
+        }
+        Some(MapStepSource::Eof(_)) => Err(CanonicalProtobufAdmissionError::CutoverInvariant(
+            "checked map continuation carries an end-of-entry source",
+        )),
+    }
+}
+
+fn observed_pushed_child(
+    after_frames: &[Frame<'_>],
+) -> Result<ObservedFrameRequest, CanonicalProtobufAdmissionError> {
+    after_frames.last().map(observed_frame_request).ok_or(
+        CanonicalProtobufAdmissionError::CutoverInvariant("checked push left no child frame"),
+    )
+}
+
+fn observed_accept_record(
+    accepted_children: Option<CheckedChildSummaries<'_, '_>>,
+) -> ObservedAcceptRecord {
+    match accepted_children {
+        None => ObservedAcceptRecord::Root,
+        Some(CheckedChildSummaries::MessageSlot { slot, ordered }) => {
+            ObservedAcceptRecord::MessageSlot {
+                slot,
+                occurrences_after: ordered.len(),
+            }
+        }
+        Some(CheckedChildSummaries::MapValue) => ObservedAcceptRecord::MapValue,
+        Some(CheckedChildSummaries::Reduced) => ObservedAcceptRecord::Reduced,
+    }
+}
+
+fn observed_admission_event(
+    event: &CheckedAdmissionEvent<'_, '_>,
+) -> Result<ObservedEvent, CanonicalProtobufAdmissionError> {
+    let before = ObservedSnapshot {
+        depth: event.before.stack_len,
+        top_kind: Some(observed_frame_kind(event.before.top_kind)),
+        score_len: event.before.score_entries,
+    };
+    let after = observed_snapshot_after(event.after_frames, event.after_scores);
+    Ok(match &event.action {
+        CheckedAdmissionAction::MessageField {
+            field,
+            pushed: None,
+        } => ObservedEvent::MessageContinue {
+            before,
+            field: observed_message_field(field),
+            after,
+        },
+        CheckedAdmissionAction::MessageField {
+            field,
+            pushed: Some(_),
+        } => ObservedEvent::MessagePush {
+            before,
+            field: observed_message_field(field),
+            child: observed_pushed_child(event.after_frames)?,
+            after,
+        },
+        CheckedAdmissionAction::MessageComplete { .. } => ObservedEvent::MessageComplete {
+            before,
+            record: observed_accept_record(event.accepted_children),
+            after,
+        },
+        CheckedAdmissionAction::OtherContinue => ObservedEvent::OtherContinue {
+            before,
+            field: observed_map_field(event.map_source)?,
+            after,
+        },
+        CheckedAdmissionAction::OtherPush { .. } => ObservedEvent::OtherPush {
+            before,
+            field: observed_map_field(event.map_source)?,
+            child: observed_pushed_child(event.after_frames)?,
+            after,
+        },
+        CheckedAdmissionAction::OtherComplete { .. } => ObservedEvent::OtherComplete {
+            before,
+            record: observed_accept_record(event.accepted_children),
+            after,
+        },
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -10413,7 +10663,7 @@ fn emit_admission_noncompletion_event<'src>(
     frames: &[Frame<'src>],
     scores: &CanonicalScoreArena<'src>,
     ticket: &admission_live_core::PreStepTicket<'src>,
-) -> Result<(), CanonicalProtobufAdmissionError> {
+) -> Result<ObservedEvent, CanonicalProtobufAdmissionError> {
     let action = match kind {
         AdmissionStepKind::MessageContinue | AdmissionStepKind::MessagePush => {
             CheckedAdmissionAction::MessageField {
@@ -10438,6 +10688,7 @@ fn emit_admission_noncompletion_event<'src>(
             after_scores: scores,
             action,
             map_source: scratch.map_source.as_ref(),
+            accepted_children: None,
         },
         ticket,
         scratch.epm_step_start.as_ref(),
@@ -10502,11 +10753,14 @@ fn emit_admission_completion_event<'src>(
     scores: &CanonicalScoreArena<'src>,
     stats: &CanonicalProtobufAdmissionStats,
     ticket: &admission_live_core::PreStepTicket<'src>,
-) -> Result<(), CanonicalProtobufAdmissionError> {
+) -> Result<ObservedEvent, CanonicalProtobufAdmissionError> {
     let outcome = scratch
         .outcome
         .as_ref()
         .expect("accepted completion outcome");
+    let accepted_children = CheckedChildSummaries::from_completion(outcome, frames);
+    #[cfg(test)]
+    let accepted_children = verified_monitor_seam::seamed_children(accepted_children);
     emit_checked_admission_event_from_core(
         CheckedAdmissionEvent {
             before: scratch.driver_source(),
@@ -10535,6 +10789,7 @@ fn emit_admission_completion_event<'src>(
                 _ => unreachable!("completion tag"),
             },
             map_source: scratch.map_source.as_ref(),
+            accepted_children,
         },
         ticket,
         scratch.epm_step_start.as_ref(),
@@ -17089,6 +17344,13 @@ mod tests {
             .spawn(move || {
                 let admission = validate(bytes, &PAR_PROTOBUF_REGION_PROGRAM);
                 assert!(admission.stats().max_frames >= 20_000);
+                let finish = verified_monitor_seam::take_monitor_finish()
+                    .expect("the deep admission reports its verified monitor finish");
+                assert!(finish.accepted);
+                assert_eq!(finish.checked_events, finish.iterations);
+                let max_frames = u64::try_from(admission.stats().max_frames)
+                    .expect("the deep admission frame count fits in u64");
+                assert!(finish.checked_events + 1 >= 2 * max_frames);
             })
             .expect("spawn small-stack canonical protobuf validator")
             .join()
@@ -17113,5 +17375,509 @@ mod tests {
             .expect("spawn small-stack wide canonical protobuf validator")
             .join()
             .expect("wide canonical protobuf validator completes");
+    }
+}
+
+#[cfg(test)]
+mod verified_monitor_seam {
+    use std::cell::Cell;
+
+    use super::{CheckedChildSummaries, ObservedEvent, ObservedField};
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) enum VerifiedMonitorFault {
+        ZeroCursorAfter { step: u64 },
+        UncheckedFrom { step: u64 },
+        DropLastChildSummary,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) struct VerifiedMonitorFinish {
+        pub(super) checked_events: u64,
+        pub(super) iterations: u64,
+        pub(super) accepted: bool,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(super) struct ChildSummariesRecord {
+        pub(super) slot: usize,
+        pub(super) bodies: Vec<Option<Vec<u8>>>,
+    }
+
+    struct SeamSession {
+        fault: Option<VerifiedMonitorFault>,
+        presented: Vec<ObservedEvent>,
+        children: Vec<ChildSummariesRecord>,
+    }
+
+    thread_local! {
+        static SESSION: Cell<Option<Box<SeamSession>>> = const { Cell::new(None) };
+        static FINISH: Cell<Option<VerifiedMonitorFinish>> = const { Cell::new(None) };
+    }
+
+    pub(super) struct VerifiedMonitorSeamSession;
+
+    impl VerifiedMonitorSeamSession {
+        pub(super) fn begin(fault: Option<VerifiedMonitorFault>) -> Self {
+            FINISH.with(|cell| cell.set(None));
+            SESSION.with(|cell| {
+                cell.set(Some(Box::new(SeamSession {
+                    fault,
+                    presented: Vec::new(),
+                    children: Vec::new(),
+                })))
+            });
+            Self
+        }
+    }
+
+    impl Drop for VerifiedMonitorSeamSession {
+        fn drop(&mut self) {
+            FINISH.with(|cell| cell.set(None));
+            SESSION.with(|cell| cell.set(None));
+        }
+    }
+
+    fn with_session<T>(visit: impl FnOnce(Option<&mut SeamSession>) -> T) -> T {
+        SESSION.with(|cell| {
+            let mut session = cell.take();
+            let visited = visit(session.as_deref_mut());
+            cell.set(session);
+            visited
+        })
+    }
+
+    fn zero_cursor_after(event: ObservedEvent) -> ObservedEvent {
+        let zeroed = |field: ObservedField| ObservedField {
+            cursor_after: 0,
+            ..field
+        };
+        match event {
+            ObservedEvent::MessageContinue {
+                before,
+                field,
+                after,
+            } => ObservedEvent::MessageContinue {
+                before,
+                field: zeroed(field),
+                after,
+            },
+            ObservedEvent::MessagePush {
+                before,
+                field,
+                child,
+                after,
+            } => ObservedEvent::MessagePush {
+                before,
+                field: zeroed(field),
+                child,
+                after,
+            },
+            ObservedEvent::OtherContinue {
+                before,
+                field,
+                after,
+            } => ObservedEvent::OtherContinue {
+                before,
+                field: field.map(zeroed),
+                after,
+            },
+            ObservedEvent::OtherPush {
+                before,
+                field,
+                child,
+                after,
+            } => ObservedEvent::OtherPush {
+                before,
+                field: field.map(zeroed),
+                child,
+                after,
+            },
+            ObservedEvent::MessageComplete { .. } | ObservedEvent::OtherComplete { .. } => event,
+        }
+    }
+
+    pub(super) fn seamed_event(step: u64, event: ObservedEvent) -> Option<ObservedEvent> {
+        with_session(|session| {
+            let Some(session) = session else {
+                return Some(event);
+            };
+            let presented = match session.fault {
+                Some(VerifiedMonitorFault::UncheckedFrom { step: first }) if step >= first => {
+                    return None;
+                }
+                Some(VerifiedMonitorFault::ZeroCursorAfter { step: target }) if step == target => {
+                    zero_cursor_after(event)
+                }
+                _ => event,
+            };
+            session.presented.push(presented);
+            Some(presented)
+        })
+    }
+
+    pub(super) fn seamed_children<'step, 'src>(
+        children: Option<CheckedChildSummaries<'step, 'src>>,
+    ) -> Option<CheckedChildSummaries<'step, 'src>> {
+        with_session(|session| {
+            let Some(session) = session else {
+                return children;
+            };
+            let children = match (session.fault, children) {
+                (
+                    Some(VerifiedMonitorFault::DropLastChildSummary),
+                    Some(CheckedChildSummaries::MessageSlot { slot, ordered }),
+                ) => Some(CheckedChildSummaries::MessageSlot {
+                    slot,
+                    ordered: ordered.split_last().map_or(ordered, |(_, rest)| rest),
+                }),
+                (_, children) => children,
+            };
+            if let Some(CheckedChildSummaries::MessageSlot { slot, ordered }) = children {
+                session.children.push(ChildSummariesRecord {
+                    slot,
+                    bodies: ordered
+                        .iter()
+                        .map(|occurrence| {
+                            occurrence.body.as_ref().map(|body| body.bytes().collect())
+                        })
+                        .collect(),
+                });
+            }
+            children
+        })
+    }
+
+    pub(super) fn record_monitor_finish(checked_events: u64, iterations: u64, accepted: bool) {
+        FINISH.with(|cell| {
+            cell.set(Some(VerifiedMonitorFinish {
+                checked_events,
+                iterations,
+                accepted,
+            }))
+        });
+    }
+
+    pub(super) fn take_monitor_finish() -> Option<VerifiedMonitorFinish> { FINISH.with(Cell::take) }
+
+    pub(super) fn take_presented_events() -> Vec<ObservedEvent> {
+        with_session(|session| {
+            session
+                .map(|session| std::mem::take(&mut session.presented))
+                .unwrap_or_default()
+        })
+    }
+
+    pub(super) fn take_child_summary_records() -> Vec<ChildSummariesRecord> {
+        with_session(|session| {
+            session
+                .map(|session| std::mem::take(&mut session.children))
+                .unwrap_or_default()
+        })
+    }
+}
+
+#[cfg(test)]
+mod verified_monitor_call_site_tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use verified_score_store::admission_event_checker::MonitorRejection;
+
+    use super::verified_monitor_seam::{
+        take_child_summary_records, take_monitor_finish, take_presented_events,
+        VerifiedMonitorFault, VerifiedMonitorFinish, VerifiedMonitorSeamSession,
+    };
+    use super::*;
+    use crate::rhoapi::expr::ExprInstance;
+    use crate::rhoapi::{Expr, New, Par, Send};
+    use crate::rust::canonical_path::{encode_trie_path, tag};
+    use crate::rust::epathmap_trie_codec::{self, EPathMapRepr};
+    use crate::rust::rhoapi_ext::EPathMap;
+    use crate::rust::rholang::protobuf_encoder;
+
+    const PRODUCTION_EVENT_CLASSES: [&str; 11] = [
+        "MessageComplete.MapValue",
+        "MessageComplete.MessageSlot",
+        "MessageComplete.Reduced",
+        "MessageComplete.Root",
+        "MessageContinue",
+        "MessagePush",
+        "OtherComplete.MessageSlot",
+        "OtherComplete.Reduced",
+        "OtherComplete.Root",
+        "OtherContinue",
+        "OtherPush",
+    ];
+
+    fn observed_event_class(event: &ObservedEvent) -> &'static str {
+        match event {
+            ObservedEvent::MessageContinue { .. } => "MessageContinue",
+            ObservedEvent::MessagePush { .. } => "MessagePush",
+            ObservedEvent::MessageComplete { record, .. } => match record {
+                ObservedAcceptRecord::Root => "MessageComplete.Root",
+                ObservedAcceptRecord::MessageSlot { .. } => "MessageComplete.MessageSlot",
+                ObservedAcceptRecord::MapValue => "MessageComplete.MapValue",
+                ObservedAcceptRecord::Reduced => "MessageComplete.Reduced",
+            },
+            ObservedEvent::OtherContinue { .. } => "OtherContinue",
+            ObservedEvent::OtherPush { .. } => "OtherPush",
+            ObservedEvent::OtherComplete { record, .. } => match record {
+                ObservedAcceptRecord::Root => "OtherComplete.Root",
+                ObservedAcceptRecord::MessageSlot { .. } => "OtherComplete.MessageSlot",
+                ObservedAcceptRecord::MapValue => "OtherComplete.MapValue",
+                ObservedAcceptRecord::Reduced => "OtherComplete.Reduced",
+            },
+        }
+    }
+
+    fn fixture_len(len: usize) -> u64 { u64::try_from(len).expect("fixture lengths fit in u64") }
+
+    fn integer(value: i64) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(value)),
+        }])
+    }
+
+    fn byte_array(bytes: &[u8]) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GByteArray(bytes.to_vec())),
+        }])
+    }
+
+    fn length_delimited_field(number: u32, body: &[u8]) -> Vec<u8> {
+        let body_len = fixture_len(body.len());
+        let mut field = Vec::with_capacity(
+            prost::encoding::key_len(number)
+                + prost::encoding::encoded_len_varint(body_len)
+                + body.len(),
+        );
+        prost::encoding::encode_key(
+            number,
+            prost::encoding::WireType::LengthDelimited,
+            &mut field,
+        );
+        prost::encoding::encode_varint(body_len, &mut field);
+        field.extend_from_slice(body);
+        field
+    }
+
+    fn escape_key() -> Vec<u8> {
+        let raw = byte_array(&[37, 37, 41]).with_sends(vec![Send {
+            chan: Some(integer(7)),
+            ..Send::default()
+        }]);
+        let key = encode_trie_path(&raw);
+        assert_eq!(key.first(), Some(&tag::ESCAPE));
+        key
+    }
+
+    fn nested_epathmap_key() -> Vec<u8> {
+        let child = EPathMap::new_map(
+            [(integer(7), byte_array(&[37, 41]))],
+            Vec::new(),
+            false,
+            None,
+        );
+        let snapshot = child.trie_snapshot();
+        let snapshot_len = fixture_len(snapshot.len());
+        let mut key = Vec::with_capacity(
+            1 + prost::encoding::encoded_len_varint(snapshot_len) + snapshot.len(),
+        );
+        key.push(tag::EPATHMAP_MAP);
+        prost::encoding::encode_varint(snapshot_len, &mut key);
+        key.extend_from_slice(snapshot);
+        key
+    }
+
+    fn epathmap_par_with_key(key: &[u8]) -> Vec<u8> {
+        let mut trie = pathmap::PathMap::new();
+        trie.insert(key, integer(11));
+        let snapshot = epathmap_trie_codec::encode(&EPathMapRepr::Map(trie));
+        length_delimited_field(
+            5,
+            &length_delimited_field(32, &length_delimited_field(9, &snapshot)),
+        )
+    }
+
+    fn gint_expr_bytes(value: i64) -> Vec<u8> {
+        protobuf_encoder::encode_to_vec(&Expr {
+            expr_instance: Some(ExprInstance::GInt(value)),
+        })
+    }
+
+    fn admit_message(
+        bytes: Vec<u8>,
+        program: &'static RhoMatchProgram,
+    ) -> Result<CanonicalProtobufAdmission, CanonicalProtobufAdmissionError> {
+        validate_canonical_protobuf(ProtobufRegion::from(bytes), program)
+    }
+
+    fn classes_of_an_admitted_run<T>(
+        admit: impl FnOnce() -> Result<T, CanonicalProtobufAdmissionError>,
+    ) -> BTreeSet<&'static str> {
+        let _session = VerifiedMonitorSeamSession::begin(None);
+        if let Err(error) = admit() {
+            panic!("a base-admitted fixture was refused: {error}");
+        }
+        let presented = take_presented_events();
+        let finish = take_monitor_finish().expect("an admitted run reports its monitor finish");
+        assert!(finish.accepted);
+        assert_eq!(finish.checked_events, finish.iterations);
+        assert_eq!(fixture_len(presented.len()), finish.checked_events);
+        presented.iter().map(observed_event_class).collect()
+    }
+
+    #[test]
+    fn every_production_event_class_is_checked_once_per_iteration() {
+        let expr = gint_expr_bytes(7);
+        let new = protobuf_encoder::encode_to_vec(&New {
+            p: Some(integer(1)),
+            injections: BTreeMap::from([("k".to_string(), integer(2))]),
+            ..New::default()
+        });
+        let escape = escape_key();
+        let nested = nested_epathmap_key();
+        let escape_par = epathmap_par_with_key(&escape);
+        let nested_par = epathmap_par_with_key(&nested);
+        let mut classes = BTreeSet::new();
+        classes.extend(classes_of_an_admitted_run(|| {
+            admit_message(expr, &EXPR_RHO_MATCH_PROGRAM)
+        }));
+        classes.extend(classes_of_an_admitted_run(|| {
+            admit_message(new, &NEW_RHO_MATCH_PROGRAM)
+        }));
+        classes.extend(classes_of_an_admitted_run(|| {
+            admit_message(escape_par, &PAR_PROTOBUF_REGION_PROGRAM)
+        }));
+        classes.extend(classes_of_an_admitted_run(|| {
+            admit_message(nested_par, &PAR_PROTOBUF_REGION_PROGRAM)
+        }));
+        classes.extend(classes_of_an_admitted_run(|| {
+            validate_canonical_path_indexed(IndexedByteRegion::from_borrowed(&escape, 0, 0))
+        }));
+        classes.extend(classes_of_an_admitted_run(|| {
+            validate_canonical_path_indexed(IndexedByteRegion::from_borrowed(&nested, 0, 0))
+        }));
+        assert_eq!(classes, BTreeSet::from(PRODUCTION_EVENT_CLASSES));
+    }
+
+    #[test]
+    fn a_refused_event_ends_the_admission_with_a_typed_refusal() {
+        let bytes = gint_expr_bytes(7);
+        {
+            let _session = VerifiedMonitorSeamSession::begin(None);
+            assert!(admit_message(bytes.clone(), &EXPR_RHO_MATCH_PROGRAM).is_ok());
+            let classes: Vec<&str> = take_presented_events()
+                .iter()
+                .map(observed_event_class)
+                .collect();
+            assert_eq!(classes, ["MessageContinue", "MessageComplete.Root"]);
+            assert_eq!(
+                take_monitor_finish(),
+                Some(VerifiedMonitorFinish {
+                    checked_events: 2,
+                    iterations: 2,
+                    accepted: true,
+                })
+            );
+        }
+        let _session =
+            VerifiedMonitorSeamSession::begin(Some(VerifiedMonitorFault::ZeroCursorAfter {
+                step: 0,
+            }));
+        assert_eq!(
+            admit_message(bytes, &EXPR_RHO_MATCH_PROGRAM).err(),
+            Some(CanonicalProtobufAdmissionError::VerifiedMonitorRefused {
+                step: 0,
+                refusal: MonitorRefusal::Rejected(MonitorRejection::FieldRefused),
+            })
+        );
+        assert!(matches!(take_presented_events().as_slice(), [
+            ObservedEvent::MessageContinue {
+                field: ObservedField {
+                    cursor_after: 0,
+                    ..
+                },
+                ..
+            }
+        ]));
+        assert_eq!(take_monitor_finish(), None);
+    }
+
+    #[test]
+    fn completions_carry_the_ordered_child_summaries_of_their_slot() {
+        let values = [11, 22, 33];
+        let bodies: Vec<Vec<u8>> = values.iter().copied().map(gint_expr_bytes).collect();
+        let bytes = protobuf_encoder::encode_to_vec(
+            &Par::default().with_exprs(
+                values
+                    .iter()
+                    .map(|value| Expr {
+                        expr_instance: Some(ExprInstance::GInt(*value)),
+                    })
+                    .collect(),
+            ),
+        );
+        let _session = VerifiedMonitorSeamSession::begin(None);
+        assert!(admit_message(bytes, &PAR_PROTOBUF_REGION_PROGRAM).is_ok());
+        let records = take_child_summary_records();
+        assert_eq!(records.len(), values.len());
+        let slot = records[0].slot;
+        for (index, record) in records.iter().enumerate() {
+            assert_eq!(record.slot, slot);
+            let expected: Vec<Option<Vec<u8>>> =
+                bodies[..=index].iter().cloned().map(Some).collect();
+            assert_eq!(record.bodies, expected);
+        }
+        let accepted: Vec<(usize, usize)> = take_presented_events()
+            .iter()
+            .filter_map(|event| match event {
+                ObservedEvent::MessageComplete {
+                    record:
+                        ObservedAcceptRecord::MessageSlot {
+                            slot,
+                            occurrences_after,
+                        },
+                    ..
+                } => Some((*slot, *occurrences_after)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(accepted, [(slot, 1), (slot, 2), (slot, 3)]);
+    }
+
+    #[test]
+    fn an_admission_with_unchecked_iterations_fails_closed() {
+        let bytes = gint_expr_bytes(7);
+        for (first_unchecked, checked_events) in [(0, 0), (1, 1)] {
+            let _session =
+                VerifiedMonitorSeamSession::begin(Some(VerifiedMonitorFault::UncheckedFrom {
+                    step: first_unchecked,
+                }));
+            assert_eq!(
+                admit_message(bytes.clone(), &EXPR_RHO_MATCH_PROGRAM).err(),
+                Some(CanonicalProtobufAdmissionError::VerifiedMonitorIncomplete { checked_events })
+            );
+            assert_eq!(take_monitor_finish(), None);
+        }
+    }
+
+    #[test]
+    fn summaries_that_disagree_with_the_acceptance_receipt_are_refused() {
+        let bytes = protobuf_encoder::encode_to_vec(&integer(5));
+        let _session =
+            VerifiedMonitorSeamSession::begin(Some(VerifiedMonitorFault::DropLastChildSummary));
+        assert_eq!(
+            admit_message(bytes, &PAR_PROTOBUF_REGION_PROGRAM).err(),
+            Some(CanonicalProtobufAdmissionError::CutoverInvariant(
+                "checked admission event disagrees with its accepted child summaries"
+            ))
+        );
+        let classes: Vec<&str> = take_presented_events()
+            .iter()
+            .map(observed_event_class)
+            .collect();
+        assert_eq!(classes, ["MessagePush", "MessageContinue"]);
+        assert_eq!(take_monitor_finish(), None);
     }
 }

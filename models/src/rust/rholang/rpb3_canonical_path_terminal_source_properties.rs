@@ -105,6 +105,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: None,
+            accepted_children: CheckedChildSummaries::from_completion(&returned, &frames),
         }).is_ok());
         let Some(terminal) = completion_source.terminal.as_deref_mut() else {
             panic!("CanonicalPath return must retain its terminal source")
@@ -124,6 +125,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: None,
+            accepted_children: CheckedChildSummaries::from_completion(&returned, &frames),
         }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_))));
         let Some(CompleteTerminalSource::CanonicalPath { end: retained_end, .. }) =
             completion_source.terminal.as_deref_mut() else { unreachable!() };
@@ -142,6 +144,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: None,
+            accepted_children: CheckedChildSummaries::from_completion(&returned, &frames),
         }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_))));
         let Some(CompleteTerminalSource::CanonicalPath { returned: retained_summary, .. }) =
             completion_source.terminal.as_deref_mut() else { unreachable!() };
@@ -158,6 +161,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: None,
+            accepted_children: CheckedChildSummaries::from_completion(&returned, &frames),
         }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_))));
         driver.top_program = None;
         completion_source.completed_kind = FrameRequestKind::EPathMap;
@@ -172,6 +176,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: None,
+            accepted_children: CheckedChildSummaries::from_completion(&returned, &frames),
         }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_))));
         completion_source.completed_kind = FrameRequestKind::CanonicalPath;
         stats.canonical_path_bytes_read += 1;
@@ -186,6 +191,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: None,
+            accepted_children: CheckedChildSummaries::from_completion(&returned, &frames),
         }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_))));
         assert!(matches!(returned, CompleteAdmissionOutcome::Root(FrameSummary::CanonicalPath(actual)) if actual == value));
         assert!(frames.is_empty());

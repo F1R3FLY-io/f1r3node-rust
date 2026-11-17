@@ -71,6 +71,7 @@ proptest! {
                     pushed: Some(&pushed),
                 },
                 map_source: None,
+                accepted_children: None,
             };
             let parent_core = event.map_push_parent_core_observation().unwrap();
             prop_assert!(parent_core.body.same_view(&field.body));
@@ -122,6 +123,7 @@ proptest! {
                     pushed: Some(&pushed),
                 },
                 map_source: None,
+                accepted_children: None,
             };
             let forged = event.map_push_parent_core_observation().unwrap();
             prop_assert_ne!(forged.seen_before_at(0), Some(expected_seen_before[0]));
@@ -146,6 +148,7 @@ proptest! {
                     pushed: Some(&pushed),
                 },
                 map_source: None,
+                accepted_children: None,
             };
             prop_assert!(event.map_push_child_observation().is_none());
             prop_assert!(emit_checked_admission_event(event).is_err());
@@ -165,6 +168,7 @@ proptest! {
                 pushed: Some(&pushed),
             },
             map_source: None,
+            accepted_children: None,
         };
         prop_assert!(event.map_push_child_observation().is_none());
         prop_assert!(emit_checked_admission_event(event).is_err());
@@ -183,6 +187,7 @@ proptest! {
                 pushed: Some(&pushed),
             },
             map_source: None,
+            accepted_children: None,
         };
         prop_assert!(event.map_push_child_observation().is_none());
         prop_assert!(emit_checked_admission_event(event).is_err());
@@ -200,6 +205,7 @@ proptest! {
                 pushed: Some(&pushed),
             },
             map_source: None,
+            accepted_children: None,
         };
         prop_assert!(event.map_push_child_observation().is_none());
         prop_assert!(emit_checked_admission_event(event).is_err());
@@ -217,6 +223,7 @@ proptest! {
                 pushed: Some(&pushed),
             },
             map_source: None,
+            accepted_children: None,
         };
         prop_assert!(event.map_push_child_observation().is_none());
         prop_assert!(emit_checked_admission_event(event).is_err());
@@ -233,6 +240,7 @@ proptest! {
                 pushed: Some(&pushed),
             },
             map_source: None,
+            accepted_children: None,
         };
         prop_assert!(event.map_push_child_observation().is_none());
         prop_assert!(emit_checked_admission_event(event).is_err());

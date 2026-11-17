@@ -110,6 +110,7 @@ proptest! {
                 request: &pushed_request,
             },
             map_source: None,
+            accepted_children: None,
         }).is_ok());
         let wrong_request = FrameRequest::Message {
             region: alternate.clone(),
@@ -124,6 +125,7 @@ proptest! {
                 request: &wrong_request,
             },
             map_source: None,
+            accepted_children: None,
         }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_))));
         let driver = DriverStepSource::before(&frames, &scores);
         let source_image = DriverCompleteSource::before_pop(

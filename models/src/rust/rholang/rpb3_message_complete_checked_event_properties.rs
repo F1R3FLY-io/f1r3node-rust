@@ -29,6 +29,7 @@ fn checked_message_complete<'src>(
             stats,
         },
         map_source: None,
+        accepted_children: CheckedChildSummaries::from_completion(outcome, frames),
     })
     .is_ok()
 }

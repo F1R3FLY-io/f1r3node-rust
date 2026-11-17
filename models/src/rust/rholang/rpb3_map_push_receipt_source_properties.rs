@@ -207,6 +207,7 @@ fn assert_checked_map_push_backing_identity<'src>(
             pushed: Some(&pushed),
         },
         map_source: None,
+        accepted_children: None,
     })
     .is_ok());
 
@@ -254,6 +255,7 @@ fn assert_checked_map_push_backing_identity<'src>(
             pushed: Some(&pushed),
         },
         map_source: None,
+        accepted_children: None,
     })
     .is_err());
     field.map_request = Some(original_request);
@@ -387,6 +389,7 @@ proptest! {
                 pushed: Some(&pushed),
             },
             map_source: None,
+            accepted_children: None,
         });
         prop_assert!(checked.is_ok());
 

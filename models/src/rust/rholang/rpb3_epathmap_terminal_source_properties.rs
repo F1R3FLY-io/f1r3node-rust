@@ -160,6 +160,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: None,
+            accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
         }).is_ok();
         prop_assert!(accepted);
         let Some(CompleteTerminalSource::EPathMap { returned, .. }) =
@@ -183,6 +184,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: None,
+            accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
         }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_)));
         prop_assert!(rejected);
     }
@@ -438,6 +440,7 @@ proptest! {
                             stats: &stats,
                         },
                         map_source: None,
+                        accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
                     }).is_ok(), "EPathMap child completion must pass the checked event");
                     let Some(CompleteTerminalSource::EPathMap {
                         cursor_source: retained_cursor,
@@ -470,6 +473,7 @@ proptest! {
                             stats: &stats,
                         },
                         map_source: None,
+                        accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
                     }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_)));
                     prop_assert!(rejected);
                     let Some(CompleteTerminalSource::EPathMap { cursor_source: retained_cursor, .. }) =
@@ -489,6 +493,7 @@ proptest! {
                             stats: &stats,
                         },
                         map_source: None,
+                        accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
                     }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_)));
                     prop_assert!(rejected);
                     let Some(CompleteTerminalSource::EPathMap { events_before: retained_events, .. }) =
@@ -517,6 +522,7 @@ proptest! {
                             stats: &stats,
                         },
                         map_source: None,
+                        accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
                     }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_)));
                     prop_assert!(rejected);
                     prop_assert_eq!(frames.len(), 1);
@@ -547,6 +553,7 @@ proptest! {
                             stats: &stats,
                         },
                         map_source: None,
+                        accepted_children: CheckedChildSummaries::from_completion(&returned_root, &frames),
                     }).is_ok(), "CanonicalPath root completion must pass the checked event");
                     prop_assert!(frames.is_empty());
                     prop_assert_eq!(scores.source_len(), score_len);
@@ -768,6 +775,7 @@ proptest! {
                 stats: &stats,
             },
             map_source: None,
+            accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
         }).is_ok();
         prop_assert!(accepted);
     }

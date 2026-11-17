@@ -1,10 +1,16 @@
+use verified_score_store::admission_event_checker::AdmissionMonitor;
+
 use super::*;
+
+const MONITOR_INITIAL_FRAME_CAPACITY: usize = 16;
 
 pub(super) struct AdmissionLiveCore<'src> {
     frames: Vec<Frame<'src>>,
     scores: CanonicalScoreArena<'src>,
     stats: CanonicalProtobufAdmissionStats,
     scratch: Box<AdmissionScratch<'src>>,
+    monitor: Box<AdmissionMonitor>,
+    iterations: u64,
 }
 
 struct MessagePreStepTicket<'src> {
@@ -318,12 +324,100 @@ impl<'src> AdmissionLiveCore<'src> {
                 "admission root disagrees with its source or checked storage observation",
             ));
         }
+        let root_request = frames.first().map(observed_frame_request).ok_or(
+            CanonicalProtobufAdmissionError::CutoverInvariant(
+                "admission root frame has no observable request",
+            ),
+        )?;
+        let monitor = AdmissionMonitor::new(
+            &root_request,
+            scores.source_len(),
+            usize::MAX,
+            MONITOR_INITIAL_FRAME_CAPACITY,
+        )
+        .map_err(
+            |refusal| CanonicalProtobufAdmissionError::VerifiedMonitorRefused { step: 0, refusal },
+        )?;
         Ok(Self {
             frames,
             scores,
             stats,
             scratch: AdmissionScratch::allocate(),
+            monitor: Box::new(monitor),
+            iterations: 0,
         })
+    }
+
+    fn check_observed_event(
+        &mut self,
+        observed: ObservedEvent,
+    ) -> Result<(), CanonicalProtobufAdmissionError> {
+        let step = self.monitor.checked_events();
+        #[cfg(test)]
+        let Some(observed) = verified_monitor_seam::seamed_event(step, observed) else {
+            return Ok(());
+        };
+        self.monitor.check_event(&observed).map_err(|refusal| {
+            CanonicalProtobufAdmissionError::VerifiedMonitorRefused { step, refusal }
+        })
+    }
+
+    #[cfg_attr(debug_assertions, inline(never))]
+    fn begin_iteration(&mut self) -> Result<PreStepTicket<'src>, CanonicalProtobufAdmissionError> {
+        self.iterations = self
+            .iterations
+            .checked_add(1)
+            .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+        PreStepTicket::before(&self.frames, &self.scores, &self.stats)
+    }
+
+    #[cfg_attr(debug_assertions, inline(never))]
+    fn check_noncompletion_event(
+        &mut self,
+        kind: AdmissionStepKind,
+        ticket: &PreStepTicket<'src>,
+    ) -> Result<(), CanonicalProtobufAdmissionError> {
+        let observed = emit_admission_noncompletion_event(
+            kind,
+            &self.scratch,
+            &self.frames,
+            &self.scores,
+            ticket,
+        )?;
+        self.check_observed_event(observed)
+    }
+
+    #[cfg_attr(debug_assertions, inline(never))]
+    fn check_completion_event(
+        &mut self,
+        kind: AdmissionStepKind,
+        ticket: &PreStepTicket<'src>,
+        root: bool,
+    ) -> Result<(), CanonicalProtobufAdmissionError> {
+        let observed = emit_admission_completion_event(
+            kind,
+            &self.scratch,
+            &self.frames,
+            &self.scores,
+            &self.stats,
+            ticket,
+        )?;
+        self.check_observed_event(observed)?;
+        if root {
+            let checked_events = self.monitor.checked_events();
+            if !self.monitor.is_accepted() || checked_events != self.iterations {
+                return Err(CanonicalProtobufAdmissionError::VerifiedMonitorIncomplete {
+                    checked_events,
+                });
+            }
+            #[cfg(test)]
+            verified_monitor_seam::record_monitor_finish(
+                checked_events,
+                self.iterations,
+                self.monitor.is_accepted(),
+            );
+        }
+        Ok(())
     }
 
     fn finish_message_complete(
@@ -342,14 +436,7 @@ impl<'src> AdmissionLiveCore<'src> {
                 "message completion disagrees with its private pre-step ticket",
             ));
         }
-        emit_admission_completion_event(
-            AdmissionStepKind::MessageComplete,
-            &self.scratch,
-            &self.frames,
-            &self.scores,
-            &self.stats,
-            &ticket,
-        )?;
+        self.check_completion_event(AdmissionStepKind::MessageComplete, &ticket, root)?;
         Ok(if root {
             let Some(CompleteAdmissionOutcome::Root(summary)) = self.scratch.outcome.take() else {
                 unreachable!("checked root completion has a root summary")
@@ -371,14 +458,7 @@ impl<'src> AdmissionLiveCore<'src> {
             &self.scores,
             &mut self.stats,
         )?;
-        emit_admission_completion_event(
-            AdmissionStepKind::OtherComplete,
-            &self.scratch,
-            &self.frames,
-            &self.scores,
-            &self.stats,
-            &ticket,
-        )?;
+        self.check_completion_event(AdmissionStepKind::OtherComplete, &ticket, root)?;
         Ok(if root {
             let Some(CompleteAdmissionOutcome::Root(summary)) = self.scratch.outcome.take() else {
                 unreachable!("checked root completion has a root summary")
@@ -408,7 +488,7 @@ impl<'src> AdmissionLiveCore<'src> {
                 self.scratch.step_before =
                     rpb3_root_finish_trace::driver_step_before(&self.frames, &self.scores);
             }
-            let ticket = PreStepTicket::before(&self.frames, &self.scores, &self.stats)?;
+            let ticket = self.begin_iteration()?;
             self.scratch.field_preimage.capture(
                 self.frames
                     .last()
@@ -432,13 +512,7 @@ impl<'src> AdmissionLiveCore<'src> {
                         &self.scores,
                         &mut self.stats,
                     )?;
-                    emit_admission_noncompletion_event(
-                        kind,
-                        &self.scratch,
-                        &self.frames,
-                        &self.scores,
-                        &ticket,
-                    )?;
+                    self.check_noncompletion_event(kind, &ticket)?;
                     None
                 }
                 AdmissionStepKind::MessageComplete => self.finish_message_complete(ticket)?,

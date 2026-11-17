@@ -465,6 +465,7 @@ proptest! {
                         stats: &stats,
                     },
                     map_source: None,
+                    accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
                 }).is_ok(), "accepted nested EPathMap completion must pass the checked event");
                 prop_assert!(matches!(emit_checked_admission_event(CheckedAdmissionEvent {
                     before: &driver,
@@ -477,6 +478,7 @@ proptest! {
                         stats: &stats,
                     },
                     map_source: None,
+                    accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
                 }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_))), "missing accept effect must be rejected");
                 completion_source.resolutions_before_accept += 1;
                 prop_assert!(matches!(emit_checked_admission_event(CheckedAdmissionEvent {
@@ -490,6 +492,7 @@ proptest! {
                         stats: &stats,
                     },
                     map_source: None,
+                    accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
                 }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_))), "changed resolution count must be rejected");
                 completion_source.resolutions_before_accept -= 1;
                 let Some(CompleteParentSource::EPathMap {
@@ -516,6 +519,7 @@ proptest! {
                         stats: &stats,
                     },
                     map_source: None,
+                    accepted_children: CheckedChildSummaries::from_completion(&outcome, &frames),
                 }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_))), "changed nested EPathMap stability must be rejected");
                 let (id, resolution) = pop.applied_obligation
                     .expect("driver recorded the EPathMap parent's nested resolution");
@@ -658,6 +662,7 @@ proptest! {
                     request: &pushed_request,
                 },
                 map_source: None,
+                accepted_children: None,
             }).is_ok(), "selected EPathMap child push must pass the checked event");
             prop_assert!(matches!(emit_checked_admission_event(CheckedAdmissionEvent {
                 before: &before,
@@ -668,6 +673,7 @@ proptest! {
                     request: &wrong_view_request,
                 },
                 map_source: None,
+                accepted_children: None,
             }), Err(CanonicalProtobufAdmissionError::CutoverInvariant(_))), "forged child view must be rejected");
             match frames.last_mut().unwrap() {
                 Frame::Message(pushed) => {
