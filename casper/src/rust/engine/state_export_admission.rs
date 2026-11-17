@@ -37,6 +37,14 @@ fn admission_error(message: impl Into<String>) -> CasperError {
     CasperError::StateExportError(StateExportError::InvalidPath(message.into()))
 }
 
+pub(crate) fn unserved_cursor_protocol_error(
+    cursor_protocol: StoreItemsCursorProtocol,
+) -> CasperError {
+    admission_error(format!(
+        "state-export cursor protocol {cursor_protocol:?} is not served by this node"
+    ))
+}
+
 pub(crate) fn validate_request(
     start_path: &[(Blake2b256Hash, Option<u8>)],
     skip: i32,
@@ -80,6 +88,9 @@ pub(crate) fn validate_request(
                      {MAX_PAGE_WORK_ITEMS}, found {take}"
                 )));
             }
+        }
+        StoreItemsCursorProtocol::DagStream => {
+            return Err(unserved_cursor_protocol_error(cursor_protocol));
         }
         StoreItemsCursorProtocol::Unspecified | StoreItemsCursorProtocol::Unknown(_) => {
             unreachable!("require_supported rejected an unavailable cursor protocol")
@@ -223,5 +234,30 @@ mod tests {
         assert!(validate_response(1, usize::MAX, 1, 1).is_err());
         assert!(validate_response(1, 0, 1, MAX_RESPONSE_BYTES).is_ok());
         assert!(validate_response(1, 0, 1, MAX_RESPONSE_BYTES + 1).is_err());
+    }
+
+    #[test]
+    fn a_dag_stream_request_is_refused_until_the_protocol_is_served() {
+        let path = vec![(root(), None)];
+        for take in [1, MAX_PAGE_WORK_ITEMS] {
+            assert!(validate_request(
+                &path,
+                0,
+                take,
+                StoreItemsCursorProtocol::AuthenticatedTerminal,
+            )
+            .is_ok());
+            match validate_request(&path, 0, take, StoreItemsCursorProtocol::DagStream) {
+                Err(CasperError::StateExportError(StateExportError::InvalidPath(message))) => {
+                    assert!(
+                        message.contains("DagStream is not served"),
+                        "unexpected refusal of a DAG stream request: {message}"
+                    )
+                }
+                other => {
+                    panic!("a DAG stream request must be refused as not served, found {other:?}")
+                }
+            }
+        }
     }
 }

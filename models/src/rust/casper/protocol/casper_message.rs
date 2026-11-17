@@ -1776,6 +1776,7 @@ pub enum StoreItemsCursorProtocol {
     Unspecified,
     LegacyEmptyTerminal,
     AuthenticatedTerminal,
+    DagStream,
     Unknown(i32),
 }
 
@@ -1785,6 +1786,7 @@ impl StoreItemsCursorProtocol {
             0 => Self::Unspecified,
             1 => Self::LegacyEmptyTerminal,
             2 => Self::AuthenticatedTerminal,
+            3 => Self::DagStream,
             value => Self::Unknown(value),
         }
     }
@@ -1794,13 +1796,14 @@ impl StoreItemsCursorProtocol {
             Self::Unspecified => 0,
             Self::LegacyEmptyTerminal => 1,
             Self::AuthenticatedTerminal => 2,
+            Self::DagStream => 3,
             Self::Unknown(value) => value,
         }
     }
 
     pub fn require_supported(self) -> Result<Self, String> {
         match self {
-            Self::LegacyEmptyTerminal | Self::AuthenticatedTerminal => Ok(self),
+            Self::LegacyEmptyTerminal | Self::AuthenticatedTerminal | Self::DagStream => Ok(self),
             Self::Unspecified => {
                 Err("store-items cursor protocol must be selected explicitly".to_string())
             }
@@ -1951,7 +1954,8 @@ impl StoreItemsMessage {
                     Ok(self.last_path.clone())
                 }
             }
-            StoreItemsCursorProtocol::AuthenticatedTerminal => {
+            StoreItemsCursorProtocol::AuthenticatedTerminal
+            | StoreItemsCursorProtocol::DagStream => {
                 if self.terminal {
                     if self.last_path != self.start_path {
                         return Err(
@@ -2678,5 +2682,319 @@ mod tests {
             .expect("spawn fixed-stack signature-algebra probe")
             .join()
             .expect("signature-algebra analysis/drop must not grow native stack with depth");
+    }
+
+    fn cursor_hash(seed: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![seed; 32]) }
+
+    fn golden_start_path() -> Vec<(Blake2b256Hash, Option<Byte>)> {
+        vec![(cursor_hash(0x11), None), (cursor_hash(0x22), Some(7))]
+    }
+
+    fn golden_request(
+        cursor_protocol: StoreItemsCursorProtocol,
+        skip: i32,
+        take: i32,
+    ) -> StoreItemsMessageRequest {
+        StoreItemsMessageRequest {
+            start_path: golden_start_path(),
+            skip,
+            take,
+            cursor_protocol,
+        }
+    }
+
+    fn golden_response(
+        cursor_protocol: StoreItemsCursorProtocol,
+        last_path: Vec<(Blake2b256Hash, Option<Byte>)>,
+        terminal: bool,
+    ) -> StoreItemsMessage {
+        StoreItemsMessage {
+            start_path: golden_start_path(),
+            last_path,
+            history_items: vec![(cursor_hash(0x44), ByteString::from_static(&[1, 2, 3]))],
+            data_items: vec![(cursor_hash(0x55), ByteString::from_static(&[4, 5]))],
+            cursor_protocol,
+            terminal,
+        }
+    }
+
+    #[test]
+    fn legacy_and_authenticated_message_bytes_are_unchanged() {
+        const LEGACY_REQUEST_HEX: &str = concat!(
+            "0a25",
+            "0a20",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "108002",
+            "0a24",
+            "0a20",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "1007",
+            "1018",
+            "18e807",
+            "2001",
+        );
+        const AUTHENTICATED_REQUEST_HEX: &str = concat!(
+            "0a25",
+            "0a20",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "108002",
+            "0a24",
+            "0a20",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "1007",
+            "188008",
+            "2002",
+        );
+        const LEGACY_RESPONSE_HEX: &str = concat!(
+            "0a25",
+            "0a20",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "108002",
+            "0a24",
+            "0a20",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "1007",
+            "1225",
+            "0a20",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "108002",
+            "1224",
+            "0a20",
+            "3333333333333333333333333333333333333333333333333333333333333333",
+            "1009",
+            "1a27",
+            "0a20",
+            "4444444444444444444444444444444444444444444444444444444444444444",
+            "1203010203",
+            "2226",
+            "0a20",
+            "5555555555555555555555555555555555555555555555555555555555555555",
+            "12020405",
+            "2801",
+        );
+        const AUTHENTICATED_RESPONSE_HEX: &str = concat!(
+            "0a25",
+            "0a20",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "108002",
+            "0a24",
+            "0a20",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "1007",
+            "1225",
+            "0a20",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "108002",
+            "1224",
+            "0a20",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "1007",
+            "1a27",
+            "0a20",
+            "4444444444444444444444444444444444444444444444444444444444444444",
+            "1203010203",
+            "2226",
+            "0a20",
+            "5555555555555555555555555555555555555555555555555555555555555555",
+            "12020405",
+            "2802",
+            "3001",
+        );
+
+        let requests = [
+            (
+                "legacy request",
+                golden_request(StoreItemsCursorProtocol::LegacyEmptyTerminal, 24, 1_000),
+                LEGACY_REQUEST_HEX,
+            ),
+            (
+                "authenticated request",
+                golden_request(StoreItemsCursorProtocol::AuthenticatedTerminal, 0, 1_024),
+                AUTHENTICATED_REQUEST_HEX,
+            ),
+        ];
+        for (name, request, golden_hex) in requests {
+            assert_eq!(
+                hex::encode(request.clone().to_proto().encode_to_vec()),
+                golden_hex,
+                "the {name} no longer encodes to the bytes of the parent commit"
+            );
+            let golden_bytes =
+                hex::decode(golden_hex).expect("golden request bytes are hexadecimal");
+            let decoded = StoreItemsMessageRequest::from_proto(
+                StoreItemsMessageRequestProto::decode(golden_bytes.as_slice())
+                    .expect("golden request bytes decode as a protobuf request"),
+            )
+            .expect("golden request bytes carry an admissible request");
+            assert_eq!(
+                decoded, request,
+                "the {name} golden bytes no longer decode to the same request"
+            );
+        }
+
+        let continuation = vec![(cursor_hash(0x11), None), (cursor_hash(0x33), Some(9))];
+        let responses = [
+            (
+                "legacy response",
+                golden_response(
+                    StoreItemsCursorProtocol::LegacyEmptyTerminal,
+                    continuation,
+                    false,
+                ),
+                LEGACY_RESPONSE_HEX,
+            ),
+            (
+                "authenticated response",
+                golden_response(
+                    StoreItemsCursorProtocol::AuthenticatedTerminal,
+                    golden_start_path(),
+                    true,
+                ),
+                AUTHENTICATED_RESPONSE_HEX,
+            ),
+        ];
+        for (name, response, golden_hex) in responses {
+            assert_eq!(
+                hex::encode(response.clone().to_proto().encode_to_vec()),
+                golden_hex,
+                "the {name} no longer encodes to the bytes of the parent commit"
+            );
+            let golden_bytes =
+                hex::decode(golden_hex).expect("golden response bytes are hexadecimal");
+            let decoded = StoreItemsMessage::from_proto(
+                StoreItemsMessageProto::decode(golden_bytes.as_slice())
+                    .expect("golden response bytes decode as a protobuf response"),
+            )
+            .expect("golden response bytes carry an admissible response");
+            assert_eq!(
+                decoded, response,
+                "the {name} golden bytes no longer decode to the same response"
+            );
+        }
+    }
+
+    #[test]
+    fn dag_stream_cursor_protocol_round_trips_as_three() {
+        assert_eq!(
+            StoreItemsCursorProtocol::DagStream.to_proto(),
+            3,
+            "the DAG stream protocol did not encode as 3"
+        );
+        assert_eq!(
+            StoreItemsCursorProtocol::from_proto(3),
+            StoreItemsCursorProtocol::DagStream,
+            "the protocol value 3 did not decode as the DAG stream protocol"
+        );
+        assert_eq!(
+            StoreItemsCursorProtocolProto::try_from(3).map(|protocol| protocol.as_str_name()),
+            Ok("STORE_ITEMS_CURSOR_PROTOCOL_DAG_STREAM")
+        );
+        assert_eq!(
+            StoreItemsCursorProtocol::DagStream.require_supported(),
+            Ok(StoreItemsCursorProtocol::DagStream)
+        );
+
+        let request = StoreItemsMessageRequest {
+            start_path: Vec::new(),
+            skip: 0,
+            take: 0,
+            cursor_protocol: StoreItemsCursorProtocol::DagStream,
+        };
+        let request_bytes = request.clone().to_proto().encode_to_vec();
+        assert_eq!(request_bytes, [0x20, 0x03]);
+        assert_eq!(
+            StoreItemsMessageRequest::from_proto(
+                StoreItemsMessageRequestProto::decode(request_bytes.as_slice())
+                    .expect("a DAG stream request decodes as a protobuf request"),
+            ),
+            Ok(request)
+        );
+
+        let response = StoreItemsMessage {
+            start_path: Vec::new(),
+            last_path: Vec::new(),
+            history_items: Vec::new(),
+            data_items: Vec::new(),
+            cursor_protocol: StoreItemsCursorProtocol::DagStream,
+            terminal: false,
+        };
+        let response_bytes = response.clone().to_proto().encode_to_vec();
+        assert_eq!(response_bytes, [0x28, 0x03]);
+        assert_eq!(
+            StoreItemsMessage::from_proto(
+                StoreItemsMessageProto::decode(response_bytes.as_slice())
+                    .expect("a DAG stream response decodes as a protobuf response"),
+            ),
+            Ok(response)
+        );
+
+        assert_eq!(
+            StoreItemsCursorProtocol::from_proto(4),
+            StoreItemsCursorProtocol::Unknown(4)
+        );
+        assert_eq!(
+            StoreItemsCursorProtocol::Unknown(4).require_supported(),
+            Err("unsupported store-items cursor protocol epoch 4".to_string())
+        );
+    }
+
+    #[test]
+    fn dag_stream_terminal_response_must_repeat_the_start_path() {
+        let dag_stream = StoreItemsCursorProtocol::DagStream;
+        let start_path = vec![(cursor_hash(0x11), None)];
+        let continuation = vec![(cursor_hash(0x11), None), (cursor_hash(0x22), Some(7))];
+        let response = |cursor_protocol, last_path, terminal| StoreItemsMessage {
+            start_path: start_path.clone(),
+            last_path,
+            history_items: Vec::new(),
+            data_items: Vec::new(),
+            cursor_protocol,
+            terminal,
+        };
+
+        assert_eq!(
+            response(dag_stream, start_path.clone(), true)
+                .canonical_advertised_next_path(dag_stream),
+            Ok(start_path.clone())
+        );
+        for forged_last_path in [continuation.clone(), Vec::new()] {
+            let refusal = response(dag_stream, forged_last_path, true)
+                .canonical_advertised_next_path(dag_stream)
+                .expect_err("a terminal DAG stream response must repeat startPath as lastPath");
+            assert!(
+                refusal.contains("must repeat startPath as lastPath"),
+                "unexpected refusal of a terminal DAG stream response: {refusal}"
+            );
+        }
+
+        assert_eq!(
+            response(dag_stream, continuation.clone(), false)
+                .canonical_advertised_next_path(dag_stream),
+            Ok(continuation)
+        );
+        for forged_continuation in [start_path.clone(), Vec::new()] {
+            let refusal = response(dag_stream, forged_continuation, false)
+                .canonical_advertised_next_path(dag_stream)
+                .expect_err("a non-terminal DAG stream response must carry a distinct cursor");
+            assert!(
+                refusal.contains("must carry a distinct continuation cursor"),
+                "unexpected refusal of a non-terminal DAG stream response: {refusal}"
+            );
+        }
+
+        for (requested, answered) in [
+            (dag_stream, StoreItemsCursorProtocol::LegacyEmptyTerminal),
+            (dag_stream, StoreItemsCursorProtocol::AuthenticatedTerminal),
+            (StoreItemsCursorProtocol::LegacyEmptyTerminal, dag_stream),
+            (StoreItemsCursorProtocol::AuthenticatedTerminal, dag_stream),
+        ] {
+            let refusal = response(answered, start_path.clone(), true)
+                .canonical_advertised_next_path(requested)
+                .expect_err("a page of one protocol must not answer a request of another");
+            assert!(
+                refusal.contains("protocol mismatch"),
+                "unexpected refusal of a mixed-protocol response: {refusal}"
+            );
+        }
     }
 }

@@ -29,7 +29,8 @@ use crate::rust::engine::block_retriever::{self, BlockRetriever};
 use crate::rust::engine::engine::{self, Engine};
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::state_export_admission::{
-    require_verified_root, validate_request as validate_state_export_request,
+    require_verified_root, unserved_cursor_protocol_error,
+    validate_request as validate_state_export_request,
     validate_response as validate_state_export_response, StateExportConcurrencyGate,
 };
 use crate::rust::errors::CasperError;
@@ -598,6 +599,9 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             casper_message::StoreItemsCursorProtocol::LegacyEmptyTerminal
             | casper_message::StoreItemsCursorProtocol::AuthenticatedTerminal => {
                 canonical_last_path
+            }
+            casper_message::StoreItemsCursorProtocol::DagStream => {
+                return Err(unserved_cursor_protocol_error(cursor_protocol));
             }
             casper_message::StoreItemsCursorProtocol::Unspecified
             | casper_message::StoreItemsCursorProtocol::Unknown(_) => {
