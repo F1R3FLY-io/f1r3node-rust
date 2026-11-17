@@ -150,7 +150,8 @@ cat >"$TMP/cronbin/date" <<SH
 case "\$*" in
   "-u +%s") printf '%s\n' "\$FAKE_NOW" ;;
   "-u +%F") "$GNU_DATE" -u -d "@\$FAKE_NOW" +%F ;;
-  *) exec "$GNU_DATE" "\$@" ;;
+  *"-d "*) exec "$GNU_DATE" "\$@" ;;
+  *) printf 'unexpected clock read: date %s\n' "\$*" >&2; exit 1 ;;
 esac
 SH
 cat >"$TMP/cronbin/gh" <<SH

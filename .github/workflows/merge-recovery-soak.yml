@@ -1256,6 +1256,7 @@ jobs:
           # number of steps, so unused slots are emitted empty and skip.
           end_epoch=$((slot_epoch + duration_seconds))
           late_start=false
+          late_skip=false
           window_start="$slot_epoch"
           if [ "$should_run" = "true" ] && [ "${trigger_source:-}" = "cron-fallback" ] && [ "${slot_delay_seconds:-0}" -gt 900 ]; then
             remaining=$((end_epoch - now_epoch))
