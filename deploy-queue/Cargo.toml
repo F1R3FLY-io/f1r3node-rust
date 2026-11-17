@@ -12,7 +12,6 @@ path = "src/main.rs"
 [dependencies]
 crypto = { path = "../crypto" }
 models = { path = "../models" }
-rholang = { path = "../rholang" }
 shared = { path = "../shared" }
 async-trait = { workspace = true }
 axum = { workspace = true, features = ["ws"] }

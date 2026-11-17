@@ -34,8 +34,6 @@ impl std::fmt::Display for Congestion {
 pub enum IntakeError {
     #[error("{0}")]
     IllegalArgument(String),
-    #[error("{0}")]
-    RholangBadTerm(String),
     #[error("deploy_expired: {0}")]
     DeployExpired(String),
     #[error("invalid_deploy_window: {0}")]
@@ -72,7 +70,6 @@ impl IntakeError {
     pub fn status(&self) -> StatusCode {
         match self {
             IntakeError::IllegalArgument(_)
-            | IntakeError::RholangBadTerm(_)
             | IntakeError::DeployExpired(_)
             | IntakeError::InvalidDeployWindow(_) => StatusCode::BAD_REQUEST,
             IntakeError::Duplicate(_) => StatusCode::CONFLICT,
@@ -87,7 +84,6 @@ impl IntakeError {
     pub fn kind(&self) -> &'static str {
         match self {
             IntakeError::IllegalArgument(_) => "illegal_argument",
-            IntakeError::RholangBadTerm(_) => "rholang_bad_term",
             IntakeError::DeployExpired(_) => "deploy_expired",
             IntakeError::InvalidDeployWindow(_) => "invalid_deploy_window",
             IntakeError::Duplicate(_) => "duplicate_deploy",

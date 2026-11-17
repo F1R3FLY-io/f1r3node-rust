@@ -17,7 +17,6 @@ use tokio_tungstenite::tungstenite;
 
 use crate::engine::EngineHandle;
 use crate::error::IntakeError;
-use crate::intake::check_term;
 use crate::node::NodeHttp;
 use crate::record::{DeployView, Sig};
 
@@ -92,24 +91,10 @@ async fn deploy_handler(State(state): State<HttpState>, body: Bytes) -> Response
         Ok(deploy) => deploy,
         Err(e) => return intake_error_response(IntakeError::IllegalArgument(e.to_string())),
     };
-    match accept(&state.engine, deploy).await {
+    match state.engine.intake(deploy).await {
         Ok(sig) => Json(format!("Success!\nDeployId is: {}", hex::encode(sig))).into_response(),
         Err(e) => intake_error_response(e),
     }
-}
-
-/// The checks every transport shares: compile the term off the runtime,
-/// then hand the deploy to the engine.
-pub async fn accept(
-    engine: &EngineHandle,
-    deploy: crypto::rust::signatures::signed::Signed<
-        models::rust::casper::protocol::casper_message::DeployData,
-    >,
-) -> Result<Sig, IntakeError> {
-    let deploy = tokio::task::spawn_blocking(move || check_term(&deploy).map(|()| deploy))
-        .await
-        .map_err(|e| IntakeError::Store(format!("term check task failed: {}", e)))??;
-    engine.intake(deploy).await
 }
 
 /// The node's deploy-status body, plus the queue's own state and detail.

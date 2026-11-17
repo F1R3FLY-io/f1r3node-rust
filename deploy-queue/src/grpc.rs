@@ -28,7 +28,6 @@ use tonic::{Request, Response, Status, Streaming};
 
 use crate::engine::EngineHandle;
 use crate::error::IntakeError;
-use crate::http::accept;
 use crate::record::{DeployView, QueueState, Sig};
 
 /// Matches the node's default `grpc-max-recv-message-size`.
@@ -107,7 +106,7 @@ impl DeployService for QueueGrpc {
             Ok(deploy) => deploy,
             Err(message) => return deploy_error(message),
         };
-        match accept(&self.engine, deploy).await {
+        match self.engine.intake(deploy).await {
             Ok(sig) => Ok(Response::new(DeployResponse {
                 message: Some(deploy_response::Message::Result(format!(
                     "Success!\nDeployId is: {}",
@@ -116,7 +115,6 @@ impl DeployService for QueueGrpc {
             })),
             Err(
                 error @ (IntakeError::IllegalArgument(_)
-                | IntakeError::RholangBadTerm(_)
                 | IntakeError::DeployExpired(_)
                 | IntakeError::InvalidDeployWindow(_)
                 | IntakeError::Duplicate(_)),

@@ -9,7 +9,6 @@ pub mod events;
 pub mod grpc;
 pub mod health;
 pub mod http;
-pub mod intake;
 pub mod node;
 pub mod record;
 pub mod store;

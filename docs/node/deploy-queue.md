@@ -28,7 +28,7 @@ Read `latestBlockNumber`, `deployLifespan` and `maxParentDepth` from
 
 | `error` | HTTP | gRPC | Cause | Client action |
 |---------|------|------|-------|---------------|
-| `invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `deploy_expired`, `invalid_deploy_window` | 400 | `ServiceError` in the response, as the node; `deploy_expired` and `invalid_deploy_window` messages start with their kind | The deploy is not valid | Correct the deploy |
+| `invalid_request_body`, `illegal_argument`, `deploy_expired`, `invalid_deploy_window` | 400 | `ServiceError` in the response, as the node; `deploy_expired` and `invalid_deploy_window` messages start with their kind | The deploy is not valid | Correct the deploy |
 | `duplicate_deploy` | 409 | `ServiceError` | The queue already holds this deploy | Read its status |
 | `deploy_queue_full` | 503 + `Retry-After` | `RESOURCE_EXHAUSTED` + `retry-after` metadata | At the validator's intake, the deploys ahead would keep this one out of a block until its window closes, or this deployer holds its full share of the queue | Wait for `Retry-After` seconds, sign the deploy again with a current `validAfterBlockNumber`, then send it |
 | `node_unavailable` | 503 + `Retry-After` | `UNAVAILABLE` + `retry-after` metadata | The queue is not connected to its node | Wait and send again |
@@ -41,6 +41,9 @@ shard (the node is holding its validator back because finality trails the tip, o
 than `maxParentDepth` and the queue holds every deploy until it catches up). While its validator creates no block,
 the queue takes no deploy, and its `Retry-After` is one citable depth at the shard's pace; a client that cannot
 wait sends the deploy to another validator's queue.
+
+The queue does not compile the Rholang term. The node checks it when the queue releases the deploy, and a term
+that does not compile ends the deploy `Rejected` with `rholang_bad_term` in its status detail.
 
 ## Deploy status
 

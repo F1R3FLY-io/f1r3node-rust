@@ -31,9 +31,10 @@ cap and its source, saturated) and `shard` (seconds per height, backpressure, fi
 
 ## Admission
 
-The queue refuses a deploy with the node's own error when its signature, shard id, phlo price, expiration,
-validity window or Rholang term is not valid, when its `validAfterBlockNumber` is more than `maxParentDepth`
-above the tip, or when the queue already holds it.
+The queue refuses a deploy with the node's own error when its signature, shard id, phlo price, expiration
+or validity window is not valid, when its `validAfterBlockNumber` is more than `maxParentDepth`
+above the tip, or when the queue already holds it. The node checks the Rholang term when the queue releases
+the deploy: a term that does not compile ends the deploy `Rejected`, with `rholang_bad_term` in its detail.
 
 The queue then checks capacity. Release takes the earliest deadline (last includable block) first, so a deploy
 waits behind every deploy in the validator's pool and every queued deploy with an earlier deadline. The queue

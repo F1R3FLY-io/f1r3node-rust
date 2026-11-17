@@ -13,7 +13,6 @@ use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
 use deploy_queue::engine::{FinalityHold, QueueSnapshot};
 use deploy_queue::error::{Congestion, IntakeError};
-use deploy_queue::http::accept;
 use deploy_queue::record::QueueState;
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::deploy_window::last_includable_block;
@@ -140,7 +139,7 @@ async fn a_deploy_is_released_and_follows_the_node_to_its_verdict() {
     let queue = Queue::start(&url, dir.path()).await;
 
     let deploy = deploy(5, "root", 1);
-    let sig = accept(&queue.handle, deploy.clone()).await.unwrap();
+    let sig = queue.handle.intake(deploy.clone()).await.unwrap();
     assert_eq!(sig, deploy.sig.to_vec());
     eventually("the node receives the deploy", || async {
         node.received().len() == 1
@@ -190,7 +189,7 @@ async fn release_keeps_the_validators_pool_at_what_its_next_block_takes() {
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
     for number in 0..12 {
-        accept(&queue.handle, numbered_deploy(10, number))
+        queue.handle.intake(numbered_deploy(10, number))
             .await
             .unwrap();
     }
@@ -282,7 +281,7 @@ async fn a_refusal_names_the_validator_or_the_shard() {
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
 
-    let pooled = accept(&queue.handle, numbered_deploy(10, 0)).await.unwrap();
+    let pooled = queue.handle.intake(numbered_deploy(10, 0)).await.unwrap();
     eventually("the deploy is released", || async {
         node.received().len() == 1
     })
@@ -294,7 +293,7 @@ async fn a_refusal_names_the_validator_or_the_shard() {
     node.emit(block_created(12, 0, true, true, &[]));
     node.emit(block_added(12, VALIDATOR, &[]));
     reaches_tip(&queue, 12).await;
-    let refusal = accept(&queue.handle, numbered_deploy(12, 1)).await;
+    let refusal = queue.handle.intake(numbered_deploy(12, 1)).await;
     assert!(
         matches!(
             refusal,
@@ -323,7 +322,7 @@ async fn a_refusal_names_the_validator_or_the_shard() {
     advance(&node, 13, 41);
     reaches_tip(&queue, 41).await;
     assert!(matches!(
-        accept(&queue.handle, numbered_deploy(41, 2)).await,
+        queue.handle.intake(numbered_deploy(41, 2)).await,
         Err(IntakeError::QueueFull {
             cause: Congestion::ValidatorIdle,
             ..
@@ -351,7 +350,7 @@ async fn finality_past_the_citable_depth_holds_release_and_intake_until_it_catch
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
     for number in 0..3 {
-        accept(&queue.handle, numbered_deploy(10, number))
+        queue.handle.intake(numbered_deploy(10, number))
             .await
             .unwrap();
     }
@@ -374,7 +373,7 @@ async fn finality_past_the_citable_depth_holds_release_and_intake_until_it_catch
     assert_eq!(snapshot.finality_hold, Some(FinalityHold { lag: 28 }));
     assert!(!snapshot.release_open);
     assert_eq!(snapshot.ready, 2);
-    let refusal = accept(&queue.handle, numbered_deploy(37, 3)).await;
+    let refusal = queue.handle.intake(numbered_deploy(37, 3)).await;
     assert!(refused_for_the_shard(&refusal), "{:?}", refusal);
 
     // Finality comes back within the depth: release and intake resume.
@@ -384,7 +383,7 @@ async fn finality_past_the_citable_depth_holds_release_and_intake_until_it_catch
     })
     .await;
     assert_eq!(queue.handle.snapshot().await.unwrap().finality_hold, None);
-    accept(&queue.handle, numbered_deploy(37, 4)).await.unwrap();
+    queue.handle.intake(numbered_deploy(37, 4)).await.unwrap();
     queue.stop();
 }
 
@@ -401,7 +400,7 @@ async fn a_burst_of_heights_at_start_with_finality_within_the_depth_does_not_hol
     }
     reaches_tip(&queue, 10).await;
     tokio::time::sleep(Duration::from_millis(2100)).await;
-    accept(&queue.handle, numbered_deploy(10, 0)).await.unwrap();
+    queue.handle.intake(numbered_deploy(10, 0)).await.unwrap();
     assert_eq!(queue.handle.snapshot().await.unwrap().finality_hold, None);
     queue.stop();
 }
@@ -414,23 +413,23 @@ async fn refusals_follow_the_node_rules() {
     let queue = Queue::start(&url, dir.path()).await;
 
     assert!(matches!(
-        accept(&queue.handle, deploy(90, "other", 3)).await,
+        queue.handle.intake(deploy(90, "other", 3)).await,
         Err(IntakeError::IllegalArgument(_))
     ));
     assert!(matches!(
-        accept(&queue.handle, deploy(50, "root", 4)).await,
+        queue.handle.intake(deploy(50, "root", 4)).await,
         Err(IntakeError::DeployExpired(_))
     ));
     // Tip 100 plus the 25-height citable depth.
     assert!(matches!(
-        accept(&queue.handle, deploy(126, "root", 8)).await,
+        queue.handle.intake(deploy(126, "root", 8)).await,
         Err(IntakeError::InvalidDeployWindow(message)) if message.contains("highest accepted block number 125")
     ));
-    accept(&queue.handle, deploy(125, "root", 9)).await.unwrap();
+    queue.handle.intake(deploy(125, "root", 9)).await.unwrap();
     let held = deploy(95, "root", 5);
-    accept(&queue.handle, held.clone()).await.unwrap();
+    queue.handle.intake(held.clone()).await.unwrap();
     assert_eq!(
-        accept(&queue.handle, held.clone()).await,
+        queue.handle.intake(held.clone()).await,
         Err(IntakeError::Duplicate(held.sig.to_vec()))
     );
     queue.stop();
@@ -446,7 +445,7 @@ async fn a_deploy_too_late_to_land_is_refused_as_full() {
     // Open through block 109 at lifespan 50, but landing from tip 100 needs a
     // height of inclusion plus the 25-height margin: 126.
     assert!(matches!(
-        accept(&queue.handle, deploy(60, "root", 6)).await,
+        queue.handle.intake(deploy(60, "root", 6)).await,
         Err(IntakeError::QueueFull { .. })
     ));
     queue.stop();
@@ -467,12 +466,12 @@ async fn a_backlog_past_the_citable_depth_waits_within_its_window() {
     let fitting = last - 10 - 25;
     assert!(fitting > 25, "the window, not the depth, bounds the line");
     for number in 0..fitting {
-        accept(&queue.handle, numbered_deploy(10, number))
+        queue.handle.intake(numbered_deploy(10, number))
             .await
             .unwrap_or_else(|error| panic!("deploy {} of {} refused: {}", number, fitting, error));
     }
     assert!(matches!(
-        accept(&queue.handle, numbered_deploy(10, fitting)).await,
+        queue.handle.intake(numbered_deploy(10, fitting)).await,
         Err(IntakeError::QueueFull { .. })
     ));
     queue.stop();
@@ -488,19 +487,19 @@ async fn one_deployer_cannot_take_the_room_another_needs() {
     // At one deploy per height, a 49-height fresh window less the 25-height
     // depth holds 24 deploys; one deployer alone may hold half.
     for number in 0..12 {
-        accept(&queue.handle, one_deployers_deploy(10, number))
+        queue.handle.intake(one_deployers_deploy(10, number))
             .await
             .unwrap();
     }
     assert!(matches!(
-        accept(&queue.handle, one_deployers_deploy(10, 12)).await,
+        queue.handle.intake(one_deployers_deploy(10, 12)).await,
         Err(IntakeError::DeployerShareFull {
             held: 12,
             limit: 12,
             ..
         })
     ));
-    accept(&queue.handle, deploy(10, "root", 11)).await.unwrap();
+    queue.handle.intake(deploy(10, "root", 11)).await.unwrap();
     queue.stop();
 }
 
@@ -513,7 +512,7 @@ async fn a_deploy_without_time_to_reach_the_validators_next_block_is_not_release
     let queue = Queue::start(&url, dir.path()).await;
     // Six deploys whose window runs out at block 69.
     for number in 0..6 {
-        accept(&queue.handle, numbered_deploy(10, number))
+        queue.handle.intake(numbered_deploy(10, number))
             .await
             .unwrap();
     }
@@ -557,7 +556,7 @@ async fn a_deploy_no_block_carries_is_resent_after_the_citable_depth() {
     let url = node.clone().serve().await;
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
-    let sig = accept(&queue.handle, deploy(10, "root", 15)).await.unwrap();
+    let sig = queue.handle.intake(deploy(10, "root", 15)).await.unwrap();
     eventually("the deploy is released", || async {
         node.received().len() == 1
     })
@@ -593,7 +592,7 @@ async fn a_refusal_from_the_node_is_terminal() {
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
 
-    let sig = accept(&queue.handle, deploy(5, "root", 7)).await.unwrap();
+    let sig = queue.handle.intake(deploy(5, "root", 7)).await.unwrap();
     eventually("the refusal lands", || async {
         queue.state(&sig).await == Some(QueueState::Rejected)
     })
@@ -618,7 +617,7 @@ async fn a_node_whose_validator_is_not_bonded_is_retried() {
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
 
-    let sig = accept(&queue.handle, deploy(5, "root", 10)).await.unwrap();
+    let sig = queue.handle.intake(deploy(5, "root", 10)).await.unwrap();
     eventually("the node refuses it", || async {
         !node.received().is_empty()
     })
@@ -646,7 +645,7 @@ async fn queue_with_a_released_deploy(seed: u8) -> (FakeNode, Queue, tempfile::T
     let url = node.clone().serve().await;
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
-    let sig = accept(&queue.handle, deploy(5, "root", seed))
+    let sig = queue.handle.intake(deploy(5, "root", seed))
         .await
         .unwrap();
     eventually("the deploy is released", || async {
@@ -716,7 +715,7 @@ async fn a_deploy_the_node_already_decided_takes_the_nodes_verdict() {
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
 
-    let sig = accept(&queue.handle, deploy(5, "root", 9)).await.unwrap();
+    let sig = queue.handle.intake(deploy(5, "root", 9)).await.unwrap();
     eventually("the node's verdict is adopted", || async {
         queue.state(&sig).await == Some(QueueState::Finalized)
     })
@@ -735,7 +734,7 @@ async fn queued_deploys_survive_a_restart_and_are_released_after_it() {
 
     // Not valid until block 41, so the first queue only holds it.
     let queue = Queue::start(&url, dir.path()).await;
-    let sig = accept(&queue.handle, deploy(41, "root", 8)).await.unwrap();
+    let sig = queue.handle.intake(deploy(41, "root", 8)).await.unwrap();
     assert_eq!(queue.state(&sig).await, Some(QueueState::Queued));
     queue.stop();
     tokio::time::sleep(Duration::from_millis(100)).await;
