@@ -139,6 +139,8 @@ impl TransportLayerTestImpl {
 
 #[async_trait]
 impl TransportLayer for TransportLayerTestImpl {
+    fn queued_stream_bytes(&self) -> usize { 0 }
+
     async fn send(&self, peer: &PeerNode, msg: &Protocol) -> Result<(), CommError> {
         // Add the peer if it doesn't exist
         let _ = self.test_network.add_peer(peer);
