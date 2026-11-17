@@ -764,8 +764,13 @@ async fn a_decided_deploy_keeps_its_record_on_disk_without_its_payload() {
     let url = node.clone().serve().await;
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
-    let decided = queue.handle.intake(deploy(5, "root", 1)).await.unwrap();
-    let held = queue.handle.intake(deploy(30, "root", 2)).await.unwrap();
+    let first = deploy(5, "root", 1);
+    let second = deploy(30, "root", 2);
+    let sizes = [&first, &second].map(|d| deploy_queue::record::encode_deploy(d).len() as u64);
+    let decided = queue.handle.intake(first).await.unwrap();
+    let held = queue.handle.intake(second).await.unwrap();
+    let payload_bytes = || async { queue.handle.snapshot().await.unwrap().payload_bytes };
+    assert_eq!(payload_bytes().await, sizes[0] + sizes[1]);
     eventually("the node receives the due deploy", || async {
         node.received().len() == 1
     })
@@ -776,7 +781,16 @@ async fn a_decided_deploy_keeps_its_record_on_disk_without_its_payload() {
         queue.state(&decided).await == Some(QueueState::Finalized)
     })
     .await;
+    assert_eq!(payload_bytes().await, sizes[1]);
     queue.stop();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let restarted = Queue::start(&url, dir.path()).await;
+    assert_eq!(
+        restarted.handle.snapshot().await.unwrap().payload_bytes,
+        sizes[1],
+        "a restart counts the payloads still held"
+    );
+    restarted.stop();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let store = deploy_queue::store::QueueStore::open(dir.path()).unwrap();

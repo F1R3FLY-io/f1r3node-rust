@@ -13,6 +13,8 @@ pub enum Congestion {
     /// The shard's finality trails the tip or has stalled: the node holds its
     /// validator back, or the queue holds release.
     Shard,
+    /// The signed deploys the queue holds fill its storage budget.
+    Storage,
 }
 
 impl std::fmt::Display for Congestion {
@@ -23,6 +25,7 @@ impl std::fmt::Display for Congestion {
                 "the validator has created no block while the shard moved on"
             }
             Congestion::Shard => "the shard's finality is holding the validator back",
+            Congestion::Storage => "the signed deploys the queue holds fill its storage budget",
         })
     }
 }

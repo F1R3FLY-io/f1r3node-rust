@@ -16,7 +16,8 @@ everything else from the node's event stream:
 
 - **The validator.** Each `block-created` event carries the block's deploys and the block creator's
   `deploy-admission`: the most fresh deploys the block could take (`cap`), what set the cap, and whether the node
-  lowered it because finality trails the tip (`backpressure`). The queue learns from a block only when this queue
+  lowered it because finality trails the tip (`backpressure`). The queue learns from a block only once the node
+  adds it, because self-validation can still discard a created block, and only when this queue
   had deploys in the validator's pool as it was built; a block built from an empty pool says nothing about what
   the validator takes. A block that left this queue's deploys behind took what it could, whatever the event says
   about its cap. A block that took everything it was offered was limited only by demand, so it could have taken
@@ -92,8 +93,10 @@ deploy-queue --node-grpc http://validator:40401 --node-http http://validator:404
 `--grpc-listen` and `--http-listen` change the client addresses. `RUST_LOG` sets the log filter. The queue has no
 configuration file: it reads the shard's values from its node. It commits the changes of each batch of waiting
 requests to its LMDB store in one transaction before it answers, broadcasts or sends anything for them, so a
-restart keeps all held deploys. What it measured of the validator and shard starts again. The store format
-changed with the persisted last-sent height: a data directory from an earlier build does not load.
+restart keeps all held deploys. What it measured of the validator and shard starts again. Records stay in
+memory; each signed deploy is stored on disk, read only to send it, and deleted once the deploy is decided.
+The signed deploys held at once are capped at half the store's 16 GiB map; past that the queue refuses with
+`deploy_queue_full`. A data directory from an earlier build does not load.
 
 ## Tests
 

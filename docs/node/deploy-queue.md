@@ -36,7 +36,8 @@ Read `latestBlockNumber`, `deployLifespan` and `maxParentDepth` from
 | `queue_store_error` | 500 | `INTERNAL` | The queue could not store the deploy | Send again later |
 
 A refused deploy is not held. The message of `deploy_queue_full` names its cause: the validator takes fewer
-deploys than arrive; the validator has created no block over a citable depth while the shard moved on; or the
+deploys than arrive; the signed deploys the queue holds fill its storage budget (half of its 16 GiB store); the
+validator has created no block over a citable depth while the shard moved on; or the
 shard (the node is holding its validator back because finality trails the tip, or finality trails the tip by more
 than `maxParentDepth` and the queue holds every deploy until it catches up). While its validator creates no block,
 the queue takes no deploy, and its `Retry-After` is one citable depth at the shard's pace; a client that cannot
@@ -92,6 +93,7 @@ height, backpressure, finality lag), and `finality_hold` with the lag while the 
 Queued deploys are counted as `ready` (window open, released earliest deadline first), `waiting` (not yet valid:
 `validAfterBlockNumber` above the tip) and `closed` (window closed before release); then `submitted`, `in_block`, and the terminal
 `finalized`, `failed`, `expired` and `rejected`. A terminal deploy stays held for one lifespan after its verdict,
-so its status can still be read. `held` is the sum of all of these.
+so its status can still be read. `held` is the sum of all of these. `payload_bytes` is the size of the signed
+deploys held for undecided deploys, which the storage budget caps.
 `GET /queue/metrics` answers Prometheus metrics. `GET /ws/events` relays the node's
 [event stream](websocket-events.md).

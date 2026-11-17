@@ -61,6 +61,8 @@ impl QueueState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueRecord {
     pub deployer: Vec<u8>,
+    /// The size of the stored signed deploy.
+    pub payload_bytes: u64,
     pub valid_after: i64,
     /// Intake order; release order within one deployer follows it.
     pub sequence: u64,
@@ -80,9 +82,15 @@ pub struct QueueRecord {
 }
 
 impl QueueRecord {
-    pub fn new(deploy: &Signed<DeployData>, sequence: u64, accepted_at_ms: i64) -> Self {
+    pub fn new(
+        deploy: &Signed<DeployData>,
+        payload_bytes: u64,
+        sequence: u64,
+        accepted_at_ms: i64,
+    ) -> Self {
         Self {
             deployer: deploy.pk.bytes.to_vec(),
+            payload_bytes,
             valid_after: deploy.data.valid_after_block_number,
             sequence,
             accepted_at_ms,
@@ -154,7 +162,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(decode_deploy(&encode_deploy(&deploy)).unwrap(), deploy);
-        let record = QueueRecord::new(&deploy, 1, 0);
+        let record = QueueRecord::new(&deploy, 42, 1, 0);
+        assert_eq!(record.payload_bytes, 42);
         assert_eq!(record.valid_after, 9);
         assert_eq!(record.deployer, deploy.pk.bytes.to_vec());
     }

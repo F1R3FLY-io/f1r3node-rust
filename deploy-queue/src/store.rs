@@ -11,6 +11,10 @@ use crate::record::{QueueRecord, Sig};
 /// LMDB reserves the map as address space; disk use follows the records.
 const MAP_SIZE: usize = 16 << 30;
 
+/// The most signed-deploy bytes the queue holds: half the map, leaving the rest
+/// for records and LMDB's own pages.
+pub const PAYLOAD_BUDGET: u64 = (MAP_SIZE / 2) as u64;
+
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("queue store: {0}")]
@@ -122,6 +126,7 @@ mod tests {
     fn record(sequence: u64) -> QueueRecord {
         QueueRecord {
             deployer: vec![4],
+            payload_bytes: 3,
             valid_after: 10,
             sequence,
             accepted_at_ms: 0,

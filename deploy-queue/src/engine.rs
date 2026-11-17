@@ -17,7 +17,7 @@ use crate::node::{
     ChainSnapshot, NodeDeployStatus, NodeError, NodeHttp, ShardValues, SubmitOutcome,
 };
 use crate::record::{decode_deploy, encode_deploy, DeployView, QueueRecord, QueueState, Sig};
-use crate::store::{Batch, QueueStore, StoreError};
+use crate::store::{Batch, QueueStore, StoreError, PAYLOAD_BUDGET};
 
 const RETRY_FLOOR: Duration = Duration::from_secs(1);
 const RETRY_CEILING: Duration = Duration::from_secs(30);
@@ -70,6 +70,8 @@ pub struct QueueSnapshot {
     pub expired: usize,
     pub rejected: usize,
     pub held: usize,
+    /// Bytes of the signed deploys held for undecided deploys.
+    pub payload_bytes: u64,
     pub validator: Option<ValidatorView>,
     pub shard: Option<ShardView>,
 }
@@ -264,6 +266,8 @@ pub struct Engine {
     new_payloads: HashMap<Sig, Vec<u8>>,
     /// Signed deploys of decided deploys, dropped at the next commit.
     dropped_payloads: Vec<Sig>,
+    /// Bytes of the signed deploys held for undecided deploys.
+    payload_bytes: u64,
     /// Intake answers waiting for the commit of what they acknowledge.
     intake_replies: Vec<(oneshot::Sender<IntakeResult>, IntakeResult)>,
     /// Broadcasts, replies and node requests waiting for the commit.
@@ -328,6 +332,11 @@ impl Engine {
             removed: Vec::new(),
             new_payloads: HashMap::new(),
             dropped_payloads: Vec::new(),
+            payload_bytes: records
+                .values()
+                .filter(|record| !record.state.is_terminal())
+                .map(|record| record.payload_bytes)
+                .sum(),
             intake_replies: Vec::new(),
             effects: Vec::new(),
         };
@@ -534,6 +543,13 @@ impl Engine {
                 cause: Congestion::ValidatorIdle,
             }));
         }
+        let payload = encode_deploy(&deploy);
+        if !fits_storage(self.payload_bytes, payload.len() as u64, PAYLOAD_BUDGET) {
+            return Ok(Err(IntakeError::QueueFull {
+                retry_after_secs: health.seconds_for(depth).unwrap_or(UNTIMED_RETRY_SECS),
+                cause: Congestion::Storage,
+            }));
+        }
 
         // The rate is what the validator takes into its blocks. The depth
         // covers an intake that falls after a deploy was accepted.
@@ -596,9 +612,9 @@ impl Engine {
             }));
         }
 
-        let record = QueueRecord::new(&deploy, self.next_sequence, now_ms);
-        self.new_payloads
-            .insert(sig.clone(), encode_deploy(&deploy));
+        let record = QueueRecord::new(&deploy, payload.len() as u64, self.next_sequence, now_ms);
+        self.payload_bytes += record.payload_bytes;
+        self.new_payloads.insert(sig.clone(), payload);
         self.next_sequence += 1;
         self.enter(QueueState::Queued);
         self.reindex(&sig, None, Some(IndexKeys::of(&record)));
@@ -1280,6 +1296,10 @@ impl Engine {
                 }
             }
         });
+        self.payload_bytes = self
+            .payload_bytes
+            .checked_sub(self.records[sig].payload_bytes)
+            .expect("held payload bytes count every undecided deploy's payload");
         self.new_payloads.remove(sig);
         self.dropped_payloads.push(sig.clone());
         metrics::counter!("deploy_queue.terminal", "state" => state.name()).increment(1);
@@ -1387,6 +1407,7 @@ impl Engine {
             expired: self.count(QueueState::Expired),
             rejected: self.count(QueueState::Rejected),
             held: self.records.len(),
+            payload_bytes: self.payload_bytes,
             validator: self.health.as_ref().map(Health::validator_view),
             shard: self.health.as_ref().map(Health::shard_view),
         }
@@ -1401,6 +1422,7 @@ impl Engine {
         metrics::gauge!("deploy_queue.waiting").set(self.waiting.len() as f64);
         metrics::gauge!("deploy_queue.release_open").set(f64::from(u8::from(self.release_open())));
         metrics::gauge!("deploy_queue.connected").set(f64::from(u8::from(self.connected)));
+        metrics::gauge!("deploy_queue.payload_bytes").set(self.payload_bytes as f64);
     }
 }
 
@@ -1466,6 +1488,11 @@ impl DeadlineIndex {
 /// The shard's citable depth: the span, in heights, in which a block may
 /// still build on another.
 fn citable_depth(shard: &ShardValues) -> i64 { i64::from(shard.max_parent_depth) }
+
+fn fits_storage(held: u64, payload: u64, budget: u64) -> bool {
+    held.checked_add(payload)
+        .is_some_and(|total| total <= budget)
+}
 
 /// Heights until the validator takes `deploys` more at `rate` a height;
 /// `None` when the rate is zero: it is taking nothing.
@@ -1586,6 +1613,13 @@ async fn wait_until(at: Option<Instant>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_admits_up_to_its_budget_and_never_overflows() {
+        assert!(fits_storage(90, 10, 100));
+        assert!(!fits_storage(91, 10, 100));
+        assert!(!fits_storage(u64::MAX, 1, u64::MAX));
+    }
 
     #[test]
     fn a_refusal_counts_the_heights_until_a_fresh_window_fits() {
