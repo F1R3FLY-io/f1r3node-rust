@@ -506,6 +506,11 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("OG-31", "a_hard_checkpoint_under_the_held_view_gate_and_owner_mutex_completes"),
     ("OG-42", "a_view_behind_the_current_state_publishes_the_successor_of_its_own_base"),
     ("OG-47", "a_concurrent_operation_waits_until_every_owner_exit_is_installed"),
+    ("PI-01", "entries_survive_a_reopen_and_match_the_golden_bytes"),
+    ("PI-02", "open_cuts_the_file_at_the_first_damaged_entry"),
+    ("PI-03", "a_forged_entry_is_refused_at_append_and_at_lookup"),
+    ("PI-04", "two_orders_of_one_channel_set_share_a_bucket_key"),
+    ("PI-05", "lookups_on_other_threads_see_only_whole_entries"),
 ];
 
 pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {

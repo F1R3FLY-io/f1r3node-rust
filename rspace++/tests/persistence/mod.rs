@@ -80,3 +80,5 @@ mod transfer_export_binding;
 #[cfg(unix)]
 mod durable_gc_cross_process;
 mod durable_rspace_checkpoint;
+#[cfg(unix)]
+mod preimage_index;

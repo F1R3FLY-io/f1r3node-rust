@@ -400,7 +400,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
     const FAMILIES: &[&str] = &[
         "INV", "DES", "WIR", "WAL", "CAT", "PUB", "SEM", "RES", "NV", "HJ", "JV", "JR", "SI", "IP",
         "IR", "CR", "LT", "DC", "CL", "RV", "TS", "TH", "PX", "RI", "SW", "OG", "VR", "DI", "SG",
-        "GC", "TX", "HR", "DF", "CB", "XB", "KG", "TM",
+        "GC", "TX", "HR", "DF", "CB", "XB", "KG", "TM", "PI",
     ];
     let is_property_id = |token: &str| {
         let Some((family, index)) = token.split_once('-') else {
@@ -756,6 +756,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("../rho_path_v2_bridge.rs"),
         include_str!("durable_gc_cross_process.rs"),
         include_str!("durable_rspace_checkpoint.rs"),
+        include_str!("preimage_index.rs"),
     ]
     .concat();
     for (id, target) in PROPERTY_BINDINGS {

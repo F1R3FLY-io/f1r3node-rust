@@ -13726,6 +13726,291 @@ compared byte for byte with its content before the fault.
 - the property registry: 313 bindings in 37 families, each ID bound once,
   each with a row of this catalog and a row of the derivation matrix.
 
+### Append-only channel preimage index (2026-11-16)
+
+Task 14425, leaf `rspace-channel-preimage-index`, adds the store-level index
+from the 32-byte hashes by which Casper reads state to the channels by which
+a durable state is keyed, in the new module
+[`preimage.rs`](../../../rspace++/src/rspace/persistence/durable/preimage.rs).
+It answers gap U3 of the ruling of 2026-11-10 (item 9). Casper names a
+channel by its hash (`dag_merger.rs`, `state_change.rs` and
+`runtime_manager.rs`), while a durable state is keyed by the identity bytes
+of the channel (`RhoPathV1::datum_prefix` in `rho_path.rs`), so a hash has to
+be resolved back to the channel that it hashes. Nothing calls the index yet:
+the leaf `rspace-preimage-index-publication` syncs it before each
+publication, and until then the module declaration carries a dead-code
+expectation that names that leaf. The index is part of no manifest and of no
+state root, and no existing file format changes. On 2026-11-16 the owner
+chose a file of its own beside the catalog, with no catalog field and no
+authenticated tail, over entries in the log pack. On the same day the owner
+decided how open treats damage: it cuts the file at the first damaged entry
+and never refuses to open because of damage. Telling damage inside the
+synced part from a torn tail is left to later hardening, and the consumer of
+the index, the leaf `rspace-preimage-index-publication`, treats a missing
+preimage as a refusal.
+
+**Terms.**
+
+- The **identity bytes** $`\iota(c)`$ of a channel $`c`$ are
+  `c.stable_hash_bytes()`, the bincode encoding that the history hashes. Its
+  **channel hash** is $`h(c) = B(\iota(c))`$, where $`B`$ is Blake2b with a
+  32-byte output; this is `hash` in `stable_hash_provider.rs`. The key never
+  depends on the channel-key grammar: by ruling Q2 of 2026-11-12 the grammar
+  is a parameter of the profile, and the key is always the hash of the legacy
+  identity bytes.
+- An **ordered group** is the list of the channels of a receive, in the order
+  of its patterns, written as the list of their channel hashes
+  $`(h_1, \ldots, h_k)`$. Its **bucket key** is the hash of the concatenation
+  of the same hashes in ascending bytewise order $`\sigma`$, which is
+  `hash_from_hashes`:
+
+  ```math
+  \beta(h_1, \ldots, h_k) = B\left(h_{\sigma(1)} \Vert h_{\sigma(2)} \Vert \cdots \Vert h_{\sigma(k)}\right)
+  ```
+
+  Every reordering of a group has the same bucket key, so the groups (a,b)
+  and (b,a) share one. The value keeps the group's own order, so the two
+  lists, which have different prefixes in a durable state, stay distinct.
+- An entry is **whole** when its 37-byte prefix lies inside the file, its
+  kind is known, its declared value length $`n`$ is admissible for the kind,
+  its extent $`45 + n`$ ends inside the file, the high half of its checksum
+  field is zero and the checksum matches. The **first damaged entry** is the
+  first position after the header at which the file does not end and no whole
+  entry begins. A **torn tail**, which a write interrupted at the end of the
+  file leaves, is one case of it; a damaged entry with whole entries after it
+  is the other, and open does not tell the two apart.
+
+**Layout.** The file `preimage.v1` lies in the store directory, beside
+`catalog.v1`. Integers are little-endian, and every checksum is CRC32C
+(`checksum.rs`) in the checked 8-byte field of the persistence protocol,
+whose high half must be zero.
+
+```text
+ header, 48 bytes
+ ┌───────────────────────┬───────────────┬───────────────────────┬────────────────────────┐
+ │ domain                │ version       │ semantic profile id   │ CRC32C of bytes 0..40  │
+ │ "RSpacePreimg.V1\0"   │ u64, 1        │ 16 bytes              │ checked field, 8 bytes │
+ │ bytes 0..16           │ bytes 16..24  │ bytes 24..40          │ bytes 40..48           │
+ └───────────────────────┴───────────────┴───────────────────────┴────────────────────────┘
+ entry, 45 + n bytes, repeated to the end of the file
+ ┌─────────┬──────────────┬────────────────────┬─────────────┬──────────────────────────────┐
+ │ kind    │ key          │ value length n     │ value       │ CRC32C of kind, key, length  │
+ │ u8      │ 32 bytes     │ u32                │ n bytes     │ and value; checked, 8 bytes  │
+ └─────────┴──────────────┴────────────────────┴─────────────┴──────────────────────────────┘
+```
+
+| Kind | Key | Value | Admissible length |
+|---|---|---|---|
+| 1, channel | $`h(c)`$ | $`\iota(c)`$ | $`n \geq 1`$ |
+| 2, ordered group | $`\beta(h_1, \ldots, h_k)`$ | $`h_1 \Vert \cdots \Vert h_k`$, in the group's own order | $`n = 32k`$ with $`k \geq 1`$ |
+
+Several ordered groups may share a key. A channel key has one value, barring
+a collision of Blake2b-256.
+
+**Surface.** `PreimageIndexV1` is `Send` and `Sync`, which the constructor
+asserts at compile time.
+
+- `open(directory, profile)` reads the file once and keeps, per key, only
+  where its entries lie: the file offset and the value length of each. A
+  missing file is an empty index. Open cuts the file at the first damaged
+  entry and never refuses a file because of damage.
+- `append(entries)` re-hashes every entry first. It refuses the whole batch
+  with `UnhashedEntry` when a value does not hash to its key, and with
+  `InvalidEntryLength` when a length is not admissible. It skips an entry that
+  the index already holds and an entry repeated within the batch. Whether the
+  index holds an entry is decided by reading the held entries of its key in
+  append order, each verified as a lookup verifies it, until one equals it; a
+  held entry that fails verification refuses the append with `DamagedEntry` or
+  `ForgedEntry`, whatever its length. It writes the rest with one
+  positional write and returns whether anything was appended. The first
+  append creates the file, readable and writable by its owner only.
+- `sync()` syncs the file and, once per handle, the store directory, so the
+  directory entry of a newly created file is durable as well.
+- `channel(hash)` and `ordered_groups(bucket)` read each entry from the file
+  and check its checksum, kind, key and length, refusing a difference with
+  `DamagedEntry`. They then re-hash the value and refuse a mismatch with
+  `ForgedEntry`. `ordered_groups` returns the lists in append order.
+
+**Recovery at open.** Open checks the header and then scans the entries in
+one buffered pass, following the declared lengths, and stops at the first
+entry that is not whole:
+
+```text
+ open(directory, profile)
+   │  file ← preimage.v1, opened without following a symbolic link
+   ├─ missing ──────────────────────────────────────────────────► empty index
+   ├─ shorter than the header ───── torn header: cut to 0 ──────► empty index
+   ├─ domain ≠ "RSpacePreimg.V1\0" ─────────────────────────────► Err(UnknownMagic)
+   ├─ version ≠ 1 ──────────────────────────────────────────────► Err(UnsupportedVersion)
+   ├─ checksum field or checksum of the header wrong: cut to 0 ─► empty index
+   ├─ profile id ≠ the store's profile id ──────────────────────► Err(ForeignProfile)
+   │  while a whole entry begins at the position:
+   │    └─ index it at its offset and move the position behind it
+   └─ if the file goes on at the position, that is the first damaged
+      entry: cut the file there and sync the cut ───────────────► index
+```
+
+By the owner's decision of 2026-11-16, open never refuses a file because of
+damage. Whatever fails a check of an entry ends the scan at that entry: a
+prefix or an extent that runs past the end of the file, an unknown kind, a
+length that is not admissible, a checksum field with a nonzero high half, or
+a checksum that does not match. Open cuts the file back to the end of the
+last whole entry with `set_len`, makes the cut durable with `sync_all`, and
+goes on as for a file that ended there, so the next append lands directly
+after the cut. A header of the right domain and version whose checksum fails
+is damage as well: the file is cut to an empty file, as for a header that is
+cut short, and the next append writes the header again.
+
+Three refusals of a file's content remain, each with a typed error and
+without a change to the file, because none of them is damage that open can
+recognize as such. A file that does not start with the domain is not a
+preimage file (`UnknownMagic`). A file of another version belongs to another
+format (`UnsupportedVersion`). A file whose whole header names another
+profile belongs to another store (`ForeignProfile`). An error of the file
+system fails the open as well, and so does a file that is not a regular,
+singly linked file of the effective user with no access for others.
+
+Two consequences follow from the decision:
+
+- Every entry behind the first damaged one is dropped, also when it is
+  whole, and also when the damage lies inside the part that was synced: open
+  does not tell a flipped bit on the disk from a torn tail. A lookup of a
+  dropped entry reports absence, and the consumer treats a missing preimage
+  as a refusal.
+- A header whose domain or version field is damaged cannot be told from a
+  file of another type or of another format, so it is refused and not cut.
+  A header that reads as zeros is such a file.
+
+**Concurrency.** One writer appends under a mutex, and the lookups take
+`&self` and no lock. Entries are located through a record arena and two
+open-addressing tables, one per kind, both built from atomics and `OnceLock`
+cells in safe Rust:
+
+- The arena holds the records in chunks that double in size, where chunk
+  $`j`$ holds $`1024 \cdot 2^{j}`$ records and is installed once. A record
+  holds the key, the offset, the value length and the link to the next record
+  of the same key, so the records of one key form a chain in append order.
+- A table maps the key, hashed with a random SipHash key of the index
+  (`RandomState`) so that crafted keys cannot force long probe sequences, to
+  the first record of its chain, and stays at a load of at most one half. It
+  grows into a new generation, which the writer fills and then publishes with
+  one release store. Earlier generations stay allocated, so a reader that
+  holds one still probes valid memory and sees an earlier, consistent set of
+  keys.
+- All allocation precedes the write of a batch. After the write the writer
+  stores the fields of each record and then publishes the record with a
+  release store, into the slot of its key or into the link at the end of its
+  key's chain; readers load slots and links with acquire. A reader therefore
+  reaches an entry only after all of its bytes are in the file, and never an
+  entry that is partly written.
+
+Open costs one read of the file with a buffer of at most 1 MiB, and an
+amount of memory linear in the number of entries. A lookup costs one probe
+sequence and one positional read for each entry that it returns. An append
+reads, for each entry whose key the index already holds, the held entries of
+that key up to the equal one, and then writes once.
+
+**Tests.** The module
+[`preimage_index.rs`](../../../rspace++/tests/persistence/preimage_index.rs)
+holds five tests. The golden bytes were computed outside Rust, with Python's
+`hashlib.blake2b` and a bitwise CRC32C that reproduces the check value
+`0xe3069283` of `"123456789"`; the encoder of the tests reproduces them before
+it builds a damaged or forged file.
+
+1. `entries_survive_a_reopen_and_match_the_golden_bytes`: an empty directory
+   is an empty index, and `sync` creates no file. After one append the file
+   is the golden header followed by the golden entry of the channel
+   `"preimage-alpha"`, and is readable and writable by its owner only; after a
+   second append it ends with the golden entry of the group of
+   `"preimage-alpha"` and `"preimage-beta"`, whose bucket key sorts the
+   second hash first. The keys equal `hash` and `hash_from_vec`. A batch of
+   held entries appends nothing and writes nothing. A batch of 48 channels
+   and 16 groups is appended and synced, and after a reopen every entry is
+   returned and none is appended again.
+2. `open_cuts_the_file_at_the_first_damaged_entry`: a file of four entries
+   is damaged in one place at a time, and one statement is asserted of every
+   damaged file. After open the file holds exactly the bytes before the
+   damage; every entry before the damage is returned and every entry at or
+   after it is absent; an append of the dropped entries and of one fresh
+   entry lands directly after the cut, so that the file is the undamaged file
+   followed by the fresh entry, byte for byte; and every entry is returned,
+   also after `sync` and a reopen, which changes nothing. A foreign profile
+   id, version 2 under a resealed header and a flipped domain bit are not
+   damage that open recognizes: they are refused with their typed errors, and
+   the file is unchanged. The damaged files are these:
+   - the file cut at six points inside its last entry, a flipped bit inside
+     the last entry, and a zero-filled tail of 4,096 bytes, after which
+     nothing is dropped;
+   - in the second entry, a flipped bit in the kind, in the key, in the
+     length (once to a shorter value and once to an extent past the end of
+     the file), in the value and in the checksum, and a nonzero high half of
+     the checksum field;
+   - under valid checksums, an unknown kind in the second entry and a group
+     value of 33 bytes in the third;
+   - in the header, a flipped profile bit, a nonzero high half of the
+     checksum field and a header cut short, each of which is cut to an empty
+     file, so that the append writes the header again.
+3. `a_forged_entry_is_refused_at_append_and_at_lookup`: a channel entry and a
+   group entry whose values do not hash to their keys are refused at append
+   with `UnhashedEntry`, the second together with a genuine entry of the same
+   batch, and empty values with `InvalidEntryLength`; no file is created.
+   Then a forged channel entry and a forged group entry with valid checksums
+   are written past the check. Open admits them, because they are whole and
+   open does not re-hash a value; `channel` and `ordered_groups` refuse them
+   with `ForgedEntry` at their offsets, the genuine entries are still
+   returned, and an append of the genuine channel over the forged key is
+   refused without a write.
+4. `two_orders_of_one_channel_set_share_a_bucket_key`: (a,b) and (b,a) have
+   one bucket key, equal to `hash_from_vec` of either order, and different
+   values. After (a,b), `ordered_groups` returns it alone; (b,a) is then
+   appended, not skipped, and both are returned in append order. All six
+   orders of three channels share another key and are returned in append
+   order. Both buckets are returned again after a reopen, and a bucket key is
+   not a channel key.
+5. `lookups_on_other_threads_see_only_whole_entries`: a test-only hook splits
+   the write of a batch and runs between its two halves, while the file holds
+   a strict prefix of the batch, its first entry already whole. Four reader
+   threads then find every settled entry and none of the batch, and under the
+   bucket key that a settled group shares with a group of the batch only the
+   settled group. After the append every entry is returned. Then four readers
+   run while one writer appends 200 batches, which hold 1,200 channels and
+   400 groups in all: each reader first finds none of them, then checks every
+   value it finds against the expected bytes and every group list against a
+   prefix of the append order, and finally finds all of them. Before its
+   $`b`$-th batch the writer waits until the readers have made $`4b`$ lookups
+   in all, so lookups and appends interleave. These batches alone add 1,200
+   channel keys and 1,600 records, more than the first capacities of the
+   code, which are 512 keys per table and 1,024 records in the first chunk,
+   so the channel table grows and the arena gains its second chunk while the
+   readers run.
+
+**Controls.** Three faults were applied, one at a time, to `preimage.rs` in
+an export of the candidate tree, each run against the `preimage_index` module
+in debug and removed:
+
+- with the re-hash of a lookup skipped, so that a lookup returns whatever the
+  checksum admits, only test 3 failed, with the message
+  `a forged preimage entry was returned by lookup`;
+- with the offsets of a batch published before the batch is written, only
+  test 5 failed. Each reader of the half-written batch failed on the settled
+  group, whose chain then reached the group of the batch at an offset that
+  the file did not hold yet, with `look up ordered groups: Io(ShortRead`, and
+  the test failed with `a reader of the half-written batch panicked`;
+- with the scan of open accepting an entry whatever its checksum, so that
+  open indexes a damaged entry and does not cut the file at it, only test 2
+  failed, at the flipped bit inside the last entry, with the message
+  `open must cut the file at the first damaged entry`.
+
+**The PI rows.**
+
+| ID | Required property | Test |
+|---|---|---|
+| PI-01 | The header and one entry of each kind encode to their golden bytes, a missing file is an empty index that the first append creates, held entries are skipped, and append, sync and reopen return every entry. | `entries_survive_a_reopen_and_match_the_golden_bytes` |
+| PI-02 | Open cuts the file at the first damaged entry and never refuses a file because of damage. A file cut inside its last entry, damaged in an earlier entry or damaged in the checksum of its header opens holding exactly the entries before the damage; a lookup of an entry recorded at or after the damage reports absence; and an append after the open lands directly after the cut and is found by a lookup. A foreign profile id, an unknown version and a foreign domain are refused with typed errors and leave the file unchanged. | `open_cuts_the_file_at_the_first_damaged_entry` |
+| PI-03 | An entry whose value does not hash to its key is refused at append, and one written past that check is refused at lookup. | `a_forged_entry_is_refused_at_append_and_at_lookup` |
+| PI-04 | `ordered_groups` returns both (a,b) and (b,a) for their shared bucket key, in append order. | `two_orders_of_one_channel_set_share_a_bucket_key` |
+| PI-05 | Readers on other threads never see a partial entry while one writer appends. | `lookups_on_other_threads_see_only_whole_entries` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -14045,6 +14330,11 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | OG-31 | `LockOrder` | `EXEC_ONLY` | P | Partially entailed (task 12424): `LockOrder` forbids a view that holds the owner mutex from waiting to take its gate again; `create_durable_checkpoint` takes the view gate as an owned permit, then the owner mutex, and neither again. That a tokio caller of `create_checkpoint` completes with both locks held at capture, and that an operation which waited at the gate then runs on the new state, are the executable refinement obligation. |
 | OG-42 | `PublishedSuccessorIsOfViewBase` | `EXEC_ONLY` | P | Partially entailed (task 12424): the invariant requires the target of a pending record to be `Succ(base, view)`, a function of the record's own base and view; on the hard checkpoint path the base is the one that the space recorded at `create` or at its previous hard checkpoint. That the root a space behind the current state returns equals the root of the same operations from its base while that base is current, and that the state the other space published is unchanged, are the executable refinement obligation. |
 | OG-47 | `NoViewOperationOnSupersededStore` | `EXEC_ONLY` | P | Partially entailed (task 12424): `NoViewOperationOnSupersededStore` requires a view whose checkpoint is acknowledged to hold its own gate until `InstallView`; `checkpoint_view_from_base` returns the caller's permit with every state that it answers, and `create_durable_checkpoint` holds it until the answer is installed. The model takes the installation as one step; that its statements commute with every concurrent step is argued by reduction in the durable hard checkpoint section, not checked. That a produce of the same space, started on a worker thread after the owner has answered and before the installation, waits for the view gate at each of six owner exits, then runs on the installed store, and is published by the next hard checkpoint, is the executable refinement obligation. The model has no counterpart of the two exits of an empty journal and of the memo hits. |
+| PI-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14425): the header and one entry of each kind of `preimage.v1` encode to their golden bytes, and appended entries are returned after `sync` and a reopen. The preimage file belongs to no manifest and no state root, and no TLA+ model under `formal/tlaplus` and no Rocq theory of this matrix models an index from a channel hash to its channel or the bytes of that file. |
+| PI-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14425): open cuts `preimage.v1` at the first damaged entry and never refuses it because of damage, by the owner's decision of 2026-11-16; it refuses only a foreign domain, an unknown version and a foreign profile id, without changing the file. The publication models have no physical file of the index; where the scan of the file stops is a property of the Rust scanner. |
+| PI-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14425): an entry whose value does not hash to its key is refused at append, and one written past that check is refused at lookup. No model of this matrix has the preimage index; the re-hash at append and at lookup is a property of the Rust index. |
+| PI-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14425): (a,b) and (b,a) share the bucket key of `hash_from_hashes`, and `ordered_groups` returns both lists in append order, also after a reopen. No model of this matrix has the preimage index. |
+| PI-05 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14425): lookups on other threads never see a partial entry while one writer appends, because offsets are published with release stores only after the bytes of their batch are written. Memory ordering, the record arena and the table generations are properties of the Rust index; no model of this matrix has the index. |
 
 ## Generator discipline
 
@@ -15458,6 +15748,34 @@ under a lockstep-descendant catalog slot is extended, as the consensus change
 register records. See the section on the WAL frontier at the recovery tail and
 the
 [pending-intent design](gc-pending-reclaim-intent-2026-10-08.md#checkpoint-under-a-deferred-reclamation-task-14510).
+
+The 2026-11-16 preimage index slice of task 14425 adds PI-01 to PI-05, so
+the catalog/derivation/binding registry now contains **318** IDs. The
+manifest test's family list gains PI, and its executable sources gain the
+module `preimage_index.rs`. No file other than the new module `preimage.rs`,
+the lines of `durable/mod.rs` that declare it and re-export it to the tests,
+the new test module and the lines of `tests/persistence/mod.rs` that declare
+it, the manifest test's file, the list of property bindings and this catalog
+changes. Open cuts the file at the first damaged entry and never refuses it
+because of damage, which is the owner's decision of 2026-11-16. On an export
+of the candidate tree, the five tests of `preimage_index`, the manifest test
+and the whole library test target passed in debug and in release. The three
+controls of the section on the preimage index were applied one at a time to
+`preimage.rs` in the export, each run against `preimage_index` in debug and
+removed, and each failed exactly the test that the section names, with its
+messages. Each faulted file was restored and compared with the candidate tree
+after the run. Clippy of `rspace_plus_plus` with every target lists no
+finding in the files of this slice, and `rustfmt --check` passes on its Rust
+files. The workspace-regression registry hashes the manifest test's file and
+`tests/persistence/mod.rs`, which both change, so that registry and the
+PathMap aggregate, which holds the same file digests and the digest of that
+registry, are regenerated with this slice; every other registry check passes
+unchanged. No Rocq or TLA+ file changed, and no proof or model was run for
+this slice. Nothing outside the tests opens the index yet. The file
+`preimage.v1` is the one new persisted format, which the owner approved on
+2026-11-16; no existing persisted byte, record kind, root, identity or wire
+message changed, and the crate has no new dependency. See the section on the
+append-only channel preimage index.
 
 ## Caller-authority contract (2026-09-06)
 

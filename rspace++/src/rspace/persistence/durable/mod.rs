@@ -22,6 +22,15 @@ mod io;
 mod layout;
 mod limits;
 mod pack;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "only unit tests open the preimage index until task \
+                  rspace-preimage-index-publication syncs it before each publication"
+    )
+)]
+mod preimage;
 mod publication;
 mod reclaim;
 mod recovery;
@@ -90,6 +99,11 @@ pub(crate) use io::{DurableWriterLeaseV1, FileLengthExpectation, index_file_name
 pub use layout::{INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, PACK_HEADER_LEN_V1};
 pub use limits::{DurableLimitConfig, DurableLimitError, DurableLimitKind, DurableLimits};
 pub use pack::{PackFormatError, PackHeaderV1, PackTerminalIdentityV1};
+#[cfg(test)]
+pub(crate) use preimage::{
+    PREIMAGE_FILE_NAME_V1, PreimageEntryV1, PreimageIndexError, PreimageIndexV1, PreimageKindV1,
+    arm_preimage_partial_write_hook,
+};
 #[cfg(test)]
 pub(crate) use publication::require_incremental_retention_manifest;
 #[cfg(test)]
