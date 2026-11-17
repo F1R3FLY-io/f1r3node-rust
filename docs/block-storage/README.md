@@ -77,7 +77,7 @@ Fixture mutation requires a detached view and cannot modify a view backed by dur
 
 Each store keeps a claim per name seed in `deploy_storage_seeds` or `rejected_deploy_buffer_seeds`: the signature of the deploy that holds the seed.
 
-- **Checked insert.** `add_prepared_if_unchanged`, which admission uses, claims the seed before it writes the record. If another signature holds the seed, it writes nothing and returns `SeedHeld` with that signature.
+- **Checked insert.** `add_prepared_if_unchanged`, which admission uses, checks the pool limits, then claims the seed before it writes the record. If another signature holds the seed, it writes nothing and returns `SeedHeld` with that signature. A deploy refused by the pool limits claims nothing.
 - **Other inserts.** `add`, `add_prepared` and `add_prepared_if_absent` store every deploy. They claim the seed when it is free.
 - **Removal.** `remove` and `remove_by_sig` release the claim after they delete the record. An unreadable record's claim stays.
 - **Store open.** The store drops each claim whose signature has no readable record. Such a claim remains after a crash between the claim and the record write.
@@ -97,8 +97,8 @@ The local deploy stores, `deploy_storage` and `rejected_deploy_buffer`, quaranti
 - **Older binaries.** Earlier binaries cannot read version 2 records. A rollback requires compatible decoding or an explicit data conversion. Existing verification-index files are unused and are not deleted automatically.
 - **Key collisions.** The node never overwrites a quarantined record. If a damaged live record has a key that the quarantine already holds with different bytes, the live record stays in place and each scan skips it with a warning.
 - **Interrupted move.** A move writes to the quarantine first and then deletes the live record. If the process stops between the two steps, the record is in both databases. The next scan finds identical bytes in the quarantine and completes the delete.
-- **Concurrent access.** A quarantine move preserves bytes before an atomic compare-and-delete of the live record. A concurrent replacement remains available for subsequent verification. The deploy pool needs no outer mutex.
-- **Admission and recovery.** Admission refuses a deploy whose name seed another signature holds in a block (seed carrier index), in the rejected buffer, or in the pool. Admission prepares the candidate once before retries and before acquiring the rejected-buffer mutex. Under that mutex, admission compares current bytes with inspected snapshots and uses conditional insertion. A changed record requires a new inspection outside the mutex. Recovery skips invalid candidates and writes the remaining records in one batch. The `buffer_added` event follows successful persistence.
+- **Concurrent access.** A quarantine move preserves bytes before an atomic compare-and-delete of the live record. A concurrent replacement remains available for subsequent verification. The move holds the store's totals lock across the delete, so it releases the charge of the removed record only.
+- **Admission and recovery.** Admission refuses a deploy whose name seed another signature holds in a block (seed carrier index), in the rejected buffer, or in the pool. Admission prepares the candidate once before retries and before acquiring the rejected-buffer mutex. Under that mutex, admission compares current bytes with inspected snapshots and uses conditional insertion. A changed record requires a new inspection outside the mutex. Admission checks the [pool limits](../designs/deploy-admission.md#pool-limits) and inserts under the store's totals lock. Recovery skips invalid candidates and writes the remaining records in one batch. The `buffer_added` event follows successful persistence.
 - **Operator cleanup.** The `WARN` lines and the counters below show when records enter the quarantine. The quarantine databases hold only records that the node does not read. If you do not need a quarantined record, you can delete it from its quarantine database while the node is stopped. Do not delete records from `deploy_storage` or `rejected_deploy_buffer`.
 - **Diagnostics.** Record warnings identify the store and failure reason: `decode`, `checksum`, or `signature`. They include at most 32 key bytes, byte lengths, and 160 error characters. They exclude deploy contents and private keys. A scan logs at most 10 records, then a summary when needed. Store open reports restoration, duplicate removal, conflicts, and remaining quarantined records.
 - **Counters.** Both quarantine counters have a `store` label. `deploy_store.quarantined_records` also has a `reason` label.
@@ -106,7 +106,7 @@ The local deploy stores, `deploy_storage` and `rejected_deploy_buffer`, quaranti
 
 **`KeyValueRejectedDeployBuffer`** uses the `KeyValueDeployStore` implementation in a separate LMDB store. The buffer holds deploys that a merge rejected and that this validator proposes again. The buffer has no size limit. Each block removes entries whose validity window closed or that expired.
 
-The two stores share the `deploystorage` LMDB environment with a map size of 1 GB. The `deploy.store.size` gauge uses the `store` label and shows the number of entries at the last full read. The node logs a warning when the rejected deploy buffer holds more than 1,000 entries.
+The two stores share the `deploystorage` LMDB environment with a map size of 1 GB. The `deploy.store.size` and `deploy.store.bytes` gauges use the `store` label and show the number of stored records and their encoded bytes after each change. The first write or limit check after the store opens counts the stored records once. The node logs a warning when the rejected deploy buffer holds more than 1,000 entries.
 
 ## Tests
 

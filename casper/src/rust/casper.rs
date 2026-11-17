@@ -11,7 +11,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
 };
 use block_storage::rust::deploy::key_value_deploy_storage::{
-    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+    DeployPoolLimits, KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::signatures::signed::Signed;
@@ -58,6 +58,17 @@ pub enum DeployError {
     DuplicateDeploy(DeployId),
     /// Another deploy, named by its sig, already has this deploy's name seed.
     SeedReuse(DeployId),
+    InvalidFreshness,
+    RecordTooLarge {
+        record_bytes: u64,
+        limit: u64,
+    },
+    PoolBusy {
+        resource: &'static str,
+        required: u64,
+        limit: u64,
+    },
+    AdmissionBusy,
 }
 
 impl DeployError {
@@ -79,6 +90,12 @@ impl Display for DeployError {
         match self {
             DeployError::ParsingError(details) => write!(f, "Parsing error: {}", details),
             DeployError::MissingUser => write!(f, "Missing user"),
+            DeployError::InvalidFreshness => write!(f, "invalid_deploy_window: deploy validity height is beyond the admission horizon. Retry the same deploy after the chain advances."),
+            DeployError::RecordTooLarge { record_bytes, limit } => write!(
+                f,
+                "deploy_too_large: deploy record size {} exceeds the configured pool byte limit {}",
+                record_bytes, limit
+            ),
             DeployError::UnknownSignatureAlgorithm(alg) => {
                 write!(f, "Unknown signature algorithm '{}'", alg)
             }
@@ -88,9 +105,18 @@ impl Display for DeployError {
             }
             DeployError::SeedReuse(holder) => write!(
                 f,
-                "Deploy {} has the same deployer, timestamp and valid-after block, so it would \
-                 create the same names; sign this deploy with a different timestamp",
+                "seed_reuse: deploy {} has the same deployer, timestamp and valid-after block, \
+                 so it would create the same names. Sign this deploy with a different timestamp.",
                 hex::encode(holder)
+            ),
+            DeployError::PoolBusy { resource, required, limit } => write!(
+                f,
+                "deploy_pool_busy: {} would require {}, above the configured limit {}. Retry later or submit to another validator.",
+                resource, required, limit
+            ),
+            DeployError::AdmissionBusy => write!(
+                f,
+                "deploy_admission_busy: admission state changed during retries. Deploy was not accepted. Retry later."
             ),
         }
     }
@@ -605,6 +631,7 @@ pub struct CasperShardConf {
     pub synchrony_finalized_baseline_enabled: bool,
     pub synchrony_finalized_baseline_max_distance: u64,
     pub max_user_deploys_per_block: u32,
+    pub deploy_admission: DeployPoolLimits,
     /// Native token metadata baked into the TokenMetadata contract at genesis.
     /// Present on every node (joiner, validator, ceremony master, observer, standalone)
     /// so each path can log the effective values at startup.
@@ -652,6 +679,7 @@ impl CasperShardConf {
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
             max_user_deploys_per_block: 128,
+            deploy_admission: DeployPoolLimits::default(),
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,

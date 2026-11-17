@@ -247,6 +247,10 @@ user deploys may enter; proposal also selects parents, executes deploys,
 assembles, signs, and self-validates.
 *Distinguish from execution*: admission selects deploys; execution runs the
 selected deploys and computes state effects.
+*Distinguish from* API pool intake: the `casper.deploy-admission` settings
+limit the records and bytes that the deploy pool accepts from the API. They do
+not limit the deploys that enter a block. See
+[deploy admission design](../designs/deploy-admission.md).
 *Avoid*: "deploy filtering" when recovery, ordering, or capacity policy is
 also involved.
 
