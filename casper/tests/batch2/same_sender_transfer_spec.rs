@@ -4,9 +4,16 @@
 // number cell they both create is initialized twice and the next read trips
 // the IntegerAdd single-value invariant.
 
+use std::sync::Arc;
+
+use casper::rust::blocks::proposer::block_creator;
+use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
+use casper::rust::blocks::proposer::proposer::DeploySelection;
+use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::tools::Tools;
 use crypto::rust::signatures::signed::Signed;
+use dashmap::DashMap;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GPrivate, GUnforgeable, Par};
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
@@ -440,4 +447,185 @@ async fn transfers_from_one_sender_in_one_block_and_on_top_of_each_other() {
         "three transfers from one sender in one block",
     )
     .await;
+}
+
+async fn share(nodes: &mut [TestNode], from: usize, block: &BlockMessage, label: &str) {
+    for (i, node) in nodes.iter_mut().enumerate() {
+        if i == from {
+            continue;
+        }
+        let replay = node
+            .process_block(block.clone())
+            .await
+            .unwrap_or_else(|e| panic!("{label}: node {i} replay failed: {e:?}"));
+        assert!(
+            matches!(replay, Either::Right(_)),
+            "{label}: node {i} replay {replay:?}"
+        );
+    }
+}
+
+/// Deploys sharing a seed, on two validators, that one merge rejects
+/// together (a third deploy wins the cell all three consume). Neither took
+/// effect, so neither holds the seed: one of them must still land.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn deploys_sharing_a_seed_rejected_by_one_merge_still_land_once() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
+        ))
+        .await
+        .expect("genesis");
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let mut nodes = TestNode::create_network(genesis, 3, None, None, None, None)
+        .await
+        .expect("network");
+    let deploy = |term: &str, timestamp: i64, phlo_limit: i64| {
+        construct_deploy::source_deploy(
+            term.to_string(),
+            timestamp,
+            Some(phlo_limit),
+            None,
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .expect("deploy")
+    };
+
+    let setup = deploy(r#"@"slot"!(0)"#, 1, 1_000_000);
+    let s0 = nodes[0]
+        .add_block_from_deploys(&[setup])
+        .await
+        .expect("setup block");
+    share(&mut nodes, 0, &s0, "setup").await;
+
+    let take = r#"new x in { for (_ <- @"slot") { @"slot"!(1) | x!(0) } }"#;
+    let first = deploy(take, 7, 1_000_000);
+    let second = deploy(take, 7, 1_000_001);
+    let winner = deploy(take, 8, 1_000_000);
+    // Each validator includes its deploy before seeing the others' blocks;
+    // once one has seen a carrier of the seed, admission refuses the other.
+    let mut siblings = Vec::new();
+    for (i, d) in [&first, &second, &winner].into_iter().enumerate() {
+        siblings.push(
+            nodes[i]
+                .add_block_from_deploys(std::slice::from_ref(d))
+                .await
+                .expect("sibling block"),
+        );
+    }
+    for (i, block) in siblings.iter().enumerate() {
+        share(&mut nodes, i, block, "sibling").await;
+    }
+
+    let mut landed = Vec::new();
+    let mut nonce = 0;
+    for round in 0..12 {
+        for proposer in 0..3 {
+            nonce += 1;
+            let marker = construct_deploy::basic_deploy_data(nonce, None, Some(shard_id.clone()))
+                .expect("marker");
+            let block = nodes[proposer]
+                .add_block_from_deploys(&[marker])
+                .await
+                .unwrap_or_else(|e| panic!("round {round} node {proposer}: {e:?}"));
+            if round == 0 && proposer == 0 {
+                let mut rejected: Vec<_> = block
+                    .body
+                    .rejected_deploys
+                    .iter()
+                    .filter(|r| !r.duplicate)
+                    .map(|r| r.sig.clone())
+                    .collect();
+                rejected.sort();
+                let mut both = vec![first.sig.to_vec(), second.sig.to_vec()];
+                both.sort();
+                assert_eq!(
+                    rejected, both,
+                    "the merge must reject both deploys sharing the seed and keep the third"
+                );
+            }
+            landed.extend(
+                block
+                    .body
+                    .deploys
+                    .iter()
+                    .filter(|pd| pd.deploy.sig == first.sig || pd.deploy.sig == second.sig)
+                    .map(|pd| pd.deploy.sig.clone()),
+            );
+            share(&mut nodes, proposer, &block, "round").await;
+        }
+    }
+    assert_eq!(
+        landed.len(),
+        1,
+        "exactly one deploy sharing the seed must land after both were rejected; landed {:?}",
+        landed
+            .iter()
+            .map(|s| hex::encode(&s[..8]))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A deploy that fails the checkpoint by itself is quarantined and the
+/// block is built without it. The seed filter would remove this twin first,
+/// so the snapshot here carries no seeds, as when the twin's carrier sits
+/// below the snapshot's scope.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn a_deploy_failing_the_checkpoint_on_its_own_is_quarantined() {
+    let (mut nodes, shard_id, _) = network().await;
+    let first = counter(7, 1_000_000, &shard_id);
+    let second = counter(7, 1_000_001, &shard_id);
+    propose_and_replay(
+        &mut nodes,
+        std::slice::from_ref(&first),
+        "the first counter",
+    )
+    .await;
+
+    let unrelated = construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone()))
+        .expect("unrelated deploy");
+    nodes[0]
+        .deploy_storage
+        .add(vec![second.clone()])
+        .expect("twin in the pool");
+    nodes[0]
+        .casper
+        .deploy(unrelated.clone())
+        .expect("admit the unrelated deploy");
+    let mut snapshot = nodes[0].casper.get_snapshot().await.expect("snapshot");
+    snapshot.seeds_in_scope = Arc::new(DashMap::new());
+    let validator = nodes[0].casper.get_validator().expect("validator");
+
+    let result = block_creator::create(
+        &snapshot,
+        &validator,
+        None,
+        nodes[0].deploy_storage.clone(),
+        nodes[0].rejected_deploy_buffer.clone(),
+        &nodes[0].runtime_manager.clone(),
+        &mut nodes[0].block_store.clone(),
+        DeploySelection::Standard,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the proposal must not fail on the twin: {e:?}"));
+    let BlockCreatorResult::Created(block, ..) = result else {
+        panic!("expected a block, got {result:?}");
+    };
+    let included: Vec<_> = block.body.deploys.iter().map(|pd| &pd.deploy.sig).collect();
+    assert!(
+        included.contains(&&unrelated.sig),
+        "the unrelated deploy lands"
+    );
+    assert!(!included.contains(&&second.sig), "the twin is left out");
+    assert!(!nodes[0].deploy_storage.contains_sig(&second.sig).unwrap());
+    assert!(!nodes[0]
+        .rejected_deploy_buffer
+        .lock()
+        .unwrap()
+        .contains_sig(&second.sig)
+        .unwrap());
 }

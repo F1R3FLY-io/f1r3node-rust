@@ -963,7 +963,8 @@ impl Validate {
 
     /// A deploy's unforgeable names derive from its name seed, so no block may
     /// carry two deploys with one seed, nor a deploy whose seed another
-    /// deploy in its ancestry already used. Two deploys share a seed only if
+    /// deploy in its ancestry already used, unless that deploy's latest
+    /// disposition in the block's scope is a merge rejection. Two deploys share a seed only if
     /// they share a valid-after block, and a deploy lands only above that
     /// block, so the ancestry walk stops below the block's lowest one. A live
     /// deploy's copies also sit above the floor's window, so with a floor the
@@ -1031,6 +1032,17 @@ impl Validate {
             return Either::Right(ValidBlock::Valid);
         }
 
+        // A carrier whose latest disposition in this block's parent scope is
+        // a merge rejection took no effect there, so it holds no seed: the
+        // same block-determined set the repeat-deploy exemption reads.
+        let released = match floor_ctx {
+            Some(ctx) => match ctx.rejected_sigs(block_store, scan_start) {
+                Ok(sigs) => sigs,
+                Err(e) => return Either::Left(BlockError::from_validation_error(e)),
+            },
+            None => HashSet::new(),
+        };
+
         let block_metadata = BlockMetadata::from_block(block, None, None, None);
         let parents = match proto_util::get_parents_metadata(&s.dag, &block_metadata) {
             Ok(parents) => parents,
@@ -1054,7 +1066,9 @@ impl Validate {
                     })?;
                 for identity in deploys.iter() {
                     if let Some(own) = block_seeds.get(&identity.seed) {
-                        if own.as_ref() != identity.sig.as_slice() {
+                        if own.as_ref() != identity.sig.as_slice()
+                            && !released.contains(identity.sig.as_slice())
+                        {
                             reused = Some((own.clone(), identity.sig.clone().into()));
                             return Ok(true);
                         }

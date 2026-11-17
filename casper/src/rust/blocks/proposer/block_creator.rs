@@ -1088,6 +1088,12 @@ async fn prepare_user_deploys_with_policy(
         .filter(|deploy| canonical_won.contains(&deploy.sig) || blocked_by_scope(deploy))
         .map(|deploy| (*deploy).clone())
         .collect();
+    // A carrier rejected by a merge in the parents' scope holds no seed; the
+    // same block-determined set validation reads.
+    let released_by_rejection = match floor_ctx {
+        Some(ctx) => ctx.rejected_sigs(block_store, canonical_scan_floor)?,
+        None => HashSet::new(),
+    };
     let mut seed_reused_in_scope: Vec<Signed<DeployData>> = Vec::new();
     let mut by_seed: HashMap<Vec<u8>, Signed<DeployData>> = HashMap::new();
     for deploy in valid
@@ -1095,10 +1101,15 @@ async fn prepare_user_deploys_with_policy(
         .filter(|deploy| !canonical_won.contains(&deploy.sig) && !blocked_by_scope(deploy))
     {
         let seed = deploy_name_seed(&deploy);
-        let seed_used_by_another = casper_snapshot
-            .seeds_in_scope
-            .get(&seed)
-            .is_some_and(|holders| holders.iter().any(|sig| *sig != deploy.sig));
+        let seed_used_by_another =
+            casper_snapshot
+                .seeds_in_scope
+                .get(&seed)
+                .is_some_and(|holders| {
+                    holders
+                        .iter()
+                        .any(|sig| *sig != deploy.sig && !released_by_rejection.contains(sig))
+                });
         if seed_used_by_another {
             seed_reused_in_scope.push(deploy);
             continue;

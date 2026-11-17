@@ -610,7 +610,8 @@ valid-after block number (`models::deploy_seed`). Every unforgeable name
 the deploy creates derives from it, so two deploys with one seed create the
 same names. At most one deploy per seed takes effect: the proposer selects
 one, validation rejects a block that carries a second or reuses one from its
-ancestry (`InvalidRepeatDeploy`), and the merge keeps one. Genesis deploys
+ancestry that a merge did not reject (`InvalidRepeatDeploy`), and the merge
+keeps one. Genesis deploys
 have valid-after block 0, which the encoding omits, so their names are those
 of the former (deployer, timestamp) seed.
 
