@@ -68,7 +68,7 @@
 {
   "artifact": {
     "path": "scripts/run-merge-recovery-soak.sh",
-    "commit": "b023b5bad9d20c625240202ebfe0ef321fc2cdbd",
+    "commit": "ba89abb262c005fe788cf43973c283251cb8bde8",
     "commit_is_base": true,
     "working_tree": true
   },
@@ -78,13 +78,13 @@
   "scope": "bounded-segment-cleanup",
   "evidence": {
     "kind": "bounded-model-and-linux-fixture",
-    "ref": "docs/casper/cbc-evidence/runs/soak-cleanup-20261116-02/report.json"
+    "ref": "docs/casper/cbc-evidence/runs/soak-cleanup-20261117-01/report.json"
   },
   "waiver": null,
-  "verified_at": "2026-11-16T05:10:28Z",
+  "verified_at": "2026-11-17T04:27:56Z",
   "claim_id": "CLAIM-SOAK-CLEANUP-001",
   "schema": "cbc-claim/v1",
-  "verification_id": "c1ff567f-59a3-41f0-8431-d7674de33cd6",
+  "verification_id": "826e7794-390a-47c8-b74a-76413c035d7b",
   "inputs": {
     "artifact": "scripts/run-merge-recovery-soak.sh",
     "source_sha256": "90fe5bc24632ea6abdfa93b1077f7c8df0c8f3076d2555cc52a8002bcf28fd43",
@@ -94,7 +94,7 @@
     }
   },
   "evidence_files": {
-    "docs/casper/cbc-evidence/runs/soak-cleanup-20261116-02/report.json": "c7000d08281e7d08afacfaf6f2099b839a384581726ad6e8425c5915752ae0f2"
+    "docs/casper/cbc-evidence/runs/soak-cleanup-20261117-01/report.json": "4228845e03c76eaa2de840041b0487dcd07055eecb2c377aff3742793b265bbf"
   }
 }
 ```
