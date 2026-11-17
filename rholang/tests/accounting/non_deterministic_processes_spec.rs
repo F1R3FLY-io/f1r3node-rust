@@ -2,12 +2,15 @@
 // Ensures that replays produce consistent costs and error handling for non-deterministic operations.
 
 use std::collections::HashMap;
+use std::future::{poll_fn, Future};
 use std::sync::Arc;
+use std::task::Poll;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::chromadb_service::create_noop_chromadb_service;
+use rholang::rust::interpreter::dispatch::decode_non_deterministic_output;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::grpc_client_service::{GrpcClientMockConfig, GrpcClientService};
 use rholang::rust::interpreter::interpreter::EvaluateResult;
@@ -15,10 +18,12 @@ use rholang::rust::interpreter::openai_service::{
     create_mock_openai_service, create_noop_openai_service, OpenAIMockConfig,
 };
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::rho_type::RhoString;
 use rholang::rust::interpreter::test_utils::resources::create_runtimes_with_services;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce};
 
 /// Helper to create external services with mock OpenAI and optional mock gRPC
 fn create_test_external_services(
@@ -503,4 +508,105 @@ async fn replay_grpc_tell_error_consistent() {
     .await;
 
     assert_replay_consistency(&play, &replay, "gRPC tell error replay", true);
+}
+
+#[tokio::test]
+async fn evaluate_returns_after_the_rewrite_so_a_hard_checkpoint_holds_the_recorded_output() {
+    const POLLS_WHILE_THE_SERVICE_IS_HELD: usize = 8;
+    let completion = "recorded completion";
+    let external_services =
+        create_test_external_services(OpenAIMockConfig::single_completion(completion), None);
+    let openai_service = Arc::clone(&external_services.openai);
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm
+        .r_space_stores()
+        .await
+        .expect("the in-memory stores of the space should open");
+    let (mut runtime, _replay_runtime, _history_repository) =
+        create_runtimes_with_services(store, false, &mut Vec::new(), external_services).await;
+
+    let held_service = openai_service.lock().await;
+    let mut evaluation = Box::pin(tokio::task::unconstrained(runtime.evaluate(
+        r#"new output, gpt4(`rho:ai:gpt4`) in { gpt4!("abc", *output) }"#,
+        Cost::create(i64::MAX, "test".to_string()),
+        HashMap::new(),
+        Blake2b512Random::create_from_bytes(&[]),
+    )));
+    for _ in 0..POLLS_WHILE_THE_SERVICE_IS_HELD {
+        match poll_fn(|context| Poll::Ready(evaluation.as_mut().poll(context))).await {
+            Poll::Pending => tokio::task::yield_now().await,
+            Poll::Ready(_) => {
+                panic!("evaluate returned while a reduction task it started was still unfinished")
+            }
+        }
+    }
+    drop(held_service);
+    assert!(
+        openai_service.try_lock().is_err(),
+        "no reduction task was waiting for the service while evaluate was pending"
+    );
+    let play_result = evaluation
+        .await
+        .expect("the play evaluation should succeed");
+    assert!(
+        play_result.errors.is_empty(),
+        "the play evaluation should report no error: {:?}",
+        play_result.errors
+    );
+
+    let checkpoint = runtime.create_checkpoint().await;
+    let recorded_produces: Vec<&Produce> = checkpoint
+        .log
+        .iter()
+        .filter_map(|event| match event {
+            Event::IoEvent(IOEvent::Produce(produce)) if !produce.is_deterministic => Some(produce),
+            _ => None,
+        })
+        .collect();
+    let [recorded_produce] = recorded_produces.as_slice() else {
+        panic!(
+            "the checkpoint log should hold one produce marked non-deterministic: {:?}",
+            checkpoint.log
+        );
+    };
+    assert!(
+        !recorded_produce.failed,
+        "the call succeeded, so its produce should not be marked failed"
+    );
+    let recorded_output: Vec<Option<String>> =
+        decode_non_deterministic_output(&recorded_produce.output_value)
+            .expect("the recorded output should decode the way a replay decodes it")
+            .iter()
+            .map(RhoString::unapply)
+            .collect();
+    assert_eq!(
+        recorded_output,
+        vec![Some(completion.to_string())],
+        "the hard checkpoint should hold the output of the non-deterministic call"
+    );
+    let occurrences_in_comm_events: Vec<&Produce> = checkpoint
+        .log
+        .iter()
+        .filter_map(|event| match event {
+            Event::Comm(comm) => Some(comm.produces.iter().chain(comm.times_repeated.keys())),
+            Event::IoEvent(_) => None,
+        })
+        .flatten()
+        .filter(|produce| produce.hash == recorded_produce.hash)
+        .collect();
+    assert!(
+        !occurrences_in_comm_events.is_empty(),
+        "the checkpoint log should hold the COMM that the produce of the call took part in"
+    );
+    for occurrence in occurrences_in_comm_events {
+        assert_eq!(
+            (
+                occurrence.is_deterministic,
+                occurrence.failed,
+                &occurrence.output_value
+            ),
+            (false, false, &recorded_produce.output_value),
+            "the COMM should hold the produce as rewritten: non-deterministic, with its output"
+        );
+    }
 }
