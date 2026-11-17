@@ -126,9 +126,8 @@ fn test_from_file_method() {
     // Create a temporary certificate
     match CertificateHelper::generate_certificate(&secret_key, &public_key) {
         Ok(cert_der) => {
-            // Write to a temporary file
-            let temp_dir = std::env::temp_dir();
-            let cert_file_path = temp_dir.join("test_cert.der");
+            let temp_dir = tempfile::tempdir().expect("create temp dir");
+            let cert_file_path = temp_dir.path().join("test_cert.der");
 
             match std::fs::write(&cert_file_path, &cert_der) {
                 Ok(()) => {
@@ -391,9 +390,8 @@ fn test_read_key_pair_from_file() {
         Ok(der_bytes) => {
             let pem_content = CertificatePrinter::print_private_key(der_bytes.as_bytes());
 
-            // Write to a temporary file
-            let temp_dir = std::env::temp_dir();
-            let key_file_path = temp_dir.join("test_key.pem");
+            let temp_dir = tempfile::tempdir().expect("create temp dir");
+            let key_file_path = temp_dir.path().join("test_key.pem");
 
             match std::fs::write(&key_file_path, &pem_content) {
                 Ok(()) => {
