@@ -1,11 +1,12 @@
 // Quarantine of undecodable records in the node-local deploy stores. The
 // behavior and the operator procedure are in docs/block-storage/README.md.
 //
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
+use parking_lot::Mutex;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::{ByteBuffer, ByteString};
@@ -31,10 +32,59 @@ struct DamagedRecord {
     reason: &'static str,
 }
 
+#[derive(Default)]
+pub struct StoredSizes {
+    sizes: HashMap<ByteBuffer, u64>,
+    bytes: u64,
+    loaded: bool,
+}
+
+impl StoredSizes {
+    pub(super) fn load(&mut self, store: &DeployTypedStore) -> Result<(), KvStoreError> {
+        if self.loaded {
+            return Ok(());
+        }
+        let mut loaded = Self {
+            loaded: true,
+            ..Self::default()
+        };
+        store.raw_store().iterate_while(&mut |key, value| {
+            loaded.insert(key, value.len() as u64);
+            Ok(true)
+        })?;
+        *self = loaded;
+        Ok(())
+    }
+
+    pub(super) fn insert(&mut self, key: ByteBuffer, len: u64) {
+        if !self.loaded {
+            return;
+        }
+        if let Some(previous) = self.sizes.insert(key, len) {
+            self.bytes -= previous;
+        }
+        self.bytes += len;
+    }
+
+    pub(super) fn remove(&mut self, key: &ByteBuffer) {
+        if !self.loaded {
+            return;
+        }
+        if let Some(previous) = self.sizes.remove(key) {
+            self.bytes -= previous;
+        }
+    }
+
+    pub fn records(&self) -> usize { self.sizes.len() }
+
+    pub fn bytes(&self) -> u64 { self.bytes }
+}
+
 #[derive(Clone)]
 pub(super) struct DeployRecordQuarantine {
     store_name: &'static str,
     quarantine: Arc<dyn KeyValueStore>,
+    sizes: Arc<Mutex<StoredSizes>>,
 }
 
 impl DeployRecordQuarantine {
@@ -42,8 +92,11 @@ impl DeployRecordQuarantine {
         Self {
             store_name,
             quarantine,
+            sizes: Arc::default(),
         }
     }
+
+    pub(super) fn sizes(&self) -> &Mutex<StoredSizes> { &self.sizes }
 
     fn decode_checked(
         &self,
@@ -260,6 +313,7 @@ impl DeployRecordQuarantine {
             if !live.delete_if_value(&record.key, &record.value)? {
                 continue;
             }
+            self.sizes.lock().remove(&record.key);
             moved += 1;
             metrics::counter!(
                 QUARANTINED_RECORDS_METRIC,

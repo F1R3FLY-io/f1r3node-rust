@@ -10,7 +10,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     DeployId, InsertMode, KeyValueDagRepresentation,
 };
 use block_storage::rust::deploy::key_value_deploy_storage::{
-    DeployPreparationError, PreparedInsertResult,
+    DeployPreparationError, PoolRefusal, PreparedInsertResult,
 };
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
@@ -24,6 +24,7 @@ use super::snapshot::record_dag_cardinality_metrics;
 use super::types::MultiParentCasperImpl;
 use crate::rust::casper::{Casper, CasperSnapshot, DeployError};
 use crate::rust::errors::CasperError;
+use crate::rust::metrics_constants::{CASPER_METRICS_SOURCE, DEPLOY_ADMISSION_REFUSED_METRIC};
 use crate::rust::util::rholang::interpreter_util;
 
 pub(crate) fn admit_dag_contains(
@@ -106,9 +107,11 @@ fn reserve_deploy(
     this: &MultiParentCasperImpl,
     deploy: &Signed<DeployData>,
 ) -> Result<Option<DeployError>, CasperError> {
+    const MAX_ATTEMPTS: usize = 3;
     let deploy_id = deploy.sig.to_vec();
     let preparation = this.deploy_storage.prepare_checked(deploy);
-    loop {
+    let limits = this.casper_shard_conf.deploy_admission;
+    for _ in 0..MAX_ATTEMPTS {
         let rejected_store = this.rejected_deploy_buffer.lock()?.clone();
         if this
             .block_dag_storage
@@ -132,25 +135,50 @@ fn reserve_deploy(
             }
             Err(DeployPreparationError::Serialization(error)) => return Err(error.into()),
         };
+        if let Some(refusal) = this.deploy_storage.refusal(prepared, limits)? {
+            return Ok(Some(pool_refusal(refusal)));
+        }
         let rejected_guard = this.rejected_deploy_buffer.lock()?;
         if !rejected_guard.matches_snapshot(&rejected)? {
             continue;
         }
-        // Before the pool insert: a crash between the two leaves a row with
-        // no pool copy, which settles Expired, never a pooled deploy no
-        // verdict can reach.
         this.block_dag_storage
             .record_deploy_admitted(&deploy_id, deploy.data.valid_after_block_number)?;
         match this
             .deploy_storage
-            .add_prepared_if_unchanged(prepared, &pool)?
+            .add_prepared_if_unchanged(prepared, &pool, limits)?
         {
             PreparedInsertResult::Inserted => return Ok(None),
             PreparedInsertResult::AlreadyPresent => {
                 return Ok(Some(DeployError::duplicate_deploy(deploy_id)));
             }
+            PreparedInsertResult::Refused(refusal) => return Ok(Some(pool_refusal(refusal))),
             PreparedInsertResult::Changed => continue,
         }
+    }
+    Ok(Some(DeployError::AdmissionBusy))
+}
+
+fn pool_refusal(refusal: PoolRefusal) -> DeployError {
+    metrics::counter!(DEPLOY_ADMISSION_REFUSED_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .increment(1);
+    match refusal {
+        PoolRefusal::TooLarge {
+            record_bytes,
+            limit,
+        } => DeployError::RecordTooLarge {
+            record_bytes,
+            limit,
+        },
+        PoolRefusal::Full {
+            resource,
+            required,
+            limit,
+        } => DeployError::PoolBusy {
+            resource,
+            required,
+            limit,
+        },
     }
 }
 

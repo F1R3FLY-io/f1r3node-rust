@@ -37,6 +37,7 @@ use models::servicemodelapi::ServiceError;
 use tokio::time::{sleep, Duration};
 use tracing::error;
 
+use crate::rust::api::{DeployRequestLimiter, DeployRequestPermit};
 use crate::rust::web::version_info::get_version_info_str;
 
 trait IntoServiceError {
@@ -69,6 +70,7 @@ fn find_deploy_max_attempts() -> u8 { FIND_DEPLOY_MAX_ATTEMPTS }
 /// Deploy gRPC Service V1 implementation
 #[derive(Clone)]
 pub struct DeployGrpcServiceV1Impl {
+    deploy_limiter: DeployRequestLimiter,
     api_max_blocks_limit: i32,
     trigger_propose_f: Option<Arc<ProposeFunction>>,
     dev_mode: bool,
@@ -115,6 +117,7 @@ impl DeployGrpcServiceV1Impl {
         is_ready: Arc<AtomicBool>,
     ) -> Self {
         Self {
+            deploy_limiter: DeployRequestLimiter::default(),
             api_max_blocks_limit,
             trigger_propose_f,
             dev_mode,
@@ -135,6 +138,59 @@ impl DeployGrpcServiceV1Impl {
             node_discovery,
             epoch_length,
             is_ready,
+        }
+    }
+
+    pub(crate) fn with_deploy_limiter(mut self, limiter: DeployRequestLimiter) -> Self {
+        self.deploy_limiter = limiter;
+        self
+    }
+
+    pub(crate) fn deploy_limiter(&self) -> &DeployRequestLimiter { &self.deploy_limiter }
+
+    async fn submit_deploy(
+        &self,
+        proto: DeployDataProto,
+    ) -> Result<tonic::Response<DeployResponse>, tonic::Status> {
+        let signed_deploy =
+            match models::rust::casper::protocol::casper_message::DeployData::from_proto(proto) {
+                Ok(signed) => signed,
+                Err(error) => {
+                    return Self::create_error_deploy_response(Self::create_service_error(error))
+                }
+            };
+        match BlockAPI::deploy(
+            &self.engine_cell,
+            signed_deploy,
+            &self.trigger_propose_f,
+            self.is_node_read_only,
+            &self.shard_id,
+        )
+        .await
+        {
+            Ok(result) => Self::create_success_deploy_response(result),
+            Err(e) => {
+                let is_expected_refusal = e.chain().any(|cause| {
+                    matches!(
+                        cause.downcast_ref::<DeployError>(),
+                        Some(
+                            DeployError::DuplicateDeploy(_)
+                                | DeployError::PoolBusy { .. }
+                                | DeployError::AdmissionBusy
+                                | DeployError::InvalidFreshness
+                                | DeployError::RecordTooLarge { .. }
+                        )
+                    ) || cause
+                        .downcast_ref::<casper::rust::api::block_api::DeployExpiredError>()
+                        .is_some()
+                });
+                if is_expected_refusal {
+                    tracing::debug!("Deploy admission refused: {}", e);
+                } else {
+                    error!("Deploy service method error do_deploy: {}", e);
+                }
+                Self::create_error_deploy_response(e.into_service_error())
+            }
         }
     }
 
@@ -256,45 +312,29 @@ impl DeployService for DeployGrpcServiceV1Impl {
     #[tracing::instrument(level = "info", skip(self, request))]
     async fn do_deploy(
         &self,
-        request: tonic::Request<DeployDataProto>,
+        mut request: tonic::Request<DeployDataProto>,
     ) -> Result<tonic::Response<DeployResponse>, tonic::Status> {
-        // Convert DeployDataProto to Signed<DeployData>
-        let signed_deploy =
-            match models::rust::casper::protocol::casper_message::DeployData::from_proto(
-                request.into_inner(),
-            ) {
-                Ok(signed) => signed,
-                Err(err_msg) => {
-                    let error = Self::create_service_error(err_msg);
-                    return Self::create_error_deploy_response(error);
+        let permit = match request.extensions_mut().remove::<DeployRequestPermit>() {
+            Some(permit) => permit,
+            None => match self.deploy_limiter.try_acquire() {
+                Ok(permit) => permit,
+                Err(error) => {
+                    return Self::create_error_deploy_response(Self::create_service_error(
+                        error.to_string(),
+                    ))
                 }
-            };
-
-        match BlockAPI::deploy(
-            &self.engine_cell,
-            signed_deploy,
-            &self.trigger_propose_f,
-            self.is_node_read_only,
-            &self.shard_id,
-        )
-        .await
-        {
-            Ok(result) => Self::create_success_deploy_response(result),
-            Err(e) => {
-                let is_duplicate = e.chain().any(|cause| {
-                    matches!(
-                        cause.downcast_ref::<DeployError>(),
-                        Some(DeployError::DuplicateDeploy(_))
-                    )
-                });
-                if is_duplicate {
-                    tracing::debug!("Duplicate deploy rejected: {}", e);
-                } else {
-                    error!("Deploy service method error do_deploy: {}", e);
-                }
-                Self::create_error_deploy_response(e.into_service_error())
-            }
+            },
+        };
+        if !self.deploy_limiter.is_limited() {
+            return self.submit_deploy(request.into_inner()).await;
         }
+        let service = self.clone();
+        crate::rust::web::shared_handlers::offload(move || async move {
+            let _permit = permit;
+            Ok(service.submit_deploy(request.into_inner()).await)
+        })
+        .await
+        .map_err(|error| tonic::Status::internal(error.to_string()))?
     }
 
     /// Get a block by hash
@@ -1521,6 +1561,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ingress_generated_client_keeps_busy_in_the_service_envelope_and_recovers() {
+        use models::casper::v1::deploy_response;
+        use models::casper::v1::deploy_service_client::DeployServiceClient;
+        use models::casper::v1::deploy_service_server::DeployServiceServer;
+
+        use crate::rust::api::grpc_package::DeployIngressService;
+
+        let limiter = DeployRequestLimiter::new(Some(1)).unwrap();
+        let permit = limiter.try_acquire().unwrap();
+        let server = DeployIngressService::new(
+            DeployServiceServer::new(service().with_deploy_limiter(limiter.clone())),
+            limiter.clone(),
+        );
+        let mut client = DeployServiceClient::new(server);
+        let response = client.do_deploy(DeployDataProto::default()).await.unwrap();
+        let Some(deploy_response::Message::Error(error)) = response.into_inner().message else {
+            panic!("expected service error");
+        };
+        assert!(error.messages[0].starts_with("deploy_admission_busy:"));
+        drop(permit);
+        let response = client.do_deploy(DeployDataProto::default()).await.unwrap();
+        let Some(deploy_response::Message::Error(error)) = response.into_inner().message else {
+            panic!("expected validation error");
+        };
+        assert!(!error.messages[0].starts_with("deploy_admission_busy:"));
+        assert!(limiter.try_acquire().is_ok());
+    }
+
+    #[tokio::test]
+    async fn ingress_rejects_without_reading_protobuf_and_does_not_gate_status() {
+        use models::casper::v1::deploy_service_client::DeployServiceClient;
+        use models::casper::v1::deploy_service_server::DeployServiceServer;
+        use tower::ServiceExt;
+
+        use crate::rust::api::grpc_package::DeployIngressService;
+
+        let limiter = DeployRequestLimiter::new(Some(1)).unwrap();
+        let _permit = limiter.try_acquire().unwrap();
+        let server = DeployIngressService::new(
+            DeployServiceServer::new(service().with_deploy_limiter(limiter.clone())),
+            limiter,
+        );
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = reads.clone();
+        let body = axum::body::Body::from_stream(tokio_stream::once(()).map(move |()| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, std::convert::Infallible>(tonic::codegen::Bytes::from_static(
+                b"invalid protobuf",
+            ))
+        }));
+        let request = tonic::codegen::http::Request::builder()
+            .uri("/casper.v1.DeployService/doDeploy")
+            .header("content-type", "application/grpc")
+            .body(tonic::body::Body::new(body))
+            .unwrap();
+        let response = server.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        let mut client = DeployServiceClient::new(server);
+        assert!(client
+            .status(())
+            .await
+            .unwrap()
+            .into_inner()
+            .message
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn ingress_direct_service_calls_share_the_transport_limit() {
+        let limiter = DeployRequestLimiter::new(Some(1)).unwrap();
+        let service = service().with_deploy_limiter(limiter.clone());
+        let _permit = limiter.try_acquire().unwrap();
+        let response = service
+            .do_deploy(tonic::Request::new(DeployDataProto::default()))
+            .await
+            .unwrap();
+        let Some(models::casper::v1::deploy_response::Message::Error(error)) =
+            response.into_inner().message
+        else {
+            panic!("expected service error");
+        };
+        assert!(error.messages[0].starts_with("deploy_admission_busy:"));
+    }
+
+    #[tokio::test]
     async fn do_deploy_without_casper_answers_service_error_not_transport_error() {
         let response = service()
             .do_deploy(tonic::Request::new(signed_deploy_proto()))
@@ -1529,6 +1655,92 @@ mod tests {
         match response.into_inner().message.unwrap() {
             models::casper::v1::deploy_response::Message::Error(error) => {
                 assert!(!error.messages.is_empty());
+            }
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pool_busy_uses_the_existing_deploy_service_error_envelope() {
+        let error = eyre::Report::new(DeployError::PoolBusy {
+            resource: "records",
+            required: 513,
+            limit: 512,
+        });
+        let response =
+            DeployGrpcServiceV1Impl::create_error_deploy_response(error.into_service_error())
+                .unwrap()
+                .into_inner();
+        match response.message.unwrap() {
+            models::casper::v1::deploy_response::Message::Error(error) => {
+                assert!(error
+                    .messages
+                    .iter()
+                    .any(|message| message.contains("deploy_pool_busy")));
+            }
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn oversized_record_has_a_permanent_error_prefix_in_the_service_envelope() {
+        let error = eyre::Report::new(DeployError::RecordTooLarge {
+            record_bytes: 100,
+            limit: 99,
+        });
+        let response =
+            DeployGrpcServiceV1Impl::create_error_deploy_response(error.into_service_error())
+                .unwrap();
+        let Some(models::casper::v1::deploy_response::Message::Error(error)) =
+            response.into_inner().message
+        else {
+            panic!("expected a deploy service error");
+        };
+        assert!(error.messages[0].starts_with("deploy_too_large:"));
+        assert!(!error.messages[0].starts_with("deploy_pool_busy:"));
+    }
+
+    #[test]
+    fn window_refusals_have_distinct_prefixes_in_the_service_envelope() {
+        let expired_api = casper::rust::api::block_api::DeployExpiredError {
+            message: "deploy_expired: validAfterBlockNumber 0 has expired".to_string(),
+        };
+        for (error, prefix) in [
+            (eyre::Report::new(expired_api), "deploy_expired:"),
+            (
+                eyre::Report::new(DeployError::InvalidFreshness),
+                "invalid_deploy_window:",
+            ),
+        ] {
+            let response =
+                DeployGrpcServiceV1Impl::create_error_deploy_response(error.into_service_error())
+                    .unwrap();
+            let Some(models::casper::v1::deploy_response::Message::Error(error)) =
+                response.into_inner().message
+            else {
+                panic!("expected a deploy service error");
+            };
+            assert!(
+                error.messages[0].starts_with(prefix),
+                "{:?}",
+                error.messages
+            );
+        }
+    }
+
+    #[test]
+    fn admission_busy_uses_the_existing_deploy_service_error_envelope() {
+        let error = eyre::Report::new(DeployError::AdmissionBusy);
+        let response =
+            DeployGrpcServiceV1Impl::create_error_deploy_response(error.into_service_error())
+                .unwrap()
+                .into_inner();
+        match response.message.unwrap() {
+            models::casper::v1::deploy_response::Message::Error(error) => {
+                assert!(error
+                    .messages
+                    .iter()
+                    .any(|message| message.contains("deploy_admission_busy")));
             }
             other => panic!("expected Error, got {:?}", other),
         }

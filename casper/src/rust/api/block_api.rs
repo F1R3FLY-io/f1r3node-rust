@@ -728,7 +728,7 @@ impl BlockAPI {
         if d.data.is_expired_at(now) {
             return Err(eyre::Report::new(DeployExpiredError {
                 message: format!(
-                    "Deploy has expired: expirationTimestamp={:?} is in the past.",
+                    "deploy_expired: expirationTimestamp={:?} is in the past.",
                     d.data.expiration_timestamp
                 ),
             }));
@@ -761,17 +761,10 @@ impl BlockAPI {
             if !casper.is_local_validator_bonded() {
                 return Err(eyre::Report::new(ValidatorNotBondedError));
             }
-            // A deploy admitted now can only ever land in a block that doesn't
-            // exist yet — the next one, at `latest_block_number + 1` — never
-            // in the current tip, which is already built. block_creator.rs's
-            // own expiry filter checks against exactly that next block's
-            // number (`earliest_block_number = block_number - deploy_lifespan`
-            // for the block being assembled). Checking admission against
-            // `latest_block_number` instead of `latest_block_number + 1` is
-            // off by one: a deploy admitted "just inside" the window at the
-            // current tip is then found expired by the very next block's
-            // filter, so it can never actually be included.
-            let next_block_number = dag.latest_block_number() + 1;
+            // `latest_block_number` is the highest stored block number plus
+            // one, which is the number of the next block that block_creator.rs
+            // assembles and checks with its own expiry filter.
+            let next_block_number = dag.latest_block_number();
             let deploy_lifespan = casper.casper_shard_conf().deploy_lifespan;
             if deploy_is_block_expired(
                 d.data.valid_after_block_number,
@@ -780,24 +773,19 @@ impl BlockAPI {
             )? {
                 return Err(eyre::Report::new(DeployExpiredError {
                     message: format!(
-                        "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
+                        "deploy_expired: validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
                         d.data.valid_after_block_number, next_block_number, deploy_lifespan
                     ),
                 }));
             }
-            let max_parent_depth = casper.casper_shard_conf().max_parent_depth;
             if models::rust::deploy_window::is_too_far_ahead(
                 d.data.valid_after_block_number,
-                dag.latest_block_number(),
-                max_parent_depth,
+                next_block_number,
+                casper.casper_shard_conf().max_parent_depth,
             ) {
-                return Err(eyre::Report::new(DeployValidationError {
-                    message: models::rust::deploy_window::too_far_ahead_message(
-                        d.data.valid_after_block_number,
-                        dag.latest_block_number(),
-                        max_parent_depth,
-                    ),
-                }));
+                return Err(eyre::Report::new(
+                    crate::rust::casper::DeployError::InvalidFreshness,
+                ));
             }
             casper_deploy(casper, d, trigger_propose).await
         } else {

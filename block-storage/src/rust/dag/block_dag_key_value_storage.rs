@@ -1439,9 +1439,6 @@ impl BlockDagKeyValueStorage {
             .map(BlockHash::from))
     }
 
-    /// Lifecycle: opens the row of a deploy this node admitted, recording its
-    /// window start before any block includes it, so the settle pass can
-    /// judge it Expired if no block ever does. No-op once terminal.
     pub fn record_deploy_admitted(&self, sig: &[u8], valid_after: i64) -> Result<(), KvStoreError> {
         self.lifecycle
             .write()

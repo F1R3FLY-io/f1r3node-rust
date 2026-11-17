@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
@@ -9,10 +9,11 @@ use block_storage::rust::dag::dag_gc_store::{DagGcStore, GC_PAGE_SIZE};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::validator::Validator;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::casper::CasperShardConf;
-use crate::rust::finality::floor::Floor;
+use crate::rust::finality::floor::{active_latest_messages, Floor};
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +50,10 @@ struct Pass {
     discovery_start: i64,
     discovery_cursor: Option<Vec<u8>>,
     retry_cursor: Option<Vec<u8>>,
+    /// The chain-active latest-message set, computed once at pass start and
+    /// reused across the turns this pass takes to complete. Bonded-and-not-
+    /// slashed validators only, so a retired validator cannot freeze the walk.
+    active_latest: HashMap<Validator, BlockHash>,
 }
 
 #[derive(Default)]
@@ -76,10 +81,20 @@ fn cached_floor(dag: &KeyValueDagRepresentation) -> Result<Option<Floor>, KvStor
     Ok(Some(Floor { hash, block_number }))
 }
 
+/// A pre-pass peek at the floor to drive the async active-validator filter
+/// before `run_turn` enters its state machine. Deliberately loose: a different
+/// floor computed by `start_pass` later in the same tick is harmless, because
+/// the filter's over-approximation (every validator bonded at either floor)
+/// is still a superset of the retention-safe answer.
+fn preliminary_floor(storage: &BlockDagKeyValueStorage) -> Result<Option<Floor>, KvStoreError> {
+    cached_floor(&storage.get_representation()?)
+}
+
 fn start_pass(
     storage: &BlockDagKeyValueStorage,
     store: &DagGcStore,
     conf: &CasperShardConf,
+    active_latest: HashMap<Validator, BlockHash>,
 ) -> Result<Option<Pass>, KvStoreError> {
     let preliminary = storage.get_representation()?;
     let Some(floor) = cached_floor(&preliminary)? else {
@@ -117,6 +132,10 @@ fn start_pass(
     let Some(floor) = cached_floor(&dag)? else {
         return Ok(None);
     };
+    // `active_latest` was computed by the caller — bonded in PoS at the floor
+    // state, not slashed, not unbonded. A validator the chain has retired
+    // would otherwise freeze the walk at the slot they left, and with #1010's
+    // shared loop that freeze now wedges block-body deletion too.
     Ok(Some(Pass {
         dag,
         floor,
@@ -127,6 +146,7 @@ fn start_pass(
             .map_or(0, |height| height.saturating_add(1)),
         discovery_cursor: state.cursor,
         retry_cursor: store.retry_cursor()?,
+        active_latest,
     }))
 }
 
@@ -136,6 +156,7 @@ fn run_turn<F>(
     blocks: &KeyValueBlockStore,
     conf: &CasperShardConf,
     effective_anchor: &AtomicI64,
+    active_latest: &HashMap<Validator, BlockHash>,
     delete: &mut F,
     page: usize,
 ) -> Result<GcProgress, KvStoreError>
@@ -147,7 +168,12 @@ where
     let mut blocks_deleted = 0;
     loop {
         match std::mem::take(&mut sweep.phase) {
-            Phase::Idle => match start_pass(storage, &store, conf)? {
+            // `active_latest` is cloned on the Idle→Discover transition only.
+            // Subsequent turns read it from the Pass struct, ignoring the
+            // argument. This keeps callers from having to peek at the phase
+            // to decide whether to compute it; they always pass, we only
+            // clone when starting.
+            Phase::Idle => match start_pass(storage, &store, conf, active_latest.clone())? {
                 Some(pass) => sweep.phase = Phase::Discover(pass),
                 None => {
                     metrics::counter!("mergeable_channels_gc_floor_deferred").increment(1);
@@ -229,7 +255,8 @@ where
                         blocks_deleted,
                     });
                 };
-                let moved_past = super::moved_past_by_every_validator(&pass.dag, minimum)?;
+                let moved_past =
+                    super::moved_past_by_every_validator(&pass.dag, &pass.active_latest, minimum)?;
                 let cursor = pass.retry_cursor.clone();
                 // Advance the effective-anchor atomic before any body
                 // deletion in the pass. If the atomic advances AFTER the
@@ -336,6 +363,7 @@ pub fn collect_garbage_with<F>(
     blocks: &KeyValueBlockStore,
     conf: &CasperShardConf,
     effective_anchor: &AtomicI64,
+    active_latest: &HashMap<Validator, BlockHash>,
     delete: &mut F,
 ) -> Result<GcProgress, KvStoreError>
 where
@@ -347,6 +375,7 @@ where
         blocks,
         conf,
         effective_anchor,
+        active_latest,
         delete,
         GC_PAGE_SIZE,
     );
@@ -366,12 +395,39 @@ pub async fn collect_garbage(
     effective_anchor: &AtomicI64,
 ) -> Result<GcProgress, KvStoreError> {
     let started = std::time::Instant::now();
+    // Compute the chain-active latest-message set once per tick. Cost: one PoS
+    // `compute_bonds` + one `get_active_validators` (microseconds against a
+    // warm cache), vs. the alternative of threading async-ness through the
+    // entire state machine so start_pass can run it internally. Only Idle→
+    // Discover transitions actually consume it; later turns read the stored
+    // copy in `Pass`.
+    let active_latest = match preliminary_floor(storage)? {
+        Some(floor) => {
+            match active_latest_messages(&storage.get_representation()?, blocks, runtime, &floor)
+                .await
+            {
+                Ok(active) => active,
+                Err(e) => {
+                    tracing::warn!(
+                        "mergeable-channel GC: active-validator filter failed ({}); skipping tick",
+                        e
+                    );
+                    return Ok(GcProgress::Complete {
+                        deleted: 0,
+                        blocks_deleted: 0,
+                    });
+                }
+            }
+        }
+        None => HashMap::new(),
+    };
     let result = run_turn(
         sweep,
         storage,
         blocks,
         conf,
         effective_anchor,
+        &active_latest,
         &mut |block| {
             runtime
                 .delete_mergeable_channels(
@@ -449,6 +505,17 @@ mod tests {
         (storage, blocks)
     }
 
+    /// All latest-messages-as-active. Pre-filter view used by tests that
+    /// exercise the state machine in isolation from PoS. Production threads
+    /// `active_latest_messages` through the `collect_garbage` entry.
+    fn all_as_active_latest(storage: &BlockDagKeyValueStorage) -> HashMap<Validator, BlockHash> {
+        let dag = storage.get_representation().unwrap();
+        dag.latest_message_hashes()
+            .iter()
+            .map(|(v, h)| (v.clone(), h.clone()))
+            .collect()
+    }
+
     /// Runs turns until the pass completes, replacing the sweep once mid-way
     /// through deletion, and returns the hashes `delete` saw.
     fn run_to_completion(
@@ -461,6 +528,7 @@ mod tests {
         let mut deleted = HashSet::new();
         let mut restarted = false;
         let effective_anchor = AtomicI64::new(0);
+        let active_latest = all_as_active_latest(storage);
         for _ in 0..1_000 {
             let progress = run_turn(
                 &mut sweep,
@@ -468,6 +536,7 @@ mod tests {
                 blocks,
                 conf,
                 &effective_anchor,
+                &active_latest,
                 &mut |block| {
                     assert!(
                         deleted.insert(block.block_hash.clone()),
@@ -501,7 +570,8 @@ mod tests {
         conf: &CasperShardConf,
     ) -> HashSet<BlockHash> {
         let dag = storage.get_representation().unwrap();
-        let moved = super::super::moved_past_by_every_validator(&dag, 0).unwrap();
+        let active = all_as_active_latest(storage);
+        let moved = super::super::moved_past_by_every_validator(&dag, &active, 0).unwrap();
         candidates
             .iter()
             .filter(|hash| {
@@ -894,12 +964,14 @@ mod tests {
         let mut total_mergeable_deleted = 0usize;
         let effective_anchor = AtomicI64::new(0);
         for _ in 0..1_000 {
+            let active_latest = all_as_active_latest(&storage);
             let progress = run_turn(
                 &mut sweep,
                 &storage,
                 &blocks,
                 &conf,
                 &effective_anchor,
+                &active_latest,
                 &mut |_block| Ok(true),
                 GC_PAGE_SIZE,
             )
@@ -944,12 +1016,14 @@ mod tests {
         let effective_anchor = AtomicI64::new(0);
         let mut sweep = GcSweep::new();
         for _ in 0..1_000 {
+            let active_latest = all_as_active_latest(&storage);
             let progress = run_turn(
                 &mut sweep,
                 &storage,
                 &blocks,
                 &conf,
                 &effective_anchor,
+                &active_latest,
                 &mut |_block| Ok(true),
                 GC_PAGE_SIZE,
             )
@@ -982,12 +1056,14 @@ mod tests {
         let effective_anchor = AtomicI64::new(0);
         let mut sweep = GcSweep::new();
         for _ in 0..1_000 {
+            let active_latest = all_as_active_latest(&storage);
             let progress = run_turn(
                 &mut sweep,
                 &storage,
                 &blocks,
                 &conf,
                 &effective_anchor,
+                &active_latest,
                 &mut |_block| Ok(true),
                 GC_PAGE_SIZE,
             )
@@ -1020,12 +1096,14 @@ mod tests {
         let effective_anchor = AtomicI64::new(0);
         let mut sweep = GcSweep::new();
         for _ in 0..1_000 {
+            let active_latest = all_as_active_latest(&storage);
             let progress = run_turn(
                 &mut sweep,
                 &storage,
                 &blocks,
                 &conf,
                 &effective_anchor,
+                &active_latest,
                 &mut |_block| Ok(true),
                 GC_PAGE_SIZE,
             )
