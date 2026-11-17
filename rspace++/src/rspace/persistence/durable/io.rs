@@ -124,6 +124,66 @@ pub(super) fn trip_durable_io_failpoint(
     })
 }
 
+#[cfg(all(test, unix))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DurableStorageFaultV1 {
+    StorageFull,
+    ShortWrite,
+    NoProgress,
+}
+
+#[cfg(all(test, unix))]
+thread_local! {
+    static DURABLE_STORAGE_FAULT: std::cell::Cell<Option<DurableStorageFaultV1>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn arm_durable_storage_fault(fault: DurableStorageFaultV1) {
+    DURABLE_STORAGE_FAULT.with(|armed| {
+        assert!(armed.replace(Some(fault)).is_none(), "durable storage fault already armed");
+    });
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn clear_durable_storage_fault() -> Option<DurableStorageFaultV1> {
+    DURABLE_STORAGE_FAULT.take()
+}
+
+#[cfg(all(test, unix))]
+fn admit_storage_fault_write(path: &Path, offered: usize) -> Result<usize, DurableIoError> {
+    DURABLE_STORAGE_FAULT.with(|armed| match armed.get() {
+        None => Ok(offered),
+        Some(DurableStorageFaultV1::StorageFull) => Err(DurableIoError::Io {
+            operation: DurableIoOperation::PositionalWrite,
+            path: path.to_path_buf(),
+            source: io::Error::from(io::ErrorKind::StorageFull),
+        }),
+        Some(DurableStorageFaultV1::ShortWrite) => {
+            armed.set(Some(DurableStorageFaultV1::NoProgress));
+            Ok(offered / 2)
+        }
+        Some(DurableStorageFaultV1::NoProgress) => Ok(0),
+    })
+}
+
+#[cfg(all(test, unix))]
+fn admit_storage_fault_sync(
+    operation: DurableIoOperation,
+    path: &Path,
+) -> Result<(), DurableIoError> {
+    match DURABLE_STORAGE_FAULT.get() {
+        Some(DurableStorageFaultV1::StorageFull) => Err(DurableIoError::Io {
+            operation,
+            path: path.to_path_buf(),
+            source: io::Error::from(io::ErrorKind::StorageFull),
+        }),
+        Some(DurableStorageFaultV1::ShortWrite | DurableStorageFaultV1::NoProgress) | None => {
+            Ok(())
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DurableIoOperation {
     OpenDirectory,
@@ -589,6 +649,8 @@ impl DurableWritableFileV1<'_> {
             &path,
         )?;
         write_all_at_with(self, &path, offset, bytes, |authority, buffer, position| {
+            #[cfg(all(test, unix))]
+            let buffer = &buffer[..admit_storage_fault_write(authority.file.path(), buffer.len())?];
             positioned_write(&authority.file.file, buffer, position, authority.file.path())
         })
     }
@@ -609,6 +671,8 @@ impl DurableWritableFileV1<'_> {
             DurableIoOperation::SyncFile,
             self.file.path(),
         )?;
+        #[cfg(all(test, unix))]
+        admit_storage_fault_sync(DurableIoOperation::SyncFile, self.file.path())?;
         self.file
             .file
             .sync_all()
@@ -1745,6 +1809,8 @@ impl DurableWriterLeaseV1 {
     }
 
     pub(crate) fn sync_directory(&mut self) -> Result<(), DurableIoError> {
+        #[cfg(all(test, unix))]
+        admit_storage_fault_sync(DurableIoOperation::SyncDirectory, self.directory.path())?;
         self.directory
             .directory
             .sync_all()

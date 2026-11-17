@@ -549,6 +549,7 @@ impl ProductionHistory {
                 self.source.core(),
                 &prepared,
                 policy,
+                crate::rspace::persistence::DurableLimits::UNBOUNDED,
                 |_| {},
             )
         }))?;
@@ -759,7 +760,14 @@ impl TrustedChain {
             )
             .expect("prepare the trusted-bound successor");
         let (published, effects) = observed_effects(|| {
-            publish_trusted_incremental_v1(&mut self.lease, &self.core, &prepared, policy, |_| {})
+            publish_trusted_incremental_v1(
+                &mut self.lease,
+                &self.core,
+                &prepared,
+                policy,
+                crate::rspace::persistence::DurableLimits::UNBOUNDED,
+                |_| {},
+            )
         });
         self.core = Arc::new(published.map_err(|error| {
             TestCaseError::fail(format!("the trusted publication failed: {error:?}"))
@@ -1628,6 +1636,7 @@ pub(super) fn production_policy_accepts_exact_and_refuses_one_below(cases: u32) 
                         history.source.core(),
                         &prepared,
                         policy_with(exact, axis, lower),
+                        crate::rspace::persistence::DurableLimits::UNBOUNDED,
                         |_| {},
                     )))?,
                     PreflightOutcome::TrustedPolicyMismatch
@@ -1640,6 +1649,7 @@ pub(super) fn production_policy_accepts_exact_and_refuses_one_below(cases: u32) 
                     history.source.core(),
                     &prepared,
                     exact,
+                    crate::rspace::persistence::DurableLimits::UNBOUNDED,
                     |_| {},
                 )
             }))?;
@@ -1820,6 +1830,7 @@ pub(super) fn production_binding_fixes_publication_mode_and_policy(cases: u32) {
                     history.source.core(),
                     &cold_prepared,
                     exact,
+                    crate::rspace::persistence::DurableLimits::UNBOUNDED,
                     |_| {},
                 )))?,
                 PreflightOutcome::ModeMismatch
@@ -1836,6 +1847,7 @@ pub(super) fn production_binding_fixes_publication_mode_and_policy(cases: u32) {
                             history.source.core(),
                             &trusted_prepared,
                             policy_with(exact, axis, changed),
+                            crate::rspace::persistence::DurableLimits::UNBOUNDED,
                             |_| {},
                         )))?,
                         PreflightOutcome::TrustedPolicyMismatch
@@ -1849,6 +1861,7 @@ pub(super) fn production_binding_fixes_publication_mode_and_policy(cases: u32) {
                     history.source.core(),
                     &trusted_prepared,
                     exact,
+                    crate::rspace::persistence::DurableLimits::UNBOUNDED,
                     |_| {},
                 )
             }))?;
@@ -1942,6 +1955,7 @@ pub(super) fn production_bind_refuses_foreign_stale_and_replayed_receipts(cases:
                             history.source.core(),
                             &prepared,
                             TrustedSuccessorPolicyV1::UNBOUNDED,
+                            crate::rspace::persistence::DurableLimits::UNBOUNDED,
                             |_| {},
                         )
                     });
@@ -1971,6 +1985,7 @@ pub(super) fn production_bind_refuses_foreign_stale_and_replayed_receipts(cases:
                             history.source.core(),
                             &prepared,
                             TrustedSuccessorPolicyV1::UNBOUNDED,
+                            crate::rspace::persistence::DurableLimits::UNBOUNDED,
                             |_| {},
                         )))?,
                         PreflightOutcome::AuthorityMismatch
@@ -1984,6 +1999,7 @@ pub(super) fn production_bind_refuses_foreign_stale_and_replayed_receipts(cases:
                                     history.source.core(),
                                     &prepared,
                                     TrustedSuccessorPolicyV1::UNBOUNDED,
+                                    crate::rspace::persistence::DurableLimits::UNBOUNDED,
                                     |_| {},
                                 )
                             }))?;
@@ -2012,6 +2028,7 @@ pub(super) fn production_bind_refuses_foreign_stale_and_replayed_receipts(cases:
                                     history.source.core(),
                                     &prepared,
                                     TrustedSuccessorPolicyV1::UNBOUNDED,
+                                    crate::rspace::persistence::DurableLimits::UNBOUNDED,
                                     |_| {},
                                 )
                             });
@@ -2746,6 +2763,7 @@ pub(super) fn production_trusted_publication_faults_recover_and_retry(cases: u32
                             &faulted.core,
                             &prepared,
                             changed,
+                            crate::rspace::persistence::DurableLimits::UNBOUNDED,
                             |_| {},
                         )))?,
                         PreflightOutcome::TrustedPolicyMismatch
@@ -2780,6 +2798,7 @@ pub(super) fn production_trusted_publication_faults_recover_and_retry(cases: u32
                                     &faulted.core,
                                     &prepared,
                                     exact,
+                                    crate::rspace::persistence::DurableLimits::UNBOUNDED,
                                     |_| {},
                                 )
                             });
@@ -2831,6 +2850,7 @@ pub(super) fn production_trusted_publication_faults_recover_and_retry(cases: u32
                                     &faulted.core,
                                     &prepared,
                                     exact,
+                                    crate::rspace::persistence::DurableLimits::UNBOUNDED,
                                     |_| {},
                                 )
                             });
@@ -2874,6 +2894,7 @@ pub(super) fn production_trusted_publication_faults_recover_and_retry(cases: u32
                                     &faulted.core,
                                     &prepared,
                                     exact,
+                                    crate::rspace::persistence::DurableLimits::UNBOUNDED,
                                     |_| {},
                                 )
                             });

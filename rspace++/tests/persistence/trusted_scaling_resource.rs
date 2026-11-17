@@ -1264,6 +1264,7 @@ fn run_timed(
                 &core,
                 &prepared,
                 TrustedSuccessorPolicyV1::UNBOUNDED,
+                DurableLimits::UNBOUNDED,
                 |_| {},
             )
             .expect("publish the timed commit"),

@@ -72,6 +72,7 @@ for mutant in \
   'IgnoreDurableExactPinMutant:DurableExactGenerationProtected' \
   'OmitKnownClosureMutant:KnownPublicationClosureProtected' \
   'PrunePastWalStartMutant:WalFrontierProtected' \
+  'AdmitPastWalWindowMutant:WalAdmissionBounded' \
   'BlockWalOnOldPackMutant:ObjectOnlyPinDoesNotBlockWal'
 do
   variant="${mutant%%:*}"
@@ -94,4 +95,4 @@ do
   fi
 done
 
-echo "gc-protection: both baselines, overlap witness, and six causal mutants passed; logs in $evidence_dir"
+echo "gc-protection: both baselines, overlap witness, and seven causal mutants passed; logs in $evidence_dir"

@@ -772,7 +772,14 @@ fn attempt(
         )
         .expect("a trusted bind prepares");
     observed_effects(|| {
-        publish_trusted_incremental_v1(&mut writer.lease, &writer.core, &prepared, policy, |_| {})
+        publish_trusted_incremental_v1(
+            &mut writer.lease,
+            &writer.core,
+            &prepared,
+            policy,
+            crate::rspace::persistence::DurableLimits::UNBOUNDED,
+            |_| {},
+        )
     })
 }
 
@@ -1738,6 +1745,7 @@ impl Trial {
                 source.core(),
                 &prepared,
                 UNBOUNDED,
+                crate::rspace::persistence::DurableLimits::UNBOUNDED,
                 |_| {},
             )
         }))?;
@@ -2150,6 +2158,7 @@ impl Trial {
                 &writer.core,
                 &prepared,
                 UNBOUNDED,
+                crate::rspace::persistence::DurableLimits::UNBOUNDED,
                 |slot| terminal.set(Some(slot)),
             )
         });
@@ -2253,6 +2262,7 @@ impl Trial {
                     &writer.core,
                     &prepared,
                     UNBOUNDED,
+                    crate::rspace::persistence::DurableLimits::UNBOUNDED,
                     |_| {},
                 )
             })
@@ -2976,6 +2986,7 @@ impl Trial {
                 &writer.core,
                 &prepared,
                 UNBOUNDED,
+                crate::rspace::persistence::DurableLimits::UNBOUNDED,
                 |_| {},
             )
         });
@@ -3569,6 +3580,7 @@ fn trusted_history_kill_child() {
         &writer.core,
         &prepared,
         UNBOUNDED,
+        crate::rspace::persistence::DurableLimits::UNBOUNDED,
         |_| {},
     );
     panic!("the kill child returned from its publication: {:?}", published.map(|_| ()));

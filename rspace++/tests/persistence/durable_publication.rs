@@ -858,6 +858,7 @@ fn check_borrowed_incremental_crash(
                     recovered.core(),
                     &prepared,
                     TrustedSuccessorPolicyV1::UNBOUNDED,
+                    DurableLimits::UNBOUNDED,
                     |_| {},
                 )
                 .map(|successor| successor.authority().slot()),
@@ -911,6 +912,7 @@ fn check_borrowed_incremental_crash(
                     retry_source.core(),
                     &retry_prepared,
                     TrustedSuccessorPolicyV1::UNBOUNDED,
+                    DurableLimits::UNBOUNDED,
                     |_| {},
                 )
                 .map(|successor| successor.authority().slot()),
@@ -933,6 +935,7 @@ fn check_borrowed_incremental_crash(
                     recovered.core(),
                     &prepared,
                     TrustedSuccessorPolicyV1::UNBOUNDED,
+                    DurableLimits::UNBOUNDED,
                     |_| {},
                 )
                 .map(|successor| successor.authority().slot()),
@@ -1007,6 +1010,7 @@ fn check_borrowed_incremental_crash(
                 source.core(),
                 &prepared,
                 TrustedSuccessorPolicyV1::UNBOUNDED,
+                DurableLimits::UNBOUNDED,
                 capture,
             )
             .map(|successor| successor.authority().slot()),

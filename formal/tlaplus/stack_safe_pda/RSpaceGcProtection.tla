@@ -3,6 +3,7 @@ EXTENDS Naturals, FiniteSets, TLC
 
 CONSTANTS MaxWalWindow, MaxWalEvents, KnownMode, OmitCoupledFacet, IgnoreExactPin,
           IgnoreDurableExactPin, OmitKnownClosure, PrunePastWalStart, BlockWalOnOldPack
+CONSTANT AdmitPastWalWindow
 
 ASSUME MaxWalWindow \in Nat \ {0}
 ASSUME MaxWalEvents \in Nat \ {0}
@@ -13,6 +14,7 @@ ASSUME IgnoreDurableExactPin \in BOOLEAN
 ASSUME OmitKnownClosure \in BOOLEAN
 ASSUME PrunePastWalStart \in BOOLEAN
 ASSUME BlockWalOnOldPack \in BOOLEAN
+ASSUME AdmitPastWalWindow \in BOOLEAN
 
 BaseObjects == {"manifest", "semantic", "compatibility", "history",
                 "operationRoot", "replayRoot"}
@@ -245,7 +247,7 @@ Reclaim ==
 
 AdvanceWal ==
   /\ phase # "crashed"
-  /\ walTail - walHead < MaxWalWindow
+  /\ (IF AdmitPastWalWindow THEN TRUE ELSE walTail - walHead < MaxWalWindow)
   /\ walTail < MaxWalEvents
   /\ walTail' = walTail + 1
   /\ UNCHANGED <<phase, catalog, copied, oldPresent, oldPins, newPins,

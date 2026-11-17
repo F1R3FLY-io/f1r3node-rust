@@ -278,6 +278,7 @@ pub(crate) enum IncrementalPublicationErrorV1 {
     Io(DurableIoError),
     LogPack(Box<LogPackFormatError>),
     Durable(Box<super::DurableFormatError>),
+    Limit(DurableLimitError),
     CatalogCompareAndSwap,
     CatalogCommitIndeterminate(DurableIoError),
     PublishedCatalogDirectory(DurableIoError),
@@ -316,6 +317,7 @@ impl IncrementalPublicationErrorV1 {
             Self::Io(_) |
             Self::LogPack(_) |
             Self::Durable(_) |
+            Self::Limit(_) |
             Self::CatalogCompareAndSwap |
             Self::BaseStateMismatch { .. } |
             Self::ProfileMismatch |
@@ -362,6 +364,10 @@ impl From<LogPackFormatError> for IncrementalPublicationErrorV1 {
 
 impl From<super::DurableFormatError> for IncrementalPublicationErrorV1 {
     fn from(error: super::DurableFormatError) -> Self { Self::Durable(Box::new(error)) }
+}
+
+impl From<DurableLimitError> for IncrementalPublicationErrorV1 {
+    fn from(error: DurableLimitError) -> Self { Self::Limit(error) }
 }
 
 impl From<DurableIoError> for IncrementalAppendErrorV1 {
@@ -1031,6 +1037,10 @@ pub(crate) fn publish_incremental_with_terminal_v1<P: SemanticProfile>(
     let prepared = prepared.prepared();
     let current = authority.slot();
     let retention_manifest = require_incremental_base(lease, &authority, prepared)?;
+    source
+        .core()
+        .recovery_window()
+        .admit_incremental_append(recovery_limits, current, prepared)?;
     truncate_incremental_pack(lease, current)?;
     let appended = append_incremental_prepare_and_index(lease, current, prepared)?;
     let (_, successor_image) = commit_incremental_successor(
@@ -1083,6 +1093,7 @@ pub(crate) fn publish_trusted_incremental_v1<P: SemanticProfile>(
     source: &DurableAuthorityCoreV1<P>,
     prepared: &PreparedDurableLogPackTransactionV1<'_, '_, P>,
     policy: TrustedSuccessorPolicyV1,
+    recovery_limits: DurableLimits,
     retain_terminal: impl FnOnce(CatalogSlotV1),
 ) -> Result<DurableAuthorityCoreV1<P>, IncrementalPublicationErrorV1> {
     source
@@ -1096,6 +1107,10 @@ pub(crate) fn publish_trusted_incremental_v1<P: SemanticProfile>(
     let prepared = prepared.prepared();
     let current = authority.slot();
     let retention_manifest = require_incremental_base(lease, &authority, prepared)?;
+    let window =
+        source
+            .recovery_window()
+            .admit_incremental_append(recovery_limits, current, prepared)?;
     let plan = IncrementalAppendPlanV1::new(current, prepared)?;
     let index = source
         .trusted_successor_index(plan.index_append.records(), plan.index_append.new_tail())
@@ -1116,7 +1131,7 @@ pub(crate) fn publish_trusted_incremental_v1<P: SemanticProfile>(
         retain_terminal,
     )?;
     let core = source
-        .assemble_trusted_successor(lease, trusted, successor, successor_image, index)
+        .assemble_trusted_successor(lease, trusted, successor, successor_image, index, window)
         .map_err(|error| {
             IncrementalPublicationErrorV1::TrustedSuccessorAssembly(Box::new(error))
         })?;

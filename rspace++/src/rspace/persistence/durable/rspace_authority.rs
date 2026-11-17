@@ -1022,6 +1022,7 @@ where P::Channel: Clone + Hash + Eq
             &self.source,
             &prepared,
             limits.trusted,
+            limits.recovery,
             |terminal| pending.expected = Some(terminal),
         )?;
         if pending.expected != Some(successor.authority().slot()) {

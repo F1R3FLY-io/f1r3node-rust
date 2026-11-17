@@ -94,6 +94,11 @@ pub(crate) use io::{
     DurableIoFailpointV1, arm_catalog_slot_write_prefix, arm_durable_io_failpoint,
     arm_reclamation_intent_write_prefix, armed_durable_io_failpoint,
 };
+#[cfg(all(test, unix))]
+pub(crate) use io::{
+    DurableIoOperation, DurableStorageFaultV1, arm_durable_storage_fault,
+    clear_durable_storage_fault,
+};
 #[cfg(test)]
 pub(crate) use io::{DurableWriterLeaseV1, FileLengthExpectation, index_file_name, pack_file_name};
 pub use layout::{INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, PACK_HEADER_LEN_V1};
@@ -104,6 +109,8 @@ pub(crate) use preimage::{
     PREIMAGE_FILE_NAME_V1, PreimageEntryV1, PreimageIndexError, PreimageIndexV1, PreimageKindV1,
     arm_preimage_partial_write_hook,
 };
+#[cfg(all(test, unix))]
+pub(crate) use publication::IncrementalAppendErrorV1;
 #[cfg(test)]
 pub(crate) use publication::require_incremental_retention_manifest;
 #[cfg(test)]

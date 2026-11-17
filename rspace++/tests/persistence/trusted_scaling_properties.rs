@@ -775,6 +775,7 @@ impl<'fixture> ScalingChain<'fixture> {
                     &self.core,
                     &prepared,
                     policy,
+                    DurableLimits::UNBOUNDED,
                     |_| {},
                 )
             })

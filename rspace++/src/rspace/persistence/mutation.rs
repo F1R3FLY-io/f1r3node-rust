@@ -1426,6 +1426,22 @@ impl<'a> MutationBatchViewV1<'a> {
     pub fn continuations(self) -> ContentMutationIter<'a> { self.continuations.iter() }
 
     pub fn joins(self) -> CountMutationIter<'a> { self.joins.iter() }
+
+    pub(crate) fn prior_key_reread_bytes(self) -> u64 {
+        section_prior_key_reread_bytes(self.data().map(|entry| entry.key)) +
+            section_prior_key_reread_bytes(self.continuations().map(|entry| entry.key)) +
+            section_prior_key_reread_bytes(self.joins().map(|entry| entry.key))
+    }
+}
+
+fn section_prior_key_reread_bytes<'a>(keys: impl Iterator<Item = &'a [u8]>) -> u64 {
+    let mut reread_bytes = 0u64;
+    let mut previous_key_bytes = 0u64;
+    for key in keys {
+        reread_bytes += previous_key_bytes;
+        previous_key_bytes = key.len() as u64;
+    }
+    reread_bytes
 }
 
 #[derive(Clone, Copy, Debug)]

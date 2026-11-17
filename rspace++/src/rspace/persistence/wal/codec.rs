@@ -219,6 +219,7 @@ pub struct PreparedLogPackTransactionV1<'transaction, 'mutation, P: SemanticProf
     object_count: u64,
     object_bytes: u64,
     object_plan: LogPackObjectPlanV1,
+    prior_key_reread_bytes: u64,
     _profile: PhantomData<fn() -> P>,
 }
 
@@ -328,6 +329,7 @@ impl<'transaction, 'mutation, P: SemanticProfile>
             },
         )?;
         validate_mutation_receipt(mutation, receipt)?;
+        let prior_key_reread_bytes = mutation.prior_key_reread_bytes();
 
         let object_count = checked_len(transaction.objects().len(), "WAL objects")?;
         require_limit("objects", limits.max_objects, object_count)?;
@@ -410,6 +412,7 @@ impl<'transaction, 'mutation, P: SemanticProfile>
             object_count,
             object_bytes,
             object_plan,
+            prior_key_reread_bytes,
             _profile: PhantomData,
         })
     }
@@ -443,6 +446,10 @@ impl<'transaction, 'mutation, P: SemanticProfile>
     pub(crate) const fn sequence(&self) -> LogPackSequence { self.sequence }
 
     pub(crate) const fn inline_count(&self) -> u64 { self.object_plan.inline_count() }
+
+    pub(crate) const fn object_count(&self) -> u64 { self.object_count }
+
+    pub(crate) const fn prior_key_reread_bytes(&self) -> u64 { self.prior_key_reread_bytes }
 
     /// Canonical bytes physically inlined by this prepare record. Reused
     /// objects are excluded from the inventory.

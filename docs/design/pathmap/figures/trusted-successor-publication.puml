@@ -21,7 +21,7 @@ skinparam ActivityBorderColor #455A64
 skinparam ActivityDiamondBorderColor #455A64
 skinparam NoteBorderColor #455A64
 
-title <b>The trusted publication of a bound transaction</b>\npublish_trusted_incremental_v1(lease, core, prepared, policy, retain_terminal) returns the successor core that it assembled\nbefore the catalog swap: no physical recovery, no index rebuild and no cold admission
+title <b>The trusted publication of a bound transaction</b>\npublish_trusted_incremental_v1(lease, core, prepared, policy, recovery_limits, retain_terminal) returns the successor core that it assembled\nbefore the catalog swap: no physical recovery, no index rebuild and no cold admission
 
 start
 :writer preflight: the lease shares\nthe core's generation-lease registry; <<#CFD8DC>>
@@ -45,6 +45,11 @@ endif
 :require_incremental_base: the receipt's base is the\ncurrent state, its profile is P, it names a retention\nmanifest, and the catalog file holds the core's image; <<#CFD8DC>>
 if (all hold?) then (no)
   :BaseStateMismatch, ProfileMismatch,\nMissingRetentionManifest or CatalogCompareAndSwap\n<b>definitely not published</b>; <<#FFCDD2>>
+  stop
+endif
+:admit_incremental_append: the recovery window that crash\nrecovery would measure on the successor, from the window\nthe core carries and the prepared record, against\nrecovery_limits; <<#CFD8DC>>
+if (inside every limit?) then (no)
+  :Limit\n<b>definitely not published</b>; nothing written; <<#FFCDD2>>
   stop
 endif
 :plan the append: the PREPARE address, the index\ngeneration, the new objects' index records and\nthe new index tail (IncrementalAppendPlanV1); <<#CFD8DC>>

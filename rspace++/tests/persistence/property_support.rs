@@ -455,6 +455,7 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
         "another_process_reclaims_unblocked_by_a_live_or_killed_reader_and_leaves_nothing_stale",
     ),
     ("GC-18", "an_owner_open_in_another_process_refuses_the_writer_lock_as_contended"),
+    ("GC-19", "an_append_is_acknowledged_only_inside_the_recovery_window"),
     ("TX-01", "pages_carry_exactly_the_closure_once_parent_first_for_deep_wide_and_shared_states"),
     ("DF-01", "visited_differences_turn_the_from_state_into_the_to_state"),
     ("DF-02", "a_difference_reads_only_the_nodes_the_two_states_do_not_share"),

@@ -369,6 +369,7 @@ fn check_trusted_durable_chain(states: &[ModelState]) {
             &core,
             &prepared,
             TrustedSuccessorPolicyV1::UNBOUNDED,
+            crate::rspace::persistence::DurableLimits::UNBOUNDED,
             |_| {},
         )
         .expect("the trusted successor publishes");

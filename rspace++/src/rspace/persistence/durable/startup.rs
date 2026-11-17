@@ -185,6 +185,10 @@ impl IndexBoundPhysicalRecoveryV1 {
 
     pub(crate) const fn scanned_bytes(&self) -> u64 { self.recovery.scanned_bytes() }
 
+    pub(crate) const fn recovery_window(&self) -> super::recovery::RecoveryWindowDemandV1 {
+        self.recovery.window_demand()
+    }
+
     pub(crate) fn object_index(&self) -> &CommittedObjectIndexV1 { self.recovery.object_index() }
 
     pub(crate) const fn catalog_authority(&self) -> &CatalogAuthorityTokenV1 {

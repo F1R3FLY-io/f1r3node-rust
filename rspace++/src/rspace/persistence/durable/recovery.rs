@@ -25,6 +25,7 @@ use crate::rspace::persistence::mutation::{
 use crate::rspace::persistence::object::CanonicalObjectStreamValidatorV1;
 use crate::rspace::persistence::physical::PHYSICAL_DIGEST_LEN;
 use crate::rspace::persistence::retention::v2_format::RetentionReader;
+use crate::rspace::persistence::semantic::SemanticProfile;
 use crate::rspace::persistence::wal::{
     GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1,
     GenerationCheckpointCommitViewV1, GenerationCheckpointPrepareIdentityV1,
@@ -203,6 +204,7 @@ pub(crate) struct ScannedPackChainV1<I = CommittedObjectIndexV1> {
     checkpoints: u64,
     object_records: u64,
     scanned_bytes: u64,
+    sealed_pack_bytes: u64,
     read_work: RecoveryReadWorkV1,
 }
 
@@ -236,6 +238,134 @@ impl RecoveryReadWorkV1 {
     }
 
     pub(crate) const fn layout_replay_bytes(self) -> u64 { self.layout_application_replay_bytes }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RecoveryWindowDemandV1 {
+    transactions: u64,
+    object_records: u64,
+    scanned_bytes: u64,
+    physical_read_bytes: u64,
+    sealed_pack_bytes: u64,
+}
+
+impl RecoveryWindowDemandV1 {
+    #[cfg(test)]
+    pub(crate) const fn transactions(self) -> u64 { self.transactions }
+
+    #[cfg(test)]
+    pub(crate) const fn object_records(self) -> u64 { self.object_records }
+
+    #[cfg(test)]
+    pub(crate) const fn scanned_bytes(self) -> u64 { self.scanned_bytes }
+
+    #[cfg(test)]
+    pub(crate) const fn physical_read_bytes(self) -> u64 { self.physical_read_bytes }
+
+    #[cfg(test)]
+    pub(crate) const fn sealed_pack_bytes(self) -> u64 { self.sealed_pack_bytes }
+
+    pub(crate) fn admit_incremental_append<P: SemanticProfile>(
+        self,
+        limits: DurableLimits,
+        current: crate::rspace::persistence::CatalogSlotV1,
+        prepared: &crate::rspace::persistence::wal::PreparedLogPackTransactionV1<'_, '_, P>,
+    ) -> Result<Self, DurableLimitError> {
+        let pack = current.pack();
+        let prepare_bytes = prepared.record_len();
+        let sealed_live_packs = pack
+            .active_pack()
+            .checked_sub(pack.first_live_pack())
+            .expect("a catalog pack state orders its first live pack before its active pack");
+        let index_tail = pack.durable_index_tail();
+        let index_records = index_tail
+            .checked_sub(INDEX_HEADER_LEN_V1)
+            .expect("a catalog pack state appoints an index tail past the index header") /
+            INDEX_RECORD_LEN_V1;
+        let source_replay_bytes = prepare_bytes
+            .checked_sub(CHECKSUM_FIELD_LEN as u64)
+            .expect("a prepared record contains its checksum field");
+        let layout_replay_bytes = prepared
+            .object_count()
+            .checked_mul(OBJECT_RECORD_HEADER_LEN_V1)
+            .expect("a prepared record contains the header of every object record");
+        let appended_bytes = checked_window_sum(
+            DurableLimitKind::PackBytes,
+            prepare_bytes,
+            TRANSACTION_COMMIT_RECORD_LEN_V1,
+        )?;
+        let replayed_bytes = checked_window_sum(
+            DurableLimitKind::TotalPhysicalReadBytes,
+            source_replay_bytes,
+            layout_replay_bytes,
+        )?;
+        let reread_bytes = checked_window_sum(
+            DurableLimitKind::TotalPhysicalReadBytes,
+            replayed_bytes,
+            prepared.prior_key_reread_bytes(),
+        )?;
+        let read_bytes = checked_window_sum(
+            DurableLimitKind::TotalPhysicalReadBytes,
+            appended_bytes,
+            reread_bytes,
+        )?;
+
+        limits.checked_charge(DurableLimitKind::LivePacks, sealed_live_packs, 1)?;
+        limits.require(DurableLimitKind::PackBytes, self.sealed_pack_bytes)?;
+        limits.checked_charge(
+            DurableLimitKind::PackBytes,
+            pack.durable_pack_tail(),
+            appended_bytes,
+        )?;
+        let scanned_bytes = limits.checked_charge(
+            DurableLimitKind::TotalScanBytes,
+            self.scanned_bytes,
+            appended_bytes,
+        )?;
+        let physical_read_bytes = limits.checked_charge(
+            DurableLimitKind::TotalPhysicalReadBytes,
+            self.physical_read_bytes,
+            read_bytes,
+        )?;
+        let transactions =
+            limits.checked_charge(DurableLimitKind::Transactions, self.transactions, 1)?;
+        let object_records = limits.checked_charge(
+            DurableLimitKind::ObjectRecords,
+            self.object_records,
+            prepared.object_count(),
+        )?;
+        limits.checked_charge(
+            DurableLimitKind::IndexRecords,
+            index_records,
+            prepared.inline_count(),
+        )?;
+        limits.checked_charge(
+            DurableLimitKind::IndexBytes,
+            index_tail,
+            prepared.inline_count().saturating_mul(INDEX_RECORD_LEN_V1),
+        )?;
+        Ok(Self {
+            transactions,
+            object_records,
+            scanned_bytes,
+            physical_read_bytes,
+            sealed_pack_bytes: self.sealed_pack_bytes,
+        })
+    }
+}
+
+fn checked_window_sum(
+    resource: DurableLimitKind,
+    current: u64,
+    additional: u64,
+) -> Result<u64, DurableLimitError> {
+    current
+        .checked_add(additional)
+        .ok_or(DurableLimitError::CounterOverflow {
+            resource,
+            current,
+            additional,
+        })
 }
 
 /// Catalog-authoritative recovery result. This type can only be constructed by
@@ -297,6 +427,16 @@ impl<I> CatalogVerifiedRecoveryV1<I> {
     pub(crate) const fn scanned_bytes(&self) -> u64 { self.scan.scanned_bytes }
 
     pub(crate) const fn read_work(&self) -> RecoveryReadWorkV1 { self.scan.read_work }
+
+    pub(crate) const fn window_demand(&self) -> RecoveryWindowDemandV1 {
+        RecoveryWindowDemandV1 {
+            transactions: self.scan.transactions,
+            object_records: self.scan.object_records,
+            scanned_bytes: self.scan.scanned_bytes,
+            physical_read_bytes: self.scan.read_work.physical_read_bytes,
+            sealed_pack_bytes: self.scan.sealed_pack_bytes,
+        }
+    }
 
     pub(crate) const fn terminal_commit(&self) -> TerminalCommitViewV1 { self.scan.terminal_commit }
 
@@ -2793,6 +2933,7 @@ where
     let mut object_records = 0u64;
     let mut index_records = 0u64;
     let mut scanned_bytes = 0u64;
+    let mut sealed_pack_bytes = 0u64;
     let mut accounting = RecoveryReadAccountingV1::default();
     let mut expected_index_tail = INDEX_HEADER_LEN_V1;
     limits.require(DurableLimitKind::IndexBytes, expected_index_tail)?;
@@ -2956,6 +3097,7 @@ where
         if pack_id == active_pack {
             break;
         }
+        sealed_pack_bytes = sealed_pack_bytes.max(durable_tail);
         pack_raw = pack_raw
             .checked_add(1)
             .ok_or(RecoveryError::Arithmetic("pack identifier"))?;
@@ -2980,6 +3122,7 @@ where
         checkpoints,
         object_records,
         scanned_bytes,
+        sealed_pack_bytes,
         read_work: accounting.report(scanned_bytes),
     })
 }

@@ -4520,10 +4520,11 @@ A trusted publication therefore passes the thirteen hooks 2 to 14, and a
 cold-checked one the sixteen hooks 2 to 17.
 
 **The publication.** `publish_trusted_incremental_v1(lease, core, prepared,
-policy, retain_terminal)` (`durable/publication.rs:909-970`) takes the
-writer's lease, the predecessor core, a transaction that
+policy, recovery_limits, retain_terminal)` (`durable/publication.rs:909-970`)
+takes the writer's lease, the predecessor core, a transaction that
 `bind_trusted_transaction` sealed and `prepare_transaction` prepared, the
-trusted successor policy, and a callback that retains the terminal catalog
+trusted successor policy, since task 12444 the recovery limits that bound the
+successor's WAL, and a callback that retains the terminal catalog
 slot. It returns the successor's `DurableAuthorityCoreV1`. Its steps run in
 this order, and the first failure ends the publication.
 
@@ -4539,7 +4540,12 @@ this order, and the first failure ends the publication.
    receipt's base is the current state, `ProfileMismatch` unless the receipt's
    profile is `P`, `MissingRetentionManifest` unless the transaction names a
    retention manifest, and `CatalogCompareAndSwap` unless the catalog file
-   holds exactly the core's 672-byte image.
+   holds exactly the core's 672-byte image. Since task 12444 the
+   recovery-window preflight `admit_incremental_append` follows in both
+   incremental modes: it refuses `Limit` unless the WAL of the successor stays
+   inside the recovery limits of the call, and nothing has been written (the
+   section on
+   [WAL admission inside the recovery window](#wal-admission-inside-the-recovery-window-2026-11-16)).
 3. ⟨Plan the append and assemble the index⟩. `IncrementalAppendPlanV1::new`
    (`durable/publication.rs:1167-1192`) derives, as the cold-checked append
    does, the PREPARE record's address at the active pack's appointed tail, the
@@ -4595,7 +4601,7 @@ step 9 its adoption. Each failure falls into one outcome class.
 
 | Outcome class | Errors | Raised at |
 |---|---|---|
-| Definitely not published | `Preparation`, `BaseStateMismatch`, `ProfileMismatch`, `MissingRetentionManifest`, `CatalogCompareAndSwap`, `TrustedSuccessorAssembly`, and the append's and commit's `Append`, `Io`, `LogPack` and `Durable` | steps 1 to 6, and the comparison of step 7 |
+| Definitely not published | `Preparation`, `BaseStateMismatch`, `ProfileMismatch`, `MissingRetentionManifest`, `CatalogCompareAndSwap`, `Limit`, `TrustedSuccessorAssembly`, and the append's and commit's `Append`, `Io`, `LogPack` and `Durable` | steps 1 to 6, and the comparison of step 7 |
 | Indeterminate | `CatalogCommitIndeterminate` | the slot write and the file sync of step 7 |
 | Published with an error | `PublishedCatalogDirectory` | the catalog directory sync of step 7 |
 | Published with an error | `PublishedRecovery` | steps 8 and 9 |
@@ -4613,7 +4619,7 @@ index, cold admission under the incoming limits, and the metadata inventory
 comparison. It assembles no index and no core, and its writes, hooks and
 errors are unchanged.
 
-![The trusted publication of a bound transaction. publish_trusted_incremental_v1(lease, core, prepared, policy, retain_terminal) returns the successor core that it assembled before the catalog swap, with no physical recovery, no index rebuild and no cold admission. In grey, the steps shared with the cold-checked publication: the writer preflight, which refuses Preparation(AuthorityMismatch) unless the lease shares the core's generation-lease registry; require_incremental_base, which refuses BaseStateMismatch, ProfileMismatch, MissingRetentionManifest or CatalogCompareAndSwap unless the receipt's base is the current state, its profile is P, it names a retention manifest and the catalog file holds the core's image; the append plan of the PREPARE address, the index generation, the new objects' index records and the new index tail; the truncation of the active pack to its appointed tail and the writes and syncs of the PREPARE and index records, at hooks AfterPrepareWrite to AfterIndexSync; and the commit step, which stages the successor slot and its image, retains the terminal, writes and syncs the commit record and syncs the artifact directory, at hooks AfterCommitWrite to AfterArtifactDirectorySync. In purple, preflight_trusted, which refuses AuthorityMismatch unless the sealed predecessor authority and registry are the core's, PublicationModeMismatch unless the binding is trusted and TrustedPolicyMismatch unless the policy is the sealed one, and otherwise borrows the prepared trusted successor that the bind sealed. In blue, the trusted derivations: trusted_successor_index, which clones the core's index, inserts each new record and requires the derived tail 64 + 72n to equal the planned tail, refusing TrustedSuccessorAssembly with DuplicateData, DigestReferenceConflict, RecordCountOverflow or CanonicalStreamTail before anything is written; assemble_trusted_successor, which selects the token from the successor image, pins the store over the new index, binds the validity token to the slot's state and builds the core from the prepared successor, refusing TrustedSuccessorAssembly with AuthorityChanged or PackTail while the catalog still names the predecessor; the resolution of the reclamation sidecar against the successor slot, which fails as PublishedRecovery; and the re-read of the 672-byte catalog image, which fails as PublishedRecovery with CatalogAuthorityChanged unless it is byte-equal to the core's image. In amber, the catalog swap: the comparison with the core's image at BeforeCatalogCompareAndSwap and AfterCatalogCasVerifiedBeforeSlotWrite, which refuses CatalogCompareAndSwap; the write and sync of the inactive slot at AfterCatalogSlotWrite and AfterCatalogFileSyncBeforeDirectorySync, whose failure is CatalogCommitIndeterminate; and the sync of the catalog directory at AfterCatalogDirectorySync and AfterCatalogSyncBeforeRecovery, whose failure is PublishedCatalogDirectory. Each red failure names its outcome class: definitely not published, indeterminate, or published with an error. In green, the returned successor core with its authority, store, validity, shape, ledger, retained states and maxima, which carries no cold evidence. Three notes state that a failure before the slot write is definitely not published, one during the slot write or its sync indeterminate, and one after the catalog file is durable published with an error, which the journal owner resolves by cold recovery; that the cold-checked publication runs every grey and amber step with the same bytes, skips the blue ones, and after the directory sync runs physical recovery, cold admission and the metadata inventory check, sixteen hooks against the trusted thirteen; and that the model adopts a successor only after an exact re-read of the catalog (AdoptTrusted, AdoptedSuccessorIsExactCatalog), which costs one 672-byte read per publication](figures/trusted-successor-publication.svg)
+![The trusted publication of a bound transaction. publish_trusted_incremental_v1(lease, core, prepared, policy, recovery_limits, retain_terminal) returns the successor core that it assembled before the catalog swap, with no physical recovery, no index rebuild and no cold admission. In grey, the steps shared with the cold-checked publication: the writer preflight, which refuses Preparation(AuthorityMismatch) unless the lease shares the core's generation-lease registry; require_incremental_base, which refuses BaseStateMismatch, ProfileMismatch, MissingRetentionManifest or CatalogCompareAndSwap unless the receipt's base is the current state, its profile is P, it names a retention manifest and the catalog file holds the core's image; admit_incremental_append, which since task 12444 refuses Limit, with nothing written, unless the recovery window that crash recovery would measure on the successor, derived from the window the core carries and the prepared record, stays inside recovery_limits; the append plan of the PREPARE address, the index generation, the new objects' index records and the new index tail; the truncation of the active pack to its appointed tail and the writes and syncs of the PREPARE and index records, at hooks AfterPrepareWrite to AfterIndexSync; and the commit step, which stages the successor slot and its image, retains the terminal, writes and syncs the commit record and syncs the artifact directory, at hooks AfterCommitWrite to AfterArtifactDirectorySync. In purple, preflight_trusted, which refuses AuthorityMismatch unless the sealed predecessor authority and registry are the core's, PublicationModeMismatch unless the binding is trusted and TrustedPolicyMismatch unless the policy is the sealed one, and otherwise borrows the prepared trusted successor that the bind sealed. In blue, the trusted derivations: trusted_successor_index, which clones the core's index, inserts each new record and requires the derived tail 64 + 72n to equal the planned tail, refusing TrustedSuccessorAssembly with DuplicateData, DigestReferenceConflict, RecordCountOverflow or CanonicalStreamTail before anything is written; assemble_trusted_successor, which selects the token from the successor image, pins the store over the new index, binds the validity token to the slot's state and builds the core from the prepared successor, refusing TrustedSuccessorAssembly with AuthorityChanged or PackTail while the catalog still names the predecessor; the resolution of the reclamation sidecar against the successor slot, which fails as PublishedRecovery; and the re-read of the 672-byte catalog image, which fails as PublishedRecovery with CatalogAuthorityChanged unless it is byte-equal to the core's image. In amber, the catalog swap: the comparison with the core's image at BeforeCatalogCompareAndSwap and AfterCatalogCasVerifiedBeforeSlotWrite, which refuses CatalogCompareAndSwap; the write and sync of the inactive slot at AfterCatalogSlotWrite and AfterCatalogFileSyncBeforeDirectorySync, whose failure is CatalogCommitIndeterminate; and the sync of the catalog directory at AfterCatalogDirectorySync and AfterCatalogSyncBeforeRecovery, whose failure is PublishedCatalogDirectory. Each red failure names its outcome class: definitely not published, indeterminate, or published with an error. In green, the returned successor core with its authority, store, validity, shape, ledger, retained states and maxima, which carries no cold evidence. Three notes state that a failure before the slot write is definitely not published, one during the slot write or its sync indeterminate, and one after the catalog file is durable published with an error, which the journal owner resolves by cold recovery; that the cold-checked publication runs every grey and amber step with the same bytes, skips the blue ones, and after the directory sync runs physical recovery, cold admission and the metadata inventory check, sixteen hooks against the trusted thirteen; and that the model adopts a successor only after an exact re-read of the catalog (AdoptTrusted, AdoptedSuccessorIsExactCatalog), which costs one 672-byte read per publication](figures/trusted-successor-publication.svg)
 
 **The re-read.** Decision 3 of the reviewed plan for task 7927 (pgmcp
 artifact 1114) rejected a re-read of the catalog after the swap: J-067 does
@@ -4649,8 +4655,8 @@ journal. `publish_captured` (`:235-289`) then
 3. prepares it under the wal limits and revalidates the journal
    (`:262-268`);
 4. enters `RecoveryRequired` and publishes with
-   `publish_trusted_incremental_v1` under the same trusted policy, retaining
-   the terminal slot (`:269-276`);
+   `publish_trusted_incremental_v1` under the same trusted policy and, since
+   task 12444, the recovery limits, retaining the terminal slot (`:269-276`);
 5. refuses `UnexpectedTerminal` unless the returned core's slot is the
    retained terminal (`:277-283`), and enters `AwaitingAck` with the
    successor core.
@@ -4669,7 +4675,7 @@ Production calls `into_core` only at `:155` and `:308`, and only tests call
 | Branch | Limits consulted | Hooks | Cold checks |
 |---|---|---|---|
 | Empty journal | none | none | 0 |
-| Non-empty journal, published | transaction, wal, trusted | 2 to 14 | 0 |
+| Non-empty journal, published | transaction, wal, trusted and, since task 12444, recovery | 2 to 14 | 0 |
 | Refused at the trusted bind | transaction, trusted | none | 0 |
 | Awaiting acknowledgement, retried | none | none | 0 |
 | Recovery required, reconciled | recovery, wal, admission | none | 1 |
@@ -8689,6 +8695,7 @@ derivation matrix must cite.
 | GC-16 | Pinned reads survive a foreign unlink (`PinnedReadReturnsAdmittedBytes`). In the cross-process trial, process A's two handles read the manifest, one datum, one continuation and one join when they are admitted. A closes its owner; process B then publishes onto the pack and the index of A's generation and reclaims that generation with a compaction, and the names of its files are absent before and after A reads again. Every read through A's handles after the reclamation, once with the handles alone and once beside the owner that A reopened at B's successor, returns exactly the admitted reads. A handle on the successor reads B's second datum, so the admitted state is not the current one. | `a_pinned_read_handle_returns_its_admitted_bytes_after_another_process_reclaims_its_packs` |
 | GC-17 | A live or dead reader of another process holds nothing back (`DeadProcessHoldsNothing`). In the cross-process trial, B's writer lock is granted while A holds only handles, and B's compaction of A's generation reclaims it within the call while A runs: right after the call the directory holds exactly `catalog.v1`, `writer.lock.v1` and the successor's pack and index. A then reopens the store and is killed with `SIGKILL` while it holds its owner, two handles on the current generation and its first two handles. B's first lock attempt after the death is granted, the directory holds exactly `catalog.v1`, `writer.lock.v1` and the current generation's pack and index, and B's next compaction reclaims the generation that A's handles held within the call, again leaving exactly the catalog, the lock file and the successor's files. | `another_process_reclaims_unblocked_by_a_live_or_killed_reader_and_leaves_nothing_stale` |
 | GC-18 | One owner at a time across processes (`TypeInvariant` of the pack-lease model, its conjunct on `lock`). In the cross-process trial, while A's owner is open, after A's first open and again after A reopened the store, B's `try_acquire_writer` and B's `recover_read_authority` are each refused with `WriterLockContended`, and the store's files other than `writer.lock.v1` keep their bytes. Once A has closed its owner, B's lock attempt is granted. | `an_owner_open_in_another_process_refuses_the_writer_lock_as_contended` |
+| GC-19 | An append is acknowledged only inside the recovery window (`WalAdmissionBounded`). The recovery window of a generation is its WAL as crash recovery measures it against eight limits of `DurableLimits`: live packs, pack bytes, transactions, object records, scanned bytes, physical read bytes, index bytes and index records. For the trusted and for the cold-checked incremental publication, three appends go onto one store, whose mutations record one, two and three new data on one channel. Before each append, a twin store publishes the same append under ample limits, and crash recovery of the twin measures the successor's demand on the eight limits. For each limit whose demand exceeds one, under limits that equal the demand except that this limit is one lower, crash recovery refuses the twin with `Exceeded` for that limit, and the publication on the store under test is refused with `IncrementalPublicationErrorV1::Limit` and the same limit, bound and demand, is classified `DefinitelyNotPublished`, and changes no byte of the store directory, no generation lease and no retained root, while a Known lease and a pin on the generation are held. Under limits that equal the demand, the append is acknowledged, the store directory equals the twin's, the window that the successor's authority carries equals the measured demand, and crash recovery under those limits accepts the store. Observed: 40 refusals, namely pack bytes, object records, scanned bytes, physical read bytes, index bytes and index records at every append and transactions at the second and the third; and a prior key that recovery reads again, in the appends that record several data. The live-pack limit and the sealed packs' share of the pack-byte limit are not reachable through a writer; see the section on WAL admission inside the recovery window. | `an_append_is_acknowledged_only_inside_the_recovery_window` |
 
 ### Dynamic retained-root handoff to compaction (2026-11-13)
 
@@ -8966,6 +8973,375 @@ request that holds a WAL start later must add its own trial. Reader, export
 and import roots of `RetainedRootRegistryV1` each hold a generation lease on
 the exact admitted generation, the lease of the exact-pin trial, and are not
 run separately.
+
+### WAL admission inside the recovery window (2026-11-16)
+
+Task 12444 (leaf GC8 of task 7944) binds the invariant `WalAdmissionBounded`
+of the GC protection model
+[`RSpaceGcProtection.tla`](../../../formal/tlaplus/stack_safe_pda/RSpaceGcProtection.tla)
+as GC-19. It adds one component, the *recovery-window preflight* of the two
+incremental publications, and a storage fault for the tests of the failpoints
+before the catalog swap. Before this task an incremental publication compared
+nothing with the limits of crash recovery before it wrote. The cold-checked
+publication met those limits only in the recovery that it runs after the
+catalog swap, where an excess is `PublishedRecovery`: the store is published
+and the caller holds an error. The trusted publication, which the journal
+owner uses, took no recovery limits and runs no recovery, so it acknowledged
+a successor that crash recovery under the owner's own limits refuses, and the
+next start could not open an acknowledged store. No persisted byte, record
+kind, file name, root or wire message changes.
+
+**Terms.** An *acknowledgement* is the `Ok` of a publication; the journal
+owner acknowledges its journals only after it. *Crash recovery* is the
+physical recovery of a start and of the owner's `reconcile`,
+`recover_index_bound_v1`: one scan of the packs that the selected catalog
+slot authorizes, then a probe of the index. The *recovery limits* are the
+`DurableLimits` that its caller passes. The *recovery window* of a generation
+is its WAL from the WAL head to the recovery tail (the section on the WAL
+frontier above), as that scan charges it to eight of those limits:
+
+| Limit kind | What the scan charges |
+|---|---|
+| `LivePacks` | the packs from the first live pack to the active pack of the slot |
+| `PackBytes` | each of these packs alone: the slot's durable pack tail for the active pack, the file length for a sealed pack |
+| `TotalScanBytes` | the sum of those lengths |
+| `TotalPhysicalReadBytes` | every byte that the scan reads, each time it reads it |
+| `Transactions` | one per incremental record |
+| `ObjectRecords` | every object record of every record, whether its bytes are inline or reused |
+| `IndexRecords` | one per object that the scan indexes |
+| `IndexBytes` | the index stream of those objects: a header of 64 bytes and 72 bytes per record |
+
+The *demand* of a generation on a limit is the value that the scan has
+charged when it ends: the largest pack for `PackBytes`, the final count for
+every other kind. Each charge only raises a counter and is compared with its
+limit at once, so the scan accepts a generation exactly when no demand
+exceeds its limit. Crash recovery charges nothing to the two remaining kinds
+of `DurableLimits`, the full-byte comparison limits.
+
+**The carried window.** The catalog slot records the first live pack $`f`$,
+the active pack $`a`$, the durable pack tail $`t`$ and the durable index tail
+$`x`$ of its generation. A `DurableAuthorityCoreV1` now carries the rest of
+the demand as a `RecoveryWindowDemandV1` $`w = (T, O, S, R, B)`$: the
+transactions $`T`$, the object records $`O`$, the scanned bytes $`S`$ and the
+physical read bytes $`R`$ of the scan that admitted the generation, and the
+length $`B`$ of its largest sealed live pack, which is zero for a generation
+of one pack. Cold admission takes $`w`$ from the scan of the recovery that it
+admits (`IndexBoundPhysicalRecoveryV1::recovery_window`), and the trusted
+publication gives its successor core the window that the preflight returns.
+Carrying five integers avoids a second scan of the WAL at every publication,
+which would cost the reads that the trusted publication exists to avoid.
+
+**The demand of a successor.** Let the prepared transaction have a PREPARE
+record of $`L`$ bytes with $`n`$ object records, of which $`d`$ are *inline*:
+new objects whose bytes the record carries and which the index gains. Let
+$`C = 384`$ be the length of a commit record in bytes. Let $`K`$ be the
+*prior-key reread* of the record's mutation: the scan decodes the keys of the
+mutation in three sections (data, continuations and joins) and reads the
+whole previous key again before each key after the first of its section, so
+$`K`$ is the sum, over the sections, of the lengths of all keys but the last
+(`MutationBatchViewV1::prior_key_reread_bytes`, which
+`PreparedLogPackTransactionV1` computes once when it is built). The scan
+reads the appended record and its commit once, $`L + C`$ bytes; it reads the
+record without its checksum field of 8 bytes again to replay its source,
+$`L - 8`$ bytes; and it reads the header of 48 bytes of each object record
+again to lay the objects out, $`48\,n`$ bytes. The successor of the append
+therefore has the demand
+
+```math
+\begin{aligned}
+D_{\mathrm{LivePacks}} &= a - f + 1, &
+D_{\mathrm{PackBytes}} &= \max(B,\ t + L + C),\\
+D_{\mathrm{TotalScanBytes}} &= S + L + C, &
+D_{\mathrm{TotalPhysicalReadBytes}} &= R + (L + C) + (L - 8) + 48\,n + K,\\
+D_{\mathrm{Transactions}} &= T + 1, &
+D_{\mathrm{ObjectRecords}} &= O + n,\\
+D_{\mathrm{IndexRecords}} &= \frac{x - 64}{72} + d, &
+D_{\mathrm{IndexBytes}} &= x + 72\,d.
+\end{aligned}
+```
+
+Every term is known before the first byte is written: $`f`$, $`a`$, $`t`$ and
+$`x`$ from the slot, $`w`$ from the core, and $`L`$, $`n`$, $`d`$ and $`K`$
+from the prepared record.
+
+**The preflight.**
+`RecoveryWindowDemandV1::admit_incremental_append(limits, slot, prepared)` in
+`durable/recovery.rs` runs in three steps.
+
+1. ⟨Derive the work of the record⟩. From the prepared record it takes $`L`$,
+   $`n`$, $`d`$ and $`K`$ and forms the appended bytes $`L + C`$ and the read
+   bytes $`(L + C) + (L - 8) + 48\,n + K`$. A sum that leaves 64 bits is
+   refused as `DurableLimitError::CounterOverflow`.
+2. ⟨Charge the limits⟩. It compares the eight demands with `limits` in the
+   order `LivePacks`, `PackBytes` (first $`B`$, then $`t + L + C`$),
+   `TotalScanBytes`, `TotalPhysicalReadBytes`, `Transactions`,
+   `ObjectRecords`, `IndexRecords`, `IndexBytes`, and refuses the first
+   excess as `DurableLimitError::Exceeded { resource, limit, attempted }`,
+   where `attempted` is the demand.
+3. ⟨Return the successor's window⟩. Otherwise it returns
+   $`(T + 1,\ O + n,\ S + L + C,\ D_{\mathrm{TotalPhysicalReadBytes}},\ B)`$.
+
+The preflight accepts exactly when no demand exceeds its limit, which is when
+the scan accepts the successor. When one limit is too low, both name it with
+the same bound and the same demand. When several are too low, each reports
+the first in its own order: the preflight in the order of step 2, the scan in
+the order of its reads.
+
+Both incremental publications call the preflight with the recovery limits of
+the call, directly after `require_incremental_base` and before the truncation
+of the active pack, which is their first durable mutation. It therefore runs
+before the sync of the commit record and before the comparison of the catalog
+swap. `publish_trusted_incremental_v1` gains the parameter `recovery_limits`
+for it; `publish_incremental_with_terminal_v1` already had one for the
+recovery after its swap. The limits are an argument and not a field of the
+trusted policy or of the core, because the policy is also the argument of the
+bind, where recovery limits mean nothing, and because every other limit of
+this layer is passed with the call.
+
+```text
+ step of an incremental publication             test point passed after it                class of a failure
+ ────────────────────────────────────────────── ───────────────────────────────────────── ───────────────────────────
+ writer preflight and binding preflight                                                   ┐
+ require_incremental_base                                                                 │
+ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓                                             │
+ ┃ admit_incremental_append   ━━▶   Limit   ┃                                             │ definitely not published:
+ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛                                             │ the catalog file holds
+ ┄┄┄┄┄ no byte is written above this line ┄┄┄┄                                            │ the predecessor's image
+ truncate the active pack to its tail                                                     │
+ write the PREPARE record                       ● AfterPrepareWrite                       │
+ sync the pack                                  ● AfterPrepareSync                        │
+ write the index records                        ● AfterIndexWrite                         │
+ sync the index                                 ● AfterIndexSync                          │
+ write the commit record                        ● AfterCommitWrite                        │
+ sync the pack                                  ● AfterCommitSync                         │
+ sync the store directory                       ● AfterArtifactDirectorySync              │
+                                                ● BeforeCatalogCompareAndSwap             │
+ compare the catalog file with the image        ● AfterCatalogCasVerifiedBeforeSlotWrite  ┘
+ ════════════════════════════════ the catalog swap begins: the uncertainty boundary ═════════════════════════════════
+ write the unselected slot                      ● AfterCatalogSlotWrite                   ┐ indeterminate
+ sync the catalog file                          ● AfterCatalogFileSyncBeforeDirectorySync ┘
+ sync the store directory                       ● AfterCatalogDirectorySync               ┐ published,
+                                                ● AfterCatalogSyncBeforeRecovery          │ with an error
+ trusted: resolve the sidecar, re-read                                                    │
+ cold-checked: recovery, cold admission         ● three more test points                  ┘
+```
+
+*Figure.* The order of an incremental publication in both modes, with the
+recovery-window preflight in the heavy box, the test point that is passed
+after each durable step, and the outcome class of a failure at each step. The
+[figure of the trusted publication](figures/trusted-successor-publication.svg)
+shows the same order with the trusted mode's derivations.
+
+**The refusal.** `IncrementalPublicationErrorV1::Limit` carries the
+`DurableLimitError`, and its outcome class is `DefinitelyNotPublished`.
+Nothing has been written or truncated when it is returned: no byte of the
+store directory has changed, the writer keeps its lease and the predecessor's
+authority, and no generation lease and no retained root has been touched. The
+caller may publish the same transaction again under limits that admit its
+successor.
+
+The journal owner passes `limits.recovery`, the limits under which its
+`reconcile` recovers, so a checkpoint cannot acknowledge what its own
+reconciliation would refuse. A refusal reaches the owner's caller as
+`DurableRSpaceTransactionError::Publication` with `Limit`. The owner entered
+`RecoveryRequired` before the publication, as before every publication, so it
+keeps the capture, the permit of the operation gate and every journal, and it
+has retained no terminal. The next call reconciles: cold recovery selects the
+predecessor, the owner returns to `Ready` with its journals unchanged, and a
+checkpoint under limits that admit the successor publishes them.
+
+**Back-pressure and rotation.** The refusal is the back-pressure of the
+model, in which `AdvanceWal` is not enabled while the window is full. The
+window reopens with a generation checkpoint, the model's `RotateWal` (the
+section on the WAL frontier above): the WAL of its successor is one
+checkpoint record and no transaction. The checkpoint's own preflight,
+`preflight_recovery_limits`, already bounded that record before its first
+write, and this task does not change it.
+
+**Storage faults before the swap.** The tests need a device that fills while
+a publication runs. `DurableStorageFaultV1` in `durable/io.rs`, compiled into
+tests only, is armed for one thread and stays in force until the test clears
+it, which stands for space being freed. `StorageFull` makes every positional
+write, every file sync and every directory sync of the durable layer fail
+with `DurableIoError::Io` of the kind `StorageFull`. `ShortWrite` lets the
+next positional write take half of the bytes that it offers and every later
+one none, as a device does that fills in the middle of a write; the
+production write loop turns the write without progress into
+`DurableIoError::ZeroWrite`, and syncs succeed. The fault sits in the physical
+layer below the publication, so the write loop, the buffered sink and the
+error conversions of production run and leave real residue in the files.
+Truncation, the creation of files and reads are not faulted.
+
+A fault begins before the first write or inside the hook of one test point,
+and then persists. The table gives the first operation that it refuses in an
+incremental publication, in both modes, and the outcome class of the typed
+error (`Append` with `Io`, `Io`, or `CatalogCommitIndeterminate`):
+
+| The fault begins | `StorageFull` refuses | Class | `ShortWrite` refuses | Class |
+|---|---|---|---|---|
+| before the first write | the write of the PREPARE record | definitely not published | the write of the PREPARE record | definitely not published |
+| `AfterPrepareWrite` | the sync of the pack | definitely not published | the write of the index records | definitely not published |
+| `AfterPrepareSync` | the write of the index records | definitely not published | the write of the index records | definitely not published |
+| `AfterIndexWrite` | the sync of the index | definitely not published | the write of the commit record | definitely not published |
+| `AfterIndexSync` | the write of the commit record | definitely not published | the write of the commit record | definitely not published |
+| `AfterCommitWrite` | the sync of the pack | definitely not published | the write of the catalog slot | indeterminate |
+| `AfterCommitSync` | the sync of the store directory | definitely not published | the write of the catalog slot | indeterminate |
+| `AfterArtifactDirectorySync`, `BeforeCatalogCompareAndSwap`, `AfterCatalogCasVerifiedBeforeSlotWrite` | the write of the catalog slot | indeterminate | the write of the catalog slot | indeterminate |
+
+A generation checkpoint passes two more test points before its first write,
+`AfterPreflightBeforeCleanup` and `AfterCleanup`, and writes the reclamation
+intent between the sync of the store directory and the catalog swap. Its
+table differs from the one above in two places. A fault that begins before
+the first write or at one of those two points refuses the write of the header
+of the successor's pack. A `ShortWrite` that begins at `AfterCommitWrite` or
+`AfterCommitSync` refuses the write of the temporary file of the reclamation
+intent, and the error is definitely not published.
+
+In every case the catalog selects the old slot afterwards, and crash recovery
+admits exactly that slot. After a refused incremental publication the
+directory has the same file names, and the pack and the index begin with
+every byte that the old slot appoints. Bytes after the appointed tails are
+residue: recovery reads the pack only to its appointed tail and rebuilds an
+index whose length is not the appointed one. A second incremental attempt
+while the fault persists is refused again with a typed storage error, or with
+`CatalogCompareAndSwap` after a short write of the unselected slot, which
+changes bytes of the catalog file outside the selected slot. After a refused
+checkpoint the pack and the index of the old generation are unchanged byte
+for byte. Once the fault is cleared, recovery under the held lease, or a new
+admission of the directory for the checkpoint, returns the old authority, and
+the retry from it publishes a directory that equals, byte for byte, the
+directory of a publication that met no fault.
+
+The three last beginnings, and a `ShortWrite` from `AfterCommitWrite` on in
+an incremental publication, leave the fault nothing to meet but the write of
+the catalog slot. That write is the uncertainty boundary of the publication
+protocol, so its failure is `CatalogCommitIndeterminate`, as it was before
+this task: the error is typed, the old slot stays selected, and the retry
+after recovery succeeds, but the class of the error is indeterminate and not
+definitely not published.
+
+**Retained roots and leases.** The property trial and every storage-fault
+case hold a Known lease on the manifest of the state at which they begin,
+registered through `register_known_root`, and the property trial also holds a
+pin on the generation. The count of active generation leases and the snapshot
+of the retained roots are taken before the publication and compared after
+every refusal; after the second attempt, the recovery and the retry of an
+incremental publication; and after the new admission that follows a refused
+checkpoint. They are equal each time, and the leased generation stays leased,
+through the retried checkpoint as well. A refusal therefore discards no
+retained root and no lease, and neither does the recovery that follows it.
+After a checkpoint the Known lease keeps the pack and the index of the
+superseded generation present.
+
+**The tests.** The module `durable_gc_wal_admission` of the persistence
+tests, on Unix, holds six tests.
+
+1. `an_append_is_acknowledged_only_inside_the_recovery_window` is the
+   property of GC-19, described in its row above. Its oracle is crash
+   recovery itself: the demand is measured on a twin store that published the
+   same append under ample limits, never computed by the test.
+2. `a_generation_checkpoint_reopens_a_full_transaction_window` runs both
+   modes under a limit of two transactions. Two appends are acknowledged; the
+   third is refused with `Exceeded` for `Transactions` with the bound 2 and
+   the demand 3, and no byte changes. A generation checkpoint under the same
+   limits publishes the same state in the pack after the old active pack;
+   crash recovery of it finds one checkpoint and no transaction, and its core
+   carries a window of no transaction. The append that was refused is then
+   acknowledged, and the window carries one transaction.
+3. `the_journal_owner_keeps_its_journals_when_the_recovery_window_refuses_the_publication`
+   lowers the owner's pack-byte limit to one below the durable pack tail of
+   the successor, which a twin owner measures. Two checkpoints in a row are
+   refused with `Publication`, `Limit` and `Exceeded` for `PackBytes`; after
+   each the owner is in `RecoveryRequired` without a retained terminal, holds
+   the gate and the pin of its generation, and the store files and the
+   journals are unchanged. `reconcile` under the same limits returns the old
+   state and frees the gate with the files and journals unchanged, and a
+   checkpoint under ample limits returns the twin's state, leaves the twin's
+   files and empties the journals.
+4. `the_preflight_bounds_the_live_packs_and_the_sealed_packs_that_recovery_reads`
+   calls the preflight on the two-pack fixture of the recovery tests, the one
+   store here with a sealed live pack. Under a limit of one live pack, and
+   under a pack-byte limit one below the length of the sealed pack, the
+   preflight and the recovery of a start refuse with the same error. At the
+   exact pack demand the preflight returns a window with one more
+   transaction, the record's object records, the appended bytes and the same
+   sealed pack.
+5. `storage_faults_before_the_incremental_catalog_swap_refuse_typed_and_retry_once_space_is_freed`
+   runs the 40 cases of the table: two modes, two faults and ten beginnings.
+6. `storage_faults_before_the_checkpoint_catalog_swap_refuse_typed_and_retry_once_space_is_freed`
+   runs the 24 cases of a generation checkpoint: two faults and twelve
+   beginnings.
+
+**The model.** `AdvanceWal` of `RSpaceGcProtection.tla` is guarded by
+`walTail - walHead < MaxWalWindow`, and `WalAdmissionBounded` states
+`walTail - walHead <= MaxWalWindow`. The base model had no mutant for this
+guard, so its gate did not show that the guard carries the invariant. The
+model gains the constant `AdmitPastWalWindow`, which is `FALSE` in the nine
+existing configurations and replaces the guard by `TRUE` in the new
+[`RSpaceGcProtectionAdmitPastWalWindowMutant.cfg`](../../../formal/tlaplus/stack_safe_pda/RSpaceGcProtectionAdmitPastWalWindowMutant.cfg).
+The [bounded gate](../../../scripts/check-rspace-gc-protection-model.sh)
+requires that configuration to violate `WalAdmissionBounded`; TLC reports the
+violation at `walHead = 0` and `walTail = 3` with `MaxWalWindow = 2`, after
+three `AdvanceWal` steps. No action, variable or invariant is added, and both
+baselines keep their state spaces: 1,503,800 distinct states at depth 23 and
+149,684 at depth 24. The model's SHA-256 is now
+`afc647af1efacbbc8705c4d627a978294d6974cb92a0ec424ba33e41248b2c5a`. The model
+counts WAL events; the implementation bounds eight weighted counts of the
+same events, of which the count of transactions is the model's window
+exactly.
+
+**The controls.** Two textual faults for the code, applied one at a time to
+the candidate tree, run in debug and removed, and one for the model.
+
+- The preflight removed, the red copy of the acceptance: both calls of
+  `admit_incremental_append` in `durable/publication.rs` receive
+  `DurableLimits::UNBOUNDED` in place of the limits of the call. The first
+  three tests fail and the other three pass. The property test panics at the
+  first lowered limit of the first trusted append with `was acknowledged, and
+  recovery under the same limits returns Some(Exceeded { resource:
+  PackBytes`: an acknowledged store that crash recovery then refuses. The
+  second test panics with `the third append was acknowledged past a window of
+  two`, and the third with `the owner acknowledged` a state `past the
+  recovery window`.
+- The live-pack bound and the storage fault removed, a control for the three
+  tests that the first fault leaves passing. It has two edits: in
+  `durable/recovery.rs` the preflight charges `LivePacks` for the active pack
+  alone, and in `durable/io.rs` no storage fault reaches a positional write.
+  The last three tests fail and the first three pass. The fourth test finds
+  the preflight admitting the two-pack fixture under a limit of one live pack,
+  where it expects `Err(Exceeded { resource: LivePacks, limit: 1, attempted:
+  2 })`. The fifth and the sixth fail at their first case, `StorageFull at
+  BeforeTheFirstWrite`: the full device is met first by the sync of the pack,
+  so the typed refusal names `StorageFull(SyncFile)` where
+  `StorageFull(PositionalWrite)` is expected.
+- The mutant neutralised: with `AdmitPastWalWindow = FALSE` in the mutant's
+  configuration the gate stops with `gc-protection: AdmitPastWalWindowMutant
+  unexpectedly passed`, so the gate does not accept a mutant that violates
+  nothing.
+
+**Limits.** The bound holds for the limits of the call: a start under smaller
+limits can still refuse a store that was acknowledged under larger ones, and
+the journal owner avoids this only by passing one `limits.recovery` to its
+publication and to its reconciliation. The preflight bounds the demand of a
+start that verifies the index, which is one scan. A start that must rebuild
+the index, after a crash or a refused append left index residue, requires
+twice the scanned and twice the read bytes before it rebuilds, as it did
+before this task, so it can refuse under limits that equal the one-scan
+demand. No writer publishes a generation of more than one live pack, so the
+demand on `LivePacks` is one in every store that a writer made, and
+`DurableLimits` admits no limit below one: a refusal for `LivePacks`, and the
+share of a sealed pack in `PackBytes`, are reachable only on the two-pack
+fixture, whose retention manifest is a synthetic reference, and are tested at
+the function. The storage fault is injected in the process at the write and
+sync seam, not by a full device, and a fault after the sync of the store
+directory can meet only the slot write. The retry of a faulted publication
+runs after crash recovery, as the journal owner's does; a retry from the
+stale authority without recovery is not part of the trial. The production
+caller that opens a durable store, `LmdbDirStoreManager`, passes unbounded
+recovery limits, under which the preflight refuses only a sum that leaves 64
+bits, and no production caller publishes a generation checkpoint: which
+finite limits a node configures, and the rotation that answers a refusal, are
+decisions of the caller and not of this component.
 
 ### Durable state transfer export (2026-11-11)
 
@@ -14285,6 +14661,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | GC-16 | `PinnedReadReturnsAdmittedBytes` | `EXEC_ONLY` | P | Partially entailed (task 12447): the invariant quantifies over every read that a live handle of a process can issue, and `HandleRead` returns the stored bytes for a handle in `pinned` of its process whatever `deleted` holds. Under the mapping of the cross-process trial, A's handles are in `leases` and `pinned` of A, and the states from the return of B's first compaction on have A's pack in `deleted`; the model reaches such states through `CloseOwner`, `OpenStore`, `RetireFirst` and `DeleteFirst`, the trace of its path-reopen mutant. The executable refinement obligation is that a handle reads only through the pack descriptors that admission opened, so that an unlink by another process leaves its reads unchanged. Four reads of one state through two handles are observed, with the handles alone and beside a newer owner of the same process; not every read, pack or schedule is. B's publication onto A's pack exercises the model's abstraction A3, appends beyond every admitted tail. The red control of the trial, a read that opens the pack by its name for every read as the path-reopen mutant does, fails this test after the unlink. |
 | GC-17 | `DeadProcessHoldsNothing` | `EXEC_ONLY` | P | Partially entailed (task 12447): `Crash` releases `lock` when the process holds it and empties its `leases` and `pinned`, and a dead process takes no step other than `Restart`. The executable refinement obligation is K2 together with the absence of any durable trace of a reader: a process killed with `SIGKILL` while it holds the writer lock and read handles neither refuses the next opener nor defers the next reclamation, and it leaves no file. The lock conjunct is observed as the granted lock attempt after the death, the lease conjunct as the reclamation within the call of the generation that the dead process held, and the absence of a durable trace as the exact directory listing. The pin conjunct, that the storage of an unlinked pack is freed, is not observed. The trial also observes F5 for a live reader: a lease of another process does not defer a reclamation. |
 | GC-18 | `TypeInvariant` | `EXEC_ONLY` | P | Partially entailed (task 12447): in the pack-lease model `TypeInvariant` types `lock` as one value of `Procs \cup {NoProcess}`, so the writer lock has at most one holder, and `OpenStore` is enabled only while `lock = NoProcess`. The executable refinement obligation is F1 across processes: an open of the store takes the writer lock first, and while an owner of another process holds the lock the open is refused with `WriterLockContended` and changes no file other than `writer.lock.v1`; `close` releases the lock. The other conjuncts of `TypeInvariant` are not observed. |
+| GC-19 | `WalAdmissionBounded` | `EXEC_ONLY` | P | Partially entailed (task 12444): the invariant keeps `walTail - walHead` at or below `MaxWalWindow`, and `AdvanceWal` is enabled only below that bound. The model counts WAL events. The implementation's window is the WAL of the selected generation as crash recovery measures it, and its bound is the eight window limits of the `DurableLimits` that the caller passes to the publication; the refinement mapping takes `AdvanceWal` to an incremental publication and its guard to the preflight `RecoveryWindowDemandV1::admit_incremental_append`, which runs before the first durable write. The executable refinement obligation is that the preflight's demand is the demand that crash recovery of the successor measures: the trial observes a refusal at one below the demand and an acknowledgement at the demand for each limit that its histories reach, on a generation of one pack. The mapping holds for one set of limits: a start under smaller limits, or a start that rebuilds the index and so scans twice, can still refuse an acknowledged store. |
 | TX-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14302): the closure, every object once and parent-first, carried by the pages of a pinned export of a retained durable state. `RSpaceDagStateTransfer.tla` states the transfer contract over an abstract closure of two objects and is not among this matrix's TLA+ sources, and no cited model represents canonical objects, the export order or the page layout. |
 | TX-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14303): a refused transfer page changes neither the import session's frontier and in-memory closure nor its staging log, frontier record or staging directory. `RSpaceDagStateTransfer.tla` rejects an out-of-order page over an abstract closure of two objects and is not among this matrix's TLA+ sources, and no cited model represents pages, their decoding, canonical objects or the staging's files. |
 | TX-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14434): the seal of a completely staged state is its full cold admission over the staging log alone, a staged state with a dangling join is refused by it, and neither a seal nor its refusal changes the staging or the store directory outside it. `RSpaceDagStateTransfer.tla` admits an abstract closure of two objects at its complete frontier, `RSpaceAffineImportLifecycle.tla` seals a session whose closure is verified, and neither is among this matrix's TLA+ sources; no cited model represents canonical objects, the staging log or the semantic rules of a state. |
@@ -15776,6 +16153,39 @@ this slice. Nothing outside the tests opens the index yet. The file
 2026-11-16; no existing persisted byte, record kind, root, identity or wire
 message changed, and the crate has no new dependency. See the section on the
 append-only channel preimage index.
+
+The 2026-11-16 WAL-admission slice of task 7944 (task 12444) adds GC-19, so
+the catalog/derivation/binding registry now contains **319** IDs. It binds
+`WalAdmissionBounded` to the property test of the new module
+`durable_gc_wal_admission` of the persistence tests, which holds six tests.
+The slice adds the recovery-window preflight to both incremental publications
+(`durable/recovery.rs`, `durable/publication.rs`), the window that an
+authority core carries (`durable/admission.rs`, `durable/startup.rs`), the
+prior-key reread of a prepared record (`mutation.rs`, `wal/codec.rs`), the
+argument of the journal owner's publication (`durable/rspace_authority.rs`),
+and a storage fault that only tests compile (`durable/io.rs`,
+`durable/mod.rs`). The 28 calls of the trusted publication in six test
+modules now pass unbounded recovery limits and are otherwise unchanged. On
+the candidate tree, the new module and the manifest test passed in debug and
+in release (7 passed), and so did the library target (1104 passed, 13
+ignored; 1098 and 13 before the slice). The two code controls of the section
+on WAL admission were applied one at a time to the candidate tree, run in
+debug against those seven tests and removed: exactly the first three tests of
+the module failed under the first, in `durable/publication.rs`, and exactly
+the other three under the second, in `durable/recovery.rs` and
+`durable/io.rs`, each with its messages, and every faulted file was compared
+with its copy after the run. Clippy of `rspace_plus_plus` with every target
+lists no finding in a file of this slice that it does not also list before
+the slice, and `rustfmt --check` passes on its Rust files. The GC protection
+model changed by one mutant switch: its bounded gate passed with both
+baselines, the overlap witness and seven causal mutants, and it failed as the
+section states with the new mutant neutralised. The workspace-regression
+registry and the PathMap aggregate hash the persistence tests' module list
+and the manifest test's file, which both change, so they are to be
+regenerated with this slice. No Rocq file changed, and no proof was run for
+this slice. No persisted byte, record kind, root, identity or wire message
+changed, and the crate has no new dependency. See the section on WAL
+admission inside the recovery window.
 
 ## Caller-authority contract (2026-09-06)
 

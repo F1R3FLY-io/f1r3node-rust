@@ -82,3 +82,5 @@ mod durable_gc_cross_process;
 mod durable_rspace_checkpoint;
 #[cfg(unix)]
 mod preimage_index;
+#[cfg(unix)]
+mod durable_gc_wal_admission;

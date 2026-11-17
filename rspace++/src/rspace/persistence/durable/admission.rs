@@ -15,6 +15,7 @@ use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
 
 use super::io::{DurableDirectoryV1, DurableFileV1, DurableIoError, DurableWriterLeaseV1};
+use super::recovery::RecoveryWindowDemandV1;
 use super::startup::{
     DurableStartupErrorV1, DurableStartupWorkV1, IndexBindingDispositionV1,
     IndexBoundPhysicalRecoveryV1, PhysicallyRecoveredDurableWriterV1, read_catalog_token,
@@ -1198,6 +1199,7 @@ pub(crate) struct DurableAuthorityCoreV1<P: SemanticProfile> {
     retained_closure: StructuralClosureLedgerV1,
     retained_states: u64,
     retained_state_maxima: ClosureInventoryV1,
+    recovery_window: RecoveryWindowDemandV1,
     /// The retention format in which this writer seals successors and
     /// checkpoints, fixed by its directory at admission.
     retention_writer: RetentionFormat,
@@ -1241,6 +1243,8 @@ impl<P: SemanticProfile> DurableAuthorityCoreV1<P> {
     pub(crate) const fn retained_state_maxima(&self) -> ClosureInventoryV1 {
         self.retained_state_maxima
     }
+
+    pub(crate) const fn recovery_window(&self) -> RecoveryWindowDemandV1 { self.recovery_window }
 
     /// Refuse a successor of a V2 source under the V1 writer, which would
     /// replace the V2 metadata with a stale V1 manifest.
@@ -1539,6 +1543,7 @@ impl<P: SemanticProfile> DurableAuthorityCoreV1<P> {
         slot: CatalogSlotV1,
         image: [u8; CATALOG_IMAGE_LEN],
         index: CommittedObjectIndexV1,
+        recovery_window: RecoveryWindowDemandV1,
     ) -> Result<Self, DurableAdmissionErrorV1> {
         let authority = CatalogAuthorityTokenV1::select(image)
             .map_err(DurableStartupErrorV1::Catalog)?
@@ -1572,6 +1577,7 @@ impl<P: SemanticProfile> DurableAuthorityCoreV1<P> {
             retained_closure: successor.retained_closure.clone(),
             retained_states: successor.retained_states,
             retained_state_maxima: successor.retained_state_maxima,
+            recovery_window,
             retention_writer: self.retention_writer,
             profile: PhantomData,
         })
@@ -2441,6 +2447,7 @@ pub(crate) fn admit_physical_source<P: SemanticProfile>(
 ) -> Result<AdmittedCheckpointSourceV1<P>, DurableAdmissionErrorV1> {
     #[cfg(test)]
     COLD_ADMISSIONS.set(COLD_ADMISSIONS.get().saturating_add(1));
+    let recovery_window = recovered.recovery_window();
     let (authority, index, terminal_commit, startup_disposition, startup_work) =
         recovered.into_admission_parts();
     let catalog = authority.slot();
@@ -2673,6 +2680,7 @@ pub(crate) fn admit_physical_source<P: SemanticProfile>(
                 distinct_objects: maximum_per_state_structural.distinct_objects,
                 canonical_bytes: maximum_per_state_structural.canonical_bytes,
             },
+            recovery_window,
             retention_writer,
             profile: PhantomData,
         }),
