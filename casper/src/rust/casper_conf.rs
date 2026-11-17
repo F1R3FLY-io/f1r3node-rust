@@ -154,6 +154,21 @@ pub struct CasperConf {
         default = "default_enable_block_store_gc"
     )]
     pub enable_block_store_gc: bool,
+
+    /// Mark-and-sweep the `rspace/history` radix-trie LMDB env, deleting
+    /// nodes no retained state root can reach (issue #923, Option D).
+    /// Shipped default off: first release of trie-store-mutating code.
+    /// LMDB file does not shrink when enabled — reclaimed pages are
+    /// reused by future writes; an offline compaction tool would be
+    /// needed to reduce the on-disk footprint. Requires
+    /// `enable-mergeable-channel-gc` for cadence (sweep runs on the same
+    /// loop tick), but deletion is independent and does not require
+    /// `enable-block-store-gc`.
+    #[serde(
+        rename = "enable-history-pruning",
+        default = "default_enable_history_pruning"
+    )]
+    pub enable_history_pruning: bool,
 }
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
@@ -187,6 +202,11 @@ fn default_mergeable_channels_gc_depth_buffer() -> i32 { 10 }
 /// omits the key must not silently disable block-store GC. Public so the
 /// node's config tests pin shipped-vs-fallback agreement.
 pub fn default_enable_block_store_gc() -> bool { true }
+
+/// Default off for the first release. Flip on after a soak run confirms
+/// no `UnknownRootError` regressions. Public so the node's config tests
+/// pin shipped-vs-fallback agreement.
+pub fn default_enable_history_pruning() -> bool { false }
 
 fn default_dag_hot_window_depth() -> i64 { 1024 }
 

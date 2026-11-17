@@ -1210,6 +1210,45 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                         }
                     }
 
+                    // Run one rspace-history mark-and-sweep pass per tick,
+                    // once the mergeable-channel sweep has completed. Default
+                    // off; a no-op when `enable_history_pruning = false`. The
+                    // pass synchronously walks every retained root's trie
+                    // and iterates the LMDB env in pages — runs inside
+                    // `block_in_place` on multi-thread runtimes for the same
+                    // reason the GC above does.
+                    let history_gc_dag = gc_block_dag_storage
+                        .get_representation()
+                        .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                    let history_gc_conf = gc_casper_shard_conf.clone();
+                    let history_gc_runtime = gc_runtime_manager.clone();
+                    let history_gc_block_store = gc_block_store.clone();
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(rt_handle)
+                            if rt_handle.runtime_flavor()
+                                == tokio::runtime::RuntimeFlavor::MultiThread =>
+                        {
+                            tokio::task::block_in_place(|| {
+                                casper::rust::util::rspace_history_gc::prune_history_once(
+                                    &history_gc_dag,
+                                    &history_gc_block_store,
+                                    &history_gc_runtime,
+                                    &history_gc_conf,
+                                )
+                                .map_err(|e| CasperError::RuntimeError(e.to_string()))
+                            })?;
+                        }
+                        _ => {
+                            casper::rust::util::rspace_history_gc::prune_history_once(
+                                &history_gc_dag,
+                                &history_gc_block_store,
+                                &history_gc_runtime,
+                                &history_gc_conf,
+                            )
+                            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                        }
+                    }
+
                     Ok::<(), CasperError>(())
                 })
             },
