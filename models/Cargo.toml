@@ -396,6 +396,15 @@ name = "bincode_encoder_massif"
 path = "benches/bincode_encoder_massif.rs"
 harness = false
 
+# Preregistered EPM1 map-value lookup validation cost (pgmcp experiment 502).
+# The shared paired harness times the whole lookup and the validation alone in
+# every repetition; `-- --test` runs each arm once without timing, and
+# `EPM1_LOOKUP_ARM=<arm>` runs one arm alone as a profiler's subject.
+[[bench]]
+name = "epm1_map_value_lookup_validation"
+path = "benches/epm1_map_value_lookup_validation.rs"
+harness = false
+
 [dev-dependencies]
 blake2 = "0.10.6"
 proc-macro2 = "1"
