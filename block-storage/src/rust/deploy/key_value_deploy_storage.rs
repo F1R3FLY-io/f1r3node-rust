@@ -1286,12 +1286,9 @@ mod tests {
         )
         .unwrap();
         live.put_one(key, vec![0xff]).unwrap();
-        let counted = KeyValueDeployStorage::from_stores(
-            live,
-            Arc::new(InMemoryKeyValueStore::new()),
-            seeds,
-        )
-        .unwrap();
+        let counted =
+            KeyValueDeployStorage::from_stores(live, Arc::new(InMemoryKeyValueStore::new()), seeds)
+                .unwrap();
         assert_eq!(totals(&counted).0, 2);
         assert_eq!(counted.read_all().unwrap(), HashSet::from([deploy(1)]));
         assert_eq!(totals(&counted), totals(&reopened));
