@@ -134,42 +134,9 @@ new lookup(`rho:registry:lookup`), sysCh,
 1. Computes the per-address vault instance channel.
 2. Registers the per-vault contracts (including the internal `_deposit` receiver) in the tuplespace.
 
-The second step is required for any transfer **to** that address to succeed. A transfer's internal `_deposit` send targets the destination vault's contract — if no contract is registered, the send is orphaned and the entire transfer's response chain breaks silently. The deploy completes with `errored: false` and `transfers: [{success: true}]`, but the caller's `for (@result <- resultCh)` continuation never fires. See [Common Pitfalls — Orphan Sends](09-contracts-and-state.md#orphan-sends-to-unregistered-channels).
+A `transfer` to an unregistered destination used to leave its internal `_deposit` send orphaned on the destination's channel until some later deploy called `findOrCreate` on the target. The source balance would then move inside that later deploy — paid for and signed by whoever registered the vault, not the original sender. `_transferTemplate` now calls `findOrCreate` on the target before it sends `_deposit`, so any transfer registers its destination as part of the sender's own deploy and completes with the source balance debited in that deploy. Callers no longer need to call `findOrCreate` on the destination themselves for correctness.
 
-This is why the standard transfer pattern calls `findOrCreate` on **both** endpoints:
-
-```rho
-@SystemVault!("findOrCreate", fromAddress, *vaultCh) |
-@SystemVault!("findOrCreate", toAddress, *targetCh) |  // critical: registers _deposit on destination
-```
-
-Skipping the destination `findOrCreate` is only safe when the destination is already known to be registered (e.g., a genesis-funded validator vault or a vault you registered earlier in the same deploy). For any new or contract-owned destination, it must be called.
-
-### Self-Registering Contracts
-
-When a contract owns a vault — a bridge, escrow, or any service that holds funds at a vault address derived from its own identity — it should call `findOrCreate` on that address at initialization, not on first use. Self-registration means callers don't have to know to register the contract's vault before sending it funds.
-
-```rho
-// Inside a bridge / escrow contract's init
-new bridgeVaultAddrCh, bridgeVaultRegisterCh in {
-  // ... derive bridgeVaultAddr from this contract's unforgeable identity ...
-
-  for (@bridgeVaultAddr <- bridgeVaultAddrCh) {
-    bridgeVaultAddrCh!(bridgeVaultAddr) |
-
-    // Register the contract's own vault BEFORE exposing the bridge interface.
-    // Without this, the first incoming transfer's _deposit send is orphaned
-    // and the lock/transfer response chain hangs forever.
-    @SystemVault!("findOrCreate", bridgeVaultAddr, *bridgeVaultRegisterCh) |
-    for (@(true, _) <- bridgeVaultRegisterCh) {
-      // Now safe to publish the bridge address and accept transfers
-      deployId!(["address", bridgeVaultAddr])
-    }
-  }
-}
-```
-
-Without this defensive registration, callers that do `findOrCreate` only on the source side will silently fail when the destination is the contract — the deploy completes, the transfer reports `success: true`, but the contract's continuation never fires. The `bridge-v2.rho` test fixture (`casper/tests/resources/bridge-v2.rho`) exemplifies this self-registration pattern.
+Calling `findOrCreate` on the destination remains a reasonable idiom when the deploy also wants to observe the destination vault directly (for example, to read the target balance in the same deploy), but it is not required for the transfer itself.
 
 ## Mergeable-Tagged Channels
 

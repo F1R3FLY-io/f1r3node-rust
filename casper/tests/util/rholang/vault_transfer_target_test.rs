@@ -56,17 +56,7 @@ async fn transfer_results(register_target: bool) -> Vec<Par> {
         .unwrap()
 }
 
-/// A transfer sends `_deposit` to the target vault. That contract exists only
-/// after `findOrCreate` created the vault, so a transfer to a fresh address
-/// never answers. Bridge-v2.rho calls `findOrCreate` on its own vault for this reason.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_transfer_to_an_unregistered_vault_never_answers() {
-    assert!(transfer_results(false).await.is_empty());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_transfer_to_a_registered_vault_succeeds() {
-    let results = transfer_results(true).await;
+fn assert_transfer_ok(results: &[Par]) {
     assert_eq!(results.len(), 1);
     let ok = match &results[0].exprs[0].expr_instance {
         Some(ExprInstance::ETupleBody(tuple)) => {
@@ -78,4 +68,18 @@ async fn a_transfer_to_a_registered_vault_succeeds() {
         _ => false,
     };
     assert!(ok, "{:?}", results[0]);
+}
+
+/// `_transferTemplate` calls `findOrCreate` on the target before it sends
+/// `_deposit`, so a transfer to a fresh address registers that address and
+/// completes inside the sender's deploy — the source balance is not debited
+/// in some later deploy that another key signed (issue #1046).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transfer_to_an_unregistered_vault_registers_it_and_succeeds() {
+    assert_transfer_ok(&transfer_results(false).await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transfer_to_a_registered_vault_succeeds() {
+    assert_transfer_ok(&transfer_results(true).await);
 }

@@ -106,11 +106,7 @@ new return, rl(`rho:registry:lookup`), deployerId(`rho:system:deployerId`),
         .unwrap()
 }
 
-/// `lock` transfers into the bridge vault, and a transfer reaches a vault only
-/// after `findOrCreate` created it. Bridge-v2.rho does that at init.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_bridge_that_registers_its_vault_accepts_a_lock() {
-    let results = lock_results(true).await;
+fn assert_bridge_lock_ok(results: &[Par]) {
     assert_eq!(results.len(), 1, "{results:?}");
     let first = match &results[0].exprs[0].expr_instance {
         Some(ExprInstance::EListBody(list)) => &list.ps[0].exprs[0].expr_instance,
@@ -122,7 +118,15 @@ async fn a_bridge_that_registers_its_vault_accepts_a_lock() {
     );
 }
 
+/// `lock` transfers into the bridge vault. `_transferTemplate` now calls
+/// `findOrCreate` on the target before `_deposit` (issue #1046), so the
+/// bridge accepts a lock whether or not it self-registered its own vault.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_bridge_without_its_vault_never_answers_a_lock() {
-    assert!(lock_results(false).await.is_empty());
+async fn a_bridge_that_registers_its_vault_accepts_a_lock() {
+    assert_bridge_lock_ok(&lock_results(true).await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bridge_without_its_vault_still_accepts_a_lock() {
+    assert_bridge_lock_ok(&lock_results(false).await);
 }

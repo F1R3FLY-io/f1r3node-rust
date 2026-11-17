@@ -238,13 +238,12 @@ in {
           // amount is transferred from purse (ownVaultAddress) to vault at targetAddress.
           // The source purse and the amount are handed to the target's `_deposit`
           // listener directly, so the transfer never creates a temporary sprout
-          // purse. If the target vault has not been created yet, the `_deposit`
-          // message waits on its unforgeable channel until a `findOrCreate` for
-          // that address installs the listener; the source balance is not moved
-          // until that listener fires, so no funds sit in an escrow purse.
-          // The source balance is checked upfront so a transfer with
-          // insufficient funds fails immediately, even if the target vault
-          // does not exist yet.
+          // purse. `findOrCreate` is called on the target before `_deposit`, so
+          // the `_deposit` listener is installed and the source balance moves
+          // inside this deploy — a transfer never waits on an unregistered
+          // vault, and never has its funds debited inside a later deploy that
+          // some other key signed. The source balance is also checked upfront
+          // so a transfer with insufficient funds fails immediately.
           contract _transferTemplate(@ownVaultAddress, purse, @targetAddress, @amount, authKey, ret) = {
             new vaultAddressValid, vaultAddressValidEither, amountNonNegative,
                 authKeyValidCh, authKeyValidEitherCh,
@@ -266,7 +265,12 @@ in {
               @Either!("productR <-", *parametersAndAuthOkCh, *sufficientFundsCh, *allChecksOkCh) |
               @Either!("flatMap <-", *allChecksOkCh, *doDeposit, *ret) |
               for (_, retCh <- doDeposit) {
-                @{targetAddress | bundle0{*_systemVault}}!("_deposit", amount, *purse, *retCh)
+                new targetReadyCh in {
+                  SystemVault!("findOrCreate", targetAddress, *targetReadyCh) |
+                  for (@(true, _) <- targetReadyCh) {
+                    @{targetAddress | bundle0{*_systemVault}}!("_deposit", amount, *purse, *retCh)
+                  }
+                }
               }
             }
           } |
