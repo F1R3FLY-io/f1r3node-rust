@@ -27,6 +27,7 @@ use prost::bytes::Bytes;
 use prost::Message;
 use rholang::rust::interpreter::system_processes::BlockData;
 use shared::rust::blocking::in_blocking;
+use shared::rust::shared::f1r3fly_event::DeployAdmission;
 use tracing;
 
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -253,12 +254,12 @@ fn retry_walk_start(
     valid_afters: impl Iterator<Item = i64>,
 ) -> Result<i64, CasperError> {
     match valid_afters.min() {
-        Some(oldest) => crate::rust::util::deploy_window::repeat_scan_start(
+        Some(oldest) => Ok(models::rust::deploy_window::repeat_scan_start(
             tip_start,
             ctx.floor.block_number,
             deploy_lifespan,
             oldest,
-        ),
+        )?),
         None => Ok(tip_start),
     }
 }
@@ -704,7 +705,7 @@ async fn prepare_user_deploys_with_policy(
         } else {
             HashSet::new()
         };
-    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+    let earliest_block_number = models::rust::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
@@ -716,7 +717,7 @@ async fn prepare_user_deploys_with_policy(
     // irreversible removal of retry work — delay, never loss.
     let floor_expiry_bound = floor_ctx
         .map(|ctx| {
-            crate::rust::util::deploy_window::earliest_valid_after(
+            models::rust::deploy_window::earliest_valid_after(
                 ctx.floor.block_number,
                 casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
             )
@@ -2150,7 +2151,7 @@ fn fresh_local_deploy_stats(
         .into_iter()
         .map(|deploy| deploy.sig)
         .collect();
-    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+    let earliest_block_number = models::rust::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
@@ -2218,7 +2219,7 @@ fn in_scope_local_deploy_stats(
         .into_iter()
         .map(|deploy| deploy.sig)
         .collect();
-    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+    let earliest_block_number = models::rust::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
@@ -2299,7 +2300,7 @@ fn rejected_buffer_has_recoverable_deploys(
     if buffered_deploys.is_empty() {
         return Ok(false);
     }
-    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+    let earliest_block_number = models::rust::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
@@ -2308,7 +2309,7 @@ fn rejected_buffer_has_recoverable_deploys(
     // cannot hold admission in recovery mode.
     let window_bound = floor_ctx
         .map(|ctx| {
-            crate::rust::util::deploy_window::earliest_valid_after(
+            models::rust::deploy_window::earliest_valid_after(
                 ctx.floor.block_number,
                 casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
             )
@@ -2933,8 +2934,10 @@ pub async fn create_with_progress(
     let shard_id = casper_snapshot.on_chain_state.shard_conf.shard_name.clone();
 
     // Prepare deploys
-    let (user_deploys, _, _) = if selection == super::proposer::DeploySelection::RecoveryEmpty {
-        (HashSet::new(), 0usize, false)
+    let (user_deploys, deploy_admission) = if selection
+        == super::proposer::DeploySelection::RecoveryEmpty
+    {
+        (HashSet::new(), None)
     } else {
         let t = std::time::Instant::now();
         let user_deploys_in_scope =
@@ -3116,7 +3119,15 @@ pub async fn create_with_progress(
         );
         metrics::histogram!(BLOCK_CREATOR_PREPARE_USER_DEPLOYS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(t.elapsed().as_secs_f64());
-        (v, prepared.effective_cap, prepared.cap_hit)
+        let admission = DeployAdmission {
+            cap: prepared.effective_cap,
+            cap_hit: prepared.cap_hit,
+            byte_cap_hit: prepared.byte_cap_hit,
+            cap_source: admission_policy.ordinary_cap_source.as_str().to_string(),
+            backpressure: admission_policy.backpressure,
+            finality_lag: finality_lag_stats.lag,
+        };
+        (v, Some(admission))
     };
     let dummy_deploys = {
         let t = std::time::Instant::now();
@@ -3572,6 +3583,7 @@ pub async fn create_with_progress(
         signed_block,
         pre_state_hash_for_result,
         post_state_hash_for_result,
+        deploy_admission,
     ))
 }
 
