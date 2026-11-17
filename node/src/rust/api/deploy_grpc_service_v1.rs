@@ -183,6 +183,9 @@ impl DeployGrpcServiceV1Impl {
                     ) || cause
                         .downcast_ref::<casper::rust::api::block_api::DeployExpiredError>()
                         .is_some()
+                        || cause
+                            .downcast_ref::<casper::rust::api::block_api::ValidatorNotBondedError>()
+                            .is_some()
                 });
                 if is_expected_refusal {
                     tracing::debug!("Deploy admission refused: {}", e);
@@ -1125,6 +1128,13 @@ impl DeployService for DeployGrpcServiceV1Impl {
             0
         };
 
+        let pacing = crate::rust::api::web_api::DeployPacing::read(&self.engine_cell)
+            .await
+            .map_err(|e| {
+                error!("Deploy service method error status (pacing): {}", e);
+                tonic::Status::internal(e.to_string())
+            })?;
+
         let status = Status {
             version: Some(VersionInfo {
                 api: "1".to_string(),
@@ -1146,6 +1156,10 @@ impl DeployService for DeployGrpcServiceV1Impl {
             is_ready,
             current_epoch,
             epoch_length,
+            latest_block_number: pacing.map(|p| p.latest_block_number),
+            deploy_lifespan: pacing.map(|p| p.deploy_lifespan),
+            max_user_deploys_per_block: pacing.map(|p| p.max_user_deploys_per_block),
+            max_parent_depth: pacing.map(|p| p.max_parent_depth),
         };
 
         Ok(tonic::Response::new(StatusResponse {
@@ -1699,6 +1713,10 @@ mod tests {
             (
                 eyre::Report::new(DeployError::InvalidFreshness),
                 "invalid_deploy_window:",
+            ),
+            (
+                eyre::Report::new(casper::rust::api::block_api::ValidatorNotBondedError),
+                "validator_not_bonded:",
             ),
         ] {
             let response =

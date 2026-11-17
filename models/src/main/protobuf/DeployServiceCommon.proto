@@ -95,6 +95,8 @@ enum DeployFinalizationStateProto {
   DEPLOY_STATE_FAILED      = 2;
   DEPLOY_STATE_PENDING     = 3;
   DEPLOY_STATE_EXPIRED     = 4;
+  // A deploy queue's node refused the deploy outright. A node never answers it.
+  DEPLOY_STATE_REJECTED    = 5;
 }
 
 message DeployFinalizationStatusInfo {
@@ -325,6 +327,12 @@ message Status {
   bool   isReady                     = 15;
   int64  currentEpoch                = 16;
   int32  epochLength                 = 17;
+  // Deploy pacing values; absent until casper is up. latestBlockNumber is the
+  // number of the next block: the highest block number in the DAG plus one.
+  optional int64  latestBlockNumber      = 19;
+  optional int64  deployLifespan         = 20;
+  optional uint32 maxUserDeploysPerBlock = 21;
+  optional int32  maxParentDepth         = 22;
 }
 
 message VersionInfo {

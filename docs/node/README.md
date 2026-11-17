@@ -301,7 +301,11 @@ API responses from `explore-deploy`, `data-at-name-by-block-hash`, `registry`, a
 
 The `/ws/events` endpoint on the HTTP port (40403) streams real-time node events. See [websocket-events.md](websocket-events.md) for full documentation.
 
-9 event types are streamed: 3 block lifecycle (`block-created`, `block-added`, `block-finalised`), 4 genesis ceremony (`sent-unapproved-block`, `block-approval-received`, `sent-approved-block`, `approved-block-received`), and 2 node lifecycle (`entered-running-state`, `node-started`).
+11 event types are streamed: 3 block lifecycle (`block-created`, `block-added`, `block-finalised`), `transfers-available`, `deploy-verdicts`, 4 genesis ceremony (`sent-unapproved-block`, `block-approval-received`, `sent-approved-block`, `approved-block-received`), and 2 node lifecycle (`entered-running-state`, `node-started`). A client that reads too slowly gets `stream-lagged` in place of the events it lost.
+
+## Deploy Queue
+
+A deploy queue runs next to a validator and serves its client ports, so clients deploy through it as they would to the node. See [deploy-queue.md](deploy-queue.md) for the client API.
 
 Events published during startup are buffered and replayed to clients that connect after the node is running. The buffer is sealed when engine initialization completes.
 

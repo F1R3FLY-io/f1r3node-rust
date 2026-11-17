@@ -14,13 +14,14 @@ use casper::rust::api::block_api::{
     BlockNotFoundError, DeployExpiredError, DeployNotFoundError, DeployValidationError,
     ExploratoryDeployReadOnlyError, ExploratoryDeployRejection, InvalidHashError,
     InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
-    ProposeRefusal, ProposeRefusedError,
+    ProposeRefusal, ProposeRefusedError, ValidatorNotBondedError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::casper::DeployError;
 use casper::rust::errors::CasperError;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
+use models::rust::deploy_request::DeployRequest;
 use rholang::rust::interpreter::errors::InterpreterError;
 use serde::Serialize;
 use serde_json::json;
@@ -31,8 +32,7 @@ use utoipa::ToSchema;
 use crate::rust::api::admin_web_api::AdminWebApi;
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::web_api::{
-    DeployRequest, ExploreDeployRequest, RhoDataResponse, SimpleExploreDeployRequest, ViewMode,
-    WebApi,
+    ExploreDeployRequest, RhoDataResponse, SimpleExploreDeployRequest, ViewMode, WebApi,
 };
 use crate::rust::api::{DeployIngressBusy, DeployRequestLimiter, DeployRequestPermit};
 
@@ -88,13 +88,16 @@ pub struct ApiErrorResponse {
     /// **400 Bad Request:**
     /// `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`,
     /// `invalid_hash`, `illegal_argument`, `rholang_bad_term`,
-    /// `readonly_node_required`,
+    /// `readonly_node_required`, `deploy_expired`, `invalid_deploy_window`
     ///
     /// **404 Not Found:**
     /// `deploy_not_found`, `block_not_found`, `endpoint_not_found`
     ///
     /// **405 Method Not Allowed:**
     /// `method_not_allowed`
+    ///
+    /// **413 Payload Too Large:**
+    /// `deploy_too_large`
     ///
     /// **415 Unsupported Media Type:**
     /// `invalid_request_body`
@@ -104,7 +107,7 @@ pub struct ApiErrorResponse {
     /// `rholang_execution_error`, `aggregate_error`
     ///
     /// **409 Conflict:**
-    /// `no_new_deploys`
+    /// `no_new_deploys`, `duplicate_deploy`
     ///
     /// **500 Internal Server Error:**
     /// `interpreter_internal_error`, `signing_error`, `replay_failure`,
@@ -115,7 +118,8 @@ pub struct ApiErrorResponse {
     /// `comm_error`, `external_service_error`
     ///
     /// **503 Service Unavailable:**
-    /// `observer_busy` — carries `Retry-After`
+    /// `observer_busy` — carries `Retry-After`; `deploy_pool_busy`,
+    /// `deploy_admission_busy`, `validator_not_bonded`
     ///
     /// **504 Gateway Timeout:**
     /// `exploratory_timeout`
@@ -375,6 +379,13 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
                 cause.to_string(),
             );
         }
+        if cause.downcast_ref::<ValidatorNotBondedError>().is_some() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "validator_not_bonded",
+                cause.to_string(),
+            );
+        }
         if cause.downcast_ref::<ProposeReadOnlyError>().is_some() {
             return (
                 StatusCode::BAD_REQUEST,
@@ -575,14 +586,14 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
     request_body = DeployRequest,
     responses(
         (status = 200, description = "Deploy accepted; returns the deploy ID (hex)", body = String),
-        (status = 400, description = "Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, unbonded validator, shard ID mismatch, forbidden key, or phlo price below minimum. A closed validity window or a past expiration timestamp causes `deploy_expired`. A validity height beyond the admission horizon causes `invalid_deploy_window`.", body = ApiErrorResponse),
+        (status = 400, description = "Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, shard ID mismatch, forbidden key, or phlo price below minimum. A closed validity window or a past expiration timestamp causes `deploy_expired`. A validity height beyond the admission horizon causes `invalid_deploy_window`.", body = ApiErrorResponse),
         (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
-        (status = 503, description = "Deploy pool is at its record or byte limit, or admission changed during its attempts or the submission limit is reached (`deploy_pool_busy`, `deploy_admission_busy`)", body = ApiErrorResponse),
         (status = 413, description = "Deploy record exceeds the configured pool byte limit (`deploy_too_large`)", body = ApiErrorResponse),
         (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
         (status = 422, description = "Invalid JSON field type or value, including deploy parameter names and values (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`)", body = ApiErrorResponse),
         (status = 502, description = "Upstream or peer communication failure (`comm_error`, `external_service_error`)", body = ApiErrorResponse),
+        (status = 503, description = "Retry later: the deploy pool is at its record or byte limit (`deploy_pool_busy`), admission changed during its attempts or the submission limit is reached (`deploy_admission_busy`), or the node's validator is not bonded (`validator_not_bonded`)", body = ApiErrorResponse),
     ),
     tag = "Deployment"
 )]
@@ -815,7 +826,7 @@ mod tests {
             BlockNotFoundError, DeployExpiredError, DeployNotFoundError, DeployValidationError,
             ExploratoryDeployReadOnlyError, InvalidHashError, InvalidPublicKeyError,
             LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal,
-            ProposeRefusedError,
+            ProposeRefusedError, ValidatorNotBondedError,
         };
         use casper::rust::casper::DeployError;
         use casper::rust::errors::CasperError;
@@ -864,6 +875,19 @@ mod tests {
                 (StatusCode::BAD_REQUEST, "illegal_argument".to_string())
             );
             assert_eq!(
+                classify(DeployExpiredError {
+                    message: "window closed".to_string(),
+                }),
+                (StatusCode::BAD_REQUEST, "deploy_expired".to_string())
+            );
+            assert_eq!(
+                classify(ValidatorNotBondedError),
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "validator_not_bonded".to_string()
+                )
+            );
+            assert_eq!(
                 classify(ProposeReadOnlyError),
                 (
                     StatusCode::BAD_REQUEST,
@@ -905,16 +929,6 @@ mod tests {
             assert_eq!(
                 classify(DeployError::InvalidFreshness),
                 (StatusCode::BAD_REQUEST, "invalid_deploy_window".to_string())
-            );
-        }
-
-        #[test]
-        fn an_expired_deploy_is_a_client_error() {
-            assert_eq!(
-                classify(DeployExpiredError {
-                    message: "expired".to_string()
-                }),
-                (StatusCode::BAD_REQUEST, "deploy_expired".to_string())
             );
         }
 
