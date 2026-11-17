@@ -119,6 +119,39 @@ fn is_node(service: &Yaml) -> bool {
         })
 }
 
+/// A service that runs the deploy queue from the node image: it has no node
+/// command or log sink, but its container logs are capped like a node's.
+fn is_deploy_queue(service: &Yaml) -> bool {
+    let entrypoint = field(service, "entrypoint");
+    let first = match entrypoint {
+        Some(Yaml::Array(args)) => args.first().and_then(Yaml::as_str),
+        Some(Yaml::String(arg)) => arg.split_whitespace().next(),
+        _ => None,
+    };
+    first.is_some_and(|binary| binary.ends_with("/deploy-queue"))
+}
+
+fn check_log_caps(service: &Yaml, fail: &dyn Fn(&str) -> String) -> Result<(), String> {
+    let logging = field(service, "logging").ok_or_else(|| fail("Container logging is missing."))?;
+    if field(logging, "driver").and_then(Yaml::as_str) != Some("json-file") {
+        return Err(fail("The bounded json-file driver is required."));
+    }
+    let options = field(logging, "options").ok_or_else(|| fail("Logging options are missing."))?;
+    let size = field(options, "max-size").and_then(bytes);
+    let count = field(options, "max-file")
+        .and_then(Yaml::as_str)
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|value| value.parse::<u64>().ok());
+    if !size.is_some_and(|size| (1..=MAX_FILE_BYTES).contains(&size))
+        || !count.is_some_and(|count| (1..=MAX_FILES).contains(&count))
+    {
+        return Err(fail(
+            "Positive literal log caps must not exceed 100 MiB per file and three files.",
+        ));
+    }
+    Ok(())
+}
+
 fn check(document: &Yaml) -> Result<usize, String> {
     let Some(services) = field(document, "services") else {
         return Ok(0);
@@ -134,29 +167,15 @@ fn check(document: &Yaml) -> Result<usize, String> {
                 "{name}: Service inheritance requires an explicit inspection rule."
             ));
         }
+        let fail = |reason: &str| format!("{name}: {reason}");
+        if is_deploy_queue(service) {
+            check_log_caps(service, &fail)?;
+            continue;
+        }
         if !is_node(service) {
             continue;
         }
-        let fail = |reason: &str| format!("{name}: {reason}");
-        let logging =
-            field(service, "logging").ok_or_else(|| fail("Container logging is missing."))?;
-        if field(logging, "driver").and_then(Yaml::as_str) != Some("json-file") {
-            return Err(fail("The bounded json-file driver is required."));
-        }
-        let options =
-            field(logging, "options").ok_or_else(|| fail("Logging options are missing."))?;
-        let size = field(options, "max-size").and_then(bytes);
-        let count = field(options, "max-file")
-            .and_then(Yaml::as_str)
-            .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
-            .and_then(|value| value.parse::<u64>().ok());
-        if !size.is_some_and(|size| (1..=MAX_FILE_BYTES).contains(&size))
-            || !count.is_some_and(|count| (1..=MAX_FILES).contains(&count))
-        {
-            return Err(fail(
-                "Positive literal log caps must not exceed 100 MiB per file and three files.",
-            ));
-        }
+        check_log_caps(service, &fail)?;
         let command = field(service, "command")
             .and_then(Yaml::as_vec)
             .ok_or_else(|| fail("The node command must be an argument list."))?;
@@ -298,6 +317,19 @@ fn yaml_anchors_and_new_node_names_are_checked() {
         check(&parse("services: {collector: {image: 'prom/prometheus'}}").unwrap()).unwrap(),
         0
     );
+}
+
+#[test]
+fn deploy_queues_keep_container_caps_without_a_node_command() {
+    let queue = "services:\n  deploy-queue1:\n    image: f1r3flyindustries/f1r3fly-rust:latest\n    entrypoint: [/opt/docker/bin/deploy-queue]\n    command: [--data-dir=/var/lib/deploy-queue]\n    logging: {driver: json-file, options: {max-size: 100m, max-file: '3'}}\n";
+    assert_eq!(check(&parse(queue).unwrap()).unwrap(), 0);
+    let uncapped = queue.replace(
+        "{driver: json-file, options: {max-size: 100m, max-file: '3'}}",
+        "{driver: json-file, options: {max-size: 1g, max-file: '3'}}",
+    );
+    assert!(check(&parse(&uncapped).unwrap())
+        .unwrap_err()
+        .starts_with("deploy-queue1: "));
 }
 
 #[test]

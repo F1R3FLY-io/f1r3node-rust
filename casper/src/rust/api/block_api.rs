@@ -105,7 +105,7 @@ fn deploy_is_block_expired(
     latest_block_number: i64,
     deploy_lifespan: i64,
 ) -> Result<bool, CasperError> {
-    Ok(!crate::rust::util::deploy_window::is_open(
+    Ok(!models::rust::deploy_window::is_open(
         valid_after_block_number,
         latest_block_number,
         deploy_lifespan,
@@ -380,6 +380,37 @@ impl std::fmt::Display for DeployValidationError {
 }
 
 impl std::error::Error for DeployValidationError {}
+
+/// A deploy whose block window or expiration timestamp has closed: no block
+/// can include it any more.
+#[derive(Debug)]
+pub struct DeployExpiredError {
+    pub message: String,
+}
+
+impl std::fmt::Display for DeployExpiredError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for DeployExpiredError {}
+
+/// The node's own validator is not bonded, so it cannot propose a block for
+/// the deploy now. It may be bonded later.
+#[derive(Debug)]
+pub struct ValidatorNotBondedError;
+
+impl std::fmt::Display for ValidatorNotBondedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "validator_not_bonded: Deploy was rejected because node's validator is not bonded."
+        )
+    }
+}
+
+impl std::error::Error for ValidatorNotBondedError {}
 
 #[derive(Debug)]
 pub struct ProposeReadOnlyError;
@@ -685,26 +716,23 @@ impl BlockAPI {
                 } else {
                     Ok(())
                 }
-            })
-            .and_then(|_| {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                if d.data.is_expired_at(now) {
-                    Err(DeployValidationError {
-                        message: format!(
-                            "Deploy has expired: expirationTimestamp={:?} is in the past.",
-                            d.data.expiration_timestamp
-                        ),
-                    })
-                } else {
-                    Ok(())
-                }
             });
 
         // Return early if validation fails
         validation_result.map_err(|e| eyre::Report::new(e))?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| eyre::eyre!("system clock is before the Unix epoch: {}", e))?
+            .as_millis() as i64;
+        if d.data.is_expired_at(now) {
+            return Err(eyre::Report::new(DeployExpiredError {
+                message: format!(
+                    "deploy_expired: expirationTimestamp={:?} is in the past.",
+                    d.data.expiration_timestamp
+                ),
+            }));
+        }
 
         let log_error_message =
             "Error: Could not deploy, casper instance was not available yet.".to_string();
@@ -731,34 +759,33 @@ impl BlockAPI {
             }
             let dag = casper.block_dag().await?;
             if !casper.is_local_validator_bonded() {
-                return Err(eyre::Report::new(DeployValidationError {
-                    message: "Deploy was rejected because node's validator is not bonded."
-                        .to_string(),
-                }));
+                return Err(eyre::Report::new(ValidatorNotBondedError));
             }
-            // A deploy admitted now can only ever land in a block that doesn't
-            // exist yet — the next one, at `latest_block_number + 1` — never
-            // in the current tip, which is already built. block_creator.rs's
-            // own expiry filter checks against exactly that next block's
-            // number (`earliest_block_number = block_number - deploy_lifespan`
-            // for the block being assembled). Checking admission against
-            // `latest_block_number` instead of `latest_block_number + 1` is
-            // off by one: a deploy admitted "just inside" the window at the
-            // current tip is then found expired by the very next block's
-            // filter, so it can never actually be included.
-            let next_block_number = dag.latest_block_number() + 1;
+            // `latest_block_number` is the highest stored block number plus
+            // one, which is the number of the next block that block_creator.rs
+            // assembles and checks with its own expiry filter.
+            let next_block_number = dag.latest_block_number();
             let deploy_lifespan = casper.casper_shard_conf().deploy_lifespan;
             if deploy_is_block_expired(
                 d.data.valid_after_block_number,
                 next_block_number,
                 deploy_lifespan,
             )? {
-                return Err(eyre::Report::new(DeployValidationError {
+                return Err(eyre::Report::new(DeployExpiredError {
                     message: format!(
-                        "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
+                        "deploy_expired: validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
                         d.data.valid_after_block_number, next_block_number, deploy_lifespan
                     ),
                 }));
+            }
+            if models::rust::deploy_window::is_too_far_ahead(
+                d.data.valid_after_block_number,
+                next_block_number,
+                casper.casper_shard_conf().max_parent_depth,
+            ) {
+                return Err(eyre::Report::new(
+                    crate::rust::casper::DeployError::InvalidFreshness,
+                ));
             }
             casper_deploy(casper, d, trigger_propose).await
         } else {
