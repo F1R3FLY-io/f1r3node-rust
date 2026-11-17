@@ -405,7 +405,7 @@ impl std::fmt::Display for ValidatorNotBondedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Deploy was rejected because node's validator is not bonded."
+            "validator_not_bonded: Deploy was rejected because node's validator is not bonded."
         )
     }
 }

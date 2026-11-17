@@ -512,16 +512,16 @@ impl Engine {
             ))));
         }
         let valid_after = deploy.data.valid_after_block_number;
-        let next_block = chain.tip;
+        let next_block = chain.tip + 1;
         if !window_open(valid_after, next_block, shard.deploy_lifespan) {
             return Ok(Err(IntakeError::DeployExpired(format!(
                 "validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
                 valid_after, next_block, shard.deploy_lifespan
             ))));
         }
-        if is_too_far_ahead(valid_after, chain.tip, shard.max_parent_depth) {
+        if is_too_far_ahead(valid_after, next_block, shard.max_parent_depth) {
             return Ok(Err(IntakeError::InvalidDeployWindow(
-                too_far_ahead_message(valid_after, chain.tip, shard.max_parent_depth),
+                too_far_ahead_message(valid_after, next_block, shard.max_parent_depth),
             )));
         }
 
@@ -554,7 +554,7 @@ impl Engine {
         // The rate is what the validator takes into its blocks. The depth
         // covers an intake that falls after a deploy was accepted.
         let rate = health.intake_per_height();
-        let fresh_span = last_includable(chain.tip, shard.deploy_lifespan) - chain.tip;
+        let fresh_span = last_includable(next_block, shard.deploy_lifespan) - chain.tip;
 
         let deployer = deploy.pk.bytes.to_vec();
         let (held, others) = match self.held_by_deployer.get(&deployer) {

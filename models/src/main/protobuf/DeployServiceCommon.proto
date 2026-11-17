@@ -327,7 +327,8 @@ message Status {
   bool   isReady                     = 15;
   int64  currentEpoch                = 16;
   int32  epochLength                 = 17;
-  // Deploy pacing values; absent until casper is up.
+  // Deploy pacing values; absent until casper is up. latestBlockNumber is the
+  // number of the next block: the highest block number in the DAG plus one.
   optional int64  latestBlockNumber      = 19;
   optional int64  deployLifespan         = 20;
   optional uint32 maxUserDeploysPerBlock = 21;

@@ -1504,7 +1504,8 @@ pub struct ApiStatus {
     /// Blocks per epoch, from genesis configuration.
     #[serde(rename = "epochLength")]
     pub epoch_length: i32,
-    /// Highest block number in this node's DAG. `null` until casper is up.
+    /// Number of the next block: the highest block number in this node's DAG
+    /// plus one. `null` until casper is up.
     #[serde(rename = "latestBlockNumber")]
     pub latest_block_number: Option<i64>,
     /// Blocks a deploy stays includable after its `validAfterBlockNumber`.

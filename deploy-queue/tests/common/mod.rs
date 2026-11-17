@@ -37,11 +37,11 @@ pub struct FakeNode {
 }
 
 impl FakeNode {
-    pub fn new(tip: i64, lfb: i64) -> Self {
+    pub fn new(highest: i64, lfb: i64) -> Self {
         let (events, _) = broadcast::channel(256);
         let (disconnect, _) = broadcast::channel(4);
         Self {
-            status: Arc::new(Mutex::new(status_body(tip, lfb))),
+            status: Arc::new(Mutex::new(status_body(highest, lfb))),
             deploy_answer: Arc::new(Mutex::new((StatusCode::OK, json!("Success!")))),
             deploy_status: Arc::new(Mutex::new(
                 json!({"state":"Pending","rejection_count":0,"latest_block_hash":null}),
@@ -70,12 +70,14 @@ impl FakeNode {
     }
 }
 
-fn status_body(tip: i64, lfb: i64) -> Value {
+/// The node's status for a DAG whose highest block is `highest`. Like the
+/// node, it reports the number of the next block as `latestBlockNumber`.
+fn status_body(highest: i64, lfb: i64) -> Value {
     json!({
         "shardId": "root",
         "minPhloPrice": "1",
         "lastFinalizedBlockNumber": lfb,
-        "latestBlockNumber": tip,
+        "latestBlockNumber": highest + 1,
         "deployLifespan": 50,
         "maxUserDeploysPerBlock": 4,
         "maxParentDepth": 25,

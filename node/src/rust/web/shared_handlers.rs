@@ -88,13 +88,16 @@ pub struct ApiErrorResponse {
     /// **400 Bad Request:**
     /// `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`,
     /// `invalid_hash`, `illegal_argument`, `rholang_bad_term`,
-    /// `readonly_node_required`, `deploy_expired`,
+    /// `readonly_node_required`, `deploy_expired`, `invalid_deploy_window`
     ///
     /// **404 Not Found:**
     /// `deploy_not_found`, `block_not_found`, `endpoint_not_found`
     ///
     /// **405 Method Not Allowed:**
     /// `method_not_allowed`
+    ///
+    /// **413 Payload Too Large:**
+    /// `deploy_too_large`
     ///
     /// **415 Unsupported Media Type:**
     /// `invalid_request_body`
@@ -115,7 +118,8 @@ pub struct ApiErrorResponse {
     /// `comm_error`, `external_service_error`
     ///
     /// **503 Service Unavailable:**
-    /// `observer_busy` — carries `Retry-After`
+    /// `observer_busy` — carries `Retry-After`; `deploy_pool_busy`,
+    /// `deploy_admission_busy`, `validator_not_bonded`
     ///
     /// **504 Gateway Timeout:**
     /// `exploratory_timeout`

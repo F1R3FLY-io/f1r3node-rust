@@ -33,6 +33,8 @@ pub struct ShardValues {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainSnapshot {
     pub shard: ShardValues,
+    /// The highest block number in the node's DAG. The node's status reports
+    /// the next block number, one above it.
     pub tip: i64,
     pub lfb: i64,
 }
@@ -76,7 +78,7 @@ impl NodeStatus {
     /// `Err` for values no running shard can hold.
     pub fn chain(&self) -> Result<Option<ChainSnapshot>, String> {
         let (
-            Some(tip),
+            Some(next_block),
             Some(deploy_lifespan),
             Some(max_user_deploys_per_block),
             Some(max_parent_depth),
@@ -91,6 +93,12 @@ impl NodeStatus {
         };
         if self.last_finalized_block_number < 0 {
             return Ok(None);
+        }
+        if next_block < 1 {
+            return Err(format!(
+                "node reports next block number {} while it has finalized a block",
+                next_block
+            ));
         }
         if deploy_lifespan < 0 {
             return Err(format!(
@@ -119,7 +127,7 @@ impl NodeStatus {
                 max_user_deploys_per_block,
                 max_parent_depth,
             },
-            tip,
+            tip: next_block - 1,
             lfb: self.last_finalized_block_number,
         }))
     }
@@ -404,7 +412,11 @@ mod tests {
         )
         .unwrap();
         let chain = status.chain().unwrap().unwrap();
-        assert_eq!((chain.tip, chain.lfb), (43, 40));
+        assert_eq!(
+            (chain.tip, chain.lfb),
+            (42, 40),
+            "the status names the next block; the tip is the highest one"
+        );
         assert_eq!(chain.shard.max_parent_depth, 25);
     }
 

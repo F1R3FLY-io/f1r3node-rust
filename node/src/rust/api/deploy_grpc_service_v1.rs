@@ -183,6 +183,9 @@ impl DeployGrpcServiceV1Impl {
                     ) || cause
                         .downcast_ref::<casper::rust::api::block_api::DeployExpiredError>()
                         .is_some()
+                        || cause
+                            .downcast_ref::<casper::rust::api::block_api::ValidatorNotBondedError>()
+                            .is_some()
                 });
                 if is_expected_refusal {
                     tracing::debug!("Deploy admission refused: {}", e);
@@ -1710,6 +1713,10 @@ mod tests {
             (
                 eyre::Report::new(DeployError::InvalidFreshness),
                 "invalid_deploy_window:",
+            ),
+            (
+                eyre::Report::new(casper::rust::api::block_api::ValidatorNotBondedError),
+                "validator_not_bonded:",
             ),
         ] {
             let response =

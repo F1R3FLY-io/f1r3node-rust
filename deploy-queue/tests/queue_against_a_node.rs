@@ -426,18 +426,41 @@ async fn refusals_follow_the_node_rules() {
         queue.handle.intake(deploy(50, "root", 4)).await,
         Err(IntakeError::DeployExpired(_))
     ));
-    // Tip 100 plus the 25-height citable depth.
+    // Next block 101 plus the 25-height citable depth.
     assert!(matches!(
-        queue.handle.intake(deploy(126, "root", 8)).await,
-        Err(IntakeError::InvalidDeployWindow(message)) if message.contains("highest accepted block number 125")
+        queue.handle.intake(deploy(127, "root", 8)).await,
+        Err(IntakeError::InvalidDeployWindow(message)) if message.contains("highest accepted block number 126")
     ));
-    queue.handle.intake(deploy(125, "root", 9)).await.unwrap();
+    queue.handle.intake(deploy(126, "root", 9)).await.unwrap();
     let held = deploy(95, "root", 5);
     queue.handle.intake(held.clone()).await.unwrap();
     assert_eq!(
         queue.handle.intake(held.clone()).await,
         Err(IntakeError::Duplicate(held.sig.to_vec()))
     );
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn window_rules_follow_the_nodes_next_block_after_blocks_arrive() {
+    let node = FakeNode::new(100, 99);
+    let url = node.clone().serve().await;
+    let dir = tempfile::tempdir().unwrap();
+    let queue = Queue::start(&url, dir.path()).await;
+
+    advance(&node, 101, 102);
+    reaches_tip(&queue, 102).await;
+    // The node's next block is 103: lifespan 50 closes valid-after 53, and
+    // the 25-height citable depth admits up to 128.
+    assert!(matches!(
+        queue.handle.intake(deploy(53, "root", 10)).await,
+        Err(IntakeError::DeployExpired(_))
+    ));
+    queue.handle.intake(deploy(128, "root", 11)).await.unwrap();
+    assert!(matches!(
+        queue.handle.intake(deploy(129, "root", 12)).await,
+        Err(IntakeError::InvalidDeployWindow(_))
+    ));
     queue.stop();
 }
 
@@ -749,7 +772,7 @@ async fn queued_deploys_survive_a_restart_and_are_released_after_it() {
     queue.stop();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    node.status.lock().unwrap()["latestBlockNumber"] = json!(41);
+    node.status.lock().unwrap()["latestBlockNumber"] = json!(42);
     node.status.lock().unwrap()["lastFinalizedBlockNumber"] = json!(40);
     let queue = Queue::start(&url, dir.path()).await;
     eventually("the restarted queue releases", || async {

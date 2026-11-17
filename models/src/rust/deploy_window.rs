@@ -34,33 +34,33 @@ pub fn last_includable_block(
         .saturating_sub(1))
 }
 
-/// The highest `validAfterBlockNumber` a deploy may name when the latest
-/// block is `latest_block_number`. An honest node's tip runs ahead of another
-/// honest node's by less than the citable depth, so a client that read the
-/// number from any node of the shard names no block past this one.
-pub fn latest_valid_after(latest_block_number: i64, max_parent_depth: i32) -> i64 {
-    latest_block_number.saturating_add(i64::from(max_parent_depth))
+/// The highest `validAfterBlockNumber` a deploy may name when the next block
+/// is `next_block_number`. An honest node's tip runs ahead of another honest
+/// node's by less than the citable depth, so a client that read the number
+/// from any node of the shard names no block past this one.
+pub fn latest_valid_after(next_block_number: i64, max_parent_depth: i32) -> i64 {
+    next_block_number.saturating_add(i64::from(max_parent_depth))
 }
 
 pub fn is_too_far_ahead(
     valid_after_block_number: i64,
-    latest_block_number: i64,
+    next_block_number: i64,
     max_parent_depth: i32,
 ) -> bool {
-    valid_after_block_number > latest_valid_after(latest_block_number, max_parent_depth)
+    valid_after_block_number > latest_valid_after(next_block_number, max_parent_depth)
 }
 
 pub fn too_far_ahead_message(
     valid_after_block_number: i64,
-    latest_block_number: i64,
+    next_block_number: i64,
     max_parent_depth: i32,
 ) -> String {
     format!(
         "Deploy validAfterBlockNumber {} is ahead of the highest accepted block number {} \
-         (latest block {} plus max parent depth {}).",
+         (next block {} plus max parent depth {}).",
         valid_after_block_number,
-        latest_valid_after(latest_block_number, max_parent_depth),
-        latest_block_number,
+        latest_valid_after(next_block_number, max_parent_depth),
+        next_block_number,
         max_parent_depth
     )
 }

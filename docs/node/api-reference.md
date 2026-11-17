@@ -171,7 +171,7 @@ curl http://localhost:40403/api/status
 | `isReady` | bool | `true` after engine enters Running state |
 | `currentEpoch` | int | `lastFinalizedBlockNumber / epochLength` |
 | `epochLength` | int | Blocks per epoch, from genesis configuration |
-| `latestBlockNumber` | int/null | Highest block number in this node's DAG. `null` until casper is up |
+| `latestBlockNumber` | int/null | Number of the next block: the highest block number in this node's DAG plus one. `null` until casper is up |
 | `deployLifespan` | int/null | Blocks a deploy stays includable after its `validAfterBlockNumber`. `null` until casper is up |
 | `maxUserDeploysPerBlock` | int/null | Most user deploys one block carries. `null` until casper is up |
 | `maxParentDepth` | int/null | How far below the tip a block may cite, in blocks. `null` until casper is up |

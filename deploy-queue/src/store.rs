@@ -15,6 +15,9 @@ const MAP_SIZE: usize = 16 << 30;
 /// for records and LMDB's own pages.
 pub const PAYLOAD_BUDGET: u64 = (MAP_SIZE / 2) as u64;
 
+const FORMAT_KEY: &[u8] = b"format";
+const FORMAT_VERSION: u32 = 1;
+
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("queue store: {0}")]
@@ -27,6 +30,15 @@ pub enum StoreError {
     Encode(bincode::Error),
     #[error("queue store: record {sig} is corrupt: {reason}")]
     Corrupt { sig: String, reason: String },
+    #[error(
+        "queue store: {dir} holds format {found}, this build reads format {expected}; \
+         remove the directory to start an empty queue"
+    )]
+    Format {
+        dir: String,
+        found: String,
+        expected: u32,
+    },
 }
 
 /// The durable record of every deploy the queue holds, keyed by signature.
@@ -52,13 +64,34 @@ impl QueueStore {
         std::fs::create_dir_all(dir)?;
         let mut options = EnvOpenOptions::new();
         options.map_size(MAP_SIZE);
-        options.max_dbs(2);
+        options.max_dbs(3);
         // SAFETY: the queue is the only process that opens this directory,
         // and it opens it once.
         let env = Arc::new(unsafe { options.open(dir)? });
         let mut wtxn = env.write_txn()?;
         let records = env.create_database(&mut wtxn, Some("records"))?;
         let payloads = env.create_database(&mut wtxn, Some("payloads"))?;
+        let meta: heed::Database<heed::types::Bytes, heed::types::Bytes> =
+            env.create_database(&mut wtxn, Some("meta"))?;
+        let expected = FORMAT_VERSION.to_be_bytes();
+        match meta.get(&wtxn, FORMAT_KEY)? {
+            Some(found) if found == expected.as_slice() => {}
+            Some(found) => {
+                return Err(StoreError::Format {
+                    dir: dir.display().to_string(),
+                    found: hex::encode(found),
+                    expected: FORMAT_VERSION,
+                })
+            }
+            None if records.is_empty(&wtxn)? => meta.put(&mut wtxn, FORMAT_KEY, &expected)?,
+            None => {
+                return Err(StoreError::Format {
+                    dir: dir.display().to_string(),
+                    found: "none".to_string(),
+                    expected: FORMAT_VERSION,
+                })
+            }
+        }
         wtxn.commit()?;
         Ok(Self {
             kv: LmdbKeyValueStore::new(env.clone(), records),
@@ -198,5 +231,36 @@ mod tests {
             .unwrap();
         assert_eq!(store.payload(&sig).unwrap(), None);
         assert_eq!(store.load().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_store_without_this_builds_format_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let sig = vec![6];
+        {
+            let store = QueueStore::open(dir.path()).unwrap();
+            store
+                .commit(&Batch {
+                    records: vec![(&sig, &record(1))],
+                    ..Batch::default()
+                })
+                .unwrap();
+            let mut wtxn = store.kv.env.write_txn().unwrap();
+            let meta: heed::Database<heed::types::Bytes, heed::types::Bytes> = store
+                .kv
+                .env
+                .open_database(&wtxn, Some("meta"))
+                .unwrap()
+                .unwrap();
+            meta.delete(&mut wtxn, FORMAT_KEY).unwrap();
+            wtxn.commit().unwrap();
+        }
+        assert!(matches!(
+            QueueStore::open(dir.path()),
+            Err(StoreError::Format { .. })
+        ));
+        let fresh = tempfile::tempdir().unwrap();
+        QueueStore::open(fresh.path()).unwrap();
+        QueueStore::open(fresh.path()).unwrap();
     }
 }
