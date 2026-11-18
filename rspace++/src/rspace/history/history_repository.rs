@@ -72,6 +72,36 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
     /// cold-store datums/continuations and the roots store are separate
     /// environments and not accessible here.
     fn history_store(&self) -> Arc<dyn KeyValueStore>;
+
+    /// Atomic mark-and-sweep of the trie-node store against `retained_roots`.
+    ///
+    /// Issue #923, Option D race fix. The sweep MUST hold the history
+    /// store's write lock for the full pass so no runtime writer can
+    /// land a new block's trie nodes between mark and sweep — that was
+    /// the race that could leave a new block's state tree with a
+    /// dangling descendant pointer. LMDB's single-writer rule inside the
+    /// history env provides the mutual exclusion; implementations do the
+    /// whole mark + sweep inside one write transaction.
+    ///
+    /// `retained_roots` is the union of every state root whose subtree
+    /// must survive — the caller (casper's `prune_history_once`) builds
+    /// this from `compute_forward_horizon_roots` plus any LFS /
+    /// report-replay / merge-intermediate anchors it holds.
+    ///
+    /// Returns a pair of counters so operators can see the pass's work.
+    fn prune_history_atomic(
+        &self,
+        retained_roots: &[Blake2b256Hash],
+    ) -> Result<HistoryPruneResult, HistoryError>;
+}
+
+/// Counters for one atomic prune pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HistoryPruneResult {
+    /// Trie nodes reachable from the retained roots at pass time.
+    pub marked: usize,
+    /// Trie nodes deleted (keys present in the env, not in the mark set).
+    pub swept: usize,
 }
 
 pub struct HistoryRepositoryInstances<C, P, A, K> {
