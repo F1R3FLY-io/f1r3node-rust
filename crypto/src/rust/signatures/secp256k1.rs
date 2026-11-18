@@ -198,6 +198,83 @@ mod tests {
         seckey.len() == 32 && SigningKey::from_slice(seckey).is_ok()
     }
 
+    fn der_scalars(signature: &[u8]) -> (num_bigint::BigUint, num_bigint::BigUint) {
+        yasna::parse_der(signature, |reader| {
+            reader.read_sequence(|reader| {
+                let r = reader.next().read_biguint()?;
+                let s = reader.next().read_biguint()?;
+                Ok((r, s))
+            })
+        })
+        .expect("DER signature")
+    }
+
+    fn der_of(r: &num_bigint::BigUint, s: &num_bigint::BigUint) -> Vec<u8> {
+        yasna::construct_der(|writer| {
+            writer.write_sequence(|writer| {
+                writer.next().write_biguint(r);
+                writer.next().write_biguint(s);
+            })
+        })
+    }
+
+    /// A deploy is identified by its signature, so a second signature the
+    /// verifier accepts for the same data is a second deploy. ECDSA admits
+    /// one for free: (r, n - s) verifies wherever (r, s) does.
+    #[test]
+    fn verify_rejects_the_high_s_twin_of_a_valid_signature() {
+        let secp256k1 = Secp256k1;
+        let order = num_bigint::BigUint::parse_bytes(
+            b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+            16,
+        )
+        .expect("secp256k1 group order");
+        let data = Sha256::digest(b"one deploy, one signature").to_vec();
+
+        for _ in 0..32 {
+            let (private_key, public_key) = secp256k1.new_key_pair();
+            let signature = secp256k1.sign(&data, &private_key.bytes);
+            assert!(secp256k1.verify(&data, &signature, &public_key.bytes));
+
+            let (r, s) = der_scalars(&signature);
+            let twin = der_of(&r, &(&order - &s));
+            assert_ne!(twin, signature);
+            assert!(
+                !secp256k1.verify(&data, &twin, &public_key.bytes),
+                "HIGH-S ACCEPTED: (r, n - s) verifies for the same data, so \
+                 anyone can mint a second signature for any deploy"
+            );
+        }
+    }
+
+    /// The same (r, s) encoded non-minimally (a padded INTEGER) is
+    /// byte-different; the verifier must reject it rather than read through
+    /// the padding.
+    #[test]
+    fn verify_rejects_a_non_minimal_der_encoding_of_a_valid_signature() {
+        let secp256k1 = Secp256k1;
+        let data = Sha256::digest(b"one deploy, one encoding").to_vec();
+        let (private_key, public_key) = secp256k1.new_key_pair();
+        let signature = secp256k1.sign(&data, &private_key.bytes);
+        let (r, s) = der_scalars(&signature);
+
+        let minimal_r = yasna::construct_der(|w| w.write_biguint(&r));
+        let mut padded_r = vec![0x02, (minimal_r.len() - 2 + 1) as u8, 0x00];
+        padded_r.extend_from_slice(&minimal_r[2..]);
+        let encoded_s = yasna::construct_der(|w| w.write_biguint(&s));
+        let mut body = padded_r;
+        body.extend_from_slice(&encoded_s);
+        let mut padded = vec![0x30, body.len() as u8];
+        padded.extend_from_slice(&body);
+
+        assert_ne!(padded, signature);
+        assert!(
+            !secp256k1.verify(&data, &padded, &public_key.bytes),
+            "NON-MINIMAL DER ACCEPTED: a padded encoding of the same (r, s) \
+             verifies, so anyone can mint a second signature for any deploy"
+        );
+    }
+
     //crypto/src/test/scala/coop/rchain/crypto/signatures/Secp256k1Spec.scala
     #[test]
     fn generate_valid_key_pair() {

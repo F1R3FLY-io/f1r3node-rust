@@ -120,6 +120,18 @@ impl KeyValueBlockStore {
         }
     }
 
+    /// The protobuf encoding of a block, read from the stored bytes without
+    /// decoding the block.
+    pub fn get_encoded(&self, block_hash: &BlockHash) -> Result<Option<Vec<u8>>, KvStoreError> {
+        match self.store.get_one(&block_hash.to_vec())? {
+            Some(bytes) => Self::decompress_block_bytes(&bytes).map(Some),
+            None => Ok(self
+                .pending
+                .get(block_hash)
+                .map(|block| block.to_proto().encode_to_vec())),
+        }
+    }
+
     /**
      * See block-storage/src/main/scala/coop/rchain/blockstorage/BlockStoreSyntax.scala
      *
@@ -175,40 +187,11 @@ impl KeyValueBlockStore {
         if deploy_sigs.is_empty() {
             return Ok(Some(false));
         }
-        let key = block_hash.to_vec();
-        if let Some(has_any) = Self::cached_has_any_deploy_sig(&key, deploy_sigs) {
-            return Ok(Some(has_any));
-        }
-
-        let bytes = match self.store.get_one(&key)? {
-            Some(bytes) => bytes,
-            None => return Ok(None),
-        };
-
-        let body = Self::decode_block_deploy_sigs(&bytes)?;
-        let mut block_deploy_sigs = Vec::with_capacity(body.deploys.len());
-        let mut has_any = false;
-        for processed_deploy in body.deploys {
-            let deploy = processed_deploy.deploy.ok_or_else(|| {
-                KvStoreError::SerializationError(Self::error_block(
-                    block_hash.clone(),
-                    "Missing deploy field".to_string(),
-                ))
-            })?;
-            let sig = deploy.sig;
-            if sig.len() < Self::MIN_DEPLOY_SIG_BYTES {
-                return Err(KvStoreError::SerializationError(Self::error_block(
-                    block_hash.clone(),
-                    format!("Invalid deploy signature length: {}", sig.len()),
-                )));
-            }
-            if deploy_sigs.contains(&sig) {
-                has_any = true;
-            }
-            block_deploy_sigs.push(sig);
-        }
-        Self::cache_deploy_sigs(key, block_deploy_sigs);
-        Ok(Some(has_any))
+        Ok(self.deploy_identities(block_hash)?.map(|identities| {
+            identities
+                .iter()
+                .any(|identity| deploy_sigs.contains(&identity.sig))
+        }))
     }
 
     /// Fetch KEPT rejected deploy signatures for a block without decoding a
@@ -242,36 +225,66 @@ impl KeyValueBlockStore {
         &self,
         block_hash: &BlockHash,
     ) -> Result<Option<Vec<Vec<u8>>>, KvStoreError> {
+        Ok(self.deploy_identities(block_hash)?.map(|identities| {
+            identities
+                .iter()
+                .map(|identity| identity.sig.clone())
+                .collect()
+        }))
+    }
+
+    /// Each deploy's signature, unforgeable-name seed and valid-after block,
+    /// without decoding a full BlockMessage. Served from a bounded shared
+    /// cache.
+    pub fn deploy_identities(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<Option<Arc<Vec<DeployIdentity>>>, KvStoreError> {
         let key = block_hash.to_vec();
-        if let Some(cached) = Self::cached_deploy_sigs(&key) {
+        if let Some(cached) = Self::cached_deploy_identities(&key) {
             return Ok(Some(cached));
         }
-
         let bytes = match self.store.get_one(&key)? {
             Some(bytes) => bytes,
             None => return Ok(None),
         };
+        let identities = Arc::new(Self::decode_deploy_identities(block_hash, &bytes)?);
+        Self::cache_deploy_identities(key, identities.clone());
+        Ok(Some(identities))
+    }
 
-        let body = Self::decode_block_deploy_sigs(&bytes)?;
-        let mut block_deploy_sigs = Vec::with_capacity(body.deploys.len());
-        for processed_deploy in body.deploys {
-            let deploy = processed_deploy.deploy.ok_or_else(|| {
-                KvStoreError::SerializationError(Self::error_block(
-                    block_hash.clone(),
-                    "Missing deploy field".to_string(),
-                ))
-            })?;
-            if deploy.sig.len() < Self::MIN_DEPLOY_SIG_BYTES {
-                return Err(KvStoreError::SerializationError(Self::error_block(
-                    block_hash.clone(),
-                    format!("Invalid deploy signature length: {}", deploy.sig.len()),
-                )));
-            }
-            block_deploy_sigs.push(deploy.sig);
-        }
-
-        Self::cache_deploy_sigs(key, block_deploy_sigs.clone());
-        Ok(Some(block_deploy_sigs))
+    fn decode_deploy_identities(
+        block_hash: &BlockHash,
+        bytes: &[u8],
+    ) -> Result<Vec<DeployIdentity>, KvStoreError> {
+        let body = Self::decode_block_deploy_sigs(bytes)?;
+        body.deploys
+            .into_iter()
+            .map(|processed_deploy| {
+                let deploy = processed_deploy.deploy.ok_or_else(|| {
+                    KvStoreError::SerializationError(Self::error_block(
+                        block_hash.clone(),
+                        "Missing deploy field".to_string(),
+                    ))
+                })?;
+                if deploy.sig.len() < Self::MIN_DEPLOY_SIG_BYTES {
+                    return Err(KvStoreError::SerializationError(Self::error_block(
+                        block_hash.clone(),
+                        format!("Invalid deploy signature length: {}", deploy.sig.len()),
+                    )));
+                }
+                let seed = models::rust::deploy_seed::name_seed(
+                    &deploy.deployer,
+                    deploy.timestamp,
+                    deploy.valid_after_block_number,
+                );
+                Ok(DeployIdentity {
+                    sig: deploy.sig,
+                    seed,
+                    valid_after_block_number: deploy.valid_after_block_number,
+                })
+            })
+            .collect()
     }
 
     pub fn put(&self, block_hash: BlockHash, block: &BlockMessage) -> Result<(), KvStoreError> {
@@ -512,6 +525,30 @@ impl KeyValueBlockStore {
         })
     }
 
+    fn decompress_block_bytes(bytes: &[u8]) -> Result<Vec<u8>, KvStoreError> {
+        use std::io::Cursor;
+
+        use prost::encoding::decode_varint;
+
+        let mut cursor = Cursor::new(bytes);
+        let decompressed_length = decode_varint(&mut cursor).map_err(|err| {
+            KvStoreError::SerializationError(format!(
+                "Failed to decode varint length prefix: {err}"
+            ))
+        })? as usize;
+        let mut output = vec![0u8; decompressed_length];
+        let written = lz4_flex::decompress_into(&bytes[cursor.position() as usize..], &mut output)
+            .map_err(|err| {
+                KvStoreError::SerializationError(format!("Decompress of block failed: {err}"))
+            })?;
+        if written != decompressed_length {
+            return Err(KvStoreError::SerializationError(format!(
+                "Decompressed block is {written} bytes, its prefix declares {decompressed_length}"
+            )));
+        }
+        Ok(output)
+    }
+
     fn decode_block_deploy_sigs(bytes: &[u8]) -> Result<BlockDeploySigsBody, KvStoreError> {
         use std::io::Cursor;
 
@@ -558,23 +595,12 @@ impl KeyValueBlockStore {
         Self::compress_bytes(&block_proto.encode_to_vec())
     }
 
-    fn cached_has_any_deploy_sig(
-        block_hash: &[u8],
-        deploy_sigs: &HashSet<Vec<u8>>,
-    ) -> Option<bool> {
-        let cache = Self::deploy_sig_cache().lock().ok()?;
-        cache
-            .entries
-            .get(block_hash)
-            .map(|cached_sigs| cached_sigs.iter().any(|sig| deploy_sigs.contains(sig)))
-    }
-
-    fn cached_deploy_sigs(block_hash: &[u8]) -> Option<Vec<Vec<u8>>> {
+    fn cached_deploy_identities(block_hash: &[u8]) -> Option<Arc<Vec<DeployIdentity>>> {
         let cache = Self::deploy_sig_cache().lock().ok()?;
         cache.entries.get(block_hash).cloned()
     }
 
-    fn cache_deploy_sigs(block_hash: Vec<u8>, deploy_sigs: Vec<Vec<u8>>) {
+    fn cache_deploy_identities(block_hash: Vec<u8>, identities: Arc<Vec<DeployIdentity>>) {
         let max_entries = Self::max_deploy_sig_cache_entries();
         if max_entries == 0 {
             return;
@@ -588,7 +614,7 @@ impl KeyValueBlockStore {
                     }
                 }
             }
-            cache.entries.insert(block_hash, deploy_sigs);
+            cache.entries.insert(block_hash, identities);
         }
     }
 
@@ -620,9 +646,18 @@ impl KeyValueBlockStore {
     }
 }
 
+/// What identifies a deploy carried in a block: its signature, and the
+/// unforgeable-name seed it shares with any deploy creating the same names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployIdentity {
+    pub sig: Vec<u8>,
+    pub seed: Vec<u8>,
+    pub valid_after_block_number: i64,
+}
+
 #[derive(Default)]
 struct DeploySigCache {
-    entries: HashMap<Vec<u8>, Vec<Vec<u8>>>,
+    entries: HashMap<Vec<u8>, Arc<Vec<DeployIdentity>>>,
     order: VecDeque<Vec<u8>>,
 }
 
@@ -648,8 +683,14 @@ struct BlockDeploySigsProcessedDeploy {
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 struct BlockDeploySigsDeploy {
+    #[prost(bytes = "vec", tag = "1")]
+    deployer: Vec<u8>,
+    #[prost(int64, tag = "3")]
+    timestamp: i64,
     #[prost(bytes = "vec", tag = "4")]
     sig: Vec<u8>,
+    #[prost(int64, tag = "10")]
+    valid_after_block_number: i64,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1216,6 +1257,60 @@ mod tests {
     }
 
     #[test]
+    fn deploy_identities_pair_each_sig_with_its_name_seed() {
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut TestRunner::default())
+            .unwrap()
+            .current();
+        let block = block_element_gen(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+        )
+        .new_tree(&mut TestRunner::default())
+        .unwrap()
+        .current();
+        let block_bytes = KeyValueBlockStore::block_proto_to_bytes(&block.to_proto());
+        let bs = KeyValueBlockStore::new(
+            Arc::new(MockKeyValueStore::new(Some(block_bytes))),
+            Arc::new(NotImplementedKV),
+        );
+
+        assert_eq!(
+            bs.deploy_identities(&block.block_hash)
+                .unwrap()
+                .map(|identities| identities.as_ref().clone()),
+            Some(vec![DeployIdentity {
+                sig: deploy.deploy.sig.to_vec(),
+                seed: models::rust::deploy_seed::deploy_name_seed(&deploy.deploy),
+                valid_after_block_number: deploy.deploy.data.valid_after_block_number,
+            }])
+        );
+
+        let missing_store = KeyValueBlockStore::new(
+            Arc::new(MockKeyValueStore::new(None)),
+            Arc::new(NotImplementedKV),
+        );
+        assert_eq!(
+            missing_store
+                .deploy_identities(&BlockHash::from(vec![0xD6; 32]))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn rejected_deploy_sigs_keeps_only_non_duplicate_records() {
         use models::rust::casper::protocol::casper_message::RejectedDeploy;
 
@@ -1336,6 +1431,38 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(store.get(&original.block_hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn get_encoded_returns_the_encoding_of_a_stored_or_pending_block() {
+        let (bs, _) = in_mem_store();
+        let stored = models::rust::block_implicits::get_random_block_default();
+        let pending = models::rust::block_implicits::get_random_block_default();
+        bs.put_block_message(&stored).unwrap();
+        bs.put_pending(&pending, PendingClass::Unsolicited).unwrap();
+
+        for block in [&stored, &pending] {
+            let encoded = bs
+                .get_encoded(&block.block_hash)
+                .unwrap()
+                .expect("block present");
+            assert_eq!(encoded, block.to_proto().encode_to_vec());
+        }
+        assert_eq!(bs.get_encoded(&BlockHash::from(vec![1; 32])).unwrap(), None);
+    }
+
+    #[test]
+    fn get_encoded_reports_a_serialization_error_for_corrupt_stored_bytes() {
+        let mut bytes = Vec::new();
+        prost::encoding::encode_varint(100, &mut bytes);
+        bytes.extend_from_slice(&[0xFF, 0x00, 0xAB]);
+        let kv = MockKeyValueStore::new(Some(bytes));
+        let bs = KeyValueBlockStore::new(Arc::new(kv), Arc::new(NotImplementedKV));
+
+        assert!(matches!(
+            bs.get_encoded(&BlockHash::from(vec![0xD1; 32])),
+            Err(KvStoreError::SerializationError(_))
+        ));
     }
 
     #[test]

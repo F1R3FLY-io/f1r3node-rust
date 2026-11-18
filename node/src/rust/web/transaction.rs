@@ -54,15 +54,18 @@ pub struct TransactionResponse {
 /// 3. The random seed algorithm for unforgeable name of the deploy is changed
 pub fn transfer_unforgeable() -> Par {
     use casper::rust::genesis::contracts::standard_deploys::{
-        to_public, SYSTEM_VAULT_PK, SYSTEM_VAULT_TIMESTAMP,
+        to_public, GENESIS_VALID_AFTER_BLOCK_NUMBER, SYSTEM_VAULT_PK, SYSTEM_VAULT_TIMESTAMP,
     };
     use casper::rust::util::rholang::tools::Tools;
     use models::rhoapi::g_unforgeable::UnfInstance;
     use models::rhoapi::{GPrivate, GUnforgeable};
 
     let system_vault_pub_key = to_public(SYSTEM_VAULT_PK);
-    let mut seed_for_system_vault =
-        Tools::unforgeable_name_rng(&system_vault_pub_key, SYSTEM_VAULT_TIMESTAMP);
+    let mut seed_for_system_vault = Tools::unforgeable_name_rng(
+        &system_vault_pub_key,
+        SYSTEM_VAULT_TIMESTAMP,
+        GENESIS_VALID_AFTER_BLOCK_NUMBER,
+    );
 
     // the 11th unforgeable name (drop 10, take the next one)
     for _ in 0..10 {

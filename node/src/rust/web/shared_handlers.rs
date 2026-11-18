@@ -11,10 +11,10 @@ use axum::http::request::Parts;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
-    BlockNotFoundError, DeployExpiredError, DeployNotFoundError, DeployValidationError,
-    ExploratoryDeployReadOnlyError, ExploratoryDeployRejection, InvalidHashError,
-    InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
-    ProposeRefusal, ProposeRefusedError, ValidatorNotBondedError,
+    BlockNotFoundError, BlockPrunedError, DeployExpiredError, DeployNotFoundError,
+    DeployValidationError, ExploratoryDeployReadOnlyError, ExploratoryDeployRejection,
+    InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError,
+    ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError, ValidatorNotBondedError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::casper::DeployError;
@@ -95,6 +95,12 @@ pub struct ApiErrorResponse {
     ///
     /// **405 Method Not Allowed:**
     /// `method_not_allowed`
+    ///
+    /// **410 Gone:**
+    /// `block_pruned` — the block was once held by this node but the
+    /// retention sweep has deleted it. The response body includes the
+    /// block height and the node's current prune floor so the consumer
+    /// can decide whether to retry against an archive node.
     ///
     /// **413 Payload Too Large:**
     /// `deploy_too_large`
@@ -293,8 +299,14 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         if let Some(ce) = cause.downcast_ref::<CasperError>() {
             return classify_casper_error(ce);
         }
-        if let Some(DeployError::DuplicateDeploy(_)) = cause.downcast_ref::<DeployError>() {
-            return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
+        match cause.downcast_ref::<DeployError>() {
+            Some(DeployError::DuplicateDeploy(_)) => {
+                return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
+            }
+            Some(DeployError::SeedReuse(_)) => {
+                return (StatusCode::CONFLICT, "seed_reuse", cause.to_string());
+            }
+            _ => {}
         }
         if cause.downcast_ref::<DeployExpiredError>().is_some() {
             return (StatusCode::BAD_REQUEST, "deploy_expired", cause.to_string());
@@ -339,6 +351,15 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         }
         if cause.downcast_ref::<BlockNotFoundError>().is_some() {
             return (StatusCode::NOT_FOUND, "block_not_found", cause.to_string());
+        }
+        // `block_pruned` is distinct from `block_not_found`: the node knew
+        // the block at some point but has since deleted it under the #923
+        // retention sweep. HTTP 410 Gone carries exactly this meaning
+        // ("resource was intentionally removed, consult an archive"), and
+        // the typed body lets consumers walk /reporting/trace and tell a
+        // deleted block apart from a gap.
+        if cause.downcast_ref::<BlockPrunedError>().is_some() {
+            return (StatusCode::GONE, "block_pruned", cause.to_string());
         }
         if cause.downcast_ref::<InvalidHashError>().is_some() {
             return (StatusCode::BAD_REQUEST, "invalid_hash", cause.to_string());
@@ -823,10 +844,10 @@ mod tests {
         use axum::http::StatusCode;
         use axum::response::IntoResponse;
         use casper::rust::api::block_api::{
-            BlockNotFoundError, DeployExpiredError, DeployNotFoundError, DeployValidationError,
-            ExploratoryDeployReadOnlyError, InvalidHashError, InvalidPublicKeyError,
-            LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal,
-            ProposeRefusedError, ValidatorNotBondedError,
+            BlockNotFoundError, BlockPrunedError, DeployExpiredError, DeployNotFoundError,
+            DeployValidationError, ExploratoryDeployReadOnlyError, InvalidHashError,
+            InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError,
+            ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError, ValidatorNotBondedError,
         };
         use casper::rust::casper::DeployError;
         use casper::rust::errors::CasperError;
@@ -852,6 +873,18 @@ mod tests {
                     hash: "bb".to_string(),
                 }),
                 (StatusCode::NOT_FOUND, "block_not_found".to_string())
+            );
+            // A pruned block is deliberately 410 Gone, not 404 Not Found:
+            // the node held the block and the retention sweep deleted it.
+            // Consumers walking /reporting/trace can tell deleted history
+            // from a gap without probing an archive node first.
+            assert_eq!(
+                classify(BlockPrunedError {
+                    hash: "cc".to_string(),
+                    block_height: 42,
+                    prune_floor: 100,
+                }),
+                (StatusCode::GONE, "block_pruned".to_string())
             );
             assert_eq!(
                 classify(InvalidHashError("bad hash".to_string())),
@@ -916,11 +949,16 @@ mod tests {
         }
 
         #[test]
-        fn duplicate_deploy_is_conflict() {
+        fn duplicate_deploy_and_seed_reuse_are_conflicts() {
             let err = DeployError::duplicate_deploy(vec![1u8, 2].into());
             assert_eq!(
                 classify(err),
                 (StatusCode::CONFLICT, "duplicate_deploy".to_string())
+            );
+            let err = DeployError::seed_reuse(vec![1u8, 2].into());
+            assert_eq!(
+                classify(err),
+                (StatusCode::CONFLICT, "seed_reuse".to_string())
             );
         }
 

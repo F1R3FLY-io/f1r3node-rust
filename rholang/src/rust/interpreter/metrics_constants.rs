@@ -38,8 +38,6 @@ pub const INJ_ATTEMPT_REDUCE_TERM_TIME_METRIC: &str = "inj-attempt.reduce-term.t
 pub const RHOLANG_MATCHER_FOLD_MATCH_CALLS_METRIC: &str = "rholang.matcher.fold_match.calls";
 pub const RHOLANG_MATCHER_FOLD_MATCH_RECURSION_DEPTH_TOTAL_METRIC: &str =
     "rholang.matcher.fold_match.recursion_depth_total";
-pub const RHOLANG_MATCHER_FOLD_MATCH_TAIL_CLONE_NS_METRIC: &str =
-    "rholang.matcher.fold_match.tail_clone_ns";
 
 // Reducer per-op-type counters — split reduce_term cost by the Rholang
 // AST node kind dispatched in DebruijnInterpreter::generated_message_eval.

@@ -20,7 +20,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, EquivocationEvidence, ProcessedSystemDeploy, SystemDeployData,
 };
@@ -46,6 +46,7 @@ fn snapshot(fixture: &DetectorFixture) -> CasperSnapshot {
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         rejected_in_scope: Arc::new(DashSet::new()),
+        seeds_in_scope: Arc::new(DashMap::new()),
         max_block_num: 10_000,
         max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {

@@ -24,9 +24,9 @@ impl Chunker {
 
         // Compress if data is large enough
         let content = if compress {
-            raw.compress()
+            Bytes::from(raw.compress())
         } else {
-            raw.to_vec()
+            blob.packet.content.clone()
         };
 
         // Create header chunk
@@ -75,17 +75,18 @@ impl Chunker {
         }
     }
 
-    /// Create data chunks by sliding over content
-    fn create_data_chunks(content: &[u8], chunk_size: usize) -> Vec<Chunk> {
+    /// Create data chunks by sliding over content; each chunk shares the
+    /// content's buffer.
+    fn create_data_chunks(content: &Bytes, chunk_size: usize) -> Vec<Chunk> {
         if chunk_size == 0 {
             return vec![];
         }
 
-        content
-            .chunks(chunk_size)
-            .map(|chunk_data| {
+        (0..content.len())
+            .step_by(chunk_size)
+            .map(|start| {
                 let chunk_data_proto = ChunkData {
-                    content_data: Bytes::copy_from_slice(chunk_data),
+                    content_data: content.slice(start..(start + chunk_size).min(content.len())),
                 };
 
                 Chunk {

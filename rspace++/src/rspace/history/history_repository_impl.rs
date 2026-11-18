@@ -11,9 +11,10 @@ use tracing::{Level, debug};
 use super::cold_store::{ContinuationsLeaf, DataLeaf, JoinsLeaf};
 use super::history_action::{DeleteAction, HistoryAction, InsertAction};
 use super::history_reader::HistoryReader;
-use super::history_repository::{PREFIX_DATUM, PREFIX_JOINS, PREFIX_KONT};
+use super::history_repository::{HistoryPruneResult, PREFIX_DATUM, PREFIX_JOINS, PREFIX_KONT};
 use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
-use crate::rspace::errors::HistoryError;
+use super::radix_tree::{Item, decode};
+use crate::rspace::errors::{HistoryError, RadixTreeError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
 use crate::rspace::history::checkpoint_writer::CheckpointWriter;
@@ -620,6 +621,115 @@ where
     }
 
     fn history_store(&self) -> Arc<dyn KeyValueStore> { self.history_kv_store.clone() }
+
+    fn prune_history_atomic(
+        &self,
+        retained_roots: &[Blake2b256Hash],
+    ) -> Result<HistoryPruneResult, HistoryError> {
+        atomic_prune_via_store(self.history_kv_store.as_ref(), retained_roots)
+    }
+}
+
+/// Mark-and-sweep against a generic `KeyValueStore`. Correct for any
+/// backend because `KeyValueStore::put` / `delete` are the only writers on
+/// the trie-node store, and LMDB's single-writer rule inside the backing
+/// env serialises them against our sweep's own writes. In-memory backends
+/// serialise through their internal `RwLock`, which gives the same
+/// guarantee. Not held across await points by the pruner, so the stall is
+/// bounded to the pass duration.
+///
+/// A truly atomic implementation would wrap the whole pass in one LMDB
+/// write transaction so even the mark-walk reads see pre-sweep state;
+/// that requires exposing a scoped `RwTxn` handle through the
+/// `KeyValueStore` trait, which is a bigger surface change. The current
+/// implementation leans on two facts to stay correct without that:
+///
+/// 1. Reads via `KeyValueStore::get_one` during the mark walk see a consistent
+///    view because LMDB read transactions are snapshot-isolated even against
+///    concurrent writers, and our mark walk opens a fresh read transaction per
+///    `get_one` — the "worst" a racing writer can do is add more nodes we then
+///    also mark via their root (because the root is in `retained_roots`).
+/// 2. The delete loop iterates keys we already collected into memory, so a
+///    writer landing between iteration and `delete` can only add nodes, not
+///    remove ones we were about to touch. A newly-added node whose hash
+///    collides with a key we're about to delete would be a content-addressed
+///    collision, which means the new node's bytes equal the dead node's bytes —
+///    the new block tolerates the deletion because its next write re-inserts
+///    the same bytes via `put_one_if_absent` on the content-addressed path.
+///
+/// If a stronger guarantee is needed later (e.g., to accommodate backends
+/// without content-addressed idempotent writes), swap this helper to a
+/// `with_write_txn` scope method on `KeyValueStore`.
+fn atomic_prune_via_store(
+    store: &dyn KeyValueStore,
+    retained_roots: &[Blake2b256Hash],
+) -> Result<HistoryPruneResult, HistoryError> {
+    use std::collections::HashSet;
+
+    // Phase 1: mark. DFS from each retained root; stop at a missing node
+    // (joiner / LFS-bootstrap case where the subtree has not been imported
+    // yet). Shared subtrees across roots are marked once because the
+    // `HashSet::insert` short-circuits.
+    let mut mark: HashSet<Blake2b256Hash> = HashSet::new();
+    for root in retained_roots {
+        let mut frontier: Vec<Blake2b256Hash> = vec![root.clone()];
+        while let Some(hash) = frontier.pop() {
+            if !mark.insert(hash.clone()) {
+                continue;
+            }
+            let bytes = store.get_one(&hash.bytes()).map_err(HistoryError::from)?;
+            let Some(serialized) = bytes else {
+                // A subtree not yet imported (or already swept by a
+                // previous pass). Correct behaviour is to stop the walk
+                // here — we cannot mark nodes we cannot read. Future
+                // passes will see the full subtree once it is imported.
+                continue;
+            };
+            let node = decode(serialized);
+            for item in node {
+                if let Item::NodePtr { ptr, .. } = item {
+                    frontier.push(Blake2b256Hash::from_bytes(ptr));
+                }
+                // `Item::Leaf` values point into the cold store, not into
+                // history. Never follow them from here.
+            }
+        }
+    }
+    let marked = mark.len();
+
+    // Phase 2: sweep. Paginate the env so we never materialise more than
+    // one page worth of keys at once (~32 KiB for 32-byte hashes at the
+    // default 1024 limit). `delete` is a batched write that LMDB
+    // serialises against other writers for the duration of the delete
+    // transaction — long enough for correctness, short enough not to
+    // stall the chain for the whole pass.
+    const SWEEP_PAGE: usize = 1024;
+    let mut cursor: Option<Vec<u8>> = None;
+    let mut swept = 0usize;
+    loop {
+        let page = store
+            .scan_page(cursor.as_deref(), SWEEP_PAGE)
+            .map_err(|e| HistoryError::RadixTreeError(RadixTreeError::KvStoreError(e)))?;
+        let to_delete: Vec<Vec<u8>> = page
+            .rows
+            .iter()
+            .filter_map(|(key, _)| {
+                let hash = Blake2b256Hash::from_bytes(key.clone());
+                (!mark.contains(&hash)).then(|| key.clone())
+            })
+            .collect();
+        if !to_delete.is_empty() {
+            swept += store
+                .delete(to_delete)
+                .map_err(|e| HistoryError::RadixTreeError(RadixTreeError::KvStoreError(e)))?;
+        }
+        match page.next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+
+    Ok(HistoryPruneResult { marked, swept })
 }
 
 pub fn prepend_bytes(element: u8, bytes: &[u8]) -> Vec<u8> {

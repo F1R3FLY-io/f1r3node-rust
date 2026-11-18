@@ -3,17 +3,27 @@
 use casper::rust::api::block_api::BlockAPI;
 use shared::rust::ByteString;
 
-fn preview_id(pk_hex: &str, timestamp: i64, nth: i32) -> String {
+fn preview_id_at(pk_hex: &str, timestamp: i64, valid_after_block_number: i64, nth: i32) -> String {
     let deployer_bytes: ByteString = if pk_hex.is_empty() {
         vec![]
     } else {
         hex::decode(pk_hex).expect("Failed to decode hex")
     };
 
-    let preview = BlockAPI::preview_private_names(&deployer_bytes, timestamp, nth + 1)
-        .expect("Failed to preview private names");
+    let preview = BlockAPI::preview_private_names(
+        &deployer_bytes,
+        timestamp,
+        valid_after_block_number,
+        nth + 1,
+    )
+    .expect("Failed to preview private names");
 
     hex::encode(&preview[nth as usize])
+}
+
+/// The ids below were observed from deploys that carried no validAfterBlockNumber.
+fn preview_id(pk_hex: &str, timestamp: i64, nth: i32) -> String {
+    preview_id_at(pk_hex, timestamp, 0, nth)
 }
 
 const MY_NODE_PK: &str = "464f6780d71b724525be14348b59c53dc8795346dfd7576c9f01c397ee7523e6";
@@ -46,6 +56,14 @@ fn preview_private_names_should_handle_empty_user_public_key() {
     assert_eq!(
         preview_id("", 1542308065454, 0),
         "a249b81b82572b32e9a8adc9d708be08bc85fdf19e4aca3c316e51d30b97c993"
+    );
+}
+
+#[test]
+fn preview_private_names_differ_for_another_valid_after_block_number() {
+    assert_ne!(
+        preview_id_at(MY_NODE_PK, 1542308065454, 315, 0),
+        preview_id(MY_NODE_PK, 1542308065454, 0)
     );
 }
 
