@@ -122,10 +122,26 @@ fn moved_past_by_every_validator(
     // A slot holding a block its validator never signed is the genesis
     // placeholder, which has no main parent: counting it collapses the anchor
     // search and the pass keeps everything.
-    let mut latest_messages: HashSet<BlockHash> = HashSet::new();
+    //
+    // For each signed latest message, the frontier also carries the blocks
+    // that message already cited — its parents and the justifications it
+    // records for other validators. A stopped validator's next block, built
+    // from the view encoded in its latest message, cites those same blocks
+    // again; starting the walk at the latest message alone treats its main
+    // parent as moved past even though the next block names that parent
+    // directly (see issue #1057). Adding the cited set to the frontier walks
+    // the anchor one step below every block the validator can still name.
+    let mut citations: HashSet<BlockHash> = HashSet::new();
     for (validator, hash) in active_latest {
         if dag.own_testimony(validator, hash)?.is_some() {
-            latest_messages.insert(hash.clone());
+            citations.insert(hash.clone());
+            let meta = dag.lookup_unsafe(hash)?;
+            citations.extend(meta.parents.iter().cloned());
+            citations.extend(
+                meta.justifications
+                    .iter()
+                    .map(|j| j.latest_block_hash.clone()),
+            );
         }
     }
 
@@ -139,7 +155,7 @@ fn moved_past_by_every_validator(
     // `common_strict_ancestors` below is that intersection, kept as the
     // differential oracle for the anchor.
     let anchor = deepest_common_strict_ancestor(
-        latest_messages,
+        citations,
         |block_hash| recorded(&read_error, dag.main_parent(block_hash)),
         |block_hash| recorded(&read_error, dag.block_number(block_hash)),
     );
@@ -172,24 +188,24 @@ fn recorded<T>(
     })
 }
 
-/// The deepest block that is a strict main-chain ancestor of every latest
-/// message, or `None` when there is no such block.
+/// The deepest block that is a strict main-chain ancestor of every input
+/// block, or `None` when there is no such block.
 ///
-/// Each walk starts at a latest message's main parent rather than at the message
-/// itself, which is what makes the result strict: a validator sitting on a block
-/// has not moved past it, so that block must not qualify.
+/// Each walk starts at an input's main parent rather than at the input itself,
+/// which is what makes the result strict: a validator still citing a block has
+/// not moved past it, so that block must not qualify.
 ///
 /// Convergence advances only the highest frontier entries, so the work is
-/// proportional to how far the validators have diverged — a few blocks when
+/// proportional to how far the inputs have diverged — a few blocks when
 /// healthy, and bounded by the stall when not — rather than to the chain length.
 fn deepest_common_strict_ancestor(
-    latest_messages: impl IntoIterator<Item = BlockHash>,
+    citations: impl IntoIterator<Item = BlockHash>,
     main_parent: impl Fn(&BlockHash) -> Option<BlockHash>,
     height_of: impl Fn(&BlockHash) -> Option<i64>,
 ) -> Option<BlockHash> {
-    let mut frontier: Vec<BlockHash> = latest_messages
+    let mut frontier: Vec<BlockHash> = citations
         .into_iter()
-        .map(|latest_message| main_parent(&latest_message))
+        .map(|citation| main_parent(&citation))
         .collect::<Option<Vec<_>>>()?;
 
     if frontier.is_empty() {

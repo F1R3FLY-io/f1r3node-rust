@@ -1115,4 +1115,105 @@ mod tests {
         assert_eq!(effective_anchor.load(Ordering::Acquire), 0);
         assert_eq!(storage.gc_store().effective_anchor().unwrap(), None);
     }
+
+    /// Issue #1057 regression. A stopped validator D sits at a block whose
+    /// main parent belongs to another validator. On restart, D's next block
+    /// (built from the stale view) cites that main parent as a parent of its
+    /// own, so GC must retain it; anchoring the moved-past walk at the main
+    /// parent alone drops that block from every other node and D is never
+    /// accepted back into the network.
+    #[tokio::test]
+    async fn a_block_a_stopped_validator_still_cites_is_kept() {
+        let (storage, blocks) = open().await;
+        let id = |height: u8, v: u8| -> BlockHash {
+            let mut bytes = vec![7u8; 32];
+            bytes[0] = height;
+            bytes[1] = v;
+            bytes.into()
+        };
+        let mut block = template();
+        let mut put = |hash: BlockHash, height: u8, sender: u8, parents: Vec<BlockHash>| {
+            block.block_hash = hash;
+            block.body.state.block_number = i64::from(height);
+            block.seq_num = i32::from(height);
+            block.sender = vec![sender; 65].into();
+            block.header.parents_hash_list = parents;
+            blocks.put(block.block_hash.clone(), &block).unwrap();
+            let mode = if height == 0 {
+                InsertMode::Approved
+            } else {
+                InsertMode::Normal
+            };
+            drop(storage.insert(&block, mode).unwrap());
+        };
+        put(hash(0), 0, 10, vec![]);
+        for height in 1..=5u8 {
+            let parents: Vec<BlockHash> = if height == 1 {
+                vec![hash(0)]
+            } else {
+                (0..4).map(|v| id(height - 1, v)).collect()
+            };
+            for v in 0..4u8 {
+                put(id(height, v), height, 10 + v, parents.clone());
+            }
+        }
+        let a5 = id(5, 0);
+        let d6 = id(6, 3);
+        put(d6.clone(), 6, 13, vec![
+            a5.clone(),
+            id(5, 1),
+            id(5, 2),
+            id(5, 3),
+        ]);
+        for height in 6..=30u8 {
+            let parents: Vec<BlockHash> = (0..3).map(|v| id(height - 1, v)).collect();
+            for v in 0..3u8 {
+                put(id(height, v), height, 10 + v, parents.clone());
+            }
+        }
+        storage
+            .record_directly_finalized(id(30, 0), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        storage
+            .get_representation()
+            .unwrap()
+            .put_cached_floor(id(30, 0), id(30, 0))
+            .unwrap();
+        let conf = super::super::tests::conf();
+        let active: HashMap<Validator, BlockHash> = [
+            (vec![10u8; 65].into(), id(30, 0)),
+            (vec![11u8; 65].into(), id(30, 1)),
+            (vec![12u8; 65].into(), id(30, 2)),
+            (vec![13u8; 65].into(), d6.clone()),
+        ]
+        .into_iter()
+        .collect();
+        let effective_anchor = AtomicI64::new(0);
+        let mut sweep = GcSweep::new();
+        let mut deleted = HashSet::new();
+        for _ in 0..1_000 {
+            let progress = run_turn(
+                &mut sweep,
+                &storage,
+                &blocks,
+                &conf,
+                &effective_anchor,
+                &active,
+                &mut |block| {
+                    deleted.insert(block.block_hash.clone());
+                    Ok(true)
+                },
+                3,
+            )
+            .unwrap();
+            if matches!(progress, GcProgress::Complete { .. }) {
+                break;
+            }
+        }
+        assert!(
+            !deleted.contains(&a5),
+            "a5 is A's latest block in D's view; D's next block cites it"
+        );
+    }
 }
