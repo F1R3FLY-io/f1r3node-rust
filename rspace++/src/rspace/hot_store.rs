@@ -1002,7 +1002,8 @@ where
     /// changes no answer and leaves the formatting to pairs `==` cannot tell
     /// apart.
     fn same_continuation(a: &WaitingContinuation<P, K>, b: &WaitingContinuation<P, K>) -> bool {
-        a.persist == b.persist &&
+        a.source.hash == b.source.hash &&
+            a.persist == b.persist &&
             a.peeks == b.peeks &&
             a.patterns == b.patterns &&
             a.continuation == b.continuation &&
