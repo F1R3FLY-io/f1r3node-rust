@@ -17,6 +17,7 @@ use models::rust::casper::protocol::casper_message::{
     self, ApprovedBlock, ApprovedBlockCandidate, BlockRequest, CasperMessage, FinalizedFloorSeed,
     HasBlock, HasBlockRequest,
 };
+use models::rust::casper::protocol::packet_type_tag::encoded_block_message_packet;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
@@ -763,15 +764,19 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         peer: PeerNode,
         br: BlockRequest,
     ) -> Result<(), CasperError> {
-        let maybe_block = self.casper.block_store().get(&br.hash)?;
-        if let Some(block) = maybe_block {
+        let maybe_encoded = self.casper.block_store().get_encoded(&br.hash)?;
+        if let Some(encoded) = maybe_encoded {
             tracing::info!(
                 "Received request for block {} from {}. Response sent.",
                 PrettyPrinter::build_string_bytes(&br.hash),
                 peer
             );
             self.transport
-                .stream_message_to_peer(&self.conf, &peer, Arc::new(block.to_proto()))
+                .stream_packet_to_peer(
+                    &self.conf,
+                    &peer,
+                    encoded_block_message_packet(encoded.into()),
+                )
                 .await?;
         } else {
             tracing::info!(

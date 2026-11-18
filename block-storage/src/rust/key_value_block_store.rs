@@ -120,6 +120,18 @@ impl KeyValueBlockStore {
         }
     }
 
+    /// The protobuf encoding of a block, read from the stored bytes without
+    /// decoding the block.
+    pub fn get_encoded(&self, block_hash: &BlockHash) -> Result<Option<Vec<u8>>, KvStoreError> {
+        match self.store.get_one(&block_hash.to_vec())? {
+            Some(bytes) => Self::decompress_block_bytes(&bytes).map(Some),
+            None => Ok(self
+                .pending
+                .get(block_hash)
+                .map(|block| block.to_proto().encode_to_vec())),
+        }
+    }
+
     /**
      * See block-storage/src/main/scala/coop/rchain/blockstorage/BlockStoreSyntax.scala
      *
@@ -511,6 +523,30 @@ impl KeyValueBlockStore {
 
             decode_result
         })
+    }
+
+    fn decompress_block_bytes(bytes: &[u8]) -> Result<Vec<u8>, KvStoreError> {
+        use std::io::Cursor;
+
+        use prost::encoding::decode_varint;
+
+        let mut cursor = Cursor::new(bytes);
+        let decompressed_length = decode_varint(&mut cursor).map_err(|err| {
+            KvStoreError::SerializationError(format!(
+                "Failed to decode varint length prefix: {err}"
+            ))
+        })? as usize;
+        let mut output = vec![0u8; decompressed_length];
+        let written = lz4_flex::decompress_into(&bytes[cursor.position() as usize..], &mut output)
+            .map_err(|err| {
+                KvStoreError::SerializationError(format!("Decompress of block failed: {err}"))
+            })?;
+        if written != decompressed_length {
+            return Err(KvStoreError::SerializationError(format!(
+                "Decompressed block is {written} bytes, its prefix declares {decompressed_length}"
+            )));
+        }
+        Ok(output)
     }
 
     fn decode_block_deploy_sigs(bytes: &[u8]) -> Result<BlockDeploySigsBody, KvStoreError> {
@@ -1395,6 +1431,38 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(store.get(&original.block_hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn get_encoded_returns_the_encoding_of_a_stored_or_pending_block() {
+        let (bs, _) = in_mem_store();
+        let stored = models::rust::block_implicits::get_random_block_default();
+        let pending = models::rust::block_implicits::get_random_block_default();
+        bs.put_block_message(&stored).unwrap();
+        bs.put_pending(&pending, PendingClass::Unsolicited).unwrap();
+
+        for block in [&stored, &pending] {
+            let encoded = bs
+                .get_encoded(&block.block_hash)
+                .unwrap()
+                .expect("block present");
+            assert_eq!(encoded, block.to_proto().encode_to_vec());
+        }
+        assert_eq!(bs.get_encoded(&BlockHash::from(vec![1; 32])).unwrap(), None);
+    }
+
+    #[test]
+    fn get_encoded_reports_a_serialization_error_for_corrupt_stored_bytes() {
+        let mut bytes = Vec::new();
+        prost::encoding::encode_varint(100, &mut bytes);
+        bytes.extend_from_slice(&[0xFF, 0x00, 0xAB]);
+        let kv = MockKeyValueStore::new(Some(bytes));
+        let bs = KeyValueBlockStore::new(Arc::new(kv), Arc::new(NotImplementedKV));
+
+        assert!(matches!(
+            bs.get_encoded(&BlockHash::from(vec![0xD1; 32])),
+            Err(KvStoreError::SerializationError(_))
+        ));
     }
 
     #[test]
