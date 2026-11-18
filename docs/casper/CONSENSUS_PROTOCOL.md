@@ -250,6 +250,12 @@ The node limits these checks. It runs at most 2 checks at a time, and one at a t
   - The scan starts at `min(tip_start, max(oldest_valid_after + 1, floor - deploy_lifespan + 2))`, where `tip_start` is `max_parent_height + 1 - deploy_lifespan` and `oldest_valid_after` is the lowest `valid_after_block_number` in the block. The expiry check reads the floor clock, so a live deploy can have a copy below the tip window. The retry exemption and the retry gate read the same start, and so does the proposer's retry gate
   - A rejected-in-scope signature is exempt when its retry gate is open (see the glossary); a closed gate returns `PrematureDeployRetry`
   - The repeat-deploy signature index (see the glossary) may skip the scan for a signature with no in-window carrier when the scan starts at or above the index watermark and the recorded prune cutoff; an index hit or read failure falls back to scope-verified scanning, so index-served and scan-served verdicts are equal
+- At most one deploy per name seed (see the glossary): the block carries no two deploys with one seed, and no deploy whose seed a deploy with another signature in its ancestry already used. Either is `InvalidRepeatDeploy`
+  - A carrier whose latest disposition in the block's parent scope is a merge rejection holds no seed (`FloorContext::rejected_sigs`, the set the repeat-deploy exemption reads; no floor, no exemption). The proposer applies the same set, so when one merge rejects every deploy of a seed, one of them can still land
+  - Deploys share a seed only if they share a valid-after block, so the scan starts at `max(lowest_valid_after + 1, floor - deploy_lifespan + 2)`; a deploy below that start fails the expiry check
+  - The seed carrier index (see the glossary) skips the scan for a seed no other signature carries, under the same watermark and prune-cutoff rule as the signature index
+  - A merge keeps one deploy per seed: the deploy the merge base already holds, otherwise the smallest signature; a chain carrying another is rejected as collateral
+  - Admission refuses a deploy whose seed another signature holds in this node's pool, rejected buffer, or seed carrier index (`SeedReuse`, HTTP 409 `seed_reuse`). This is node-local: two nodes can each admit one deploy of a seed, and the rules above decide
 - Phlogiston price meets minimum
 - Invalid block tracking applied
 

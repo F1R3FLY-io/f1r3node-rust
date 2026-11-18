@@ -902,41 +902,33 @@ impl RadixTreeImpl {
         node_ptr: ByteVector,
         no_assert: Option<bool>,
     ) -> Result<Arc<Node>, RadixTreeError> {
-        let no_assert = no_assert.unwrap_or(false);
+        // `no_assert = Some(true)` preserves the legacy "tolerate missing
+        // root" semantics used by `RadixHistory::create` / `::reset`: an
+        // absent root is reported as an empty tree, so a newly-created
+        // history can bootstrap against a not-yet-imported root. Any OTHER
+        // call site now gets a typed `MissingNode` error instead of the
+        // panic it used to get. See issue #923 Option D: the pre-#1045
+        // assert crashed the node on a sweep-vs-write race; the typed error
+        // lets replay / merge / block-report / exploratory-deploy surface
+        // a precise "pruned subtree" answer.
+        let tolerate_missing = no_assert.unwrap_or(false);
 
-        let error_msg = |node_ptr: &[u8]| {
-            assert!(
-                no_assert,
-                "Missing node in database. ptr={:?}",
-                node_ptr
-                    .iter()
-                    .map(|byte| format!("{:02x}", byte))
-                    .collect::<Vec<_>>()
-            );
-        };
+        if let Some(cached) = self.cache_r.get(&node_ptr) {
+            return Ok(Arc::clone(cached.value()));
+        }
 
-        let cache_miss: Box<dyn Fn(ByteVector) -> Result<Arc<Node>, RadixTreeError>> =
-            Box::new(|node_ptr: ByteVector| {
-                let store_node_opt = self.load_node_from_store(&node_ptr)?;
-
-                match store_node_opt {
-                    Some(node) => {
-                        let node_arc = Arc::new(node);
-                        self.cache_r.insert(node_ptr.clone(), Arc::clone(&node_arc));
-                        self.enforce_read_cache_bounds();
-                        Ok(node_arc)
-                    }
-                    None => {
-                        error_msg(&node_ptr);
-                        Ok(Arc::new(empty_node()))
-                    }
-                }
-            });
-
-        let cache_node_opt = self.cache_r.get(&node_ptr);
-        match cache_node_opt {
-            Some(node) => Ok(Arc::clone(node.value())),
-            None => cache_miss(node_ptr),
+        let store_node_opt = self.load_node_from_store(&node_ptr)?;
+        match store_node_opt {
+            Some(node) => {
+                let node_arc = Arc::new(node);
+                self.cache_r.insert(node_ptr.clone(), Arc::clone(&node_arc));
+                self.enforce_read_cache_bounds();
+                Ok(node_arc)
+            }
+            None if tolerate_missing => Ok(Arc::new(empty_node())),
+            None => Err(RadixTreeError::MissingNode {
+                ptr: Blake2b256Hash::from_bytes(node_ptr),
+            }),
         }
     }
 
@@ -1669,5 +1661,57 @@ impl RadixTreeImpl {
             }
         }
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod load_node_arc_tests {
+    //! The missing-node contract. Before issue #923 Option D the assert in
+    //! `load_node_arc` crashed the process when a sweep-vs-write race left
+    //! a descendant pointer dangling. The typed `MissingNode` makes that
+    //! path recoverable, so block-report replay, exploratory-deploy,
+    //! get-data-at-par and merge can surface a precise "pruned subtree"
+    //! answer to their own callers rather than disappear the node.
+
+    use std::sync::Arc;
+
+    use shared::rust::store::key_value_store::KeyValueStore;
+
+    use super::*;
+    use crate::rspace::errors::RadixTreeError;
+    use crate::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+
+    fn empty_store() -> Arc<dyn KeyValueStore> { Arc::new(InMemoryKeyValueStore::new()) }
+
+    #[test]
+    fn missing_pointer_without_no_assert_returns_typed_error() {
+        let imple = RadixTreeImpl::new(empty_store());
+        let bogus = vec![0x42u8; 32];
+        let err = imple
+            .load_node_arc(bogus.clone(), None)
+            .expect_err("a missing pointer must not resolve to an empty node when no_assert=false");
+        match err {
+            RadixTreeError::MissingNode { ptr } => {
+                assert_eq!(
+                    ptr.bytes(),
+                    bogus,
+                    "the error names the pointer that could not be resolved"
+                );
+            }
+            other => panic!("expected MissingNode, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn missing_pointer_with_no_assert_returns_empty_node() {
+        // The legacy escape hatch used by RadixHistory::create / ::reset:
+        // a not-yet-imported root bootstraps to an empty tree instead of
+        // raising.
+        let imple = RadixTreeImpl::new(empty_store());
+        let bogus = vec![0xABu8; 32];
+        let node = imple
+            .load_node_arc(bogus, Some(true))
+            .expect("no_assert=true must tolerate a missing pointer");
+        assert_eq!(node.as_ref(), &empty_node(), "no_assert=true must synthesize an empty node");
     }
 }

@@ -6,7 +6,7 @@
 // rather than worked around in the web layer.
 
 use casper::rust::genesis::contracts::standard_deploys::{
-    to_public, SYSTEM_VAULT_PK, SYSTEM_VAULT_TIMESTAMP,
+    to_public, GENESIS_VALID_AFTER_BLOCK_NUMBER, SYSTEM_VAULT_PK, SYSTEM_VAULT_TIMESTAMP,
 };
 use casper::rust::reporting_casper;
 use casper::rust::reporting_proto_transformer::{to_proto_phase, ReportingProtoTransformer};
@@ -29,7 +29,11 @@ use crate::util::rholang::resources::mk_test_rnode_store_manager_shared;
 /// does not depend on the `node` crate.
 fn transfer_unforgeable_channel() -> models::rhoapi::Par {
     let system_vault_pub_key = to_public(SYSTEM_VAULT_PK);
-    let mut rng = Tools::unforgeable_name_rng(&system_vault_pub_key, SYSTEM_VAULT_TIMESTAMP);
+    let mut rng = Tools::unforgeable_name_rng(
+        &system_vault_pub_key,
+        SYSTEM_VAULT_TIMESTAMP,
+        GENESIS_VALID_AFTER_BLOCK_NUMBER,
+    );
     for _ in 0..10 {
         rng.next();
     }

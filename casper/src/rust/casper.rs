@@ -15,7 +15,7 @@ use block_storage::rust::deploy::key_value_deploy_storage::{
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
 use models::rust::validator::Validator;
@@ -56,6 +56,8 @@ pub enum DeployError {
     UnknownSignatureAlgorithm(String),
     SignatureVerificationFailed,
     DuplicateDeploy(DeployId),
+    /// Another deploy, named by its sig, already has this deploy's name seed.
+    SeedReuse(DeployId),
     InvalidFreshness,
     RecordTooLarge {
         record_bytes: u64,
@@ -80,6 +82,7 @@ impl DeployError {
 
     pub fn signature_verification_failed() -> Self { DeployError::SignatureVerificationFailed }
     pub fn duplicate_deploy(deploy_id: DeployId) -> Self { DeployError::DuplicateDeploy(deploy_id) }
+    pub fn seed_reuse(holder: DeployId) -> Self { DeployError::SeedReuse(holder) }
 }
 
 impl Display for DeployError {
@@ -100,6 +103,12 @@ impl Display for DeployError {
             DeployError::DuplicateDeploy(deploy_id) => {
                 write!(f, "Deploy already known: {}", hex::encode(deploy_id))
             }
+            DeployError::SeedReuse(holder) => write!(
+                f,
+                "seed_reuse: deploy {} has the same deployer, timestamp and valid-after block, \
+                 so it would create the same names. Sign this deploy with a different timestamp.",
+                hex::encode(holder)
+            ),
             DeployError::PoolBusy { resource, required, limit } => write!(
                 f,
                 "deploy_pool_busy: {} would require {}, above the configured limit {}. Retry later or submit to another validator.",
@@ -484,6 +493,10 @@ pub struct CasperSnapshot {
     /// was executed in one block and rejected during a descendant merge; the block
     /// creator uses this set to know which in-scope deploys are eligible for re-inclusion.
     pub rejected_in_scope: Arc<DashSet<Bytes>>,
+    /// Unforgeable-name seed of each deploy in the ancestry window, mapped to
+    /// the signatures of the deploys carrying it. A deploy whose seed maps to
+    /// another signature would create that deploy's names.
+    pub seeds_in_scope: Arc<DashMap<Vec<u8>, Vec<Bytes>>>,
     pub max_block_num: i64,
     pub max_seq_nums: HashMap<Validator, u64>,
     pub on_chain_state: OnChainCasperState,
@@ -514,6 +527,7 @@ impl CasperSnapshot {
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
             rejected_in_scope: Arc::new(DashSet::new()),
+            seeds_in_scope: Arc::new(DashMap::new()),
             max_block_num: 0,
             max_seq_nums: HashMap::new(),
             on_chain_state: OnChainCasperState::new(CasperShardConf::new()),

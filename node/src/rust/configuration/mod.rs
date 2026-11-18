@@ -182,6 +182,50 @@ pub mod builder {
             ));
         }
 
+        // `disable-lfs = true` tells the node to bootstrap by replaying
+        // every block from genesis forward instead of starting from the
+        // last-finalized-state anchor. That replay needs:
+        //   - every block body from genesis onward (to know what to
+        //     replay), and
+        //   - every intermediate historical trie state (so each block's
+        //     deploys can apply against the prior state).
+        //
+        // Either GC flag makes the local store a non-conformant target
+        // for that replay. `enable-block-store-gc = true` removes
+        // finalized block bodies past the citation horizon, so a replay
+        // that walks past the horizon hits the pruned gap and fails
+        // with no path to recover on this node (block bodies are
+        // primary data; there is no recompute). `enable-history-pruning
+        // = true` sweeps the historical radix trie, so a replay that
+        // tries to `reset` to a pre-pruned state can hit `MissingNode`
+        // at a descendant.
+        //
+        // We cannot validate the whole shard's configuration — remote
+        // peers may have the opposite flags — but we can and do refuse
+        // the combination on THIS node, which is the one whose startup
+        // would miscarry.
+        if node_conf.protocol_client.disable_lfs {
+            if node_conf.casper.enable_block_store_gc {
+                eyre::bail!(
+                    "protocol-client.disable-lfs = true and casper.enable-block-store-gc = true \
+                    are mutually exclusive: a genesis-forward bootstrap needs every finalized \
+                    block body, but block-store GC removes bodies past the citation horizon. \
+                    Choose one: either keep LFS enabled (disable-lfs = false) to join from the \
+                    last-finalized-state anchor, or turn off block-store GC on this node."
+                );
+            }
+            if node_conf.casper.enable_history_pruning {
+                eyre::bail!(
+                    "protocol-client.disable-lfs = true and casper.enable-history-pruning = true \
+                    are mutually exclusive: a genesis-forward bootstrap walks the full history \
+                    trie, but history pruning sweeps trie nodes past the retention window and a \
+                    later reset into a swept subtree surfaces a MissingNode. Choose one: either \
+                    keep LFS enabled (disable-lfs = false) to join from the last-finalized-state \
+                    anchor, or turn off history pruning on this node."
+                );
+            }
+        }
+
         // A negative threshold weakens "finalized" from a BFT certificate
         // (mutual-witnessing clique; revert requires >= theta equivocating
         // stake) to bare majority agreement per snapshot, which can flip
@@ -1100,11 +1144,42 @@ mod embedded_defaults_tests {
             "deploy-lifespan 0 must fail startup"
         );
 
-        let mut cfg = base;
+        let mut cfg = base.clone();
         cfg.casper.genesis_block_data.epoch_length = 0;
         assert!(
             builder::validate_config(&cfg).is_err(),
             "epoch-length 0 must fail startup"
+        );
+
+        // disable-lfs = true + enable-block-store-gc = true is unsound:
+        // genesis-forward replay walks every finalized block body, but
+        // block-store GC removes bodies past the citation horizon. The
+        // startup check refuses the combination on this node.
+        let mut cfg = base.clone();
+        cfg.protocol_client.disable_lfs = true;
+        cfg.casper.enable_block_store_gc = true;
+        cfg.casper.enable_history_pruning = false;
+        let err = builder::validate_config(&cfg)
+            .expect_err("disable-lfs + block-store GC must fail startup");
+        assert!(
+            err.to_string().contains("disable-lfs")
+                && err.to_string().contains("enable-block-store-gc"),
+            "error must name both flags, got: {err}"
+        );
+
+        // disable-lfs = true + enable-history-pruning = true is unsound
+        // for the same reason — the pruner sweeps historical trie nodes
+        // a genesis-forward replay would reset into.
+        let mut cfg = base;
+        cfg.protocol_client.disable_lfs = true;
+        cfg.casper.enable_block_store_gc = false;
+        cfg.casper.enable_history_pruning = true;
+        let err = builder::validate_config(&cfg)
+            .expect_err("disable-lfs + history-pruning must fail startup");
+        assert!(
+            err.to_string().contains("disable-lfs")
+                && err.to_string().contains("enable-history-pruning"),
+            "error must name both flags, got: {err}"
         );
     }
 
