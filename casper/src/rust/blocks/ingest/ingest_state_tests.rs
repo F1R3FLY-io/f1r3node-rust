@@ -224,6 +224,47 @@ fn a_block_is_dispatched_once_its_parent_is_inserted_when_the_outcome_arrives_fi
 }
 
 #[test]
+fn a_settled_block_finishes_its_insert_when_dag_membership_cannot_be_read() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(received(meta(10, 2, &[7])), 0, &dag);
+    s.handle(received(meta(7, 1, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(7), Work::Validate)));
+    s.handle(IngestInput::Inserted { hash: hash(7) }, 0, &dag);
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(7),
+            outcome: WorkOutcome::Settled,
+        },
+        0,
+        &dag,
+    );
+    assert!(!s.is_held(&hash(7)));
+    assert_eq!(s.next_dispatch(), Some((hash(10), Work::Validate)));
+}
+
+#[test]
+fn a_block_inserted_before_its_attempt_failed_finishes_its_insert() {
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
+    s.handle(received(meta(10, 2, &[7])), 0, &dag);
+    s.handle(received(meta(7, 1, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(7), Work::Validate)));
+    dag.blocks.insert(hash(7));
+    s.handle(IngestInput::Inserted { hash: hash(7) }, 0, &dag);
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(7),
+            outcome: WorkOutcome::Failed,
+        },
+        0,
+        &dag,
+    );
+    assert!(!s.is_held(&hash(7)));
+    assert_eq!(s.next_dispatch(), Some((hash(10), Work::Validate)));
+}
+
+#[test]
 fn a_block_received_twice_is_held_and_dispatched_once() {
     let (mut s, _) = state();
     let dag = dag_with(&[0]);

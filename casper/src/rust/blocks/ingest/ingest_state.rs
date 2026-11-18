@@ -681,7 +681,7 @@ impl IngestState {
         if !self.tracker.contains(hash) {
             return;
         }
-        if stores.in_dag(hash) {
+        if outcome == WorkOutcome::Settled || stores.in_dag(hash) {
             self.finish_insert(hash, now_ms, stores);
             return;
         }
@@ -703,7 +703,7 @@ impl IngestState {
         let meta = self.tracker.meta(hash).expect("the block is held");
         let facts = citation(meta);
         match outcome {
-            WorkOutcome::Settled => {}
+            WorkOutcome::Settled => unreachable!("a settled block finished its insert above"),
             WorkOutcome::Rejected { invalid_sender } => {
                 let pusher = meta.pushed_by.clone();
                 if let (true, Some(peer)) = (invalid_sender, &pusher) {
