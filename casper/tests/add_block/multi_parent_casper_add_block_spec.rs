@@ -104,7 +104,7 @@ async fn multi_parent_casper_should_be_able_to_create_a_chain_of_blocks_from_dif
     let mut dag = node.casper.block_dag().await.unwrap();
     let estimate = node.casper.estimator(&mut dag).await.unwrap();
 
-    let unforgeable_id = Tools::unforgeable_name_rng(&deploy2.pk, deploy2.data.time_stamp).next();
+    let unforgeable_id = Tools::deploy_name_rng(&deploy2).next();
     let unforgeable_id_u8: Vec<u8> = unforgeable_id.iter().map(|&b| b as u8).collect();
 
     let data = rspace_util::get_data_at_private_channel(
@@ -1030,6 +1030,7 @@ async fn multi_parent_casper_should_ignore_adding_equivocation_blocks() {
     let dag1 = nodes[1].casper.block_dag().await.unwrap();
     let invalid_hashes: Vec<_> = dag1
         .invalid_blocks()
+        .expect("invalid blocks")
         .iter()
         .map(|m| m.block_hash.clone())
         .collect();
@@ -1292,7 +1293,7 @@ async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence()
     // the is_slashable narrowing): the block is dropped without entering
     // the DAG or minting slash evidence.
     let dag = nodes[1].casper.block_dag().await.unwrap();
-    let invalid_blocks = dag.invalid_blocks();
+    let invalid_blocks = dag.invalid_blocks().expect("invalid blocks");
 
     let is_recorded = invalid_blocks
         .iter()
@@ -1605,6 +1606,7 @@ async fn build_block_with_invalid_justification(
         timestamp: 0,
         version: 0,
         extra_bytes: Bytes::new(),
+        chain_id: signed_invalid_block.header.chain_id.clone(),
     };
 
     let block_hash = {

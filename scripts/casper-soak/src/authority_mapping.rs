@@ -250,7 +250,7 @@ fn target(value: &Value, snapshot: &str, strict: bool) -> Result<Value> {
         display_digest = inputs["input_digest"].as_str();
         if let Some(payload) = payload {
             ensure!(
-                object(payload)?.len() == 10,
+                object(payload)?.len() == 9,
                 "The display input fields differ."
             );
             for field in ["base_bits", "initial_fault_bits"] {
@@ -263,7 +263,6 @@ fn target(value: &Value, snapshot: &str, strict: bool) -> Result<Value> {
                 ),
                 "The display base source is unsupported."
             );
-            manifest::hex(&payload["equivocation_digest"], 64)?;
             for field in ["equivocating_weight", "total_weight"] {
                 ensure!(
                     stake(&payload[field])?.sign() != Sign::Minus,
@@ -477,10 +476,6 @@ pub fn map(response: &Value) -> Result<Value> {
             .as_array_mut()
             .unwrap()
             .retain(|reason| reason != "paired_fork_choice_unavailable");
-    }
-    if let Some(capture) = value.get("equivocation_capture") {
-        available(capture, None)?;
-        mapped["equivocation_capture"] = capture.clone();
     }
     if let Some(scope) = value.get("display_scope") {
         ensure!(

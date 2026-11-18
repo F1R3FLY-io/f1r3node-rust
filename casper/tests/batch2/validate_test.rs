@@ -45,7 +45,9 @@ use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
 
 const SHARD_ID: &str = "root-shard";
 
-fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot { CasperSnapshot::new(dag) }
+fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
+    CasperSnapshot::new(dag, prost::bytes::Bytes::new())
+}
 
 fn record_metrics<T>(f: impl FnOnce() -> T) -> (T, Snapshotter) {
     let recorder = DebuggingRecorder::new();
@@ -1008,6 +1010,160 @@ async fn repeat_deploy_validation_should_return_valid_for_empty_blocks() {
         let result2 =
             Validate::repeat_deploy(&block2, &mut casper_snapshot, &block_store, 50, None);
         assert_eq!(result2, Either::Right(ValidBlock::Valid));
+    })
+    .await
+}
+
+/// Two distinct deploys by one key whose name seeds are equal: same
+/// timestamp and valid-after block, different phlo limit.
+fn seed_sharing_pair() -> (
+    casper_message::ProcessedDeploy,
+    casper_message::ProcessedDeploy,
+) {
+    let deploy = |phlo_limit: i64| {
+        casper_message::ProcessedDeploy::empty(
+            construct_deploy::source_deploy(
+                "new x in { x!(1) }".to_string(),
+                7,
+                Some(phlo_limit),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("deploy"),
+        )
+    };
+    let (first, second) = (deploy(100_000), deploy(100_001));
+    assert_ne!(first.deploy.sig, second.deploy.sig);
+    (first, second)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploy_seed_reuse_rejects_a_deploy_reusing_an_ancestors_name_seed() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let (first, second) = seed_sharing_pair();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![first]),
+            None,
+            None,
+            None,
+            None,
+        );
+        let block = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![second]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let snapshot = mk_casper_snapshot(block_dag_storage.get_representation().expect("dag"));
+
+        assert_eq!(
+            Validate::deploy_seed_reuse(&block, &snapshot, &block_store, None, 50),
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
+        );
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploy_seed_reuse_rejects_two_deploys_sharing_a_name_seed_in_one_block() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let (first, second) = seed_sharing_pair();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let block = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![first, second]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let snapshot = mk_casper_snapshot(block_dag_storage.get_representation().expect("dag"));
+
+        assert_eq!(
+            Validate::deploy_seed_reuse(&block, &snapshot, &block_store, None, 50),
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
+        );
+    })
+    .await
+}
+
+/// The same signature again is the same deploy: seed reuse does not apply
+/// (repeat-deploy validation judges re-inclusion).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploy_seed_reuse_accepts_the_same_deploy_and_distinct_seeds() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let (first, _) = seed_sharing_pair();
+        let other = construct_deploy::basic_processed_deploy(1, None).expect("deploy");
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![first.clone()]),
+            None,
+            None,
+            None,
+            None,
+        );
+        let block = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![first, other]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let snapshot = mk_casper_snapshot(block_dag_storage.get_representation().expect("dag"));
+
+        assert_eq!(
+            Validate::deploy_seed_reuse(&block, &snapshot, &block_store, None, 50),
+            Either::Right(ValidBlock::Valid)
+        );
     })
     .await
 }
@@ -2770,6 +2926,8 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
 
         // Use unlimited parents (-1) like in Scala tests: Estimator.UnlimitedParents
         let max_number_of_parents = -1;
+        let runtime_manager =
+            crate::util::rholang::resources::mk_runtime_manager("block-summary", None).await;
 
         let result = Validate::block_summary(
             &signed_block,
@@ -2795,6 +2953,7 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
             max_number_of_parents,
             i32::MAX, // max_parent_depth: disable depth check for this test
             &block_store,
+            &runtime_manager,
             false,
             &mut None,
         )
@@ -3152,8 +3311,11 @@ async fn justification_regression_validation_should_return_valid_for_proper_just
     .await
 }
 
+/// A block held as an equivocation is held so only because its twin arrived
+/// first, so citing it below the sender's previous citation is a regression
+/// like any other.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn justification_regression_validation_should_return_valid_for_regressive_invalid_blocks() {
+async fn a_justification_regressing_to_an_equivocation_is_still_a_regression() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let v0 = generate_validator(Some("Validator 1"));
         let v1 = generate_validator(Some("Validator 2"));
@@ -3284,7 +3446,10 @@ async fn justification_regression_validation_should_return_valid_for_regressive_
             &block_with_invalid_justification,
             &mut casper_snapshot,
         );
-        assert_eq!(result, Either::Right(ValidBlock::Valid));
+        assert_eq!(
+            result,
+            Either::Left(BlockError::Invalid(InvalidBlock::JustificationRegression))
+        );
     })
     .await
 }

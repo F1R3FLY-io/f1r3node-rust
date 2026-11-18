@@ -4,7 +4,7 @@
 // has passed.
 
 use casper::rust::block_status::ValidBlock;
-use casper::rust::util::construct_deploy;
+use casper::rust::util::{construct_deploy, proto_util};
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, DeployData, ProcessedSystemDeploy, SystemDeployData,
@@ -27,9 +27,11 @@ impl Proposal {
             matches!(
                 deploy,
                 ProcessedSystemDeploy::Succeeded {
-                    system_deploy: SystemDeployData::Slash { invalid_block_hash, .. },
+                    system_deploy: SystemDeployData::Slash { evidence, .. },
                     ..
-                } if invalid_block_hash.as_ref() == self.sibling_hash.as_slice()
+                } if [&evidence.first, &evidence.second].into_iter().any(|commitment| {
+                    proto_util::commitment_hash(commitment).as_ref() == self.sibling_hash.as_slice()
+                })
             )
         })
     }
@@ -186,11 +188,13 @@ async fn honest_validator_slashes_an_equivocation_learned_late_in_its_epoch() {
 
 #[serial_test::serial]
 #[tokio::test]
-async fn honest_validator_proposes_after_an_equivocation_from_a_past_epoch() {
+async fn honest_validator_slashes_an_equivocation_from_a_past_epoch() {
     let mut scenario = LateEquivocation::new(4, 6).await;
     let (proposal, verdict) = scenario.v1_proposes(100).await;
     assert_valid(&verdict, &proposal, "v1");
-    assert!(!proposal.slashes_equivocation(), "{}", proposal.evidence());
+    assert!(proposal.slashes_equivocation(), "{}", proposal.evidence());
+    let verdict = scenario.v2_receives_what_v1_saw().await;
+    assert_valid(&verdict, &proposal, "v2");
 }
 
 #[serial_test::serial]

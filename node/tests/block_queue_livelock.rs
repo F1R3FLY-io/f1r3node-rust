@@ -329,6 +329,8 @@ fn block_request_kind(msg: &Protocol) -> Option<BlockRequestKind> {
 
 #[async_trait]
 impl TransportLayer for PeerTransport {
+    fn queued_stream_bytes(&self) -> usize { 0 }
+
     async fn send(&self, peer: &PeerNode, msg: &Protocol) -> Result<(), CommError> {
         if let Some(kind) = block_request_kind(msg) {
             self.sent.attempted.fetch_add(1, Ordering::SeqCst);

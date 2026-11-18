@@ -1,10 +1,11 @@
 // See casper/src/main/scala/coop/rchain/casper/util/rholang/InterpreterUtil.scala
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use block_storage::rust::key_value_block_store::{DeployIdentity, KeyValueBlockStore};
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::Par;
 use models::rust::block::state_hash::StateHash;
@@ -541,8 +542,7 @@ pub async fn validate_block_checkpoint(
                 tracing::debug!(target: "f1r3fly.casper.replay_block", "replay-block-started");
                 let replay_start = std::time::Instant::now();
                 let replay_result =
-                    replay_block(incoming_pre_state_hash, block, &mut s.dag, runtime_manager)
-                        .await?;
+                    replay_block(incoming_pre_state_hash, block, runtime_manager).await?;
                 metrics::histogram!(BLOCK_PROCESSING_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .record(replay_start.elapsed().as_secs_f64());
                 tracing::debug!(target: "f1r3fly.casper.replay_block", "replay-block-finished");
@@ -557,7 +557,6 @@ pub async fn validate_block_checkpoint(
 async fn replay_block(
     initial_state_hash: StateHash,
     block: &BlockMessage,
-    dag: &mut KeyValueDagRepresentation,
     runtime_manager: &RuntimeManager,
 ) -> Result<Either<ReplayFailure, StateHash>, CasperError> {
     // Extract deploys and system deploys from the block
@@ -616,13 +615,10 @@ async fn replay_block(
         );
     }
 
-    // Invalid-blocks map (hash -> sender) for the PoS slash deploys: derived from
-    // this block's own recorded slash targets so it is byte-identical at block
-    // creation and replay (see proto_util::slashed_block_senders). A DAG-derived
-    // view is node-view-dependent and makes the slash deploy fail replay
-    // (ConsumeFailed) because the map is produced into a content-addressed COMM.
+    // The map is produced into a content-addressed COMM, so creation and replay
+    // must build it identically: it comes from the block's own slash evidence.
     let invalid_blocks: HashMap<BlockHash, Validator> =
-        proto_util::block_slash_invalid_blocks(dag, block)?;
+        proto_util::slash_evidence_senders(proto_util::slash_evidence(block));
 
     // Create block data and check if genesis
     let block_data = BlockData::from_block(block);
@@ -923,6 +919,90 @@ pub async fn compute_deploys_checkpoint(
     })
 }
 
+/// The name seeds of every user deploy in `scope`, and for each, the deploy
+/// already holding it in the base's state. Deploys sharing a seed share a
+/// valid-after block and land only above it, so the walk down the base's
+/// ancestry stops below the scope's lowest one.
+fn merge_name_seeds(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    scope: &HashSet<BlockHash>,
+    base: &BlockHash,
+    settled_in_base: &dyn Fn(&Bytes) -> Result<bool, CasperError>,
+) -> Result<dag_merger::NameSeeds, CasperError> {
+    let identities_of = |hash: &BlockHash| -> Result<Arc<Vec<DeployIdentity>>, CasperError> {
+        block_store.deploy_identities(hash)?.ok_or_else(|| {
+            CasperError::BlockNotHeld(hash.clone(), MissingBlockContext::new("merge name seeds"))
+        })
+    };
+    let mut of_scope_deploys: HashMap<Bytes, Vec<u8>> = HashMap::new();
+    let mut lowest_valid_after: Option<i64> = None;
+    for hash in scope {
+        for identity in identities_of(hash)?.iter() {
+            lowest_valid_after = Some(
+                lowest_valid_after.map_or(identity.valid_after_block_number, |lowest| {
+                    lowest.min(identity.valid_after_block_number)
+                }),
+            );
+            of_scope_deploys.insert(identity.sig.clone().into(), identity.seed.clone());
+        }
+    }
+    let mut held_by_base: HashMap<Vec<u8>, Bytes> = HashMap::new();
+    if let Some(lowest_valid_after) = lowest_valid_after {
+        let scan_start = lowest_valid_after + 1;
+        let scan_seeds: HashSet<&Vec<u8>> = match proto_util::seeds_needing_scan(
+            dag,
+            of_scope_deploys
+                .iter()
+                .map(|(sig, seed)| (seed, sig.as_ref())),
+            scan_start,
+        )? {
+            Some(needing) => of_scope_deploys
+                .values()
+                .filter(|seed| needing.contains(*seed))
+                .collect(),
+            None => of_scope_deploys.values().collect(),
+        };
+        if !scan_seeds.is_empty() {
+            let base_metadata = dag.lookup(base)?.ok_or_else(|| {
+                CasperError::BlockNotHeld(
+                    base.clone(),
+                    MissingBlockContext::new("merge name seeds"),
+                )
+            })?;
+            proto_util::walk_blocks_in_scope(
+                dag,
+                [base_metadata],
+                scan_start,
+                proto_util::UnheldParent::Surface,
+                |hash| {
+                    for identity in identities_of(hash)?.iter() {
+                        if !scan_seeds.contains(&identity.seed) {
+                            continue;
+                        }
+                        let sig: Bytes = identity.sig.clone().into();
+                        if settled_in_base(&sig)? {
+                            held_by_base
+                                .entry(identity.seed.clone())
+                                .and_modify(|held| {
+                                    if sig < *held {
+                                        *held = sig.clone();
+                                    }
+                                })
+                                .or_insert(sig);
+                        }
+                    }
+                    Ok(false)
+                },
+            )?;
+        }
+    }
+    Ok(dag_merger::NameSeeds {
+        of_scope_deploys,
+        held_by_base,
+    })
+}
+
 /// Ensure every block in the merge `scope` has its mergeable-channels entry
 /// materialized before `dag_merger::merge` reads them through the (synchronous)
 /// `block_index_f` closure. A block imported via LFS without replay — or rejected
@@ -935,7 +1015,6 @@ pub async fn compute_deploys_checkpoint(
 pub(crate) async fn ensure_scope_mergeable_present(
     block_store: &KeyValueBlockStore,
     runtime_manager: &RuntimeManager,
-    dag: &KeyValueDagRepresentation,
     scope: &HashSet<BlockHash>,
 ) -> Result<(), CasperError> {
     for hash in scope {
@@ -949,12 +1028,8 @@ pub(crate) async fn ensure_scope_mergeable_present(
             continue;
         }
 
-        // The recompute replays the block; its invalid-blocks map must match the
-        // one validation/creation used (slashed_block_senders — the block's own
-        // slash targets) so the replay reproduces the block's post_state_hash and
-        // the entry is stored under the correct key.
         let invalid_blocks: HashMap<BlockHash, Validator> =
-            proto_util::block_slash_invalid_blocks(dag, &block)?;
+            proto_util::slash_evidence_senders(proto_util::slash_evidence(&block));
 
         runtime_manager
             .ensure_mergeable_entry(&block, invalid_blocks)
@@ -1688,13 +1763,8 @@ pub async fn compute_parents_post_state(
                 .cloned()
                 .collect();
             let ensure_mergeable_started = std::time::Instant::now();
-            ensure_scope_mergeable_present(
-                block_store,
-                runtime_manager,
-                &s.dag,
-                &mergeable_required,
-            )
-            .await?;
+            ensure_scope_mergeable_present(block_store, runtime_manager, &mergeable_required)
+                .await?;
             metrics::histogram!(PARENTS_POST_STATE_ENSURE_MERGEABLE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(ensure_mergeable_started.elapsed().as_secs_f64());
             tracing::debug!(
@@ -1873,6 +1943,15 @@ pub async fn compute_parents_post_state(
                 settled_probe_time_ns.increment(probe_started.elapsed().as_nanos() as u64);
                 result
             };
+            let name_seeds = in_blocking(|| {
+                merge_name_seeds(
+                    &s.dag,
+                    block_store,
+                    &visible_blocks,
+                    &main_parent_hash,
+                    &sig_settled_in_base,
+                )
+            })?;
             let merge_started = std::time::Instant::now();
             let merger_result = in_blocking(|| {
                 dag_merger::merge(
@@ -1892,6 +1971,7 @@ pub async fn compute_parents_post_state(
                     &sig_settled_in_floor,
                     &base_lineage_blocks,
                     &prior_rejection_counts,
+                    &name_seeds,
                 )
             })?;
             let merge_elapsed = merge_started.elapsed();

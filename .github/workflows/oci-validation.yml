@@ -62,6 +62,7 @@ jobs:
       head_ref: ${{ steps.pr.outputs.head_ref || steps.candidate.outputs.head_ref }}
       base_ref: ${{ steps.pr.outputs.base_ref || steps.candidate.outputs.base_ref }}
       system_integration_ref: ${{ steps.pr.outputs.system_integration_ref || steps.candidate.outputs.system_integration_ref }}
+      launcher_ref: ${{ steps.launcher.outputs.ref }}
       candidate_tag: ${{ steps.candidate.outputs.candidate_tag }}
       candidate_amd64_digest: ${{ steps.candidate.outputs.candidate_amd64_digest }}
       candidate_arm64_digest: ${{ steps.candidate.outputs.candidate_arm64_digest }}
@@ -71,6 +72,13 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
+
+      - name: Read trusted launcher pin
+        id: launcher
+        shell: bash -euo pipefail {0}
+        run: |
+          pin="$(bash .github/scripts/read-system-integration-pin.sh .github/oci-validation.env)"
+          echo "ref=$pin" >> "$GITHUB_OUTPUT"
 
       - name: Validate candidate
         id: candidate
@@ -107,6 +115,8 @@ jobs:
             tag_sha="$(gh api "repos/${GH_REPO}/git/tags/${tag_sha}" --jq '.object.sha')"
           fi
           [ "$tag_sha" = "$source_sha" ] || { echo "tag ${CANDIDATE_TAG} resolves to ${tag_sha}, not the evidence source ${source_sha}"; exit 1; }
+          candidate_pin="$(bash .github/scripts/read-system-integration-pin.sh --repository "$GH_REPO" "$source_sha")"
+          [ "$candidate_pin" = "$(jq -r '.system_integration_sha' "$evidence")" ] || { echo "::error::candidate pin differs from release evidence"; exit 1; }
           {
             echo "head_repo=${GH_REPO}"
             echo "head_sha=${source_sha}"
@@ -199,18 +209,14 @@ jobs:
             exit 1
           fi
 
-          source .github/oci-validation.env
-          if [[ ! "$SYSTEM_INTEGRATION_REF" =~ ^[0-9a-f]{40}$ && ! "$SYSTEM_INTEGRATION_REF" =~ ^refs/tags/[A-Za-z0-9._/-]+$ ]]; then
-            echo "SYSTEM_INTEGRATION_REF must be a 40-character commit SHA or refs/tags/<tag>."
-            exit 1
-          fi
+          candidate_pin="$(bash .github/scripts/read-system-integration-pin.sh --repository "$head_repo" "$head_sha")"
 
           {
             echo "head_repo=${head_repo}"
             echo "head_sha=${head_sha}"
             echo "head_ref=${head_ref}"
             echo "base_ref=${base_ref}"
-            echo "system_integration_ref=${SYSTEM_INTEGRATION_REF}"
+            echo "system_integration_ref=${candidate_pin}"
           } >> "$GITHUB_OUTPUT"
 
   await_approval:
@@ -237,7 +243,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: F1R3FLY-io/system-integration
-          ref: ${{ needs.validate_pr.outputs.system_integration_ref }}
+          ref: ${{ needs.validate_pr.outputs.launcher_ref }}
           path: system-integration
           persist-credentials: false
 

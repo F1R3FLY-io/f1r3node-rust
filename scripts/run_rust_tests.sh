@@ -38,3 +38,6 @@ cargo test --release
 
 cd ../node
 cargo test --release
+
+cd ../deploy-queue
+cargo test --release

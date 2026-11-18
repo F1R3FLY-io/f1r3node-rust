@@ -147,24 +147,15 @@ impl WalPayloadRetriever {
     /// Rehashes the bytes and refuses to store them if they
     /// don't match `payload_hash`.  The reducer is trusted code
     /// (part of the joiner binary) so a mismatch indicates a
-    /// bug in the reducer, not adversary input.  Debug-asserts
-    /// on mismatch; returns `false` in release.  Callers that
-    /// see `false` should treat it as "reducer failed to
-    /// reproduce, please fetch from peers" and call
-    /// [`enqueue`](Self::enqueue).
+    /// bug in the reducer, not adversary input.  Returns `false`
+    /// on mismatch so callers can fall back to peer fetch by
+    /// calling [`enqueue`](Self::enqueue).
     ///
     /// Idempotent: if the hash is already resolved
     /// (`bytes: Some`), this is a no-op returning `true`.
     pub async fn mark_resolved(&self, payload_hash: [u8; 32], bytes: Vec<u8>) -> bool {
         let actual = hash_bytes(&bytes);
         if actual != payload_hash {
-            debug_assert!(
-                false,
-                "reducer produced bytes that don't hash to the requested payload_hash \
-                 (requested={} actual={}); this is a reducer bug",
-                hex::encode(payload_hash),
-                hex::encode(actual),
-            );
             debug!(
                 target: "f1r3fly.casper.wal_payload_retriever",
                 requested = hex::encode(payload_hash),
@@ -531,39 +522,21 @@ mod tests {
         assert_eq!(retriever.get_bytes(&hash).await.unwrap(), bytes);
     }
 
-    /// LOAD-BEARING: `mark_resolved` guard against reducer
-    /// bugs.  Debug builds trip `debug_assert!(false, ...)` and
-    /// panic loudly; release builds return `false` so the
-    /// sync-driver can fall back to peer fetch.  Both modes
-    /// MUST refuse to store wrong bytes.
-    ///
-    /// Uses `catch_unwind` + `cfg(debug_assertions)` branches
-    /// so the test exercises the actual mode-dependent
-    /// behavior instead of documenting a contract-via-string
-    /// (which the earlier version did).
-    #[test]
-    fn mark_resolved_rejects_hash_mismatch() {
-        use std::panic;
-        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-            tokio::runtime::Runtime::new().unwrap().block_on(async {
-                let retriever = WalPayloadRetriever::new();
-                retriever.mark_resolved([0xAA; 32], vec![0xFF; 10]).await
-            })
-        }));
-        #[cfg(debug_assertions)]
-        {
-            assert!(
-                result.is_err(),
-                "debug build must panic via debug_assert on hash/bytes mismatch"
-            );
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            assert!(
-                !result.expect("release build must not panic"),
-                "release build must return false on hash/bytes mismatch"
-            );
-        }
+    /// LOAD-BEARING: `mark_resolved` returns `false` when the
+    /// supplied bytes don't hash to `payload_hash` so the
+    /// sync-driver can fall back to peer fetch; it MUST NOT
+    /// store wrong bytes.
+    #[tokio::test]
+    async fn mark_resolved_rejects_hash_mismatch() {
+        let retriever = WalPayloadRetriever::new();
+        assert!(
+            !retriever.mark_resolved([0xAA; 32], vec![0xFF; 10]).await,
+            "mark_resolved must return false on hash/bytes mismatch"
+        );
+        assert!(
+            retriever.get_bytes(&[0xAA; 32]).await.is_none(),
+            "mismatched bytes must not be stored"
+        );
     }
 
     #[tokio::test]

@@ -670,7 +670,7 @@ async fn a_display_selection_is_admitted_and_invalid_display_fields_are_rejected
         .spawn();
     let (mut stream, hello) = connect(&directory.socket()).await;
     let mut message = authority_request(&hello);
-    message["authority"]["display"] = json!({"max_equivocation_records": 4096});
+    message["authority"]["display"] = json!({});
     send(&mut stream, &message).await;
     let response = receive(&mut stream).await;
     assert_eq!(response["kind"], "authority_snapshot");
@@ -678,28 +678,14 @@ async fn a_display_selection_is_admitted_and_invalid_display_fields_are_rejected
     assert_eq!(response["identity"], hello["identity"]);
     for selection in [
         json!(null),
-        json!({}),
-        json!({"max_equivocation_records": 1.5}),
-        json!({"max_equivocation_records": 1, "extra": true}),
+        json!({"max_equivocation_records": 1}),
+        json!({"extra": true}),
     ] {
         let (mut stream, hello) = connect(&directory.socket()).await;
         let mut message = authority_request(&hello);
         message["authority"]["display"] = selection;
         send(&mut stream, &message).await;
         closed(&mut stream).await;
-    }
-    for limit in [0, 4097] {
-        let (mut stream, hello) = connect(&directory.socket()).await;
-        let mut message = authority_request(&hello);
-        message["authority"]["display"] = json!({"max_equivocation_records": limit});
-        send(&mut stream, &message).await;
-        let response = receive(&mut stream).await;
-        assert_eq!(response["result"]["availability"], "unavailable");
-        assert!(response["result"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("equivocation rows"));
-        assert_eq!(response["identity"], hello["identity"]);
     }
     observer.stop().await;
 }

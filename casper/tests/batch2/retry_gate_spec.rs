@@ -211,11 +211,8 @@ async fn premature_retry_is_rejected_by_every_validator() {
         .create_block(&[])
         .await
         .expect("owner attempts a proposal");
-    if let casper::rust::blocks::proposer::propose_result::BlockCreatorResult::Created(
-        block,
-        _,
-        _,
-    ) = &owner_attempt
+    if let casper::rust::blocks::proposer::propose_result::BlockCreatorResult::Created(block, ..) =
+        &owner_attempt
     {
         assert!(
             !block
@@ -311,6 +308,7 @@ async fn premature_retry_is_rejected_by_every_validator() {
         timestamp: now_millis,
         version: 1,
         extra_bytes: Bytes::new(),
+        chain_id: snapshot.chain_id.clone(),
     };
     let justifications: Vec<Justification> = snapshot.justifications.iter().cloned().collect();
     let unsigned = proto_util::unsigned_block_proto(

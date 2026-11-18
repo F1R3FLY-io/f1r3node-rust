@@ -144,7 +144,7 @@ fn dag_with_parents(
                     weight_map: BTreeMap::new(),
                     block_number: number,
                     sequence_number: 1,
-                    invalid: false,
+                    equivocates: None,
                     directly_finalized: false,
                     finalized: false,
                     fault_tolerance_value: 0.0,
@@ -160,6 +160,7 @@ fn dag_with_parents(
         history: None,
         view_sequence: u64::MAX,
         view_max_height: None,
+        pruning_cutoff: 0,
         dag_set,
         latest_messages_map: imbl::HashMap::new(),
         child_map,
@@ -167,7 +168,6 @@ fn dag_with_parents(
         block_number_map,
         main_parent_map,
         self_justification_map: imbl::HashMap::new(),
-        invalid_blocks_set: imbl::HashSet::new(),
         last_finalized_block_hash: genesis.clone(),
         finalized_blocks_set,
         block_metadata_index: Arc::new(PlRwLock::new(metadata_store)),
@@ -241,6 +241,15 @@ async fn merge_in_dag(
     expensive_sig: Option<Bytes>,
 ) -> MergeOutcome {
     let scope: HashSet<BlockHash> = blocks.iter().map(|block| block.hash.clone()).collect();
+    let name_seeds = dag_merger::NameSeeds {
+        of_scope_deploys: blocks
+            .iter()
+            .flat_map(|block| block.chains.iter())
+            .flat_map(|chain| chain.deploys_with_cost.0.iter())
+            .map(|deploy| (deploy.deploy_id.clone(), deploy.deploy_id.to_vec()))
+            .collect(),
+        held_by_base: HashMap::new(),
+    };
     let (merged_state, rejected, applied) = dag_merger::merge(
         &dag,
         genesis,
@@ -272,6 +281,7 @@ async fn merge_in_dag(
         &|_| Ok(false),
         &HashSet::new(),
         &HashMap::new(),
+        &name_seeds,
     )
     .expect("merge");
 
