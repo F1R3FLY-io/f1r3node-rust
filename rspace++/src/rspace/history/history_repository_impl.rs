@@ -21,6 +21,7 @@ use crate::rspace::history::checkpoint_writer::CheckpointWriter;
 use crate::rspace::history::cold_store::PersistedData;
 use crate::rspace::history::history::History;
 use crate::rspace::history::history_repository::HistoryRepository;
+use crate::rspace::history::prune_guard::PruneGuard;
 use crate::rspace::history::root_repository::RootRepository;
 use crate::rspace::hot_store_action::DeleteAction::{DeleteContinuations, DeleteData, DeleteJoins};
 use crate::rspace::hot_store_action::HotStoreAction;
@@ -61,6 +62,11 @@ pub struct HistoryRepositoryImpl<C, P, A, K> {
     pub history_kv_store: Arc<dyn KeyValueStore>,
     pub rspace_exporter: Arc<dyn RSpaceExporter>,
     pub rspace_importer: Arc<dyn RSpaceImporter>,
+    /// Coordination with the history pruner (issue #1061). Shared by Arc
+    /// across every `HistoryRepositoryImpl` that refers to the same backing
+    /// trie store; `do_checkpoint` and `reset` return a fresh repository
+    /// instance but keep the same `prune_guard`.
+    pub prune_guard: Arc<PruneGuard>,
     pub _marker: PhantomData<(C, P, A, K)>,
 }
 
@@ -168,6 +174,7 @@ where
             history_kv_store: self.history_kv_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
+            prune_guard: self.prune_guard.clone(),
             _marker: PhantomData,
         })
     }
@@ -514,7 +521,17 @@ where
         };
 
         // store everything related to history (history data, new root and populate
-        // cache for new root)
+        // cache for new root).
+        //
+        // Hold the prune guard's shared side across `stage` (which reads
+        // the store via `pending_writes` to decide which content-addressed
+        // nodes to skip) and `checkpoint_writer.write` (which lands the
+        // remaining nodes). If the sweep fires between those two steps,
+        // it could delete a hash the stage decided to skip, leaving the
+        // new state with a dangling pointer. See
+        // `rspace::history::prune_guard` for the full rationale.
+        let _prune_lock = self.prune_guard.enter_write();
+
         let (new_history, nodes, lock_wait, process_time) = {
             let lock_start = Instant::now();
             let history_lock =
@@ -530,6 +547,11 @@ where
             .record(process_time.as_secs_f64());
 
         let new_root = new_history.root();
+        // Pin the new root before writing so the next sweep retains it even
+        // if the DAG has not yet caught up to the block that will reference
+        // it as a pre/post state.
+        self.prune_guard.pin(new_root.clone());
+
         let commit_start = Instant::now();
         self.checkpoint_writer
             .write(nodes, &new_root)
@@ -545,6 +567,7 @@ where
             history_kv_store: self.history_kv_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
+            prune_guard: self.prune_guard.clone(),
             _marker: PhantomData,
         });
         metrics::histogram!(HISTORY_CHECKPOINT_TIME_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
@@ -564,6 +587,20 @@ where
         lock_roots_repository(&self.roots_repository, &ROOTS_LOCK_RESET_SITE)
             .validate_root(root)?;
 
+        // Hold the sweep's shared side across pin + load. Without this a
+        // sweep that took its pinned snapshot a moment before our `pin`
+        // call would delete the root before `history_lock.reset` reads
+        // it. Lock order (prune_guard shared → current_history) matches
+        // `do_checkpoint`.
+        let _prune_lock = self.prune_guard.enter_write();
+
+        // Pin the target so an in-flight sweep that did not reach this
+        // root via its caller-supplied set keeps its subtree. A reset is
+        // issued ahead of executing or replaying the block anchored at
+        // this root; without the pin the sweep could delete nodes that
+        // the next read reaches.
+        self.prune_guard.pin(root.clone());
+
         let history_lock = lock_current_history(&self.current_history, &HISTORY_LOCK_RESET_SITE);
         let next = history_lock.reset(root)?;
 
@@ -575,6 +612,7 @@ where
             history_kv_store: self.history_kv_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
+            prune_guard: self.prune_guard.clone(),
             _marker: PhantomData,
         }))
     }
@@ -626,40 +664,46 @@ where
         &self,
         retained_roots: &[Blake2b256Hash],
     ) -> Result<HistoryPruneResult, HistoryError> {
-        atomic_prune_via_store(self.history_kv_store.as_ref(), retained_roots)
+        // Hold the sweep lock for the entire pass so no `do_checkpoint`
+        // can run its content-addressed `contains` + `put` window while
+        // we are deleting. Pin snapshot is unioned with the caller's
+        // retained roots so recently-committed roots (and anything a
+        // `reset` locked in) survive even if the caller's DAG walk did
+        // not reach them.
+        let _sweep_lock = self.prune_guard.enter_sweep();
+        let pinned = self.prune_guard.pinned_snapshot();
+        let merged: Vec<Blake2b256Hash> = if pinned.is_empty() {
+            retained_roots.to_vec()
+        } else {
+            let mut m: Vec<Blake2b256Hash> =
+                Vec::with_capacity(retained_roots.len() + pinned.len());
+            m.extend_from_slice(retained_roots);
+            m.extend(pinned);
+            m
+        };
+        atomic_prune_via_store(self.history_kv_store.as_ref(), &merged)
     }
 }
 
-/// Mark-and-sweep against a generic `KeyValueStore`. Correct for any
-/// backend because `KeyValueStore::put` / `delete` are the only writers on
-/// the trie-node store, and LMDB's single-writer rule inside the backing
-/// env serialises them against our sweep's own writes. In-memory backends
-/// serialise through their internal `RwLock`, which gives the same
-/// guarantee. Not held across await points by the pruner, so the stall is
-/// bounded to the pass duration.
+/// Mark-and-sweep against a generic `KeyValueStore`. The caller — the
+/// trait method [`HistoryRepository::prune_history_atomic`] — holds the
+/// `PruneGuard` exclusive side across this helper, so no runtime writer
+/// can commit a content-addressed `pending_writes` + `write` sequence
+/// while we are between `contains` and `delete`. Pre-#1061 this helper
+/// leaned on (1) LMDB read-snapshot isolation and (2) the claim that a
+/// newly-written node colliding with a dead node would be re-inserted by
+/// the writer's `put_one_if_absent`. (2) was wrong: `RadixTreeImpl::
+/// pending_writes` SKIPS keys already in the store (content-addressed
+/// writes are idempotent — the already-present bytes equal the pending
+/// bytes), so a sweep that deleted that key between the writer's
+/// `contains` check and its `put` of the other nodes left the new state
+/// with a dangling pointer. `PruneGuard` closes the race by serialising
+/// the full write window with the full sweep window.
 ///
-/// A truly atomic implementation would wrap the whole pass in one LMDB
-/// write transaction so even the mark-walk reads see pre-sweep state;
-/// that requires exposing a scoped `RwTxn` handle through the
-/// `KeyValueStore` trait, which is a bigger surface change. The current
-/// implementation leans on two facts to stay correct without that:
-///
-/// 1. Reads via `KeyValueStore::get_one` during the mark walk see a consistent
-///    view because LMDB read transactions are snapshot-isolated even against
-///    concurrent writers, and our mark walk opens a fresh read transaction per
-///    `get_one` — the "worst" a racing writer can do is add more nodes we then
-///    also mark via their root (because the root is in `retained_roots`).
-/// 2. The delete loop iterates keys we already collected into memory, so a
-///    writer landing between iteration and `delete` can only add nodes, not
-///    remove ones we were about to touch. A newly-added node whose hash
-///    collides with a key we're about to delete would be a content-addressed
-///    collision, which means the new node's bytes equal the dead node's bytes —
-///    the new block tolerates the deletion because its next write re-inserts
-///    the same bytes via `put_one_if_absent` on the content-addressed path.
-///
-/// If a stronger guarantee is needed later (e.g., to accommodate backends
-/// without content-addressed idempotent writes), swap this helper to a
-/// `with_write_txn` scope method on `KeyValueStore`.
+/// Reads via `KeyValueStore::get_one` during the mark walk still open a
+/// fresh LMDB read transaction per call, so a racing writer that has not
+/// yet taken the PruneGuard shared side (e.g., a reader on an unrelated
+/// path) can only add nodes, not remove ones we are about to mark.
 fn atomic_prune_via_store(
     store: &dyn KeyValueStore,
     retained_roots: &[Blake2b256Hash],
@@ -699,10 +743,9 @@ fn atomic_prune_via_store(
 
     // Phase 2: sweep. Paginate the env so we never materialise more than
     // one page worth of keys at once (~32 KiB for 32-byte hashes at the
-    // default 1024 limit). `delete` is a batched write that LMDB
-    // serialises against other writers for the duration of the delete
-    // transaction — long enough for correctness, short enough not to
-    // stall the chain for the whole pass.
+    // default 1024 limit). Runtime writers are already blocked by the
+    // caller's `PruneGuard` exclusive guard for the full pass; pagination
+    // is purely a memory-footprint bound, not a stall bound.
     const SWEEP_PAGE: usize = 1024;
     let mut cursor: Option<Vec<u8>> = None;
     let mut swept = 0usize;
