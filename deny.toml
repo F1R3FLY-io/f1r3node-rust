@@ -75,16 +75,33 @@ ignore = [
     # Swagger UI release archive entry by entry (`by_index` plus
     # `enclosed_name`) and never calls `ZipArchive::extract` or
     # `ZipStreamReader::extract`, the functions these advisories concern.
+    # It never uses `ZipStreamReader` at all, and zip 3.0.0 is built without
+    # its `aes-crypto` feature (utoipa-swagger-ui asks only for `deflate`,
+    # and the lock lists no `aes` dependency of zip 3.0.0), so the AES
+    # decryption path is not compiled.
     # The patched releases are zip >= 9.0.0.
     "RUSTSEC-2026-0367", # extract() preserves SUID/SGID bits
     "RUSTSEC-2026-0368", # extract() creates symlinks outside the destination
     "RUSTSEC-2026-0369", # extract() applies permissions through symlinks
     "RUSTSEC-2026-0429", # extract() aborts on a symlink entry with a large declared size
+    "RUSTSEC-2026-0545", # AES entries returned without checking their authentication code (aes-crypto only)
+    "RUSTSEC-2026-0548", # ZipStreamReader extracts entries under local-header names
 
     # proc-macro-error2 2.0.1 is unmaintained and has no successor release.
     # It is a compile-time dependency of the getset proc-macro, reached
     # through comm -> local-ip-address 0.6.13 -> neli 0.7.4.
     "RUSTSEC-2026-0173",
+
+    # chrono is unmaintained and has no maintained or fixed release
+    # (RUSTSEC-2026-0543); humantime, which wraps chrono, is unmaintained with
+    # it (RUSTSEC-2026-0542). Both advisories are informational, not
+    # vulnerabilities. chrono is a direct dependency of comm, rspace_plus_plus
+    # and rspace_plus_plus_rhotypes and a transitive one through
+    # metrics-exporter-influx and x509-certificate; humantime is a dependency
+    # of casper and node. Replacing them (the advisories name jiff and time)
+    # is a workspace-wide migration outside the RSpace PathMap campaign.
+    "RUSTSEC-2026-0543",
+    "RUSTSEC-2026-0542",
 ]
 
 # ---------------------------------------------------------------------------
