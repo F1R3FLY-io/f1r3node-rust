@@ -12,6 +12,7 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::private_key::PrivateKey;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use shared::rust::shared::f1r3fly_event::DeployAdmission;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tracing;
 
@@ -124,7 +125,11 @@ pub trait ProposeEffectHandler {
     ) -> Result<(), CasperError>;
 
     /// Publish BlockCreated event immediately after block creation (before validation).
-    fn publish_block_created(&self, block: &BlockMessage) -> Result<(), CasperError>;
+    fn publish_block_created(
+        &self,
+        block: &BlockMessage,
+        deploy_admission: Option<DeployAdmission>,
+    ) -> Result<(), CasperError>;
 }
 
 pub enum ProposerResult {
@@ -272,9 +277,15 @@ where
                 record_propose_steps(constraints_ms, create_ms, 0, 0);
                 Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None))
             }
-            BlockCreatorResult::Created(block, pre_state_hash, post_state_hash) => {
+            BlockCreatorResult::Created(
+                block,
+                pre_state_hash,
+                post_state_hash,
+                deploy_admission,
+            ) => {
                 // Publish BlockCreated event immediately after block is created (before validation)
-                self.propose_effect_handler.publish_block_created(&block)?;
+                self.propose_effect_handler
+                    .publish_block_created(&block, deploy_admission)?;
 
                 let step_start = std::time::Instant::now();
                 let validation_result = casper
@@ -864,10 +875,13 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposeEffectHandler
         Ok(())
     }
 
-    fn publish_block_created(&self, block: &BlockMessage) -> Result<(), CasperError> {
-        // Publish BlockCreated event
+    fn publish_block_created(
+        &self,
+        block: &BlockMessage,
+        deploy_admission: Option<DeployAdmission>,
+    ) -> Result<(), CasperError> {
         self.event_publisher
-            .publish(created_event(block))
+            .publish(created_event(block, deploy_admission))
             .map_err(Into::into)
     }
 }

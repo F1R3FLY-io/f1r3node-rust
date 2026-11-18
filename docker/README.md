@@ -60,13 +60,21 @@ docker compose -f standalone.yml logs -f
 docker compose -f standalone.yml down -v
 ```
 
+## Deploy Queues
+
+Every validator in these compose files runs behind a [deploy queue](../docs/node/deploy-queue.md), a second
+container from the same image. The queue owns the validator's client ports on the host (gRPC external and
+HTTP), so clients deploy to the same addresses as before: `localhost:40401`/`40403` for the standalone node,
+`40411`/`40413`, `40421`/`40423`, `40431`/`40433` for the shard's validators. The queue answers deploys and their
+status itself and sends every other request on to its validator. The bootstrap and observer have no queue.
+
 ## Compose Files
 
 | File | Description |
 |------|-------------|
-| `shard.yml` | Full shard: bootstrap + 3 validators + observer, plus Prometheus and Grafana |
-| `standalone.yml` | Single standalone node for development |
-| `validator4.yml` | Additional validator joining existing shard — see [Joining an Existing Network](../docs/node/joining-a-network.md) |
+| `shard.yml` | Full shard: bootstrap + 3 validators, each behind a deploy queue + observer, plus Prometheus and Grafana |
+| `standalone.yml` | Single standalone node behind a deploy queue, for development |
+| `validator4.yml` | Additional validator, behind a deploy queue, joining existing shard — see [Joining an Existing Network](../docs/node/joining-a-network.md) |
 | `observer.yml` | Additional read-only node joining existing shard — see [Joining an Existing Network](../docs/node/joining-a-network.md) |
 | `monitoring.yml` | Prometheus + Grafana + cAdvisor, for a topology that does not already include them |
 
@@ -147,6 +155,9 @@ See [`.env.example`](.env.example) for Docker defaults. The compose files read t
 | Validator4 | 40440 | 40441 | 40442 | 40443 | 40444 | 40445 |
 | Observer | 40450 | 40451 | 40452 | 40453 | 40454 | 40455 |
 
+A validator's gRPC Ext and HTTP host ports belong to its deploy queue. The validator still serves them on the
+compose network.
+
 ## Monitoring
 
 `shard.yml` starts Prometheus and Grafana itself, so a full shard needs nothing
@@ -164,7 +175,7 @@ docker compose -f monitoring.yml down      # Stop
 | Grafana | http://localhost:3000 | Dashboards (admin/admin) |
 | cAdvisor | http://localhost:8080 | Container CPU/memory/IO metrics |
 
-Prometheus uses DNS-based service discovery — only running nodes get scraped (no false DOWN targets for standalone or partial shard).
+Prometheus uses DNS-based service discovery — only running nodes get scraped (no false DOWN targets for standalone or partial shard). The `deploy-queue` job scrapes each queue's own metrics at `/queue/metrics`.
 
 ## CI/Smoke Testing
 

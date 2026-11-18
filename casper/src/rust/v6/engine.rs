@@ -844,6 +844,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
             block,
             attestation.root.clone(),
             attestation.root,
+            None,
         ))
     }
 }

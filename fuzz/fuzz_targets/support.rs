@@ -25,7 +25,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{
@@ -237,6 +237,7 @@ pub fn snapshot(held: &[Held], max_block_num: i64, bonds: Vec<(Validator, i64)>)
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         rejected_in_scope: Arc::new(DashSet::new()),
+        seeds_in_scope: Arc::new(DashMap::new()),
         max_block_num,
         max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {

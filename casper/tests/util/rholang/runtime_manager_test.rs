@@ -4422,6 +4422,23 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
     dag.put_cached_floor(chain_hash(TIP), chain_hash(TIP))
         .expect("seed the live floor");
 
+    // The active-validator filter in `collect_garbage` reads the floor block's
+    // post-state hash to resolve the PoS bonded committee, so the tip block
+    // must be in the block store. The synthetic chain re-uses the lagging
+    // block's post-state at every height, which is the real genesis state
+    // (no state advance in this test), so the genesis bonds are the active
+    // committee and the chain validator (`sender`) stays in the filter set.
+    let mut tip_block = lagging_block.clone();
+    tip_block.block_hash = chain_hash(TIP);
+    tip_block.body.state.block_number = TIP as i64;
+    tip_block.seq_num = TIP as i32 + seq_num - LAGGING_HEIGHT as i32;
+    tip_block.header.parents_hash_list = vec![chain_hash(TIP - 1)];
+    tip_block.body.deploys.clear();
+    tip_block.body.system_deploys.clear();
+    block_store
+        .put(tip_block.block_hash.clone(), &tip_block)
+        .expect("store the synthetic tip block so GC can resolve its post-state");
+
     // Production GC: the block sits 15 below the live floor, past the 4-block
     // allowance, so its data is released.
     drop(dag);

@@ -64,6 +64,44 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
     /// Companion to `record_root` for joiner-side LFS sync to check whether
     /// a root has already been imported before fetching from peers.
     fn contains_root(&self, root: &Blake2b256Hash) -> Result<bool, HistoryError>;
+
+    /// Raw access to the LMDB-backed trie-node store. Used by rspace-history
+    /// pruning (issue #923, Option D) to walk every node hash in the env
+    /// via `scan_page` + `delete`, after a mark walk from each retained
+    /// root has built the reachable-hash set. Exposes trie nodes only —
+    /// cold-store datums/continuations and the roots store are separate
+    /// environments and not accessible here.
+    fn history_store(&self) -> Arc<dyn KeyValueStore>;
+
+    /// Atomic mark-and-sweep of the trie-node store against `retained_roots`.
+    ///
+    /// Issue #923, Option D race fix. The sweep MUST hold the history
+    /// store's write lock for the full pass so no runtime writer can
+    /// land a new block's trie nodes between mark and sweep — that was
+    /// the race that could leave a new block's state tree with a
+    /// dangling descendant pointer. LMDB's single-writer rule inside the
+    /// history env provides the mutual exclusion; implementations do the
+    /// whole mark + sweep inside one write transaction.
+    ///
+    /// `retained_roots` is the union of every state root whose subtree
+    /// must survive — the caller (casper's `prune_history_once`) builds
+    /// this from `compute_forward_horizon_roots` plus any LFS /
+    /// report-replay / merge-intermediate anchors it holds.
+    ///
+    /// Returns a pair of counters so operators can see the pass's work.
+    fn prune_history_atomic(
+        &self,
+        retained_roots: &[Blake2b256Hash],
+    ) -> Result<HistoryPruneResult, HistoryError>;
+}
+
+/// Counters for one atomic prune pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HistoryPruneResult {
+    /// Trie nodes reachable from the retained roots at pass time.
+    pub marked: usize,
+    /// Trie nodes deleted (keys present in the env, not in the mark set).
+    pub swept: usize,
 }
 
 pub struct HistoryRepositoryInstances<C, P, A, K> {
@@ -124,10 +162,11 @@ where
             current_history: Arc::new(Mutex::new(Box::new(history))),
             roots_repository: Arc::new(Mutex::new(roots_repository)),
             checkpoint_writer: Arc::new(KvCheckpointWriter {
-                history: history_key_value_store,
+                history: history_key_value_store.clone(),
                 roots: roots_key_value_store,
             }),
             leaf_store: cold_key_value_store,
+            history_kv_store: history_key_value_store,
             rspace_exporter: Arc::new(exporter),
             rspace_importer: Arc::new(importer),
             _marker: PhantomData,

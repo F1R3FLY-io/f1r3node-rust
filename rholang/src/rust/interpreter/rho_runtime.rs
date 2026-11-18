@@ -632,6 +632,9 @@ impl RhoRuntime for RhoRuntimeImpl {
         if let Some(mark) = wal_snap {
             self.fs_handles.wal.truncate_to(mark);
         }
+        // A reverted deploy must not contribute trapped-GPrivate ids to
+        // the successor deploy's sweep.
+        let _ = self.reducer.drain_trapped();
         self.reducer
             .space
             .revert_to_soft_checkpoint(soft_checkpoint)
@@ -641,6 +644,39 @@ impl RhoRuntime for RhoRuntimeImpl {
 
     async fn create_checkpoint(&mut self) -> Checkpoint {
         let start = Instant::now();
+        // Scope-trapped GC (opt-in). Retires rspace data rows keyed on
+        // fresh GPrivates whose binder was used only in channel
+        // positions by H1 (see
+        // `rholang::interpreter::garbage::is_scope_trapped` and
+        // docs/rholang/garbage-collection.md). Continuations and join
+        // records are NOT swept — the casper merger walks event-log
+        // consumes and needs the matching join record to resolve a
+        // hashed channel list, so dropping joins triggers a
+        // "Tuple space inconsistency found" panic in
+        // `StateChange::new`.
+        //
+        // Set `F1R3FLY_SCOPE_TRAPPED_GC=1` to enable. Default remains
+        // off pending a full-suite soak with the sweep on; the
+        // narrowing clears the known merger regression but has not
+        // been validated against the entire casper suite.
+        let drained = self.reducer.drain_trapped();
+        if std::env::var("F1R3FLY_SCOPE_TRAPPED_GC").as_deref() == Ok("1") {
+            // Rust-side callers (exploratory deploys, oracle readers, …) pin
+            // an unforgeable's id via `self.reducer.space.gc_roots()` for the
+            // lifetime of a reference they hold. The sweep must skip any such
+            // pinned id even if H1 classifies the binder as trapped, otherwise
+            // the rspace entries behind the reference disappear while the
+            // reference is still live. See docs/rholang/garbage-collection.md.
+            let roots = self.reducer.space.gc_roots();
+            let unpinned: Vec<Vec<u8>> = drained
+                .into_iter()
+                .filter(|id| !roots.is_pinned_by_key(id))
+                .collect();
+            let trapped = trapped_channels_from_ids(unpinned);
+            if !trapped.is_empty() {
+                let _ = self.reducer.space.sweep_channels(trapped).await;
+            }
+        }
         let checkpoint = self.reducer.space.create_checkpoint().await.unwrap();
         metrics::histogram!(CREATE_CHECKPOINT_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
@@ -663,6 +699,10 @@ impl RhoRuntime for RhoRuntimeImpl {
     }
 
     async fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), InterpreterError> {
+        // Drop any trapped-GPrivate ids held from a prior deploy; reset
+        // means "start fresh at this root", so carrying ids forward
+        // would be a cross-deploy leak.
+        let _ = self.reducer.drain_trapped();
         self.reducer.space.reset(root).await?;
         self.reset_files(root);
         Ok(())
@@ -1678,6 +1718,7 @@ async fn setup_reducer(
         seal_records: urn_phase.seal_records.clone(),
         elaborate_next: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         funding: Arc::new(std::sync::Mutex::new(None)),
+        trapped_gprivates: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
     });
 
     reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
@@ -1905,6 +1946,21 @@ where
 }
 
 // This is from Nassim Taleb's "Skin in the Game"
+/// Build the bare-`GPrivate` channel `Par` for each trapped id so the
+/// rspace sweep can retire entries keyed on it. The `Par` shape matches
+/// exactly what `eval_new` pushed into the reducer env for the same id.
+fn trapped_channels_from_ids(ids: Vec<Vec<u8>>) -> Vec<Par> {
+    use models::rhoapi::g_unforgeable::UnfInstance;
+    use models::rhoapi::{GPrivate, GUnforgeable};
+    ids.into_iter()
+        .map(|id| {
+            Par::default().with_unforgeables(vec![GUnforgeable {
+                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id })),
+            }])
+        })
+        .collect()
+}
+
 fn bootstrap_rand() -> Blake2b512Random {
     Blake2b512Random::create_from_bytes("Decentralization is based on the simple notion that it is easier to macrobull***t than microbull***t. \
          Decentralization reduces large structural asymmetries."

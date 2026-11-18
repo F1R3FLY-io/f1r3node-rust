@@ -69,6 +69,18 @@ versions = ["2.0.1"]
 owner = "@F1R3FLY-io/ci-maintainers"
 review-by = 2026-12-02
 
+[exceptions.RUSTSEC-2026-0543]
+package = "chrono"
+versions = ["0.4.45"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-12-02
+
+[exceptions.RUSTSEC-2026-0542]
+package = "humantime"
+versions = ["2.4.0"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-12-02
+
 [exceptions.RUSTSEC-2026-0367]
 package = "zip"
 versions = ["0.6.6"]
@@ -88,6 +100,18 @@ owner = "@F1R3FLY-io/ci-maintainers"
 review-by = 2026-12-02
 
 [exceptions.RUSTSEC-2026-0429]
+package = "zip"
+versions = ["0.6.6"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-12-02
+
+[exceptions.RUSTSEC-2026-0545]
+package = "zip"
+versions = ["0.6.6"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-12-02
+
+[exceptions.RUSTSEC-2026-0548]
 package = "zip"
 versions = ["0.6.6"]
 owner = "@F1R3FLY-io/ci-maintainers"

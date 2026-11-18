@@ -40,6 +40,7 @@ fn lmdb_manager(directory: &std::path::Path) -> Box<dyn KeyValueStoreManager> {
         "deploy-lifecycle-events",
         "deploy-lifecycle-terminal",
         "carrier-index",
+        "carrier-index-seeds",
         "carrier-index-meta",
         "v6-executor-state",
         "finalization-commit-marker",

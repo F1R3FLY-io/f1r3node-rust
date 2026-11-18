@@ -17,6 +17,7 @@ use models::rust::casper::protocol::casper_message::{
     self, ApprovedBlock, ApprovedBlockCandidate, BlockRequest, CasperMessage, FinalizedFloorSeed,
     HasBlock, HasBlockRequest,
 };
+use models::rust::casper::protocol::packet_type_tag::encoded_block_message_packet;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
@@ -33,6 +34,9 @@ use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::snapshot_chunk_sync::SnapshotChunkSyncDriver;
 use crate::rust::engine::snapshot_chunk_wire::{
     handle_get_snapshot_chunk_request, handle_has_snapshot_request,
+};
+use crate::rust::engine::state_export_limiter::{
+    StateExportLimiter, MAX_PENDING_REQUESTS_PER_PEER, QUEUED_STREAM_BYTES_BUDGET,
 };
 use crate::rust::engine::wal_payload_wire::{
     handle_get_wal_payload_request, handle_has_wal_payload_request,
@@ -590,6 +594,7 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     /// configured payload store (observers, test harnesses that
     /// skip the boot pipeline).
     wal_payload_ctx: std::sync::OnceLock<WalPayloadContext>,
+    state_export_limiter: StateExportLimiter,
 }
 
 impl<T: TransportLayer + Send + Sync> Running<T> {
@@ -688,6 +693,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             state_items_tx,
             snapshot_chunk_ctx: std::sync::OnceLock::new(),
             wal_payload_ctx: std::sync::OnceLock::new(),
+            state_export_limiter: StateExportLimiter::default(),
         }
     }
 
@@ -758,15 +764,19 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         peer: PeerNode,
         br: BlockRequest,
     ) -> Result<(), CasperError> {
-        let maybe_block = self.casper.block_store().get(&br.hash)?;
-        if let Some(block) = maybe_block {
+        let maybe_encoded = self.casper.block_store().get_encoded(&br.hash)?;
+        if let Some(encoded) = maybe_encoded {
             tracing::info!(
                 "Received request for block {} from {}. Response sent.",
                 PrettyPrinter::build_string_bytes(&br.hash),
                 peer
             );
             self.transport
-                .stream_message_to_peer(&self.conf, &peer, Arc::new(block.to_proto()))
+                .stream_packet_to_peer(
+                    &self.conf,
+                    &peer,
+                    encoded_block_message_packet(encoded.into()),
+                )
                 .await?;
         } else {
             tracing::info!(
@@ -914,14 +924,46 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             return Ok(());
         }
 
-        let exporter = self.casper.get_history_exporter().await;
+        let Some(_slot) = self.state_export_limiter.reserve(&peer) else {
+            tracing::warn!(
+                %peer,
+                max = MAX_PENDING_REQUESTS_PER_PEER,
+                "Too many StoreItemsMessageRequests in progress for peer; ignoring"
+            );
+            return Ok(());
+        };
+        let Some(_permit) = self
+            .state_export_limiter
+            .acquire(|| self.transport.queued_stream_bytes())
+            .await
+        else {
+            tracing::warn!(
+                %peer,
+                budget = QUEUED_STREAM_BYTES_BUDGET,
+                "Outgoing stream queue stayed over its byte budget; ignoring StoreItemsMessageRequest"
+            );
+            return Ok(());
+        };
 
-        let (history, data) = match RSpaceExporterItems::get_history_and_data(
-            exporter,
-            start_path.clone(),
-            skip,
-            take,
-        ) {
+        let exporter = self.casper.get_history_exporter().await;
+        let export_path = start_path.clone();
+        let export = match tokio::task::spawn_blocking(move || {
+            RSpaceExporterItems::get_history_and_data(exporter, export_path, skip, take)
+        })
+        .await
+        {
+            Ok(export) => export,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    %peer,
+                    "State export task for StoreItemsMessageRequest failed; ignoring"
+                );
+                return Ok(());
+            }
+        };
+
+        let (history, data) = match export {
             Ok(items) => items,
             Err(error) => {
                 tracing::warn!(

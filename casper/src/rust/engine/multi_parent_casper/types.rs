@@ -111,6 +111,7 @@ pub struct MultiParentCasperImpl {
                 Vec<BlockHash>,
                 Arc<dashmap::DashSet<Bytes>>,
                 Arc<dashmap::DashSet<Bytes>>,
+                Arc<dashmap::DashMap<Vec<u8>, Vec<Bytes>>>,
             )>,
         >,
     >,

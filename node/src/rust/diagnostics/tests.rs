@@ -33,6 +33,7 @@ mod tests {
             max_parent_depth: 100,
             dag_hot_window_depth: 1024,
             deploy_lifespan: 50,
+            deploy_admission: Default::default(),
             deploy_play_budget: Duration::ZERO,
             fork_choice_stale_threshold: Duration::from_secs(30 * 60),
             fork_choice_check_if_stale_interval: Duration::from_secs(30),
@@ -81,6 +82,7 @@ mod tests {
             mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
             mergeable_channels_gc_depth_buffer: 10,
             enable_block_store_gc: false,
+            enable_history_pruning: false,
             rejection_search_cap_from_height: None,
             rejection_search_group_branch_cap:
                 casper::rust::casper_conf::default_rejection_search_group_branch_cap(),
@@ -163,6 +165,7 @@ mod tests {
                 port_http: 40403,
                 port_admin_http: 40405,
                 http_max_body_bytes: 16 * 1024 * 1024,
+                deploy_max_inflight: None,
                 max_blocks_limit: 100,
                 enable_reporting: true,
                 report_cache_retention_blocks: 0,

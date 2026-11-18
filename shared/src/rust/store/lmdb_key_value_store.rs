@@ -1,10 +1,13 @@
 use std::collections::BTreeMap;
+use std::ops::Bound;
 use std::sync::Arc;
 
 use heed::types::SerdeBincode;
 use heed::{Database, Env, Error as HeedError, MdbError, PutFlags};
 
-use super::key_value_store::{KeyValueStore, KvStoreError};
+use super::key_value_store::{
+    check_scan_limit, encode_bincode_key, KeyValueStore, KvStoreError, StorePage,
+};
 use crate::rust::blocking::in_blocking;
 use crate::rust::ByteBuffer;
 
@@ -121,6 +124,48 @@ impl KeyValueStore for LmdbKeyValueStore {
             }
             drop(reader);
             Ok(())
+        })
+    }
+
+    /// Cursor-paginated scan over raw-byte key order.
+    ///
+    /// Reads via `remap_types::<Bytes, Bytes>` to compare keys lexicographically
+    /// over the bincode-encoded form LMDB stores them in. For same-length keys
+    /// (the rspace/history node-hash case this is built for — 32-byte Blake2b)
+    /// that is byte-identical to raw-key order, so the cursor the caller sees
+    /// is the raw key. Values are still bincode-encoded in the env, so we
+    /// deserialize them back on the way out, matching what `get`/`iter_while`
+    /// expose. Same pattern as `atomic_store::scan_lmdb`; one env read
+    /// transaction per page, no cross-page snapshot invariant.
+    fn scan_page(&self, after: Option<&[u8]>, limit: usize) -> Result<StorePage, KvStoreError> {
+        check_scan_limit(limit)?;
+        in_blocking(|| {
+            let reader = self.env.read_txn()?;
+            let raw = self
+                .db
+                .remap_types::<heed::types::Bytes, heed::types::Bytes>();
+            // Keys are stored bincode-encoded: an 8-byte little-endian length
+            // prefix followed by the raw bytes. A raw-byte cursor from a
+            // previous page is the un-prefixed key, so wrap it before passing
+            // to `range`. Values are deserialized back from bincode on the
+            // way out.
+            let encoded_after = after.map(encode_bincode_key);
+            let start: Bound<&[u8]> = match encoded_after.as_ref() {
+                Some(bytes) => Bound::Excluded(bytes.as_slice()),
+                None => Bound::Unbounded,
+            };
+            let range = (start, Bound::<&[u8]>::Unbounded);
+            let mut rows = Vec::with_capacity(limit);
+            for row in raw.range(&reader, &range)?.take(limit) {
+                let (key_bytes, value_bytes) = row?;
+                let key: ByteBuffer = bincode::deserialize(key_bytes)?;
+                let value: ByteBuffer = bincode::deserialize(value_bytes)?;
+                rows.push((key, value));
+            }
+            drop(reader);
+            let next =
+                (rows.len() == limit).then(|| rows.last().expect("positive page limit").0.clone());
+            Ok(StorePage { rows, next })
         })
     }
 
@@ -689,6 +734,109 @@ mod store_tests {
             store.get_one(&b"k9".to_vec()).unwrap(),
             Some(b"fresh".to_vec())
         );
+    }
+
+    fn seeded_store_at(keys: &[&[u8]]) -> TestLmdbStore {
+        let store = open_scoped_store("scan");
+        let pairs: Vec<(ByteBuffer, ByteBuffer)> =
+            keys.iter().map(|k| (k.to_vec(), k.to_vec())).collect();
+        store.put(pairs).unwrap();
+        store
+    }
+
+    #[test]
+    fn scan_page_returns_empty_store_without_next() {
+        let store = open_scoped_store("empty");
+        let page = store.scan_page(None, 16).unwrap();
+        assert!(page.rows.is_empty());
+        assert!(page.next.is_none(), "empty store never has a next cursor");
+    }
+
+    #[test]
+    fn scan_page_walks_same_length_keys_in_byte_order() {
+        // 32-byte Blake2b-shaped keys — the rspace/history production case.
+        let keys: Vec<Vec<u8>> = (0u8..10).map(|n| vec![n; 32]).collect();
+        let refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+        let store = seeded_store_at(&refs);
+
+        let mut seen: Vec<ByteBuffer> = Vec::new();
+        let mut cursor: Option<ByteBuffer> = None;
+        loop {
+            let page = store.scan_page(cursor.as_deref(), 3).unwrap();
+            assert!(page.rows.len() <= 3);
+            seen.extend(page.rows.iter().map(|(k, _)| k.clone()));
+            match page.next {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(seen, keys, "every key visited exactly once in byte order");
+    }
+
+    #[test]
+    fn scan_page_cursor_is_exclusive() {
+        let keys: Vec<Vec<u8>> = (0u8..5).map(|n| vec![n; 32]).collect();
+        let refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+        let store = seeded_store_at(&refs);
+
+        let first = store.scan_page(None, 2).unwrap();
+        assert_eq!(first.rows.iter().map(|(k, _)| k).collect::<Vec<_>>(), vec![
+            &keys[0], &keys[1]
+        ]);
+        let second = store.scan_page(first.next.as_deref(), 2).unwrap();
+        assert_eq!(
+            second.rows.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            vec![&keys[2], &keys[3]]
+        );
+        let third = store.scan_page(second.next.as_deref(), 2).unwrap();
+        assert_eq!(third.rows.iter().map(|(k, _)| k).collect::<Vec<_>>(), vec![
+            &keys[4]
+        ]);
+        assert!(
+            third.next.is_none(),
+            "page below limit must not request another"
+        );
+    }
+
+    #[test]
+    fn scan_page_values_round_trip() {
+        let store = open_scoped_store("values");
+        store
+            .put(vec![
+                (b"aa".to_vec(), b"alpha".to_vec()),
+                (b"bb".to_vec(), b"beta".to_vec()),
+            ])
+            .unwrap();
+        let page = store.scan_page(None, 16).unwrap();
+        assert_eq!(page.rows, vec![
+            (b"aa".to_vec(), b"alpha".to_vec()),
+            (b"bb".to_vec(), b"beta".to_vec()),
+        ]);
+    }
+
+    #[test]
+    fn scan_page_limit_out_of_range_is_rejected() {
+        let store = open_scoped_store("bounds");
+        assert!(matches!(
+            store.scan_page(None, 0),
+            Err(KvStoreError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            store.scan_page(None, 1025),
+            Err(KvStoreError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn scan_page_cursor_past_the_end_returns_empty() {
+        let keys: Vec<Vec<u8>> = (0u8..3).map(|n| vec![n; 32]).collect();
+        let refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+        let store = seeded_store_at(&refs);
+
+        let past_end = vec![0xff; 32];
+        let page = store.scan_page(Some(&past_end), 16).unwrap();
+        assert!(page.rows.is_empty());
+        assert!(page.next.is_none());
     }
 
     // Run manually:
