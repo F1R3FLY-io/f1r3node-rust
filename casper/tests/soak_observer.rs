@@ -45,7 +45,7 @@ use shared::rust::dag::observation_work::{
 };
 use shared::rust::store::key_value_store::KeyValueStore;
 
-const STORES: [&str; 19] = [
+const STORES: [&str; 22] = [
     "block-metadata",
     "latest-messages",
     "dag-equivocations-v1",
@@ -57,6 +57,9 @@ const STORES: [&str; 19] = [
     "carrier-index-seeds",
     "carrier-index-meta",
     "genesis-hash",
+    "finalization-commit-marker",
+    "lfb-pointer",
+    "v6-executor-state",
     "blocks",
     "blocks-approved",
     "dag-membership-v1",

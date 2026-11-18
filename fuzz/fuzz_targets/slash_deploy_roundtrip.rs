@@ -58,6 +58,7 @@ impl CommitmentInput {
             applied_from_scope_root: self.applied_from_scope_root,
             merge_base: self.merge_base.into(),
             body_extra_bytes: self.body_extra_bytes.into(),
+            v6: None,
             sender: self.sender.into(),
             sig_algorithm: self.sig_algorithm,
             seq_num: self.seq_num,

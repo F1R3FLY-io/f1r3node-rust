@@ -4,10 +4,10 @@
 
 use casper::rust::util::proto_util;
 use models::casper::{
-    BlockCommitmentProto, BondInfo, CloseBlockSystemDeployDataProto, HeaderProto,
+    AttestationProto, BlockCommitmentProto, BondInfo, CloseBlockSystemDeployDataProto, HeaderProto,
     JustificationInfo, PeekProto, RejectedDeployInfo, ReportCommProto, ReportConsumeProto,
     ReportProduceProto, ReportProto, SingleReport, SlashSystemDeployDataProto,
-    SystemDeployDataProto, SystemDeployInfoWithEventData,
+    SystemDeployDataProto, SystemDeployInfoWithEventData, V6BodyProto,
 };
 use models::rhoapi::{BindPattern, ListParWithRandom, Par};
 use models::rust::casper::protocol::casper_message::BlockCommitment;
@@ -114,6 +114,45 @@ impl From<HeaderSerde> for HeaderProto {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AttestationSerde {
+    #[serde(rename = "blockHash", with = "base64_bytes")]
+    pub block_hash: Vec<u8>,
+    #[serde(with = "base64_bytes")]
+    pub root: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct V6BodySerde {
+    pub attestation: Option<AttestationSerde>,
+    #[serde(with = "base64_bytes::list")]
+    pub records: Vec<Vec<u8>>,
+}
+
+impl From<V6BodyProto> for V6BodySerde {
+    fn from(data: V6BodyProto) -> Self {
+        Self {
+            attestation: data.attestation.map(|a| AttestationSerde {
+                block_hash: a.block_hash.to_vec(),
+                root: a.root.to_vec(),
+            }),
+            records: data.records.into_iter().map(|r| r.to_vec()).collect(),
+        }
+    }
+}
+
+impl From<V6BodySerde> for V6BodyProto {
+    fn from(data: V6BodySerde) -> Self {
+        Self {
+            attestation: data.attestation.map(|a| AttestationProto {
+                block_hash: a.block_hash.into(),
+                root: a.root.into(),
+            }),
+            records: data.records.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 /// A block as its hash and signature commit to it, with the hash.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BlockCommitmentSerde {
@@ -138,6 +177,8 @@ pub struct BlockCommitmentSerde {
     pub merge_base: Vec<u8>,
     #[serde(rename = "bodyExtraBytes", with = "base64_bytes")]
     pub body_extra_bytes: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub v6: Option<V6BodySerde>,
     #[serde(with = "base64_bytes")]
     pub sender: Vec<u8>,
     #[serde(rename = "sigAlgorithm")]
@@ -170,6 +211,7 @@ impl From<BlockCommitmentProto> for BlockCommitmentSerde {
             applied_from_scope_root: commitment.applied_from_scope_root.to_vec(),
             merge_base: commitment.merge_base.to_vec(),
             body_extra_bytes: commitment.body_extra_bytes.to_vec(),
+            v6: commitment.v6.as_ref().map(|body| body.to_proto().into()),
             sender: commitment.sender.to_vec(),
             sig_algorithm: commitment.sig_algorithm,
             seq_num: commitment.seq_num,
@@ -195,6 +237,7 @@ impl From<BlockCommitmentSerde> for BlockCommitmentProto {
             applied_from_scope_root: data.applied_from_scope_root.into(),
             merge_base: data.merge_base.into(),
             body_extra_bytes: data.body_extra_bytes.into(),
+            v6: data.v6.map(Into::into),
             sender: data.sender.into(),
             sig_algorithm: data.sig_algorithm,
             seq_num: data.seq_num,
@@ -559,6 +602,7 @@ mod tests {
             applied_from_scope_root: vec![seed + 5; 32].into(),
             merge_base: vec![seed + 6; 32].into(),
             body_extra_bytes: vec![seed + 7].into(),
+            v6: None,
             sender: vec![0x04; 65].into(),
             sig_algorithm: "secp256k1".to_string(),
             seq_num: 3,
@@ -591,6 +635,24 @@ mod tests {
     }
 
     #[test]
+    fn v6_slash_evidence_round_trips_through_json() {
+        let mut proto = slash(9);
+        proto.first.as_mut().unwrap().v6 = Some(V6BodyProto {
+            attestation: Some(AttestationProto {
+                block_hash: vec![7; 32].into(),
+                root: vec![8; 32].into(),
+            }),
+            records: vec![vec![9, 10].into()],
+        });
+        let json = serde_json::to_string(&SlashSystemDeployDataSerde::from(proto.clone())).unwrap();
+        let back: SlashSystemDeployDataProto =
+            serde_json::from_str::<SlashSystemDeployDataSerde>(&json)
+                .unwrap()
+                .into();
+        assert_eq!(back, proto);
+    }
+
+    #[test]
     fn each_evidence_block_reports_its_hash() {
         let serde = SlashSystemDeployDataSerde::from(slash(9));
         for (reported, seed) in [(&serde.first, 1), (&serde.second, 20)] {
@@ -616,6 +678,7 @@ mod tests {
             data: Some(ListParWithRandom {
                 pars: vec![sample_par()],
                 random_state: vec![9, 9].into(),
+                seal: None,
             }),
         }
     }

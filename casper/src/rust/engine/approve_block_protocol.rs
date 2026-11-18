@@ -110,6 +110,7 @@ impl ApproveBlockProtocolFactory {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        protocol_version: i64,
         fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
         runtime_manager: &RuntimeManager,
         last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
@@ -169,7 +170,7 @@ impl ApproveBlockProtocolFactory {
             },
             vaults,
             supply: (i64::MAX as u64).into(),
-            version: 1,
+            version: protocol_version,
             native_token_name,
             native_token_symbol,
             native_token_decimals,
@@ -177,7 +178,11 @@ impl ApproveBlockProtocolFactory {
             consensus_fs_snapshot_cadence: None,
         };
 
-        let genesis_block = Genesis::create_genesis_block(runtime_manager, &genesis).await?;
+        let policy = (protocol_version == crate::rust::v6::resource_policy::PROTOCOL_V6)
+            .then(crate::rust::v6::resource_policy::ShardResourcePolicy::default);
+        let genesis_block =
+            Genesis::create_genesis_block_with_policy(runtime_manager, &genesis, policy.as_ref())
+                .await?;
         let sigs = Arc::new(Mutex::new(HashSet::new()));
 
         Ok(ApproveBlockProtocolImpl::new(

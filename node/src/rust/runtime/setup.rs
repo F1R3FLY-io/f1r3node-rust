@@ -399,6 +399,10 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 
         let deploy_storage = KeyValueDeployStorage::new(&mut rnode_store_manager).await?;
+        deploy_storage.set_rejection_log_bounds(
+            conf.casper.offer_rejection_log_capacity,
+            conf.casper.offer_rejection_reason_bytes,
+        );
         let deploy_storage_arc = Arc::new(deploy_storage.clone());
         (deploy_storage, deploy_storage_arc)
     };
