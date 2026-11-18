@@ -4,10 +4,9 @@
 //! file, and sleeps. The parent reads the path, sends `SIGTERM`, waits for
 //! the child to exit, and asserts the directory is gone.
 
-use std::fs;
 use std::path::PathBuf;
-use std::thread;
 use std::time::{Duration, Instant};
+use std::{fs, thread};
 
 use shared::rust::test_tmpdir::ScopedTmpdir;
 
@@ -16,7 +15,10 @@ fn sigterm_in_child_removes_the_scoped_tmpdir() {
     // A shared file in the parent's tmpdir lets the child publish its
     // tempdir path. Parent polls until it appears.
     let outside = std::env::temp_dir();
-    let handoff = outside.join(format!("f1r3node-scoped-sigterm-test-{}.txt", std::process::id()));
+    let handoff = outside.join(format!(
+        "f1r3node-scoped-sigterm-test-{}.txt",
+        std::process::id()
+    ));
     let _ = fs::remove_file(&handoff);
 
     let child = unsafe { libc::fork() };
