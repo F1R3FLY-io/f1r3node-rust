@@ -655,6 +655,24 @@ impl KeyValueDagRepresentation {
         self.carrier_index.read().proves_absence(sig)
     }
 
+    /// Seed carrier index: the height since which every insert has recorded
+    /// name seeds on this database. `None` keeps the seed fast path off.
+    pub fn carrier_index_seed_watermark(&self) -> Result<Option<i64>, KvStoreError> {
+        self.carrier_index.read().seed_watermark()
+    }
+
+    /// Seed carrier index: true when no carrier of another sig with this
+    /// seed is indexed. Sound as an absence proof only when the window starts
+    /// at or above the seed watermark and the prune cutoff. A `false` routes
+    /// the deploy to the exact ancestor scan.
+    pub fn carrier_index_seed_proves_unshared(
+        &self,
+        seed: &[u8],
+        sig: &[u8],
+    ) -> Result<bool, KvStoreError> {
+        self.carrier_index.read().seed_proves_unshared(seed, sig)
+    }
+
     /// Repeat-deploy carrier index: drop entries below the cutoff. The
     /// finalizer drives this on LFB advances.
     pub fn prune_carriers_below(&self, cutoff: i64) -> Result<u64, KvStoreError> {
@@ -1439,6 +1457,16 @@ impl BlockDagKeyValueStorage {
             .map(BlockHash::from))
     }
 
+    /// Seed carrier index: the sig of an indexed carrier of another deploy
+    /// with this seed. A hit is proof at any height; a miss proves nothing.
+    pub fn carrier_index_other_seed_carrier(
+        &self,
+        seed: &[u8],
+        sig: &[u8],
+    ) -> Result<Option<DeployId>, KvStoreError> {
+        self.carrier_index.read().other_seed_carrier(seed, sig)
+    }
+
     pub fn record_deploy_admitted(&self, sig: &[u8], valid_after: i64) -> Result<(), KvStoreError> {
         self.lifecycle
             .write()
@@ -1529,9 +1557,13 @@ impl BlockDagKeyValueStorage {
         let lifecycle_terminal_kv_store =
             kvm.store("deploy-lifecycle-terminal".to_string()).await?;
         let carrier_index_kv_store = kvm.store("carrier-index".to_string()).await?;
+        let carrier_index_seeds_kv_store = kvm.store("carrier-index-seeds".to_string()).await?;
         let carrier_index_meta_kv_store = kvm.store("carrier-index-meta".to_string()).await?;
-        let carrier_index_tables =
-            CarrierIndex::new(carrier_index_kv_store, carrier_index_meta_kv_store);
+        let carrier_index_tables = CarrierIndex::new(
+            carrier_index_kv_store,
+            carrier_index_seeds_kv_store,
+            carrier_index_meta_kv_store,
+        );
         let lifecycle_tables =
             DeployLifecycleTables::new(lifecycle_events_kv_store, lifecycle_terminal_kv_store);
 
@@ -2139,6 +2171,7 @@ impl BlockDagKeyValueStorage {
                 for pd in &block.body.deploys {
                     carrier_guard.record_once(
                         &pd.deploy.sig,
+                        &models::rust::deploy_seed::deploy_name_seed(&pd.deploy),
                         block_number,
                         block.block_hash.to_vec(),
                     )?;
@@ -2487,7 +2520,7 @@ mod tests {
 
     use super::*;
 
-    const DAG_STORES: [&str; 16] = [
+    const DAG_STORES: [&str; 17] = [
         "block-metadata",
         "latest-messages",
         "dag-equivocations-v1",
@@ -2496,6 +2529,7 @@ mod tests {
         "deploy-lifecycle-events",
         "deploy-lifecycle-terminal",
         "carrier-index",
+        "carrier-index-seeds",
         "carrier-index-meta",
         "genesis-hash",
         "dag-membership-v1",

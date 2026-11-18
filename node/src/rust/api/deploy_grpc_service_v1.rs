@@ -175,6 +175,7 @@ impl DeployGrpcServiceV1Impl {
                         cause.downcast_ref::<DeployError>(),
                         Some(
                             DeployError::DuplicateDeploy(_)
+                                | DeployError::SeedReuse(_)
                                 | DeployError::PoolBusy { .. }
                                 | DeployError::AdmissionBusy
                                 | DeployError::InvalidFreshness
@@ -694,9 +695,24 @@ impl DeployService for DeployGrpcServiceV1Impl {
         request: tonic::Request<PrivateNamePreviewQuery>,
     ) -> Result<tonic::Response<PrivateNamePreviewResponse>, tonic::Status> {
         let request = request.into_inner();
+        let Some(valid_after_block_number) = request.valid_after_block_number else {
+            return Ok(tonic::Response::new(PrivateNamePreviewResponse {
+                message: Some(
+                    models::casper::v1::private_name_preview_response::Message::Error(
+                        ServiceError {
+                            messages: vec![
+                                "validAfterBlockNumber is required: a deploy's names derive from it"
+                                    .to_string(),
+                            ],
+                        },
+                    ),
+                ),
+            }));
+        };
         match BlockAPI::preview_private_names(
             &request.user.to_vec(),
             request.timestamp,
+            valid_after_block_number,
             request.name_qty,
         ) {
             Ok(ids) => {
@@ -1539,16 +1555,35 @@ mod tests {
                 user: vec![1u8; 32].into(),
                 timestamp: 1,
                 name_qty: 2,
+                valid_after_block_number: Some(9),
             }))
             .await
             .unwrap();
         match response.into_inner().message.unwrap() {
             models::casper::v1::private_name_preview_response::Message::Payload(payload) => {
-                assert_eq!(payload.ids.len(), 2);
-                assert!(!payload.ids[0].is_empty());
+                let expected = BlockAPI::preview_private_names(&vec![1u8; 32], 1, 9, 2).unwrap();
+                let ids: Vec<Vec<u8>> = payload.ids.iter().map(|id| id.to_vec()).collect();
+                assert_eq!(ids, expected);
             }
             other => panic!("expected Payload, got {:?}", other),
         }
+
+        let missing = service()
+            .preview_private_names(tonic::Request::new(PrivateNamePreviewQuery {
+                user: vec![1u8; 32].into(),
+                timestamp: 1,
+                name_qty: 2,
+                valid_after_block_number: None,
+            }))
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                missing.into_inner().message.unwrap(),
+                models::casper::v1::private_name_preview_response::Message::Error(_)
+            ),
+            "a query without validAfterBlockNumber is refused"
+        );
     }
 
     #[tokio::test]

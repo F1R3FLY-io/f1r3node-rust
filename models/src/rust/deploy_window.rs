@@ -71,15 +71,36 @@ pub fn repeat_scan_start(
     deploy_lifespan: i64,
     oldest_valid_after: i64,
 ) -> Result<i64, NegativeDeployLifespan> {
+    Ok(tip_scan_start.min(lowest_live_carrier_height(
+        floor_block_number,
+        deploy_lifespan,
+        oldest_valid_after,
+    )?))
+}
+
+/// The lowest height a block carrying a copy of a deploy can sit at while
+/// that deploy is live on the floor clock: above its own valid-after block,
+/// and above the floor's window.
+pub fn lowest_live_carrier_height(
+    floor_block_number: i64,
+    deploy_lifespan: i64,
+    oldest_valid_after: i64,
+) -> Result<i64, NegativeDeployLifespan> {
     let lowest_live_copy =
         earliest_valid_after(floor_block_number, deploy_lifespan)?.saturating_add(2);
     let lowest_own_copy = oldest_valid_after.saturating_add(1);
-    Ok(tip_scan_start.min(lowest_own_copy.max(lowest_live_copy)))
+    Ok(lowest_own_copy.max(lowest_live_copy))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_live_carrier_sits_above_its_valid_after_block_and_the_floor_window() {
+        assert_eq!(lowest_live_carrier_height(100, 50, 80).unwrap(), 81);
+        assert_eq!(lowest_live_carrier_height(100, 50, 0).unwrap(), 52);
+    }
 
     #[test]
     fn boundary_is_closed() {

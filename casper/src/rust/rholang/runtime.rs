@@ -1081,7 +1081,7 @@ impl RuntimeOps {
             )?;
 
             // Create return channel as first private name created in deploy term
-            let mut rand = Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp);
+            let mut rand = Tools::deploy_name_rng(&deploy);
             let return_name = Par::default().with_unforgeables(vec![GUnforgeable {
                 unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
                     id: rand.next().into_iter().map(|b| b as u8).collect(),
@@ -1245,7 +1245,7 @@ impl RuntimeOps {
         deploy: &Signed<DeployData>,
     ) -> Result<Vec<Par>, CasperError> {
         // Create return channel as first unforgeable name created in deploy term
-        let mut rand = Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp);
+        let mut rand = Tools::deploy_name_rng(deploy);
         let return_name = Par::default().with_unforgeables(vec![GUnforgeable {
             unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
                 id: rand.next().into_iter().map(|b| b as u8).collect(),
@@ -1302,7 +1302,7 @@ impl RuntimeOps {
                 Cost::create(deploy.data.phlo_limit, "Evaluate deploy".to_string()),
                 normalizer_env_from_deploy(deploy)
                     .map_err(|error| CasperError::RuntimeError(error.to_string()))?,
-                Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp),
+                Tools::deploy_name_rng(deploy),
             )
             .await;
 

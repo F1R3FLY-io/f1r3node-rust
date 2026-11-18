@@ -1086,7 +1086,6 @@ async fn measure_block_replay_cost() {
             let efm_pair_ns = get_counter_value(snapshotter, "rspace.matcher.extract_first_match.pair_construction_ns");
             let fold_calls = get_counter_value(snapshotter, "rholang.matcher.fold_match.calls");
             let fold_depth_total = get_counter_value(snapshotter, "rholang.matcher.fold_match.recursion_depth_total");
-            let fold_clone_ns = get_counter_value(snapshotter, "rholang.matcher.fold_match.tail_clone_ns");
             let matcher_get_calls = get_counter_value(snapshotter, "rspace.matcher.get_calls");
             let matcher_clone_ns = get_counter_value(snapshotter, "rspace.matcher.clone_ns");
             let matcher_fold_ns = get_counter_value(snapshotter, "rspace.matcher.fold_match_ns");
@@ -1104,9 +1103,6 @@ async fn measure_block_replay_cost() {
             println!("  fold_match (rholang): {} calls, depth_total {} (avg depth {:.2})",
                 fold_calls, fold_depth_total,
                 if fold_calls == 0 { 0.0 } else { fold_depth_total as f64 / fold_calls as f64 });
-            println!("    tail_clone (to_vec/to_owned per recursion): {:.1}ms ({:.0} ns/call)",
-                to_ms(fold_clone_ns),
-                if fold_calls == 0 { 0.0 } else { fold_clone_ns as f64 / fold_calls as f64 });
             println!("================================================================\n");
 
             // Cold path

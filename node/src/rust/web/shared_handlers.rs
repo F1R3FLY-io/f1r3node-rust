@@ -299,8 +299,14 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         if let Some(ce) = cause.downcast_ref::<CasperError>() {
             return classify_casper_error(ce);
         }
-        if let Some(DeployError::DuplicateDeploy(_)) = cause.downcast_ref::<DeployError>() {
-            return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
+        match cause.downcast_ref::<DeployError>() {
+            Some(DeployError::DuplicateDeploy(_)) => {
+                return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
+            }
+            Some(DeployError::SeedReuse(_)) => {
+                return (StatusCode::CONFLICT, "seed_reuse", cause.to_string());
+            }
+            _ => {}
         }
         if cause.downcast_ref::<DeployExpiredError>().is_some() {
             return (StatusCode::BAD_REQUEST, "deploy_expired", cause.to_string());
@@ -943,11 +949,16 @@ mod tests {
         }
 
         #[test]
-        fn duplicate_deploy_is_conflict() {
+        fn duplicate_deploy_and_seed_reuse_are_conflicts() {
             let err = DeployError::duplicate_deploy(vec![1u8, 2].into());
             assert_eq!(
                 classify(err),
                 (StatusCode::CONFLICT, "duplicate_deploy".to_string())
+            );
+            let err = DeployError::seed_reuse(vec![1u8, 2].into());
+            assert_eq!(
+                classify(err),
+                (StatusCode::CONFLICT, "seed_reuse".to_string())
             );
         }
 
