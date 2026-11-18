@@ -84,6 +84,12 @@ in {
             }
           } |
           // Either retrieves or creates corresponding System vault either.
+          // Uses `TreeHashMap.getOrCreate`, whose per-leaf lock serializes
+          // two parallel calls on the same fresh address: the first caller
+          // runs the factory and installs the vault; the second sees the
+          // installed value and returns it unchanged. No globally-shared
+          // channel is consumed+produced, so two blocks that each register
+          // a different fresh address merge cleanly.
           contract SystemVault(@"findOrCreate", @vaultAddress, retCh) = {
             new vaultAddressValidCh, vaultAddressValidEitherCh in {
               // Validate Vault address first.
@@ -91,29 +97,32 @@ in {
               @Either!("fromNillableError <-", *vaultAddressValidCh, *vaultAddressValidEitherCh) |
               for (@vaultAddressEither <- vaultAddressValidEitherCh) {
                 match vaultAddressEither {
-                  // Invalid Vault address returns Left.
                   (false, _) => {
                     retCh!(vaultAddressEither)
                   }
-                  // Valid Vault address returns Right and we proceed with creation/search.
                   _ => {
-                    new createVault, vaultCh, getVaultCh in {
-                      TreeHashMap!("get", vaultMap, vaultAddress, *getVaultCh) |
-                      for (@vault <- getVaultCh) {
-                        if (vault != Nil) {
-                          // If vault is in the store, return (true, vault).
-                          retCh!((true, vault))
-                        } else {
-                          // If vault was not found in store, create it and put it in the store.
-                          _create!(vaultAddress, *createVault, *vaultCh) |
-                          for (vaultRetCh <- createVault) {
-                            // Creates System vault and returns on vaultRetCh, consumed within _create contract.
-                            _makeVault!(vaultAddress, 0, *vaultRetCh) |
-                            // Blocks until both the vault is created and set in the store.
-                            for (@eitherVault <- vaultCh) {
-                              retCh!(eitherVault)
+                    new factory, gocCh in {
+                      // The factory creates a fresh vault and sends the
+                      // `bundle+{*systemVault}` on the provided channel. It
+                      // runs under the leaf lock, so it fires at most once
+                      // per address per deploy.
+                      contract factory(ret) = {
+                        new vaultResCh in {
+                          _makeVault!(vaultAddress, 0, *vaultResCh) |
+                          for (@eitherVault <- vaultResCh) {
+                            match eitherVault {
+                              (true, vault) => ret!(vault)
+                              _ => ret!(Nil)
                             }
                           }
+                        }
+                      } |
+                      TreeHashMap!("getOrCreate", vaultMap, vaultAddress, *factory, *gocCh) |
+                      for (@vault <- gocCh) {
+                        if (vault == Nil) {
+                          retCh!((false, "Couldn't create vault"))
+                        } else {
+                          retCh!((true, vault))
                         }
                       }
                     }
@@ -238,13 +247,12 @@ in {
           // amount is transferred from purse (ownVaultAddress) to vault at targetAddress.
           // The source purse and the amount are handed to the target's `_deposit`
           // listener directly, so the transfer never creates a temporary sprout
-          // purse. If the target vault has not been created yet, the `_deposit`
-          // message waits on its unforgeable channel until a `findOrCreate` for
-          // that address installs the listener; the source balance is not moved
-          // until that listener fires, so no funds sit in an escrow purse.
-          // The source balance is checked upfront so a transfer with
-          // insufficient funds fails immediately, even if the target vault
-          // does not exist yet.
+          // purse. `findOrCreate` is called on the target before `_deposit`, so
+          // the `_deposit` listener is installed and the source balance moves
+          // inside this deploy — a transfer never waits on an unregistered
+          // vault, and never has its funds debited inside a later deploy that
+          // some other key signed. The source balance is also checked upfront
+          // so a transfer with insufficient funds fails immediately.
           contract _transferTemplate(@ownVaultAddress, purse, @targetAddress, @amount, authKey, ret) = {
             new vaultAddressValid, vaultAddressValidEither, amountNonNegative,
                 authKeyValidCh, authKeyValidEitherCh,
@@ -266,7 +274,12 @@ in {
               @Either!("productR <-", *parametersAndAuthOkCh, *sufficientFundsCh, *allChecksOkCh) |
               @Either!("flatMap <-", *allChecksOkCh, *doDeposit, *ret) |
               for (_, retCh <- doDeposit) {
-                @{targetAddress | bundle0{*_systemVault}}!("_deposit", amount, *purse, *retCh)
+                new targetReadyCh in {
+                  SystemVault!("findOrCreate", targetAddress, *targetReadyCh) |
+                  for (@(true, _) <- targetReadyCh) {
+                    @{targetAddress | bundle0{*_systemVault}}!("_deposit", amount, *purse, *retCh)
+                  }
+                }
               }
             }
           } |
