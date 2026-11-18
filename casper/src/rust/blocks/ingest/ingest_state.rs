@@ -250,9 +250,6 @@ pub struct IngestState {
     anchor_height: Option<i64>,
     /// The most parents a valid block lists; `None` when unlimited.
     max_parents: Option<usize>,
-    /// Blocks inserted while a worker still validated them; their waiters
-    /// are released when the outcome arrives.
-    inserted_while_working: HashSet<BlockHash>,
     /// Needed blocks the pending area keeps room for.
     reserved: HashSet<BlockHash>,
     tracker: DependencyTracker,
@@ -265,7 +262,6 @@ impl IngestState {
         Self {
             anchor_height: None,
             max_parents: None,
-            inserted_while_working: HashSet::new(),
             reserved: HashSet::new(),
             tracker: DependencyTracker::new(view.clone()),
             scheduler: FetchScheduler::new(view.clone()),
@@ -590,10 +586,9 @@ impl IngestState {
 
     fn inserted(&mut self, hash: &BlockHash, now_ms: u64, stores: &dyn StoreReads) {
         // The worker validating `hash` still applies the insert's effects
-        // (latest messages, finalization); its waiters start after its
-        // outcome.
+        // (latest messages, finalization); its outcome finishes the insert,
+        // whichever of the two arrives first.
         if self.tracker.is_working(hash) {
-            self.inserted_while_working.insert(hash.clone());
             return;
         }
         self.finish_insert(hash, now_ms, stores);
@@ -683,11 +678,11 @@ impl IngestState {
         stores: &dyn StoreReads,
         effects: &mut Vec<Effect>,
     ) {
-        if self.inserted_while_working.remove(hash) {
-            self.finish_insert(hash, now_ms, stores);
+        if !self.tracker.contains(hash) {
             return;
         }
-        if !self.tracker.contains(hash) {
+        if outcome == WorkOutcome::Settled || stores.in_dag(hash) {
+            self.finish_insert(hash, now_ms, stores);
             return;
         }
         let no_verdict = matches!(
@@ -708,7 +703,7 @@ impl IngestState {
         let meta = self.tracker.meta(hash).expect("the block is held");
         let facts = citation(meta);
         match outcome {
-            WorkOutcome::Settled => {}
+            WorkOutcome::Settled => unreachable!("a settled block finished its insert above"),
             WorkOutcome::Rejected { invalid_sender } => {
                 let pusher = meta.pushed_by.clone();
                 if let (true, Some(peer)) = (invalid_sender, &pusher) {
