@@ -1569,16 +1569,18 @@ pub struct RhoPathV2DatumView<'a> {
     channel_image: &'a [u8],
     datum_structure: &'a [u8],
     datum_identity: &'a [u8],
+    channel_prefix_len: usize,
 }
 
-impl RhoPathV2DatumView<'_> {
+impl<'a> RhoPathV2DatumView<'a> {
     /// Borrow the complete escaped frame, including its terminator.
     pub const fn encoded_channel_image(&self) -> &[u8] { self.channel_image }
     pub const fn encoded_datum_structure(&self) -> &[u8] { self.datum_structure }
     pub const fn encoded_datum_identity(&self) -> &[u8] { self.datum_identity }
     pub fn channel_image(&self) -> Vec<u8> { decode_frame(self.channel_image) }
     pub fn datum_structure(&self) -> Vec<u8> { decode_frame(self.datum_structure) }
-    pub fn datum_identity(&self) -> Vec<u8> { decode_frame(self.datum_identity) }
+    pub const fn datum_identity(&self) -> &'a [u8] { self.datum_identity }
+    pub const fn channel_prefix_len(&self) -> usize { self.channel_prefix_len }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1789,19 +1791,32 @@ impl RhoPathV2 {
     pub const JOIN_KIND: u8 = 3;
     pub const COLLECTION_VERSION: u8 = 1;
 
+    pub fn datum_prefix(channel_image: &[u8]) -> Vec<u8> {
+        Self::datum_prefix_with_suffix_capacity(channel_image, 0)
+    }
+
     pub fn datum_key(
         channel_image: &[u8],
         datum_structure: &[u8],
         datum_identity: &[u8],
     ) -> Vec<u8> {
+        let relative = RhoPathV1::relative_datum_key(datum_structure, datum_identity);
+        let mut out = Self::datum_prefix_with_suffix_capacity(channel_image, relative.len());
+        out.extend_from_slice(&relative);
+        out
+    }
+
+    fn datum_prefix_with_suffix_capacity(channel_image: &[u8], suffix_len: usize) -> Vec<u8> {
         let mut out = Vec::with_capacity(
-            5 + channel_image.len() + datum_structure.len() + datum_identity.len() + 6,
+            Self::MAGIC
+                .len()
+                .saturating_add(channel_image.len())
+                .saturating_add(3)
+                .saturating_add(suffix_len),
         );
         out.extend_from_slice(&Self::MAGIC);
         out.push(Self::DATUM_KIND);
         append_frame(&mut out, channel_image);
-        append_frame(&mut out, datum_structure);
-        append_frame(&mut out, datum_identity);
         out
     }
 
@@ -1814,15 +1829,13 @@ impl RhoPathV2 {
         }
         let mut cursor = 5;
         let channel_image = take_frame(path, &mut cursor)?;
+        let channel_prefix_len = cursor;
         let datum_structure = take_frame(path, &mut cursor)?;
-        let datum_identity = take_frame(path, &mut cursor)?;
-        if cursor != path.len() {
-            return Err(RhoPathError::TrailingBytes);
-        }
         Ok(RhoPathV2DatumView {
             channel_image,
             datum_structure,
-            datum_identity,
+            datum_identity: &path[cursor..],
+            channel_prefix_len,
         })
     }
 

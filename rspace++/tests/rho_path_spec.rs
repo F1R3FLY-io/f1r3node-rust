@@ -54,19 +54,46 @@ proptest::proptest! {
 }
 
 #[test]
-fn v2_datum_uses_three_framed_canonical_fields() {
-    let path = RhoPathV2::datum_key(b"channel\0image", b"shape", b"identity\0tail");
-    let view = RhoPathV2::parse_datum(&path).unwrap();
-    assert_eq!(view.channel_image(), b"channel\0image");
-    assert_eq!(view.datum_structure(), b"shape");
-    assert_eq!(view.datum_identity(), b"identity\0tail");
+fn v2_datum_frames_the_image_and_keeps_the_v1_relative_bytes() {
+    let image = b"channel\0image";
+    let structure = b"shape\0frame";
+    let identity = b"identity\0tail";
+    let path = RhoPathV2::datum_key(image, structure, identity);
+    let view = RhoPathV2::parse_datum(&path).expect("a V2 datum key parses");
+    let prefix = RhoPathV2::datum_prefix(image);
+    let relative = RhoPathV1::relative_datum_key(structure, identity);
+    assert_eq!(
+        view.channel_prefix_len(),
+        prefix.len(),
+        "the channel prefix ends after the channel-image frame"
+    );
+    assert_eq!(&path[..view.channel_prefix_len()], prefix.as_slice());
+    assert_eq!(
+        &path[view.channel_prefix_len()..],
+        relative.as_slice(),
+        "the bytes after the channel prefix are the V1 datum-relative key"
+    );
+    assert_eq!(view.channel_image(), image);
+    assert_eq!(view.datum_structure(), structure);
+    assert_eq!(view.datum_identity(), identity);
     assert!(view.encoded_channel_image().ends_with(&[0, 0]));
     assert!(view.encoded_datum_structure().ends_with(&[0, 0]));
-    assert!(view.encoded_datum_identity().ends_with(&[0, 0]));
-    assert_eq!(RhoPathV2::parse_datum_prefix(&path).unwrap(), view.encoded_channel_image());
-    let mut trailing = path.clone();
-    trailing.push(9);
-    assert_eq!(RhoPathV2::parse_datum(&trailing), Err(RhoPathError::TrailingBytes));
+    assert_eq!(view.encoded_datum_identity(), identity);
+    let channel_frame =
+        RhoPathV2::parse_datum_prefix(&path).expect("a V2 datum key starts with its channel frame");
+    assert_eq!(channel_frame, view.encoded_channel_image());
+    assert_eq!(
+        RhoPathV2::parse_datum_prefix(&prefix).expect("a V2 datum prefix is one channel frame"),
+        channel_frame
+    );
+    let mut longer = path.clone();
+    longer.push(9);
+    let longer_identity = b"identity\0tail\x09";
+    assert_eq!(longer, RhoPathV2::datum_key(image, structure, longer_identity));
+    let longer_view =
+        RhoPathV2::parse_datum(&longer).expect("a longer V2 datum key names a longer identity");
+    assert_eq!(longer_view.datum_identity(), longer_identity);
+    assert_eq!(longer_view.channel_prefix_len(), view.channel_prefix_len());
 }
 
 #[test]

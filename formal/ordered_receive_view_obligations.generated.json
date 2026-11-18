@@ -419,7 +419,7 @@
     "models/tests/cold_store_records.rs": "e9e38b6f861d66c0fec90bf174b793f217e8e41eb16dfd1d02568298173b9f6a",
     "rholang/tests/ordered_receive_view_rholang.rs": "10191077f1417dd08700179902c088fbfff77f143dab0570ed02f003f827a413",
     "rspace++/src/rspace/ordered_receive.rs": "3b4a8a4bd5dfeaee77f55d3453a827cb99b24904f4b1f4a5432ae71f7a5c2373",
-    "rspace++/src/rspace/rho_path.rs": "377f1f4064505dacc4e668239794818d8f937f1816d68b4c4c0f0a93d2bb4079",
+    "rspace++/src/rspace/rho_path.rs": "f6ad833acbbbe32b783c282817f4dbed80cc6807707174d3285f7ce2cbcd6a18",
     "rspace++/tests/ordered_receive_view_spec.rs": "056600fdd0262df83e2a8082403f71477127ed757283a44baae103e864cd9fae",
     "scripts/generate-ordered-receive-view-mutant.py": "3d01cbaa8f4ee260f3e26f2f3f73738e9621a57cc441a39374a86d01a87de9e7"
   }

@@ -17,7 +17,7 @@
     "tests": [
       "datum_paths_round_trip_all_byte_values",
       "datum_offsets_refine_exact_prefix_and_raw_identity_suffix",
-      "v2_datum_uses_three_framed_canonical_fields",
+      "v2_datum_frames_the_image_and_keeps_the_v1_relative_bytes",
       "v2_datum_round_trips_all_byte_values_in_each_field",
       "v1_and_v2_datum_namespaces_are_disjoint",
       "rho_path_errors_are_not_mislabeled_by_wire_version",
@@ -58,7 +58,7 @@
       {
         "id": "RPV2-RC-03",
         "mode": "proof_only",
-        "obligation": "datum_empty_rejects_trailing_bytes",
+        "obligation": "datum_identity_is_the_raw_suffix",
         "test_target": null
       },
       {
@@ -124,7 +124,7 @@
     ],
     "print_assumptions": [
       "datum_empty_round_trip",
-      "datum_empty_rejects_trailing_bytes",
+      "datum_identity_is_the_raw_suffix",
       "v1_v2_domains_are_prefix_disjoint",
       "continuation_count_is_eight_bytes"
     ],
@@ -132,7 +132,7 @@
   },
   "scope": "RhoPath V2 outer byte grammar and abstract two-lane lifecycle",
   "sources_sha256": {
-    "formal/rocq/stack_safe_pda/theories/RhoPathV2.v": "3ef35d417d92147a9c5318d8a71c2488840d5de0ed5714307c8a2f176eb3f106",
+    "formal/rocq/stack_safe_pda/theories/RhoPathV2.v": "22d02cd28d9ac8148c53af889977c309bdd961d1e6e10a8d19f31ecccd737af2",
     "formal/tlaplus/stack_safe_pda/RhoPathV2Lifecycle.cfg": "ab4189ddeb55332f25356dfedf8eedf021840e3c820cce807d1514f4e37f2a8a",
     "formal/tlaplus/stack_safe_pda/RhoPathV2Lifecycle.tla": "5259c2adcbc760d3a0f7240d713f80cddd8b5ef48fe95004fd6089b8337bf181",
     "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDecodeLegacyMutant.cfg": "800cd4beb7e04ea2656ae350401c538be86279244c24c9900de2a3c6b418ff97",
@@ -142,7 +142,7 @@
     "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.cfg": "233a78a56eb2972e46742bdf983cef96cc92bb580a0cc763833a7a4781dc4766",
     "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.tla": "678019bff3b23322cde42c7cde8482aaecb59188b1af8e338cafd1056455c12a",
     "rspace++/Cargo.toml": "b2bb4651b743a60e1efe5b74558b98c50460450807902e1d70c6e612aad5e675",
-    "rspace++/tests/rho_path_spec.rs": "25d6ed6736474d4bbcd7e678038c459756e53f334f6fa9f53611eff25f2d7eae"
+    "rspace++/tests/rho_path_spec.rs": "49549b2537b847cf7296484dfae00994611a5f72e395cb1b9a137f493b57b641"
   },
   "tlc": {
     "actions": [

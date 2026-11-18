@@ -23,7 +23,7 @@ MUTANTS = {
 ROCQ_OBLIGATIONS = re.findall(
     r"\S+",
     """
-parse_three_round_trip datum_empty_round_trip datum_empty_rejects_trailing_bytes
+parse_three_round_trip datum_empty_round_trip datum_identity_is_the_raw_suffix
 join_empty_round_trip continuation_zero_count_bytes_are_rejected
 continuation_count_mismatch_is_rejected join_trailing_bytes_are_rejected
 v1_v2_domains_are_prefix_disjoint datum_kind_is_distinct
@@ -33,7 +33,7 @@ nonempty_continuation_has_explicit_count join_identity_is_framed
 )
 PRINTS = [
     "datum_empty_round_trip",
-    "datum_empty_rejects_trailing_bytes",
+    "datum_identity_is_the_raw_suffix",
     "v1_v2_domains_are_prefix_disjoint",
     "continuation_count_is_eight_bytes",
 ]

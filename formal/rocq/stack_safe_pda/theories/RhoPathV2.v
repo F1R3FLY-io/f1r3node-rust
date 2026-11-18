@@ -21,9 +21,16 @@ Definition count_byte (n : nat) : bytes :=
     (n / 16777216) mod 256; (n / 65536) mod 256;
     (n / 256) mod 256; n mod 256 ].
 
+(** A datum key is the channel prefix [RHP 02 01 || frame(channel image)]
+    followed by the V1 datum-relative bytes of [relative_datum_key]: the
+    frame of the datum structure, then the raw canonical datum identity.
+    Only the channel prefix differs from a V1 datum key with the same datum
+    structure and identity. *)
+Definition datum_prefix (channel : bytes) : bytes :=
+  v2_magic ++ [datum_kind] ++ encode_frame channel.
+
 Definition datum_key (channel structure ident : bytes) : bytes :=
-  v2_magic ++ [datum_kind] ++ encode_frame channel ++
-  encode_frame structure ++ encode_frame ident.
+  datum_prefix channel ++ relative_datum_key structure ident.
 
 Definition continuation_key_unchecked (channels : list bytes) (ident : bytes) : bytes :=
   v2_magic ++ [continuation_kind; collection_version] ++
@@ -43,15 +50,17 @@ Definition join_key (channel ident : bytes) : bytes :=
   v2_magic ++ [join_kind] ++ encode_frame channel ++ [0; 1] ++
   encode_frame ident.
 
-Definition parse_three (input : bytes) : option (bytes * bytes * bytes * bytes) :=
+(** [parse_three] splits the body of a datum key into its three fields: the
+    channel-image frame, the datum-structure frame, and the raw identity
+    suffix.  Like [parse_absolute_datum] of [RhoPathV1Datum] for its whole
+    input, it accepts only byte values below 256.  The identity is not a
+    frame, so no suffix is left over to refuse. *)
+Definition parse_three (input : bytes) : option (bytes * bytes * bytes) :=
   match parse_frame input with
-  | Some (a, rest) =>
-      match parse_frame rest with
-      | Some (b, rest') =>
-          match parse_frame rest' with
-          | Some (c, suffix) => Some (a, b, c, suffix)
-          | None => None
-          end
+  | Some (channel, relative) =>
+      match parse_frame relative with
+      | Some (structure, ident) =>
+          if bytes_valid ident then Some (channel, structure, ident) else None
       | None => None
       end
   | None => None
@@ -59,15 +68,7 @@ Definition parse_three (input : bytes) : option (bytes * bytes * bytes * bytes) 
 
 Definition parse_datum (input : bytes) : option (bytes * bytes * bytes) :=
   match input with
-  | 82 :: 72 :: 80 :: 2 :: 1 :: rest =>
-      match parse_three rest with
-      | Some (channel, structure, ident, suffix) =>
-          match suffix with
-          | [] => Some (channel, structure, ident)
-          | _ => None
-          end
-      | None => None
-      end
+  | 82 :: 72 :: 80 :: 2 :: 1 :: rest => parse_three rest
   | _ => None
   end.
 
@@ -144,28 +145,48 @@ Definition parse_continuation (input : bytes)
   | _ => None
   end.
 
-Lemma parse_three_round_trip : forall a b c suffix,
+(** Mirrors [datum_constructor_parser_round_trip] of [RhoPathV1Datum]: the
+    channel frame, the structure frame and the raw identity of the V1
+    datum-relative bytes are recovered exactly. *)
+Lemma parse_three_round_trip : forall a b c,
   bytes_valid a = true -> bytes_valid b = true -> bytes_valid c = true ->
-  parse_three (encode_frame a ++ encode_frame b ++ encode_frame c ++ suffix) =
-    Some (a, b, c, suffix).
+  parse_three (encode_frame a ++ relative_datum_key b c) = Some (a, b, c).
 Proof.
-  intros a b c suffix Ha Hb Hc.
-  unfold parse_three.
-  rewrite (frame_encode_parse_round_trip a
-    (encode_frame b ++ encode_frame c ++ suffix) Ha).
-  rewrite (frame_encode_parse_round_trip b
-    (encode_frame c ++ suffix) Hb).
-  rewrite (frame_encode_parse_round_trip c suffix Hc).
-  reflexivity.
+  intros a b c Ha Hb Hc.
+  unfold parse_three, relative_datum_key.
+  rewrite (frame_encode_parse_round_trip a (encode_frame b ++ c) Ha).
+  rewrite (frame_encode_parse_round_trip b c Hb).
+  now rewrite Hc.
 Qed.
 
 Theorem datum_empty_round_trip :
   parse_datum (datum_key [] [] []) = Some ([], [], []).
 Proof. reflexivity. Qed.
 
-Theorem datum_empty_rejects_trailing_bytes :
-  parse_datum (datum_key [] [] [] ++ [9]) = None.
-Proof. reflexivity. Qed.
+(** The identity is the raw suffix of a datum key: the key extended by any
+    bytes is the key of the longer identity, and the parser returns that
+    identity instead of refusing trailing bytes.  With [suffix = []] this is
+    the general constructor and parser round trip. *)
+Theorem datum_identity_is_the_raw_suffix : forall channel structure ident suffix,
+  bytes_valid channel = true -> bytes_valid structure = true ->
+  bytes_valid ident = true -> bytes_valid suffix = true ->
+  datum_key channel structure ident ++ suffix =
+    datum_key channel structure (ident ++ suffix) /\
+  parse_datum (datum_key channel structure ident ++ suffix) =
+    Some (channel, structure, ident ++ suffix).
+Proof.
+  intros channel structure ident suffix Hchannel Hstructure Hident Hsuffix.
+  assert (Hlonger : datum_key channel structure ident ++ suffix =
+    datum_key channel structure (ident ++ suffix)).
+  { unfold datum_key, relative_datum_key. now rewrite <- !app_assoc. }
+  split; [exact Hlonger|].
+  rewrite Hlonger.
+  change (parse_three (encode_frame channel ++
+    relative_datum_key structure (ident ++ suffix)) =
+    Some (channel, structure, ident ++ suffix)).
+  apply parse_three_round_trip; [exact Hchannel|exact Hstructure|].
+  rewrite bytes_valid_app, Hident, Hsuffix. reflexivity.
+Qed.
 
 Theorem join_empty_round_trip :
   parse_join (join_key [] []) = Some ([], []).
@@ -215,7 +236,7 @@ Theorem join_identity_is_framed : forall channel ident,
 Proof. reflexivity. Qed.
 
 Print Assumptions datum_empty_round_trip.
-Print Assumptions datum_empty_rejects_trailing_bytes.
+Print Assumptions datum_identity_is_the_raw_suffix.
 Print Assumptions v1_v2_domains_are_prefix_disjoint.
 Print Assumptions continuation_count_is_eight_bytes.
 End RhoPathV2.

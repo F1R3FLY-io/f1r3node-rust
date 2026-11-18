@@ -32,23 +32,39 @@ zero_escape(00) := 00 FF
 ```
 
 The terminator cannot occur inside a frame. Every parser is a checked forward cursor;
-it rejects malformed escapes, truncated frames, trailing bytes, and noncanonical
-RCI2 payloads without recursive calls or an artificial depth limit.
+it rejects malformed escapes, truncated frames, trailing bytes after a continuation or
+join key, and noncanonical RCI2 payloads without recursive calls or an artificial depth
+limit. A datum key has no trailing bytes: its last field is the unframed datum
+identity (see below).
 
 ## Datum keys
 
 ```text
-datum_v2 := RHP 02 01
-            frame(RCI2 channel_image)
-            frame(RMP2 datum_structure)
-            frame(canonical datum_identity)
+datum_v2        := datum_prefix_v2 datum_relative
+datum_prefix_v2 := RHP 02 01
+                   frame(RCI2 channel_image)
+datum_relative  := frame(RMP2 datum_structure)
+                   canonical datum_identity
 ```
+
+`datum_prefix_v2` is the channel prefix; `RhoPathV2::datum_prefix` builds it, and
+`RhoPathV2::parse_datum` reports its length as `channel_prefix_len`, the offset of the
+first byte after the channel-image frame. `datum_relative` is byte for byte the V1
+datum-relative key, `RhoPathV1::relative_datum_key(datum_structure, datum_identity)`
+(`relative_datum_key` in `formal/rocq/stack_safe_pda/theories/RhoPathV1Datum.v`), so a
+V1 and a V2 datum key with the same datum structure and identity differ only in their
+channel prefix. The `RHP 01` and `RHP 02` domains keep the complete keys disjoint.
 
 The channel image is emitted once and is both the structural and semantic channel
 identity. Consequently two `Par` channels compare equal exactly when their RCI2
 frames compare equal, including the `connective_used` bit and excluding only the
 top-level `locally_free` summary. The datum structure is the existing RMP2 structural
-image; the final frame is the complete canonical datum identity required by replay.
+image. The datum identity is the complete canonical identity required by replay; it is
+the last field and is not framed, because a key is a complete byte string whose end
+delimits the identity. A datum key extended by more bytes is therefore the key of a
+longer identity, not a key with trailing bytes: `RhoPathV2::parse_datum` returns that
+longer identity (`datum_identity_is_the_raw_suffix` in
+`formal/rocq/stack_safe_pda/theories/RhoPathV2.v`).
 
 ## Continuation keys
 
@@ -102,7 +118,8 @@ The formal and executable gates must establish:
 3. raw byte ordering is preserved wherever the caller relies on zipper order;
 4. root `locally_free` changes do not change a channel frame, while
    `connective_used` changes do;
-5. V1 and V2 domains are disjoint, and malformed/trailing input fails closed;
+5. V1 and V2 domains are disjoint, and malformed input, including trailing bytes after
+   a continuation or join key, fails closed;
 6. full-image comparison prevents legacy-digest collision aliasing;
 7. ordered receive groups remain positional and unordered history remains separate;
 8. play/replay/checkpoint/reset/export/import/state-sync differentials preserve all
