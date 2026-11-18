@@ -106,7 +106,7 @@ fn deploy_is_block_expired(
     latest_block_number: i64,
     deploy_lifespan: i64,
 ) -> Result<bool, CasperError> {
-    Ok(!crate::rust::util::deploy_window::is_open(
+    Ok(!models::rust::deploy_window::is_open(
         valid_after_block_number,
         latest_block_number,
         deploy_lifespan,
@@ -316,6 +316,40 @@ impl std::fmt::Display for BlockNotFoundError {
 
 impl std::error::Error for BlockNotFoundError {}
 
+/// The block was once held by this node but has been deleted by the
+/// retention sweep. The DAG still carries its metadata (hash, parents,
+/// height) so we can report the height at which it lived, and the
+/// current prune floor so consumers can decide whether to ask an
+/// archive node. Distinct from [`BlockNotFoundError`], which means
+/// "we have no record of this hash at all" — a joiner that hasn't
+/// caught up yet, or an outright invalid hash. #923 Option D callers
+/// use this split so a client walking `/reporting/trace` can tell
+/// deleted history from a gap and route accordingly.
+#[derive(Debug)]
+pub struct BlockPrunedError {
+    pub hash: String,
+    /// Height of the block when it was retained. Known from the DAG
+    /// metadata index, which is not swept.
+    pub block_height: i64,
+    /// The node's current body-prune floor: the highest height for
+    /// which block bodies have been deleted. Callers can request the
+    /// same hash from an archive node with retention above this.
+    pub prune_floor: i64,
+}
+
+impl std::fmt::Display for BlockPrunedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Block {} (height {}) is below this node's prune floor (height {}). \
+             Consult an archive node to retrieve it.",
+            self.hash, self.block_height, self.prune_floor
+        )
+    }
+}
+
+impl std::error::Error for BlockPrunedError {}
+
 #[derive(Debug)]
 pub struct InvalidHashError(pub String);
 
@@ -511,6 +545,37 @@ impl std::fmt::Display for DeployValidationError {
 }
 
 impl std::error::Error for DeployValidationError {}
+
+/// A deploy whose block window or expiration timestamp has closed: no block
+/// can include it any more.
+#[derive(Debug)]
+pub struct DeployExpiredError {
+    pub message: String,
+}
+
+impl std::fmt::Display for DeployExpiredError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for DeployExpiredError {}
+
+/// The node's own validator is not bonded, so it cannot propose a block for
+/// the deploy now. It may be bonded later.
+#[derive(Debug)]
+pub struct ValidatorNotBondedError;
+
+impl std::fmt::Display for ValidatorNotBondedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "validator_not_bonded: Deploy was rejected because node's validator is not bonded."
+        )
+    }
+}
+
+impl std::error::Error for ValidatorNotBondedError {}
 
 #[derive(Debug)]
 pub struct ProposeReadOnlyError;
@@ -743,26 +808,23 @@ impl BlockAPI {
                 } else {
                     Ok(())
                 }
-            })
-            .and_then(|_| {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                if d.data.is_expired_at(now) {
-                    Err(DeployValidationError {
-                        message: format!(
-                            "Deploy has expired: expirationTimestamp={:?} is in the past.",
-                            d.data.expiration_timestamp
-                        ),
-                    })
-                } else {
-                    Ok(())
-                }
             });
 
         // Return early if validation fails
         validation_result.map_err(|e| eyre::Report::new(e))?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| eyre::eyre!("system clock is before the Unix epoch: {}", e))?
+            .as_millis() as i64;
+        if d.data.is_expired_at(now) {
+            return Err(eyre::Report::new(DeployExpiredError {
+                message: format!(
+                    "deploy_expired: expirationTimestamp={:?} is in the past.",
+                    d.data.expiration_timestamp
+                ),
+            }));
+        }
 
         let log_error_message =
             "Error: Could not deploy, casper instance was not available yet.".to_string();
@@ -789,34 +851,33 @@ impl BlockAPI {
             }
             let dag = casper.block_dag().await?;
             if !casper.is_local_validator_bonded() {
-                return Err(eyre::Report::new(DeployValidationError {
-                    message: "Deploy was rejected because node's validator is not bonded."
-                        .to_string(),
-                }));
+                return Err(eyre::Report::new(ValidatorNotBondedError));
             }
-            // A deploy admitted now can only ever land in a block that doesn't
-            // exist yet — the next one, at `latest_block_number + 1` — never
-            // in the current tip, which is already built. block_creator.rs's
-            // own expiry filter checks against exactly that next block's
-            // number (`earliest_block_number = block_number - deploy_lifespan`
-            // for the block being assembled). Checking admission against
-            // `latest_block_number` instead of `latest_block_number + 1` is
-            // off by one: a deploy admitted "just inside" the window at the
-            // current tip is then found expired by the very next block's
-            // filter, so it can never actually be included.
-            let next_block_number = dag.latest_block_number() + 1;
+            // `latest_block_number` is the highest stored block number plus
+            // one, which is the number of the next block that block_creator.rs
+            // assembles and checks with its own expiry filter.
+            let next_block_number = dag.latest_block_number();
             let deploy_lifespan = casper.casper_shard_conf().deploy_lifespan;
             if deploy_is_block_expired(
                 d.data.valid_after_block_number,
                 next_block_number,
                 deploy_lifespan,
             )? {
-                return Err(eyre::Report::new(DeployValidationError {
+                return Err(eyre::Report::new(DeployExpiredError {
                     message: format!(
-                        "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
+                        "deploy_expired: validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
                         d.data.valid_after_block_number, next_block_number, deploy_lifespan
                     ),
                 }));
+            }
+            if models::rust::deploy_window::is_too_far_ahead(
+                d.data.valid_after_block_number,
+                next_block_number,
+                casper.casper_shard_conf().max_parent_depth,
+            ) {
+                return Err(eyre::Report::new(
+                    crate::rust::casper::DeployError::InvalidFreshness,
+                ));
             }
             casper_deploy(casper, d, trigger_propose).await
         } else {
@@ -1704,11 +1765,37 @@ impl BlockAPI {
                 find_block.await
             };
 
-            let block = block_f?.ok_or_else(|| {
-                eyre::Report::new(BlockNotFoundError {
-                    hash: hash.to_string(),
-                })
-            })?;
+            let block = match block_f? {
+                Some(block) => block,
+                None => {
+                    // The body is missing. Distinguish "was it ever here"
+                    // (BlockNotFoundError) from "we had it, the retention
+                    // sweep deleted it" (BlockPrunedError). The DAG metadata
+                    // index is not swept by #1010 / #1045, so its presence
+                    // of the hash tells us we knew the block once.
+                    let dag = casper.block_dag().await?;
+                    let padded_hash = pad_hex_string(hash);
+                    let hash_bytes = hex::decode(&padded_hash).map_err(|_| {
+                        eyre::Report::new(InvalidHashError(format!(
+                            "'{}' is not valid block hash",
+                            hash
+                        )))
+                    })?;
+                    let dag_hash: prost::bytes::Bytes = hash_bytes.into();
+                    return Err(match dag.lookup(&dag_hash)? {
+                        Some(metadata) => eyre::Report::new(BlockPrunedError {
+                            hash: hash.to_string(),
+                            block_height: metadata.block_number,
+                            prune_floor: casper
+                                .effective_anchor_handle()
+                                .load(std::sync::atomic::Ordering::Acquire),
+                        }),
+                        None => eyre::Report::new(BlockNotFoundError {
+                            hash: hash.to_string(),
+                        }),
+                    });
+                }
+            };
 
             let dag = casper.block_dag().await?;
             if dag.contains(&block.block_hash)? {
@@ -1887,9 +1974,14 @@ impl BlockAPI {
     pub fn preview_private_names(
         deployer: &ByteString,
         timestamp: i64,
+        valid_after_block_number: i64,
         name_qty: i32,
     ) -> ApiErr<Vec<ByteString>> {
-        let mut rand = Tools::unforgeable_name_rng(&PublicKey::from_bytes(deployer), timestamp);
+        let mut rand = Tools::unforgeable_name_rng(
+            &PublicKey::from_bytes(deployer),
+            timestamp,
+            valid_after_block_number,
+        );
         let safe_qty = name_qty.clamp(0, 1024) as usize;
         let ids: Vec<BlockHash> = (0..safe_qty)
             .map(|_| rand.next().into_iter().map(|b| b as u8).collect())

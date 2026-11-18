@@ -755,6 +755,69 @@ pub async fn floor_committee(
         .collect())
 }
 
+/// The latest message from every validator that is active as of a floor state:
+/// bonded in PoS at that state, not currently unbonded, and whose own latest
+/// message has not been marked invalid (equivocation slashing).
+///
+/// Used by retention sweeps (mergeable-channel data, block bodies via #1010,
+/// and any future rspace-history prune) to decide whose main-parent lineage
+/// still has a right to constrain deletion. A validator the chain has retired
+/// — unbonded, slashed, or leaky-bucket-ejected — must not freeze pruning: a
+/// stuck slot pins disk usage on every other node, and with #1010's shared
+/// loop it now pins three retention paths at once.
+///
+/// Three filters, applied in order:
+///   1. `floor_committee` — bonds at the floor state intersected with
+///      `get_active_validators`. Catches unbonded/withdrawn validators. When
+///      the leaky-bucket quarantine window
+///      (`docs/casper/theory/leaky-bucket/leaky-bucket-specification.md`
+///      Component 0) lands, ejected validators drop out here too with no
+///      further edits required at this helper or its callers.
+///   2. `invalid_latest_messages_from_hashes` — validators whose latest
+///      message is flagged `metadata.invalid`. Catches equivocators whose
+///      last message was slashed.
+///   3. Intersection with `dag.latest_message_hashes()` — the validator must
+///      actually have produced a block the local DAG has admitted. A bonded
+///      validator that has never proposed carries no retention constraint.
+///
+/// A *bonded but silent* validator still appears: their stake is in
+/// `floor_committee` and their last-seen message (possibly genesis for a
+/// freshly-bonded validator) is still in `latest_message_hashes`. This is
+/// deliberate — a currently-bonded validator retains the right to propose a
+/// block whose parent reaches back to their old slot, and the moved-past
+/// walk must honour that until they are unbonded or leaky-bucket-ejected.
+pub async fn active_latest_messages(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    runtime_manager: &RuntimeManager,
+    floor: &Floor,
+) -> Result<HashMap<Validator, BlockHash>, CasperError> {
+    let floor_block = block_store
+        .get(&floor.hash)
+        .map_err(CasperError::KvStoreError)?
+        .ok_or_else(|| {
+            CasperError::Other(format!(
+                "active_latest_messages: floor block {} absent from block store",
+                PrettyPrinter::build_string_bytes(&floor.hash)
+            ))
+        })?;
+    let committee =
+        floor_committee(runtime_manager, &floor_block.body.state.post_state_hash).await?;
+    let active: HashSet<Validator> = committee.into_iter().map(|bond| bond.validator).collect();
+
+    let all = dag.latest_message_hashes();
+    let all_std: HashMap<Validator, BlockHash> =
+        all.iter().map(|(v, h)| (v.clone(), h.clone())).collect();
+    let invalid = dag
+        .invalid_latest_messages_from_hashes(&all_std)
+        .map_err(CasperError::KvStoreError)?;
+
+    Ok(all_std
+        .into_iter()
+        .filter(|(validator, _)| active.contains(validator) && !invalid.contains_key(validator))
+        .collect())
+}
+
 /// Walk depth past which a floor walk is reported as unusually deep (cold
 /// start after restart, or a finality stall). Visibility only — the walk
 /// always terminates: main-parent chains end at genesis, and genesis is
@@ -1799,6 +1862,7 @@ mod frontier_determinism_tests {
         let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
@@ -1865,6 +1929,7 @@ mod frontier_determinism_tests {
         let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
@@ -2373,6 +2438,7 @@ mod frontier_determinism_tests {
         block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),

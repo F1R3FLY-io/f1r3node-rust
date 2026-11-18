@@ -37,12 +37,16 @@ macro_rules! impl_packet {
             }
         }
 
-        $(impl ToPacket for $type {
+        $(impl $type {
+            pub const PACKET_TYPE_ID: &'static str = $tag;
+        }
+
+        impl ToPacket for $type {
             fn content(&self) -> prost::bytes::Bytes { self.encode_to_vec().into() }
 
             fn mk_packet(&self) -> Packet {
                 Packet {
-                    type_id: $tag.to_string(),
+                    type_id: Self::PACKET_TYPE_ID.to_string(),
                     content: self.content(),
                 }
             }
@@ -88,3 +92,30 @@ impl_packet!(
     (HasWalPayloadRequestProto, "HasWalPayloadRequest", Pull),
     (HasWalPayloadProto, "HasWalPayload", Push),
 );
+
+/// The packet of a block whose `BlockMessageProto` encoding is already in hand.
+pub fn encoded_block_message_packet(content: prost::bytes::Bytes) -> Packet {
+    Packet {
+        type_id: BlockMessageProto::PACKET_TYPE_ID.to_string(),
+        content,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_encoded_block_packet_equals_the_packet_of_the_block() {
+        let block = BlockMessageProto {
+            block_hash: vec![7; 32].into(),
+            sender: vec![3; 65].into(),
+            seq_num: 11,
+            ..BlockMessageProto::default()
+        };
+        assert_eq!(
+            encoded_block_message_packet(block.encode_to_vec().into()),
+            block.mk_packet()
+        );
+    }
+}

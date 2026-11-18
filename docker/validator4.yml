@@ -10,6 +10,10 @@
 # Prerequisites:
 #   - A running shard network (docker compose -f shard.yml up -d)
 #   - Validator 4 must be bonded via the PoS contract
+#
+# A deploy queue fronts the validator and owns its client ports (40441 gRPC,
+# 40443 HTTP). Until the validator is bonded and creating blocks, the queue
+# refuses deploys.
 
 services:
   validator4:
@@ -40,9 +44,7 @@ services:
         must be set, copy docker/.env.example to docker/.env}
     ports:
       - "40440:40400"
-      - "40441:40401"
       - "40442:40402"
-      - "40443:40403"
       - "40444:40404"
       - "40445:40405"
     volumes:
@@ -51,8 +53,42 @@ services:
       - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
 
+  deploy-queue4:
+    image: ${F1R3FLY_RUST_IMAGE:-f1r3flyindustries/f1r3fly-rust:latest}
+    user: root
+    restart: always
+    networks:
+      - f1r3fly
+    container_name: rnode.deploy-queue4
+    entrypoint: ["/opt/docker/bin/deploy-queue"]
+    command:
+      - --node-grpc=http://${VALIDATOR4_HOST:-rnode.validator4}:40401
+      - --node-http=http://${VALIDATOR4_HOST:-rnode.validator4}:40403
+      - --data-dir=/var/lib/deploy-queue
+    depends_on:
+      - validator4
+    ports:
+      - "40441:40401"
+      - "40443:40403"
+    volumes:
+      - deploy-queue4-data:/var/lib/deploy-queue
+    environment:
+      - RUST_LOG
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:40403/queue/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
 volumes:
   validator4-data:
+  deploy-queue4-data:
 
 networks:
   f1r3fly:

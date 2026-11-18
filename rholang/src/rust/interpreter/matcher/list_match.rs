@@ -155,9 +155,7 @@ macro_rules! list_match {
               ) -> Option<()> {
                 let remainder_par = self
                 .free_map
-                .clone()
-                .get(&level)
-                .cloned()
+                .remove(&level)
                 .unwrap_or(vector_par(Vec::new(), false));
 
                 let remainder_par_updated = merger(remainder_par, remainder_targets);

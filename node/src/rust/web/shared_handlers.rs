@@ -11,15 +11,17 @@ use axum::http::request::Parts;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
-    BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
-    ExploratoryDeployRejection, InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError,
-    NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError,
+    BlockNotFoundError, BlockPrunedError, DeployExpiredError, DeployNotFoundError,
+    DeployValidationError, ExploratoryDeployReadOnlyError, ExploratoryDeployRejection,
+    InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError,
+    ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError, ValidatorNotBondedError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::casper::DeployError;
 use casper::rust::errors::CasperError;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
+use models::rust::deploy_request::DeployRequest;
 use rholang::rust::interpreter::errors::InterpreterError;
 use serde::Serialize;
 use serde_json::json;
@@ -30,12 +32,14 @@ use utoipa::ToSchema;
 use crate::rust::api::admin_web_api::AdminWebApi;
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::web_api::{
-    DeployRequest, ExploreDeployRequest, OfferedReceiptResponse, RhoDataResponse,
-    SimpleExploreDeployRequest, ViewMode, WebApi,
+    ExploreDeployRequest, OfferedReceiptResponse, RhoDataResponse, SimpleExploreDeployRequest,
+    ViewMode, WebApi,
 };
+use crate::rust::api::{DeployIngressBusy, DeployRequestLimiter, DeployRequestPermit};
 
 #[derive(Clone)]
 pub struct AppState {
+    deploy_limiter: DeployRequestLimiter,
     pub admin_web_api: Arc<dyn AdminWebApi + Send + Sync + 'static>,
     pub web_api: Arc<dyn WebApi + Send + Sync + 'static>,
     pub block_report_api: Arc<BlockReportAPI>,
@@ -58,6 +62,7 @@ impl AppState {
         startup_events: StartupBuffer,
     ) -> Self {
         Self {
+            deploy_limiter: DeployRequestLimiter::default(),
             admin_web_api,
             web_api,
             block_report_api,
@@ -67,6 +72,11 @@ impl AppState {
             event_stream: event_consumer,
             startup_events,
         }
+    }
+
+    pub(crate) fn with_deploy_limiter(mut self, limiter: DeployRequestLimiter) -> Self {
+        self.deploy_limiter = limiter;
+        self
     }
 }
 
@@ -79,13 +89,22 @@ pub struct ApiErrorResponse {
     /// **400 Bad Request:**
     /// `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`,
     /// `invalid_hash`, `illegal_argument`, `rholang_bad_term`,
-    /// `readonly_node_required`,
+    /// `readonly_node_required`, `deploy_expired`, `invalid_deploy_window`
     ///
     /// **404 Not Found:**
     /// `deploy_not_found`, `block_not_found`, `endpoint_not_found`
     ///
     /// **405 Method Not Allowed:**
     /// `method_not_allowed`
+    ///
+    /// **410 Gone:**
+    /// `block_pruned` — the block was once held by this node but the
+    /// retention sweep has deleted it. The response body includes the
+    /// block height and the node's current prune floor so the consumer
+    /// can decide whether to retry against an archive node.
+    ///
+    /// **413 Payload Too Large:**
+    /// `deploy_too_large`
     ///
     /// **415 Unsupported Media Type:**
     /// `invalid_request_body`
@@ -95,7 +114,7 @@ pub struct ApiErrorResponse {
     /// `rholang_execution_error`, `aggregate_error`
     ///
     /// **409 Conflict:**
-    /// `no_new_deploys`
+    /// `no_new_deploys`, `duplicate_deploy`
     ///
     /// **500 Internal Server Error:**
     /// `interpreter_internal_error`, `signing_error`, `replay_failure`,
@@ -106,7 +125,8 @@ pub struct ApiErrorResponse {
     /// `comm_error`, `external_service_error`
     ///
     /// **503 Service Unavailable:**
-    /// `observer_busy`, `deploy_pool_full` — carry `Retry-After`
+    /// `observer_busy`, `deploy_pool_full` — carry `Retry-After`; `deploy_pool_busy`,
+    /// `deploy_admission_busy`, `validator_not_bonded`
     ///
     /// **504 Gateway Timeout:**
     /// `exploratory_timeout`
@@ -177,6 +197,30 @@ where E: Into<eyre::Error>
 
 /// Json extractor that returns rejection errors as JSON instead of plain text
 pub struct AppJson<T>(pub T);
+
+pub struct DeployJson(pub DeployRequest, DeployRequestPermit);
+
+impl FromRequest<AppState> for DeployJson {
+    type Rejection = Response;
+
+    async fn from_request(request: Request, state: &AppState) -> Result<Self, Self::Rejection> {
+        let permit = state
+            .deploy_limiter
+            .try_acquire()
+            .map_err(|error| AppError(error.into()).into_response())?;
+        if !state.deploy_limiter.is_limited() {
+            return AppJson::<DeployRequest>::from_request(request, &())
+                .await
+                .map(|AppJson(value)| Self(value, permit));
+        }
+        offload(move || async move {
+            let parsed = AppJson::<DeployRequest>::from_request(request, &()).await;
+            Ok(parsed.map(|AppJson(value)| Self(value, permit)))
+        })
+        .await
+        .map_err(|error| AppError(error).into_response())?
+    }
+}
 
 impl<T, S> FromRequest<S> for AppJson<T>
 where
@@ -266,8 +310,52 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         if let Some(ce) = cause.downcast_ref::<CasperError>() {
             return classify_casper_error(ce);
         }
-        if let Some(DeployError::DuplicateDeploy(_)) = cause.downcast_ref::<DeployError>() {
-            return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
+        match cause.downcast_ref::<DeployError>() {
+            Some(DeployError::DuplicateDeploy(_)) => {
+                return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
+            }
+            Some(DeployError::SeedReuse(_)) => {
+                return (StatusCode::CONFLICT, "seed_reuse", cause.to_string());
+            }
+            _ => {}
+        }
+        if cause.downcast_ref::<DeployExpiredError>().is_some() {
+            return (StatusCode::BAD_REQUEST, "deploy_expired", cause.to_string());
+        }
+        if let Some(DeployError::InvalidFreshness) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::BAD_REQUEST,
+                "invalid_deploy_window",
+                cause.to_string(),
+            );
+        }
+        if let Some(DeployError::PoolBusy { .. }) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "deploy_pool_busy",
+                cause.to_string(),
+            );
+        }
+        if let Some(DeployError::RecordTooLarge { .. }) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "deploy_too_large",
+                cause.to_string(),
+            );
+        }
+        if let Some(DeployError::AdmissionBusy) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "deploy_admission_busy",
+                cause.to_string(),
+            );
+        }
+        if cause.downcast_ref::<DeployIngressBusy>().is_some() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "deploy_admission_busy",
+                cause.to_string(),
+            );
         }
         if let Some(DeployError::PoolFull { .. }) = cause.downcast_ref::<DeployError>() {
             return (
@@ -281,6 +369,15 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         }
         if cause.downcast_ref::<BlockNotFoundError>().is_some() {
             return (StatusCode::NOT_FOUND, "block_not_found", cause.to_string());
+        }
+        // `block_pruned` is distinct from `block_not_found`: the node knew
+        // the block at some point but has since deleted it under the #923
+        // retention sweep. HTTP 410 Gone carries exactly this meaning
+        // ("resource was intentionally removed, consult an archive"), and
+        // the typed body lets consumers walk /reporting/trace and tell a
+        // deleted block apart from a gap.
+        if cause.downcast_ref::<BlockPrunedError>().is_some() {
+            return (StatusCode::GONE, "block_pruned", cause.to_string());
         }
         if cause.downcast_ref::<InvalidHashError>().is_some() {
             return (StatusCode::BAD_REQUEST, "invalid_hash", cause.to_string());
@@ -318,6 +415,13 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
             return (
                 StatusCode::BAD_REQUEST,
                 "illegal_argument",
+                cause.to_string(),
+            );
+        }
+        if cause.downcast_ref::<ValidatorNotBondedError>().is_some() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "validator_not_bonded",
                 cause.to_string(),
             );
         }
@@ -522,21 +626,28 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
     request_body = DeployRequest,
     responses(
         (status = 200, description = "Deploy accepted; returns the deploy ID (hex)", body = String),
-        (status = 400, description = "Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, unbonded validator, shard ID mismatch, forbidden key, phlo price below minimum, or expired deploy.", body = ApiErrorResponse),
+        (status = 400, description = "Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, shard ID mismatch, forbidden key, or phlo price below minimum. A closed validity window or a past expiration timestamp causes `deploy_expired`. A validity height beyond the admission horizon causes `invalid_deploy_window`.", body = ApiErrorResponse),
         (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
+        (status = 413, description = "Deploy record exceeds the configured pool byte limit (`deploy_too_large`)", body = ApiErrorResponse),
         (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
         (status = 422, description = "Invalid JSON field type or value, including deploy parameter names and values (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`)", body = ApiErrorResponse),
         (status = 502, description = "Upstream or peer communication failure (`comm_error`, `external_service_error`)", body = ApiErrorResponse),
+        (status = 503, description = "Retry later: the deploy pool is at its record or byte limit (`deploy_pool_busy`), admission changed during its attempts or the submission limit is reached (`deploy_admission_busy`), or the node's validator is not bonded (`validator_not_bonded`)", body = ApiErrorResponse),
     ),
     tag = "Deployment"
 )]
 pub async fn deploy_handler(
     State(app_state): State<AppState>,
-    AppJson(request): AppJson<DeployRequest>,
+    DeployJson(request, permit): DeployJson,
 ) -> Response {
     let web_api = app_state.web_api.clone();
-    match offload(move || async move { web_api.deploy(request).await }).await {
+    match offload(move || async move {
+        let _permit = permit;
+        web_api.deploy(request).await
+    })
+    .await
+    {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -786,17 +897,18 @@ mod tests {
 
     mod classification {
         use axum::http::StatusCode;
+        use axum::response::IntoResponse;
         use casper::rust::api::block_api::{
-            BlockNotFoundError, DeployNotFoundError, DeployValidationError,
-            ExploratoryDeployReadOnlyError, InvalidHashError, InvalidPublicKeyError,
-            LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal,
-            ProposeRefusedError,
+            BlockNotFoundError, BlockPrunedError, DeployExpiredError, DeployNotFoundError,
+            DeployValidationError, ExploratoryDeployReadOnlyError, InvalidHashError,
+            InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError,
+            ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError, ValidatorNotBondedError,
         };
         use casper::rust::casper::DeployError;
         use casper::rust::errors::CasperError;
         use rholang::rust::interpreter::errors::InterpreterError;
 
-        use super::super::classify_error;
+        use super::super::{classify_error, AppError};
 
         fn classify(err: impl std::error::Error + Send + Sync + 'static) -> (StatusCode, String) {
             let (status, kind, _message) = classify_error(&eyre::Report::new(err));
@@ -816,6 +928,18 @@ mod tests {
                     hash: "bb".to_string(),
                 }),
                 (StatusCode::NOT_FOUND, "block_not_found".to_string())
+            );
+            // A pruned block is deliberately 410 Gone, not 404 Not Found:
+            // the node held the block and the retention sweep deleted it.
+            // Consumers walking /reporting/trace can tell deleted history
+            // from a gap without probing an archive node first.
+            assert_eq!(
+                classify(BlockPrunedError {
+                    hash: "cc".to_string(),
+                    block_height: 42,
+                    prune_floor: 100,
+                }),
+                (StatusCode::GONE, "block_pruned".to_string())
             );
             assert_eq!(
                 classify(InvalidHashError("bad hash".to_string())),
@@ -837,6 +961,19 @@ mod tests {
                     message: "bad deploy".to_string(),
                 }),
                 (StatusCode::BAD_REQUEST, "illegal_argument".to_string())
+            );
+            assert_eq!(
+                classify(DeployExpiredError {
+                    message: "window closed".to_string(),
+                }),
+                (StatusCode::BAD_REQUEST, "deploy_expired".to_string())
+            );
+            assert_eq!(
+                classify(ValidatorNotBondedError),
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "validator_not_bonded".to_string()
+                )
             );
             assert_eq!(
                 classify(ProposeReadOnlyError),
@@ -867,16 +1004,81 @@ mod tests {
         }
 
         #[test]
-        fn duplicate_deploy_is_conflict() {
+        fn duplicate_deploy_and_seed_reuse_are_conflicts() {
             let err = DeployError::duplicate_deploy(vec![1u8, 2].into());
             assert_eq!(
                 classify(err),
                 (StatusCode::CONFLICT, "duplicate_deploy".to_string())
             );
+            let err = DeployError::seed_reuse(vec![1u8, 2].into());
+            assert_eq!(
+                classify(err),
+                (StatusCode::CONFLICT, "seed_reuse".to_string())
+            );
         }
 
         #[test]
-        fn propose_refusals_map_to_stable_kinds() {
+        fn invalid_deploy_window_is_a_client_error() {
+            assert_eq!(
+                classify(DeployError::InvalidFreshness),
+                (StatusCode::BAD_REQUEST, "invalid_deploy_window".to_string())
+            );
+        }
+
+        #[tokio::test]
+        async fn a_record_above_the_pool_byte_limit_is_not_a_retryable_busy_error() {
+            let response = AppError(
+                DeployError::RecordTooLarge {
+                    record_bytes: 101,
+                    limit: 100,
+                }
+                .into(),
+            )
+            .into_response();
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "deploy_too_large");
+        }
+
+        #[tokio::test]
+        async fn deploy_pool_busy_returns_a_retryable_json_error() {
+            let response = AppError(
+                DeployError::PoolBusy {
+                    resource: "bytes",
+                    required: 250,
+                    limit: 200,
+                }
+                .into(),
+            )
+            .into_response();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "deploy_pool_busy");
+            assert!(body["message"].as_str().unwrap().contains("Retry later"));
+        }
+
+        #[tokio::test]
+        async fn deploy_admission_busy_returns_a_retryable_json_error() {
+            let response = AppError(DeployError::AdmissionBusy.into()).into_response();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "deploy_admission_busy");
+            let message = body["message"].as_str().unwrap();
+            assert!(message.contains("Deploy was not accepted"));
+            assert!(message.contains("Retry later"));
+        }
+
+        #[tokio::test]
+        async fn propose_refusals_map_to_stable_kinds() {
             let cases = [
                 (
                     ProposeRefusal::NotBonded,
@@ -911,13 +1113,21 @@ mod tests {
             ];
             for (refusal, status, kind) in cases {
                 let message = format!("Failure: refused {:?} (seqNum 3)", refusal);
-                let (got_status, got_kind, got_message) =
-                    classify_error(&eyre::Report::new(ProposeRefusedError {
-                        refusal,
-                        message: message.clone(),
-                    }));
+                let error = eyre::Report::new(ProposeRefusedError {
+                    refusal,
+                    message: message.clone(),
+                });
+                let (got_status, got_kind, got_message) = classify_error(&error);
                 assert_eq!((got_status, got_kind), (status, kind));
                 assert_eq!(got_message, message);
+                let response = AppError(error).into_response();
+                assert_eq!(response.status(), status);
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["error"], kind);
+                assert_eq!(body["message"], message);
             }
         }
 

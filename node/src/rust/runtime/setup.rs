@@ -900,7 +900,23 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         });
 
         tokio::spawn(async move {
-            while let Some(event) = event_stream.next().await {
+            while let Some(item) = event_stream.next().await {
+                let event = match item {
+                    Ok(event) => event,
+                    Err(lagged) => {
+                        metrics::counter!(
+                            "node.event_consumer.lagged_events",
+                            "source" => "node"
+                        )
+                        .increment(lagged.0);
+                        tracing::warn!(
+                            skipped = lagged.0,
+                            "Node event consumer lagged; the skipped events are lost to \
+                             report prewarm and readiness tracking"
+                        );
+                        continue;
+                    }
+                };
                 match &event {
                     F1r3flyEvent::BlockFinalised(finalized) if prewarm_enabled => {
                         if report_tx.send(finalized.clone()).await.is_err() {
@@ -1155,6 +1171,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                         return Ok(());
                     };
                     let gc_casper_shard_conf = gc_casper.casper_shard_conf().clone();
+                    let gc_effective_anchor = gc_casper.effective_anchor_handle();
 
                     loop {
                         let progress = match tokio::runtime::Handle::try_current() {
@@ -1171,6 +1188,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                                             &gc_block_store,
                                             &gc_runtime_manager,
                                             &gc_casper_shard_conf,
+                                            &gc_effective_anchor,
                                         ))
                                         .map_err(|e| CasperError::RuntimeError(e.to_string()))
                                 })?
@@ -1183,6 +1201,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                                     &gc_block_store,
                                     &gc_runtime_manager,
                                     &gc_casper_shard_conf,
+                                    &gc_effective_anchor,
                                 )
                                 .await
                                 .map_err(|e| CasperError::RuntimeError(e.to_string()))?
@@ -1193,6 +1212,45 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                             mergeable_channels_gc::GcProgress::Yielded { .. } => {
                                 tokio::task::yield_now().await
                             }
+                        }
+                    }
+
+                    // Run one rspace-history mark-and-sweep pass per tick,
+                    // once the mergeable-channel sweep has completed. Default
+                    // off; a no-op when `enable_history_pruning = false`. The
+                    // pass synchronously walks every retained root's trie
+                    // and iterates the LMDB env in pages — runs inside
+                    // `block_in_place` on multi-thread runtimes for the same
+                    // reason the GC above does.
+                    let history_gc_dag = gc_block_dag_storage
+                        .get_representation()
+                        .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                    let history_gc_conf = gc_casper_shard_conf.clone();
+                    let history_gc_runtime = gc_runtime_manager.clone();
+                    let history_gc_block_store = gc_block_store.clone();
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(rt_handle)
+                            if rt_handle.runtime_flavor()
+                                == tokio::runtime::RuntimeFlavor::MultiThread =>
+                        {
+                            tokio::task::block_in_place(|| {
+                                casper::rust::util::rspace_history_gc::prune_history_once(
+                                    &history_gc_dag,
+                                    &history_gc_block_store,
+                                    &history_gc_runtime,
+                                    &history_gc_conf,
+                                )
+                                .map_err(|e| CasperError::RuntimeError(e.to_string()))
+                            })?;
+                        }
+                        _ => {
+                            casper::rust::util::rspace_history_gc::prune_history_once(
+                                &history_gc_dag,
+                                &history_gc_block_store,
+                                &history_gc_runtime,
+                                &history_gc_conf,
+                            )
+                            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
                         }
                     }
 

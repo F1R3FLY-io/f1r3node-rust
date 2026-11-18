@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use models::rust::block_hash::BlockHash;
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::block_metadata::BlockMetadata;
 use serde::{Deserialize, Serialize};
 use shared::rust::store::atomic_store::{AtomicStoreGroup, AtomicTransaction};
 use shared::rust::store::key_value_store::KvStoreError;
@@ -12,9 +13,11 @@ pub const GC_PAGE_SIZE: usize = 1_024;
 
 const DISCOVERY_KEY: &[u8] = b"gc.discovery";
 const RETRY_CURSOR_KEY: &[u8] = b"gc.retry-cursor";
+const EFFECTIVE_ANCHOR_KEY: &[u8] = b"gc.effective-anchor";
 
 #[derive(Clone, Copy)]
 pub struct DagGcSlots {
+    pub metadata: usize,
     pub state: usize,
     pub retry: usize,
 }
@@ -158,6 +161,51 @@ impl DagGcStore {
         self.group.transaction(|tx| {
             tx.delete(self.slots.retry, hash)?;
             Ok(())
+        })
+    }
+
+    pub fn effective_anchor(&self) -> Result<Option<i64>, KvStoreError> {
+        self.group
+            .get(self.slots.state, EFFECTIVE_ANCHOR_KEY)?
+            .map(|bytes| decode(&bytes))
+            .transpose()
+    }
+
+    /// Monotonically raise the persisted anchor to `height`, returning the
+    /// resulting anchor. A lower incoming height is a no-op: GC only
+    /// advances the anchor, and a restart reading an earlier floor must
+    /// not regress past-prune state.
+    pub fn advance_effective_anchor(&self, height: i64) -> Result<i64, KvStoreError> {
+        self.group.transaction(|tx| {
+            let current = tx
+                .get(self.slots.state, EFFECTIVE_ANCHOR_KEY)?
+                .map(|bytes| decode::<i64>(&bytes))
+                .transpose()?
+                .unwrap_or(i64::MIN);
+            let next = current.max(height);
+            if next != current {
+                tx.put(
+                    self.slots.state,
+                    EFFECTIVE_ANCHOR_KEY.to_vec(),
+                    encode(&next)?,
+                )?;
+            }
+            Ok(next)
+        })
+    }
+
+    pub fn drop_unfinalized(&self, hash: &BlockHash) -> Result<bool, KvStoreError> {
+        self.group.transaction(|tx| {
+            let finalized = tx
+                .get(self.slots.metadata, &encode(&BlockHashSerde(hash.clone()))?)?
+                .map(|bytes| decode::<BlockMetadata>(&bytes))
+                .transpose()?
+                .is_some_and(|metadata| metadata.finalized);
+            if finalized {
+                return Ok(false);
+            }
+            tx.delete(self.slots.retry, hash)?;
+            Ok(true)
         })
     }
 }

@@ -65,6 +65,55 @@ pub enum F1r3flyEvent {
     ApprovedBlockReceived(ApprovedBlockReceived),
     EnteredRunningState(EnteredRunningState),
     NodeStarted(NodeStarted),
+    DeployVerdicts(DeployVerdicts),
+}
+
+/// Every verdict one settle wrote, in one event: a settle after a long
+/// finality jump can decide hundreds of deploys at once.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct DeployVerdicts {
+    pub verdicts: Vec<DeployVerdict>,
+}
+
+/// The terminal state the node settled for a deploy. Written once; a deploy
+/// never receives a second verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeployVerdictState {
+    Finalized,
+    Expired,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct DeployVerdict {
+    pub deploy_id: String,
+    pub state: DeployVerdictState,
+    pub rejection_count: u32,
+    /// The deploy's latest DAG-visible inclusion; `None` for a deploy no
+    /// block ever included.
+    pub block_hash: Option<String>,
+}
+
+/// How the block creator admitted fresh user deploys into a block it created.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct DeployAdmission {
+    /// The most fresh user deploys the block could take.
+    pub cap: usize,
+    /// Fresh deploys stayed in the pool because the block reached `cap`.
+    pub cap_hit: bool,
+    /// Fresh deploys stayed in the pool because the block reached its byte budget.
+    pub byte_cap_hit: bool,
+    /// What set the cap: `normal`, `base`, `backlog`, `soft-backlog`,
+    /// `soft-stalled`, `stale` or `hard`.
+    pub cap_source: String,
+    /// The cap was lowered because finality trails the tip or has stalled.
+    pub backpressure: bool,
+    /// Heights between the tip and the last finalized block when the block was created.
+    pub finality_lag: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +128,8 @@ pub struct BlockCreated {
     pub creator: String,
     #[serde(rename = "seq-num")]
     pub seq_number: i32,
+    /// `None` for a block built without selecting user deploys.
+    pub deploy_admission: Option<DeployAdmission>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,6 +221,7 @@ impl F1r3flyEvent {
         deploys: Vec<DeployEvent>,
         creator: String,
         seq_number: i32,
+        deploy_admission: Option<DeployAdmission>,
     ) -> Self {
         Self::BlockCreated(BlockCreated {
             block_hash,
@@ -180,6 +232,7 @@ impl F1r3flyEvent {
             deploys,
             creator,
             seq_number,
+            deploy_admission,
         })
     }
 
@@ -271,6 +324,10 @@ impl F1r3flyEvent {
     }
 
     pub fn node_started(address: String) -> Self { Self::NodeStarted(NodeStarted { address }) }
+
+    pub fn deploy_verdicts(verdicts: Vec<DeployVerdict>) -> Self {
+        Self::DeployVerdicts(DeployVerdicts { verdicts })
+    }
 }
 
 #[cfg(test)]
@@ -362,7 +419,8 @@ mod tests {
     fn block_events_use_kebab_case_tag_and_field_names() {
         for (ctor, tag) in [
             (
-                F1r3flyEvent::block_created as fn(_, _, _, _, _, _, _, _) -> _,
+                (|h, n, t, p, j, d, c, s| F1r3flyEvent::block_created(h, n, t, p, j, d, c, s, None))
+                    as BlockEventCtor,
                 "block-created",
             ),
             (F1r3flyEvent::block_added, "block-added"),
@@ -377,6 +435,40 @@ mod tests {
             assert_eq!(json["justification-hashes"][0][0], "v1");
             assert_eq!(json["deploys"][0]["deployer"], "deployer-pk");
         }
+    }
+
+    #[test]
+    fn block_created_carries_its_deploy_admission() {
+        let event = F1r3flyEvent::block_created(
+            "hash".to_string(),
+            7,
+            1234,
+            Vec::new(),
+            Vec::new(),
+            vec![sample_deploy()],
+            "creator".to_string(),
+            3,
+            Some(DeployAdmission {
+                cap: 16,
+                cap_hit: true,
+                byte_cap_hit: false,
+                cap_source: "soft-backlog".to_string(),
+                backpressure: true,
+                finality_lag: 5,
+            }),
+        );
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["deploy-admission"]["cap"], 16);
+        assert_eq!(json["deploy-admission"]["cap-hit"], true);
+        assert_eq!(json["deploy-admission"]["byte-cap-hit"], false);
+        assert_eq!(json["deploy-admission"]["cap-source"], "soft-backlog");
+        assert_eq!(json["deploy-admission"]["backpressure"], true);
+        assert_eq!(json["deploy-admission"]["finality-lag"], 5);
+
+        let recovery = sample_block_event(|h, n, t, p, j, d, c, s| {
+            F1r3flyEvent::block_created(h, n, t, p, j, d, c, s, None)
+        });
+        assert!(serde_json::to_value(&recovery).unwrap()["deploy-admission"].is_null());
     }
 
     #[test]

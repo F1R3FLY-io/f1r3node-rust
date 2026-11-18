@@ -247,6 +247,10 @@ user deploys may enter; proposal also selects parents, executes deploys,
 assembles, signs, and self-validates.
 *Distinguish from execution*: admission selects deploys; execution runs the
 selected deploys and computes state effects.
+*Distinguish from* API pool intake: the `casper.deploy-admission` settings
+limit the records and bytes that the deploy pool accepts from the API. They do
+not limit the deploys that enter a block. See
+[deploy admission design](../designs/deploy-admission.md).
 *Avoid*: "deploy filtering" when recovery, ordering, or capacity policy is
 also involved.
 
@@ -598,6 +602,37 @@ decide a verdict.
 *Avoid*: "deploy index" without qualification, because the removed
 last-write-wins `lookup_by_deploy_id` index resolved display carriers,
 not validity.
+
+### Name seed
+
+A deploy's name seed is the encoding of its deployer key, timestamp, and
+valid-after block number (`models::deploy_seed`). Every unforgeable name
+the deploy creates derives from it, so two deploys with one seed create the
+same names. At most one deploy per seed takes effect: the proposer selects
+one, validation rejects a block that carries a second or reuses one from its
+ancestry that a merge did not reject (`InvalidRepeatDeploy`), and the merge
+keeps one. Genesis deploys
+have valid-after block 0, which the encoding omits, so their names are those
+of the former (deployer, timestamp) seed.
+
+**Preferred usage.** Use for the identity under which a deploy's private
+names are unique.
+*Distinguish from* the deploy signature, which identifies the deploy for
+repeat-deploy validation; two deploys with different signatures can share a
+seed.
+
+### Seed carrier index
+
+The seed carrier index is the per-seed carrier record, kept beside the
+[repeat-deploy signature index](#repeat-deploy-signature-index) with its own
+watermark: for each name seed, every carrier block and the signature of the
+deploy it carries. An index with no carrier of another signature for a seed
+proves that no ancestor reuses it, for a scan that starts at or above the
+seed watermark and the prune cutoff, so validation and the merge skip the
+ancestor scan for that seed.
+
+**Preferred usage.** Use for the fast path of `Validate::deploy_seed_reuse`
+and of the merge's seed check.
 
 ### Retry frontier lease
 

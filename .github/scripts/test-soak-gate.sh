@@ -55,6 +55,7 @@ contains finalize_if "always()"
 contains finalize_if "needs.schedule_gate.outputs.gate != ''"
 contains finalize_needs "soak"
 contains final_deadline "needs.schedule_gate.outputs.gate == ''"
+contains final_deadline "needs.schedule_gate.outputs.late_start == 'true'"
 contains verdict_output "steps.verdict.outputs.verdict"
 contains retry_run '-f gate="$GATE"'
 contains run_name "format('Merge Recovery Soak [ca-item:#{0}]', inputs.gate_pr)"
@@ -141,6 +142,78 @@ refuse "a gate window restart" ca-item 12 daily-24h "$SHA" INPUT_WINDOW_END=1785
 refuse "a gate candidate" ca-release "" weekend-60h "$SHA" INPUT_CANDIDATE_TAG=v1.0.0-canary.1
 refuse "a scheduled gate" ca-item 12 daily-24h "$SHA" INPUT_SCHEDULED_SLOT=1785810600
 refuse "a gate on a cron event" ca-item 12 daily-24h "$SHA" EVENT_NAME=schedule
+
+GNU_DATE="$(command -v gdate || command -v date)"
+mkdir -p "$TMP/cronbin"
+cat >"$TMP/cronbin/date" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  "-u +%s") printf '%s\n' "\$FAKE_NOW" ;;
+  "-u +%F") "$GNU_DATE" -u -d "@\$FAKE_NOW" +%F ;;
+  *"-d "*) exec "$GNU_DATE" "\$@" ;;
+  *) printf 'unexpected clock read: date %s\n' "\$*" >&2; exit 1 ;;
+esac
+SH
+cat >"$TMP/cronbin/gh" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *"/runs?event=workflow_dispatch"*) printf '{"workflow_runs":[]}\n' ;;
+  *"/commits?sha="*) printf '3\n' ;;
+  *"/commits/"*) printf '%s\n' "$SHA" ;;
+  *) printf 'unexpected gh invocation: %s\n' "\$*" >&2; exit 1 ;;
+esac
+SH
+chmod +x "$TMP/cronbin/date" "$TMP/cronbin/gh"
+
+run_cron() {
+	: >"$TMP/output"
+	: >"$TMP/summary"
+	set +e
+	out="$(env PATH="$TMP/cronbin:$PATH" FAKE_NOW="$1" EVENT_NAME=schedule EVENT_SCHEDULE="$2" INPUT_SCHEDULED_SLOT="" \
+		INPUT_DURATION="" INPUT_TARGET_REF="" INPUT_WINDOW_END="" INPUT_SERIES="" \
+		INPUT_RETRY_ATTEMPT=0 INPUT_CANARY=false INPUT_PREFLIGHT_ONLY=false INPUT_SKIP_PREFLIGHT=false \
+		INPUT_INJECT_PROTECTION_BREACH=false INPUT_CANDIDATE_TAG="" INPUT_GATE="" INPUT_GATE_PR="" \
+		GH_TOKEN=test GITHUB_REPOSITORY=example/repo GITHUB_RUN_ID=999 GITHUB_OUTPUT="$TMP/output" \
+		GITHUB_STEP_SUMMARY="$TMP/summary" bash -euo pipefail "$TMP/gate.sh" 2>&1)"
+	status=$?
+	set -e
+}
+has() {
+	grep -qx "$1" "$TMP/output" || fail "$2 has no $1: $(cat "$TMP/output")"
+}
+WEEKEND_SLOT=1794627000
+WEEKEND_END=$((WEEKEND_SLOT + 216000))
+
+run_cron $((WEEKEND_SLOT + 600)) "30 3 * * *"
+[ "$status" -eq 0 ] || fail "an on-time weekend cron fallback failed: $out"
+for line in should_run=true kind=weekend duration_seconds=216000 "end_epoch=$WEEKEND_END" late_start=false; do
+	has "$line" "the on-time weekend cron fallback"
+done
+
+LATE_NOW=1794653100
+run_cron "$LATE_NOW" "30 3 * * *"
+[ "$status" -eq 0 ] || fail "a late weekend cron fallback failed: $out"
+for line in should_run=true kind=weekend "duration_seconds=$((WEEKEND_END - LATE_NOW))" "end_epoch=$WEEKEND_END" late_start=true; do
+	has "$line" "the late weekend cron fallback"
+done
+for n in 1 2 3 4 5; do
+	cp="$(sed -n "s/^checkpoint_${n}=//p" "$TMP/output")"
+	[ -z "$cp" ] || [ "$cp" -gt "$LATE_NOW" ] || fail "the late weekend cron fallback kept checkpoint $cp before its start"
+done
+
+DAILY_SLOT=1794886200
+run_cron $((DAILY_SLOT + 75600)) "30 3 * * *"
+[ "$status" -eq 0 ] || fail "a daily cron fallback 21h late failed: $out"
+for line in should_run=false late_start=false; do
+	has "$line" "the daily cron fallback 21h late"
+done
+grep -q "skipped (window nearly over)" "$TMP/summary" || fail "the daily cron fallback 21h late gave no skip summary"
+
+run_cron $((DAILY_SLOT + 10800)) "30 3 * * *"
+[ "$status" -eq 0 ] || fail "a daily cron fallback 3h late failed: $out"
+for line in should_run=true kind=daily duration_seconds=68400 late_start=true; do
+	has "$line" "the daily cron fallback 3h late"
+done
 
 # The restart of a gate run dispatches a full new window: no window_end_epoch,
 # no series, and the gate inputs of the failed run.

@@ -56,7 +56,7 @@ use prost::bytes::Bytes;
 use prost::Message;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::dag::dag_ops;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::casper::CasperSnapshot;
@@ -466,6 +466,15 @@ impl Validate {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
+        if let Either::Left(err) = Self::deploy_seed_reuse(
+            block,
+            s,
+            block_store,
+            floor_ctx_slot.as_ref(),
+            expiration_threshold as i64,
+        ) {
+            return Either::Left(err);
+        }
         tracing::debug!(target: "f1r3fly.casper", "before-block-number-validation");
         match __step!(
             BLOCK_VALIDATION_BLOCK_NUMBER_TIME_METRIC,
@@ -658,14 +667,14 @@ impl Validate {
             .min();
         let earliest_block_number = match (floor_ctx, oldest_valid_after) {
             (Some(ctx), Some(oldest_valid_after)) => {
-                match crate::rust::util::deploy_window::repeat_scan_start(
+                match models::rust::deploy_window::repeat_scan_start(
                     tip_scan_start,
                     ctx.floor.block_number,
                     expiration_threshold as i64,
                     oldest_valid_after,
                 ) {
                     Ok(start) => start,
-                    Err(e) => return Either::Left(BlockError::from_validation_error(e)),
+                    Err(e) => return Either::Left(BlockError::from_validation_error(e.into())),
                 }
             }
             _ => tip_scan_start,
@@ -950,6 +959,144 @@ impl Validate {
     });
 
         maybe_error.map_or(Either::Right(ValidBlock::Valid), Either::Left)
+    }
+
+    /// A deploy's unforgeable names derive from its name seed, so no block may
+    /// carry two deploys with one seed, nor a deploy whose seed another
+    /// deploy in its ancestry already used, unless that deploy's latest
+    /// disposition in the block's scope is a merge rejection. Two deploys share a seed only if
+    /// they share a valid-after block, and a deploy lands only above that
+    /// block, so the ancestry walk stops below the block's lowest one. A live
+    /// deploy's copies also sit above the floor's window, so with a floor the
+    /// walk stops there too; a deploy below it fails the expiry check.
+    pub fn deploy_seed_reuse(
+        block: &BlockMessage,
+        s: &CasperSnapshot,
+        block_store: &KeyValueBlockStore,
+        floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
+        deploy_lifespan: i64,
+    ) -> ValidBlockProcessing {
+        let mut block_seeds: HashMap<Vec<u8>, Bytes> = HashMap::new();
+        for pd in &block.body.deploys {
+            let seed = models::rust::deploy_seed::deploy_name_seed(&pd.deploy);
+            if let Some(other) = block_seeds.insert(seed, pd.deploy.sig.clone()) {
+                if other != pd.deploy.sig {
+                    tracing::warn!(
+                        "{}",
+                        Self::ignore(
+                            block,
+                            &format!(
+                                "deploys {} and {} share a name seed",
+                                hex::encode(&other[..8.min(other.len())]),
+                                hex::encode(&pd.deploy.sig[..8.min(pd.deploy.sig.len())]),
+                            )
+                        )
+                    );
+                    return Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy));
+                }
+            }
+        }
+        let Some(lowest_valid_after) = block
+            .body
+            .deploys
+            .iter()
+            .map(|pd| pd.deploy.data.valid_after_block_number)
+            .min()
+        else {
+            return Either::Right(ValidBlock::Valid);
+        };
+        let scan_start = match floor_ctx {
+            Some(ctx) => match models::rust::deploy_window::lowest_live_carrier_height(
+                ctx.floor.block_number,
+                deploy_lifespan,
+                lowest_valid_after,
+            ) {
+                Ok(start) => start,
+                Err(e) => return Either::Left(BlockError::from_validation_error(e.into())),
+            },
+            None => lowest_valid_after + 1,
+        };
+
+        let needing_scan = match proto_util::seeds_needing_scan(
+            &s.dag,
+            block_seeds.iter().map(|(seed, sig)| (seed, sig.as_ref())),
+            scan_start,
+        ) {
+            Ok(needing) => needing,
+            Err(e) => return Either::Left(BlockError::from_validation_error(e)),
+        };
+        if let Some(needing) = needing_scan {
+            block_seeds.retain(|seed, _| needing.contains(seed));
+        }
+        if block_seeds.is_empty() {
+            return Either::Right(ValidBlock::Valid);
+        }
+
+        // A carrier whose latest disposition in this block's parent scope is
+        // a merge rejection took no effect there, so it holds no seed: the
+        // same block-determined set the repeat-deploy exemption reads.
+        let released = match floor_ctx {
+            Some(ctx) => match ctx.rejected_sigs(block_store, scan_start) {
+                Ok(sigs) => sigs,
+                Err(e) => return Either::Left(BlockError::from_validation_error(e)),
+            },
+            None => HashSet::new(),
+        };
+
+        let block_metadata = BlockMetadata::from_block(block, None, None, None);
+        let parents = match proto_util::get_parents_metadata(&s.dag, &block_metadata) {
+            Ok(parents) => parents,
+            Err(e) => return Either::Left(BlockError::from_validation_error(e)),
+        };
+        let mut reused: Option<(Bytes, Bytes)> = None;
+        let scan = proto_util::walk_blocks_in_scope(
+            &s.dag,
+            parents,
+            scan_start,
+            proto_util::UnheldParent::Surface,
+            |ancestor| {
+                let deploys = block_store
+                    .deploy_identities(ancestor)
+                    .map_err(CasperError::from)?
+                    .ok_or_else(|| {
+                        CasperError::BlockNotHeld(
+                            ancestor.clone(),
+                            MissingBlockContext::new("deploy_seed_reuse"),
+                        )
+                    })?;
+                for identity in deploys.iter() {
+                    if let Some(own) = block_seeds.get(&identity.seed) {
+                        if own.as_ref() != identity.sig.as_slice()
+                            && !released.contains(identity.sig.as_slice())
+                        {
+                            reused = Some((own.clone(), identity.sig.clone().into()));
+                            return Ok(true);
+                        }
+                    }
+                }
+                Ok(false)
+            },
+        );
+        match scan {
+            Err(e) => Either::Left(BlockError::from_validation_error(e)),
+            Ok(None) => Either::Right(ValidBlock::Valid),
+            Ok(Some(ancestor)) => {
+                let (own, other) = reused.expect("the walk stops only on a reused seed");
+                tracing::warn!(
+                    "{}",
+                    Self::ignore(
+                        block,
+                        &format!(
+                            "deploy {} reuses the name seed of deploy {} in ancestor {}",
+                            hex::encode(&own[..8.min(own.len())]),
+                            hex::encode(&other[..8.min(other.len())]),
+                            PrettyPrinter::build_string_bytes(&ancestor),
+                        )
+                    )
+                );
+                Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
+            }
+        }
     }
 
     // This is not a slashable offence

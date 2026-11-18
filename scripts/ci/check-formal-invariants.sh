@@ -134,6 +134,8 @@ run_rocq_checks() {
         "$REPO_ROOT/formal/rocq/fork_choice/theories/"
     ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
         "$REPO_ROOT/formal/rocq/rspace_guards/theories/"
+    ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
+        "$REPO_ROOT/formal/rocq/scope_trapped_gc/theories/"
 
     ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
         "$REPO_ROOT/formal/rocq/node_observation/theories/"
@@ -225,6 +227,11 @@ run_rocq_checks() {
         rspace_replay_log_gated \
         rspace_replay_equivalent \
         rspace_replay_guard_complete
+
+    build_rocq_project scope_trapped_gc ScopeTrappedGC
+    check_assumptions scope_trapped_gc ScopeTrappedGC 2 \
+        rholang_scope_trapped_invariant \
+        rholang_scope_trapped_sweep_safe
 }
 
 if [[ "$run_tla" == true ]]; then

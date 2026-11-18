@@ -531,3 +531,4 @@ pub const DEPLOY_LIFECYCLE_RELEASE_FAILURES_METRIC: &str = "deploy-lifecycle.rel
 // each is retried by the next settle.
 pub const DEPLOY_LIFECYCLE_SETTLE_ROW_FAILURES_METRIC: &str =
     "deploy-lifecycle.settle.row-failures";
+pub const DEPLOY_ADMISSION_REFUSED_METRIC: &str = "deploy-admission.refused";
