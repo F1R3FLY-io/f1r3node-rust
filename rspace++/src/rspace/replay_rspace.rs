@@ -542,7 +542,7 @@ where
             "source" => REPLAY_RSPACE_METRICS_SOURCE
         )
         .set(estimate as f64);
-        let channel_depth = self.get_store().get_continuations(channels).len();
+        let channel_depth = self.get_store().get_continuations_arc(channels).len();
         metrics::histogram!(
             REPLAY_WAITING_CONTINUATIONS_CHANNEL_DEPTH_METRIC,
             "source" => REPLAY_RSPACE_METRICS_SOURCE
@@ -652,12 +652,11 @@ where
         // store_waiting_continuation, so take it directly. When data IS
         // present, narrow candidates through the consume/produce index;
         // any miss falls back to the full clone, preserving behavior.
-        let present_produce_hashes: HashSet<Blake2b256Hash> = channels
+        let present_data: Vec<Arc<Datum<A>>> = channels
             .iter()
             .flat_map(|c| self.get_store().get_data_arc(c))
-            .map(|d| d.source.hash.clone())
             .collect();
-        if present_produce_hashes.is_empty() {
+        if present_data.is_empty() {
             let recorded = self
                 .replay_data
                 .lock()
@@ -693,8 +692,8 @@ where
                 index.get(&consume_ref.hash).map(|by_produce| {
                     let mut out: Vec<COMM> = Vec::new();
                     let mut seen: HashSet<&COMM> = HashSet::new();
-                    for hash in &present_produce_hashes {
-                        if let Some(comms) = by_produce.get(hash) {
+                    for datum in &present_data {
+                        if let Some(comms) = by_produce.get(&datum.source.hash) {
                             for comm in comms {
                                 if seen.insert(comm) {
                                     out.push(comm.clone());
