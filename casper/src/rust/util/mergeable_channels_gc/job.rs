@@ -469,6 +469,7 @@ pub async fn collect_garbage(
 mod tests {
     use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
     use models::rust::block_implicits::get_random_block;
+    use models::rust::casper::protocol::casper_message::Justification;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
@@ -1214,6 +1215,261 @@ mod tests {
         assert!(
             !deleted.contains(&a5),
             "a5 is A's latest block in D's view; D's next block cites it"
+        );
+    }
+
+    /// Issue #1057 variant. A validator's justifications record its view of
+    /// each other validator's latest, which its next block carries forward
+    /// unchanged while its view is stale. A block cited only through such a
+    /// justification — never as a direct parent — must still be retained,
+    /// because the next block will name it in exactly the same way.
+    ///
+    /// This isolates the justifications path: D's self-chain hits A's main
+    /// chain at a5 (via D@6's merge), so the parent walk alone would still
+    /// anchor at a5. Only pulling a5 in through D@30's justifications moves
+    /// the anchor below it.
+    #[tokio::test]
+    async fn a_block_cited_only_through_a_justification_is_kept() {
+        let (storage, blocks) = open().await;
+        let a = vec![10u8; 65];
+        let d = vec![13u8; 65];
+        let d_block = |height: u8| -> BlockHash {
+            let mut bytes = vec![3u8; 32];
+            bytes[0] = height;
+            bytes.into()
+        };
+        let a_block = |height: u8| -> BlockHash {
+            let mut bytes = vec![7u8; 32];
+            bytes[0] = height;
+            bytes.into()
+        };
+        let mut block = template();
+        let mut put = |hash: BlockHash,
+                       height: u8,
+                       sender: Vec<u8>,
+                       parents: Vec<BlockHash>,
+                       justifications: Vec<Justification>| {
+            block.block_hash = hash;
+            block.body.state.block_number = i64::from(height);
+            block.seq_num = i32::from(height);
+            block.sender = sender.into();
+            block.header.parents_hash_list = parents;
+            block.justifications = justifications;
+            blocks.put(block.block_hash.clone(), &block).unwrap();
+            let mode = if height == 0 {
+                InsertMode::Approved
+            } else {
+                InsertMode::Normal
+            };
+            drop(storage.insert(&block, mode).unwrap());
+        };
+        put(hash(0), 0, vec![0u8; 65], vec![], vec![]);
+        // A: height 1..=5 on A's own self-chain.
+        for height in 1..=5u8 {
+            let parents = if height == 1 {
+                vec![hash(0)]
+            } else {
+                vec![a_block(height - 1)]
+            };
+            put(a_block(height), height, a.clone(), parents, vec![]);
+        }
+        let a5 = a_block(5);
+        // D's chain merges with A at height 6 (D@6.parents = [a5]) then runs
+        // on self-chain through height 30. D@30 carries a stale view of A:
+        // its justification for A still points at a5. The parent walk alone
+        // cannot refuse a5 — D's main chain from D@30 hits a5 via D@6's
+        // merge, so the deepest common strict main-chain ancestor is a5.
+        // Only the justifications branch can admit a5 to the frontier and
+        // push the anchor below it.
+        put(d_block(6), 6, d.clone(), vec![a5.clone()], vec![]);
+        for height in 7..=29u8 {
+            put(
+                d_block(height),
+                height,
+                d.clone(),
+                vec![d_block(height - 1)],
+                vec![],
+            );
+        }
+        put(d_block(30), 30, d.clone(), vec![d_block(29)], vec![
+            Justification {
+                validator: a.clone().into(),
+                latest_block_hash: a5.clone(),
+            },
+            Justification {
+                validator: d.clone().into(),
+                latest_block_hash: d_block(29),
+            },
+        ]);
+        // A continues to height 30 on its own self-chain.
+        for height in 6..=30u8 {
+            put(
+                a_block(height),
+                height,
+                a.clone(),
+                vec![a_block(height - 1)],
+                vec![],
+            );
+        }
+
+        storage
+            .record_directly_finalized(a_block(30), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        storage
+            .get_representation()
+            .unwrap()
+            .put_cached_floor(a_block(30), a_block(30))
+            .unwrap();
+        let conf = super::super::tests::conf();
+        let active: HashMap<Validator, BlockHash> = [
+            (a.clone().into(), a_block(30)),
+            (d.clone().into(), d_block(30)),
+        ]
+        .into_iter()
+        .collect();
+        let effective_anchor = AtomicI64::new(0);
+        let mut sweep = GcSweep::new();
+        let mut deleted = HashSet::new();
+        for _ in 0..1_000 {
+            let progress = run_turn(
+                &mut sweep,
+                &storage,
+                &blocks,
+                &conf,
+                &effective_anchor,
+                &active,
+                &mut |block| {
+                    deleted.insert(block.block_hash.clone());
+                    Ok(true)
+                },
+                3,
+            )
+            .unwrap();
+            if matches!(progress, GcProgress::Complete { .. }) {
+                break;
+            }
+        }
+        assert!(
+            !deleted.contains(&a5),
+            "a5 is A's latest in D's view (D's justification for A still \
+             names it); the next block D proposes will cite a5 as its \
+             justification for A, so a5 must survive this pass"
+        );
+    }
+
+    /// A newly-bonded validator that has not yet proposed sits in every
+    /// other validator's justifications as a genesis placeholder. Reading
+    /// that slot into the citation frontier would feed `main_parent` a
+    /// height-0 block, collapse the anchor search, and freeze GC until the
+    /// slot fills. Filtering through `own_testimony` drops placeholders so
+    /// the pass completes.
+    #[tokio::test]
+    async fn a_silent_bonded_validator_does_not_freeze_gc() {
+        let (storage, blocks) = open().await;
+        let a = vec![10u8; 65];
+        // W is bonded but has never proposed. Nobody signed any slot in
+        // its name, so every justification that names W can only point at
+        // the genesis placeholder.
+        let w = vec![99u8; 65];
+        let mut block = template();
+        let mut put = |hash: BlockHash,
+                       height: u8,
+                       sender: Vec<u8>,
+                       parents: Vec<BlockHash>,
+                       justifications: Vec<Justification>| {
+            block.block_hash = hash;
+            block.body.state.block_number = i64::from(height);
+            block.seq_num = i32::from(height);
+            block.sender = sender.into();
+            block.header.parents_hash_list = parents;
+            block.justifications = justifications;
+            blocks.put(block.block_hash.clone(), &block).unwrap();
+            let mode = if height == 0 {
+                InsertMode::Approved
+            } else {
+                InsertMode::Normal
+            };
+            drop(storage.insert(&block, mode).unwrap());
+        };
+        put(hash(0), 0, vec![0u8; 65], vec![], vec![]);
+        for height in 1..=19u8 {
+            let parents = if height == 1 {
+                vec![hash(0)]
+            } else {
+                vec![hash(height - 1)]
+            };
+            put(hash(height), height, a.clone(), parents, vec![]);
+        }
+        // A's latest block carries a justification for W whose
+        // `latest_block_hash` is genesis — exactly the placeholder shape.
+        let a_latest = hash(20);
+        let a20_justifications = vec![
+            Justification {
+                validator: a.clone().into(),
+                latest_block_hash: hash(19),
+            },
+            Justification {
+                validator: w.clone().into(),
+                latest_block_hash: hash(0),
+            },
+        ];
+        put(
+            a_latest.clone(),
+            20,
+            a.clone(),
+            vec![hash(19)],
+            a20_justifications,
+        );
+        storage
+            .record_directly_finalized(a_latest.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        storage
+            .get_representation()
+            .unwrap()
+            .put_cached_floor(a_latest.clone(), a_latest.clone())
+            .unwrap();
+        let conf = super::super::tests::conf();
+        // Active set carries both the live validator and the silent one.
+        // W's slot resolves to genesis — the placeholder — which the
+        // filter in `active_latest` will eject by the same `own_testimony`
+        // rule the new fix applies to justifications.
+        let active: HashMap<Validator, BlockHash> = [
+            (a.clone().into(), a_latest.clone()),
+            (w.clone().into(), hash(0)),
+        ]
+        .into_iter()
+        .collect();
+        let effective_anchor = AtomicI64::new(0);
+        let mut sweep = GcSweep::new();
+        let mut deleted = HashSet::new();
+        let mut completed = false;
+        for _ in 0..1_000 {
+            let progress = run_turn(
+                &mut sweep,
+                &storage,
+                &blocks,
+                &conf,
+                &effective_anchor,
+                &active,
+                &mut |block| {
+                    deleted.insert(block.block_hash.clone());
+                    Ok(true)
+                },
+                3,
+            )
+            .unwrap();
+            if matches!(progress, GcProgress::Complete { .. }) {
+                completed = true;
+                break;
+            }
+        }
+        assert!(completed, "GC must complete even when a silent bonded validator leaves a genesis placeholder in justifications");
+        assert!(
+            deleted.contains(&hash(5)),
+            "a block well below the floor should be collected once the \
+             placeholder is filtered out; otherwise the pass stayed frozen"
         );
     }
 }

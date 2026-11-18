@@ -131,17 +131,27 @@ fn moved_past_by_every_validator(
     // parent as moved past even though the next block names that parent
     // directly (see issue #1057). Adding the cited set to the frontier walks
     // the anchor one step below every block the validator can still name.
+    //
+    // Justification slots are filtered through `own_testimony` for the same
+    // reason `active_latest` entries are: a newly-bonded validator that has
+    // not proposed sits in every other validator's justifications as a
+    // genesis placeholder, and genesis has no main parent — admitting it
+    // would collapse the anchor search and freeze every pass until the slot
+    // fills.
     let mut citations: HashSet<BlockHash> = HashSet::new();
     for (validator, hash) in active_latest {
         if dag.own_testimony(validator, hash)?.is_some() {
             citations.insert(hash.clone());
             let meta = dag.lookup_unsafe(hash)?;
             citations.extend(meta.parents.iter().cloned());
-            citations.extend(
-                meta.justifications
-                    .iter()
-                    .map(|j| j.latest_block_hash.clone()),
-            );
+            for just in &meta.justifications {
+                if dag
+                    .own_testimony(&just.validator, &just.latest_block_hash)?
+                    .is_some()
+                {
+                    citations.insert(just.latest_block_hash.clone());
+                }
+            }
         }
     }
 
