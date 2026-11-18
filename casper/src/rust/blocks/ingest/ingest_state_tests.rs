@@ -203,6 +203,27 @@ fn a_block_is_dispatched_once_its_parents_are_inserted() {
 }
 
 #[test]
+fn a_block_is_dispatched_once_its_parent_is_inserted_when_the_outcome_arrives_first() {
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
+    s.handle(received(meta(10, 2, &[7])), 0, &dag);
+    s.handle(received(meta(7, 1, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(7), Work::Validate)));
+    dag.blocks.insert(hash(7));
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(7),
+            outcome: WorkOutcome::Settled,
+        },
+        0,
+        &dag,
+    );
+    s.handle(IngestInput::Inserted { hash: hash(7) }, 0, &dag);
+    assert!(!s.is_held(&hash(7)));
+    assert_eq!(s.next_dispatch(), Some((hash(10), Work::Validate)));
+}
+
+#[test]
 fn a_block_received_twice_is_held_and_dispatched_once() {
     let (mut s, _) = state();
     let dag = dag_with(&[0]);
