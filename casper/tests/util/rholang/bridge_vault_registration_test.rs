@@ -2,6 +2,7 @@ use casper::rust::util::{construct_deploy, proto_util};
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GDeployId, GUnforgeable, Par};
+use num_bigint::BigInt;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
@@ -42,7 +43,34 @@ fn lock_uri(deploy_id_data: &[Par]) -> String {
         .expect("the bridge publishes its three contract URIs on deployId")
 }
 
-async fn lock_results(register_vault: bool) -> Vec<Par> {
+fn bridge_vault_addr(deploy_id_data: &[Par]) -> String {
+    deploy_id_data
+        .iter()
+        .find_map(|par| match &par.exprs.first()?.expr_instance {
+            Some(ExprInstance::EListBody(list)) if list.ps.len() == 2 => {
+                let is_address_tag = matches!(
+                    list.ps[0].exprs.first().and_then(|e| e.expr_instance.as_ref()),
+                    Some(ExprInstance::GString(s)) if s == "address"
+                );
+                if !is_address_tag {
+                    return None;
+                }
+                match &list.ps[1].exprs.first()?.expr_instance {
+                    Some(ExprInstance::GString(addr)) => Some(addr.clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .expect("the bridge publishes [\"address\", bridgeVaultAddr] on deployId")
+}
+
+struct LockOutcome {
+    marker: String,
+    balance: BigInt,
+}
+
+async fn lock_outcome(register_vault: bool) -> LockOutcome {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)
         .await
@@ -77,18 +105,31 @@ async fn lock_results(register_vault: bool) -> Vec<Par> {
         .await
         .unwrap();
     let lock_uri = lock_uri(&published);
+    let bridge_addr = bridge_vault_addr(&published);
 
     let lock = construct_deploy::source_deploy_now_full(
         format!(
             r#"
 new return, rl(`rho:registry:lookup`), deployerId(`rho:system:deployerId`),
-    VaultAddress(`rho:vault:address`), lockCh, meCh, svCh, keyCh in {{
+    VaultAddress(`rho:vault:address`), lockCh, meCh, svCh, keyCh,
+    lockRet, bridgeVaultCh, balCh in {{
   rl!(`{lock_uri}`, *lockCh) |
   rl!(`rho:vault:system`, *svCh) |
   VaultAddress!("fromDeployerId", *deployerId, *meCh) |
   for (lock <- lockCh & @(_, SystemVault) <- svCh & @me <- meCh) {{
     @SystemVault!("deployerAuthKey", *deployerId, *keyCh) |
-    for (key <- keyCh) {{ lock!(100, "0x0000000000000000000000000000000000000001", me, *key, *return) }}
+    for (key <- keyCh) {{
+      lock!(100, "0x0000000000000000000000000000000000000001", me, *key, *lockRet) |
+      for (@lockResult <- lockRet) {{
+        @SystemVault!("findOrCreate", "{bridge_addr}", *bridgeVaultCh) |
+        for (@(true, bridgeVault) <- bridgeVaultCh) {{
+          @bridgeVault!("balance", *balCh) |
+          for (@bal <- balCh) {{
+            return!([lockResult, bal])
+          }}
+        }}
+      }}
+    }}
   }}
 }}
 "#
@@ -100,33 +141,67 @@ new return, rl(`rho:registry:lookup`), deployerId(`rho:system:deployerId`),
         Some(shard_id),
     )
     .unwrap();
-    node.runtime_manager
+    let results = node
+        .runtime_manager
         .capture_results(&post_state, &lock)
         .await
-        .unwrap()
-}
-
-fn assert_bridge_lock_ok(results: &[Par]) {
+        .unwrap();
     assert_eq!(results.len(), 1, "{results:?}");
-    let first = match &results[0].exprs[0].expr_instance {
-        Some(ExprInstance::EListBody(list)) => &list.ps[0].exprs[0].expr_instance,
-        other => panic!("unexpected lock result {other:?}"),
+
+    let list = match results[0]
+        .exprs
+        .first()
+        .and_then(|e| e.expr_instance.as_ref())
+    {
+        Some(ExprInstance::EListBody(list)) => list,
+        other => panic!("expected list return value, got {other:?}"),
     };
-    assert_eq!(
-        *first,
-        Some(ExprInstance::GString("bridge lock OK".to_string()))
-    );
+    assert_eq!(list.ps.len(), 2, "{:?}", list.ps);
+    let marker = match list.ps[0]
+        .exprs
+        .first()
+        .and_then(|e| e.expr_instance.as_ref())
+    {
+        Some(ExprInstance::EListBody(inner)) => {
+            match inner
+                .ps
+                .first()
+                .and_then(|p| p.exprs.first())
+                .and_then(|e| e.expr_instance.as_ref())
+            {
+                Some(ExprInstance::GString(s)) => s.clone(),
+                other => panic!("expected lock marker string, got {other:?}"),
+            }
+        }
+        other => panic!("expected lock result list, got {other:?}"),
+    };
+    let balance = match list.ps[1]
+        .exprs
+        .first()
+        .and_then(|e| e.expr_instance.as_ref())
+    {
+        Some(ExprInstance::GBigInt(bytes)) => BigInt::from_signed_bytes_be(bytes),
+        other => panic!("expected balance bigint, got {other:?}"),
+    };
+    LockOutcome { marker, balance }
 }
 
 /// `lock` transfers into the bridge vault. `_transferTemplate` now calls
 /// `findOrCreate` on the target before `_deposit` (issue #1046), so the
 /// bridge accepts a lock whether or not it self-registered its own vault.
+/// Asserting balance (not just the reply marker) catches the case where
+/// `_deposit` lands on a different vault instance than the one `findOrCreate`
+/// later returns — the race `findOrCreate`'s global lock now prevents.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_bridge_that_registers_its_vault_accepts_a_lock() {
-    assert_bridge_lock_ok(&lock_results(true).await);
+    let outcome = lock_outcome(true).await;
+    assert_eq!(outcome.marker, "bridge lock OK");
+    assert_eq!(outcome.balance, BigInt::from(100));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_bridge_without_its_vault_still_accepts_a_lock() {
-    assert_bridge_lock_ok(&lock_results(false).await);
+    let outcome = lock_outcome(false).await;
+    assert_eq!(outcome.marker, "bridge lock OK");
+    assert_eq!(outcome.balance, BigInt::from(100));
 }

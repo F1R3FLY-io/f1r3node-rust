@@ -32,9 +32,20 @@ in {
        @(_, Either)   <- EitherCh &
        TreeHashMap    <- TreeHashMapCh) {
     // Each invocation of the SystemVault contract uses a different mint.
-    new mintCh, vaultMapStore, initVault in {
+    new mintCh, vaultMapStore, vaultMapLock, initVault in {
       // Initializes the vaultMapStore.
       TreeHashMap!("init", 2, *vaultMapStore) |
+      // `vaultMapLock` serializes the `vaultMap` create critical section when
+      // two findOrCreate calls race on the same fresh address: without it both
+      // read Nil from `TreeHashMap.get`, both create a vault and install a
+      // `_deposit` listener on `@{address | bundle0{*_systemVault}}`, and only
+      // the last `TreeHashMap.set` stays in the map — deposits to the loser's
+      // purse are stranded. The lock is taken only on the slow (create) path,
+      // so the already-registered fast path stays lock-free and does not
+      // consume+produce this channel in every block (which would create
+      // sibling-block merge conflicts on every deploy whose precharge or
+      // refund calls findOrCreate on the deployer's vault).
+      vaultMapLock!(Nil) |
       for (@vaultMap <- vaultMapStore) {
         // Called from VaultsGenerator:
         //   SystemVault!("init", *ret)
@@ -97,21 +108,41 @@ in {
                   }
                   // Valid Vault address returns Right and we proceed with creation/search.
                   _ => {
-                    new createVault, vaultCh, getVaultCh in {
+                    new getVaultCh in {
+                      // Optimistic fast path: if the vault is already in the map,
+                      // return it without touching `vaultMapLock`. Precharge and
+                      // refund hit this path on every user deploy, so keeping it
+                      // lock-free avoids cross-block merge conflicts on the lock
+                      // channel.
                       TreeHashMap!("get", vaultMap, vaultAddress, *getVaultCh) |
                       for (@vault <- getVaultCh) {
                         if (vault != Nil) {
-                          // If vault is in the store, return (true, vault).
                           retCh!((true, vault))
                         } else {
-                          // If vault was not found in store, create it and put it in the store.
-                          _create!(vaultAddress, *createVault, *vaultCh) |
-                          for (vaultRetCh <- createVault) {
-                            // Creates System vault and returns on vaultRetCh, consumed within _create contract.
-                            _makeVault!(vaultAddress, 0, *vaultRetCh) |
-                            // Blocks until both the vault is created and set in the store.
-                            for (@eitherVault <- vaultCh) {
-                              retCh!(eitherVault)
+                          // Slow path: hold `vaultMapLock` across a re-check and
+                          // (if still needed) _create+set so concurrent callers
+                          // for the same fresh address share one vault. The
+                          // re-check inside the lock catches the case where
+                          // another caller created the vault between our first
+                          // get and our lock acquisition.
+                          for (_ <- vaultMapLock) {
+                            new createVault, vaultCh, reGetCh in {
+                              TreeHashMap!("get", vaultMap, vaultAddress, *reGetCh) |
+                              for (@vault2 <- reGetCh) {
+                                if (vault2 != Nil) {
+                                  vaultMapLock!(Nil) |
+                                  retCh!((true, vault2))
+                                } else {
+                                  _create!(vaultAddress, *createVault, *vaultCh) |
+                                  for (vaultRetCh <- createVault) {
+                                    _makeVault!(vaultAddress, 0, *vaultRetCh) |
+                                    for (@eitherVault <- vaultCh) {
+                                      vaultMapLock!(Nil) |
+                                      retCh!(eitherVault)
+                                    }
+                                  }
+                                }
+                              }
                             }
                           }
                         }
@@ -124,13 +155,18 @@ in {
           } |
           // Used during genesis to create PoS vault with initial balance = sum of initial bonds.
           // Can only be used to create the PoS vault, i.e. Vault address = "1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5".
+          // Shares `vaultMapLock` with findOrCreate so a genesis PoS create and any
+          // same-address findOrCreate serialize correctly.
           for (@"createWithBalance", @"1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5", @amount, retCh <- SystemVault) {
-            new createVault, vaultCh in {
-              _create!("1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5", *createVault, *vaultCh) |
-              for (vaultRetCh <- createVault) {
-                _makeVault!("1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5", amount, *vaultRetCh) |
-                for (@eitherVault <- vaultCh) {
-                  retCh!(eitherVault)
+            for (_ <- vaultMapLock) {
+              new createVault, vaultCh in {
+                _create!("1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5", *createVault, *vaultCh) |
+                for (vaultRetCh <- createVault) {
+                  _makeVault!("1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5", amount, *vaultRetCh) |
+                  for (@eitherVault <- vaultCh) {
+                    vaultMapLock!(Nil) |
+                    retCh!(eitherVault)
+                  }
                 }
               }
             }

@@ -134,9 +134,11 @@ new lookup(`rho:registry:lookup`), sysCh,
 1. Computes the per-address vault instance channel.
 2. Registers the per-vault contracts (including the internal `_deposit` receiver) in the tuplespace.
 
-A `transfer` to an unregistered destination used to leave its internal `_deposit` send orphaned on the destination's channel until some later deploy called `findOrCreate` on the target. The source balance would then move inside that later deploy — paid for and signed by whoever registered the vault, not the original sender. `_transferTemplate` now calls `findOrCreate` on the target before it sends `_deposit`, so any transfer registers its destination as part of the sender's own deploy and completes with the source balance debited in that deploy. Callers no longer need to call `findOrCreate` on the destination themselves for correctness.
+`_transferTemplate` calls `findOrCreate` on the destination before it sends `_deposit`, so every transfer registers its destination and moves the source balance inside the sender's own deploy. The source funds are not held in an intermediate purse and are not debited by a later deploy that another key signed.
 
-Calling `findOrCreate` on the destination remains a reasonable idiom when the deploy also wants to observe the destination vault directly (for example, to read the target balance in the same deploy), but it is not required for the transfer itself.
+`findOrCreate` is atomic per vault address: a `vaultMapLock` token held across the `TreeHashMap.get` and (when creation is needed) the `_create` + `set` makes concurrent callers for the same address agree on one vault instance and share its `_deposit` listener. Two parallel transfers to the same fresh address in one deploy therefore both land in the same purse.
+
+Calling `findOrCreate` on the destination is not required for a transfer to complete. It remains a reasonable idiom when the deploy also wants to observe the destination vault directly — for example, to read the target balance in the same deploy.
 
 ## Mergeable-Tagged Channels
 
