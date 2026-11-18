@@ -129,6 +129,10 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
+            Db::new("block-metadata-schema".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
             // WRITE-ONCE terminal deploy verdicts (Finalized/Expired/Failed),
             // written by the finality layer's lifecycle register.
             Db::new("deploy-lifecycle-terminal".to_string(), None),
@@ -297,6 +301,49 @@ mod tests {
             block.body.state.bonds[0].stake
         );
         drop(dag);
+    }
+
+    #[tokio::test]
+    async fn metadata_schema_marks_unmarked_stores_and_refuses_other_schemas() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut manager = new_key_value_store_manager(directory.path().to_path_buf(), None);
+        BlockDagKeyValueStorage::ensure_metadata_schema(&mut manager)
+            .await
+            .unwrap();
+        let dag = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        let mut block = get_random_block_default();
+        block.header.parents_hash_list.clear();
+        block.body.state.block_number = 0;
+        dag.insert(&block, InsertMode::Approved).unwrap();
+        drop(dag);
+        let schema = manager
+            .store("block-metadata-schema".to_string())
+            .await
+            .unwrap();
+        let version = b"version".to_vec();
+        assert_eq!(
+            schema.get_one(&version).unwrap(),
+            Some(BlockDagKeyValueStorage::METADATA_SCHEMA.to_vec())
+        );
+
+        schema.delete(vec![version.clone()]).unwrap();
+        BlockDagKeyValueStorage::ensure_metadata_schema(&mut manager)
+            .await
+            .unwrap();
+        assert_eq!(
+            schema.get_one(&version).unwrap(),
+            Some(BlockDagKeyValueStorage::METADATA_SCHEMA.to_vec())
+        );
+
+        let metadata = manager.store("block-metadata".to_string()).await.unwrap();
+        let before = metadata.to_map().unwrap();
+        schema.put_one(version, b"other-v0".to_vec()).unwrap();
+        assert!(
+            BlockDagKeyValueStorage::ensure_metadata_schema(&mut manager)
+                .await
+                .is_err()
+        );
+        assert_eq!(metadata.to_map().unwrap(), before);
     }
 
     #[tokio::test]

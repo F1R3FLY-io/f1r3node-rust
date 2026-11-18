@@ -354,6 +354,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     let block_dag_storage = {
         use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 
+        BlockDagKeyValueStorage::ensure_metadata_schema(&mut rnode_store_manager).await?;
         BlockDagKeyValueStorage::new_with_hot_window(
             &mut rnode_store_manager,
             conf.casper.dag_hot_window_depth,

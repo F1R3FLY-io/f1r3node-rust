@@ -1563,6 +1563,25 @@ impl BlockDagKeyValueStorage {
         Self::new_with_hot_window(kvm, 1024).await
     }
 
+    pub const METADATA_SCHEMA: &'static [u8] = b"token-amount-v1";
+
+    pub async fn ensure_metadata_schema(
+        kvm: &mut (impl KeyValueStoreManager + ?Sized),
+    ) -> Result<(), KvStoreError> {
+        let schema_store = kvm.store("block-metadata-schema".to_string()).await?;
+        let schema_key = b"version".to_vec();
+        schema_store.put_one_if_absent(schema_key.clone(), Self::METADATA_SCHEMA.to_vec())?;
+        match schema_store.get_one(&schema_key)? {
+            Some(schema) if schema == Self::METADATA_SCHEMA => Ok(()),
+            other => Err(KvStoreError::InvalidArgument(format!(
+                "Incompatible block metadata schema {:?}; this node reads {:?}. Use an \
+                 explicitly migrated or fresh data directory.",
+                other.map(|schema| String::from_utf8_lossy(&schema).into_owned()),
+                String::from_utf8_lossy(Self::METADATA_SCHEMA),
+            ))),
+        }
+    }
+
     pub async fn new_with_hot_window(
         kvm: &mut (impl KeyValueStoreManager + ?Sized),
         hot_window: i64,

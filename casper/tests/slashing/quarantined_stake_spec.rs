@@ -177,8 +177,10 @@ async fn an_equivocator_is_slashed_while_its_withdrawal_is_in_quarantine() {
     );
     admit_everywhere(&mut nodes, &next).await;
     assert_eq!(
-        quarantined(&nodes[1], &next, &leaving_key).await,
-        Some(TokenAmount::zero()),
+        quarantined(&nodes[1], &next, &leaving_key)
+            .await
+            .unwrap_or_else(TokenAmount::zero),
+        TokenAmount::zero(),
         "the slash takes the quarantined stake"
     );
 

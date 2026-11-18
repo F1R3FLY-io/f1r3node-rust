@@ -115,12 +115,15 @@ A successful slash transition (Diagram 07) atomically:
 1. Verifies the system auth token (rejects the deploy at the first
    guard if invalid — `T-AuthCheck`).
 2. Looks up the offender via `invalidBlocks[blockHash]`.
-3. Reads the offender's bond.
-4. If the bond is already zero, returns success without mutation.
-5. Otherwise transfers the bond to the Coop vault.
-6. **Atomically** updates `state.allBonds`, `state.activeValidators`,
-   and `state.committedRewards` — a single map-construction step,
-   not three field writes.
+3. Reads the offender's self-bond, active delegated total, and pending
+   undelegation exposure.
+4. If that slash exposure is already zero, returns success without
+   mutation.
+5. Otherwise transfers the slash exposure to the Coop vault.
+6. **Atomically** updates `state.allBonds`, `state.delegations`,
+   `state.delegatedTotals`, `state.pendingUndelegations`,
+   `state.activeValidators`, and `state.committedRewards` — a single
+   map-construction step, not several field writes.
 7. Returns `(true, Nil)` on `returnCh`.
 
 [![Diagram 07 — PoS.slash() Rholang activity flow](../diagrams/07-activity-pos-slash-contract.svg)](../diagrams/07-activity-pos-slash-contract.svg)
