@@ -53,9 +53,17 @@ COMMON_ENV=(
   CI=
   GITLAB_CI=
   GITHUB_ACTIONS=
+  # The point of this test is to observe the cargo-nextest invocation the
+  # hook makes for the casper crate. An outer SKIP_TESTS=1 (common when a
+  # developer uses that flag to shortcut their own push) would leak into
+  # `env` and make the inner hook skip the invocation, so clear it here
+  # along with the other skip knobs the hook recognizes.
+  SKIP_TESTS=
+  QUICK=
   SKIP_CLIPPY=1
   SKIP_DENY=1
   SKIP_CI_TESTS=1
+  SKIP_TEST_LOCK=1
   TEST_CRATES=casper
 )
 
