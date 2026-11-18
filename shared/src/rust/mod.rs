@@ -7,6 +7,7 @@ pub mod metrics_constants;
 pub mod metrics_semaphore;
 pub mod shared;
 pub mod store;
+pub mod test_tmpdir;
 pub mod token_amount;
 pub mod tracing_init;
 

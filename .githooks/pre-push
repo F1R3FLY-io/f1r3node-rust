@@ -14,11 +14,13 @@
 #   SKIP_CLIPPY=1        - Skip clippy (already runs on commit, but double-checked here)
 #   SKIP_DENY=1          - Skip soak-charts dependency policy checks
 #   SKIP_CI_TESTS=1      - Skip CI workflow and release-train script tests
+#   SKIP_TEST_LOCK=1     - Skip the host-wide pre-push lock (see acquire_test_lock)
 #   QUICK=1              - Run only fast tests (skip --release tests)
 #   VERBOSE=1            - Show all test output (not just failures)
 #   TEST_TIMEOUT=600     - Per-command timeout in seconds (default: 600)
 #   CASPER_TEST_TIMEOUT=3600 - Casper test timeout in seconds (default: 3600)
 #   TEST_CRATES="casper rholang" - Run tests for specific crates only
+#   TEST_LOCK_DIR=path   - Override lock directory (default: $TMPDIR/f1r3node-pre-push.lock.d)
 #
 # CI environment detection:
 #   Automatically skips in CI environments (CI, GITLAB_CI, GITHUB_ACTIONS)
@@ -106,6 +108,87 @@ fi
 # Unset git environment variables that leak from hook context
 unset GIT_DIR GIT_WORK_TREE 2>/dev/null || true
 
+# ---------------------------------------------------------------------------
+# Host-wide test lock.
+#
+# Two sibling checkouts of this repo running their pre-push gates at the same
+# wall-clock instant compete for CPU on the timing sentinels (see
+# .config/nextest.toml), for file descriptors under kern.maxfilesperproc, for
+# VM address space across LMDB mmaps, and for the per-user SysV semaphore
+# pool that the destructive ipcrm reap below walks. Serialize the gates on
+# this lock so the second push blocks instead of corrupting the first.
+#
+# mkdir is atomic on all POSIX filesystems. The pid file records who owns
+# the lock; a dead pid in it means the previous holder was SIGKILL'd (traps
+# don't fire), so the next acquirer treats it as stale and takes over.
+#
+# Opt out with SKIP_TEST_LOCK=1 when you know you're the only run on the
+# host and need the lock out of the way.
+TEST_LOCK_DIR="${TEST_LOCK_DIR:-${TMPDIR:-/tmp}/f1r3node-pre-push.lock.d}"
+SKIP_TEST_LOCK="${SKIP_TEST_LOCK:-0}"
+TEST_LOCK_HELD=0
+
+acquire_test_lock() {
+    if [[ "$SKIP_TEST_LOCK" == "1" ]]; then
+        echo -e "${YELLOW}[test-lock] skipped (SKIP_TEST_LOCK=1)${NC}"
+        return 0
+    fi
+
+    echo -e "${CYAN}[test-lock] attempting to acquire $TEST_LOCK_DIR${NC}"
+
+    local waited=0 holder_pid holder_info sleep_s=5
+    while true; do
+        if mkdir "$TEST_LOCK_DIR" 2>/dev/null; then
+            echo "$$" > "$TEST_LOCK_DIR/pid"
+            {
+                echo "pid=$$"
+                echo "host=$(hostname -s 2>/dev/null || echo unknown)"
+                echo "repo=$REPO_ROOT"
+                echo "acquired=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            } > "$TEST_LOCK_DIR/info" 2>/dev/null || true
+            TEST_LOCK_HELD=1
+            if (( waited > 0 )); then
+                echo -e "${CYAN}[test-lock] acquired after ${waited}s${NC}"
+            else
+                echo -e "${CYAN}[test-lock] acquired${NC}"
+            fi
+            return 0
+        fi
+
+        holder_pid="$(cat "$TEST_LOCK_DIR/pid" 2>/dev/null || true)"
+        if [[ -n "$holder_pid" ]] && ! kill -0 "$holder_pid" 2>/dev/null; then
+            echo -e "${YELLOW}[test-lock] stale lock from dead pid $holder_pid; clearing${NC}"
+            rm -rf "$TEST_LOCK_DIR"
+            continue
+        fi
+
+        if (( waited == 0 )); then
+            holder_info="$(cat "$TEST_LOCK_DIR/info" 2>/dev/null | tr '\n' ' ' || true)"
+            echo -e "${CYAN}[test-lock] waiting for holder pid ${holder_pid:-?} (${holder_info:-no info})${NC}"
+        elif (( waited % 60 == 0 )); then
+            echo -e "${CYAN}[test-lock] still waiting... (${waited}s elapsed, holder pid ${holder_pid:-?})${NC}"
+        fi
+        sleep "$sleep_s"
+        waited=$((waited + sleep_s))
+    done
+}
+
+release_test_lock() {
+    if [[ "$TEST_LOCK_HELD" == "1" ]]; then
+        rm -rf "$TEST_LOCK_DIR"
+        TEST_LOCK_HELD=0
+    fi
+}
+
+acquire_test_lock
+
+# Bridge trap until the full cleanup() is defined and its trap installed
+# below. Covers accidental exits between here and there (e.g. cargo nextest
+# missing, mktemp failing). Replaced when `trap 'cleanup $?' EXIT` fires.
+trap 'rc=$?; release_test_lock; echo "[pre-push hook: exit $rc after $(($(date +%s) - _hook_t0))s]" >&2; exit $rc' EXIT
+trap 'release_test_lock; exit 130' INT
+trap 'release_test_lock; exit 143' TERM
+
 # Raise FD limit for parallel LMDB-heavy tests (rholang/casper open many envs).
 # heed 0.22 holds more FDs per Env than 0.11; macOS default of 256 trips EMFILE.
 ulimit -n 65536 2>/dev/null || true
@@ -168,6 +251,7 @@ cleanup() {
         done
     fi
     rm -rf "$RESULTS_DIR"
+    release_test_lock
     echo "[pre-push hook: exit $rc after $(($(date +%s) - _hook_t0))s]" >&2
     exit "$rc"
 }
