@@ -321,12 +321,12 @@ impl KeyValueBlockStore {
         block: &BlockMessage,
         class: PendingClass,
     ) -> Result<PendingInsert, KvStoreError> {
-        if self.disk_contains(&block.block_hash)? {
-            return Ok(PendingInsert::Accepted);
-        }
         let outcome = self.pending.insert(block, class);
+        // `put` writes the body before it removes the pending copy, so whichever
+        // of the two runs second removes it.
         if self.disk_contains(&block.block_hash)? {
             self.pending.remove(&block.block_hash);
+            return Ok(PendingInsert::Accepted);
         }
         Ok(outcome)
     }
@@ -1555,6 +1555,24 @@ mod tests {
             PendingInsert::Accepted
         );
         assert!(!bs.is_pending(&block.block_hash));
+    }
+
+    #[test]
+    fn a_block_already_on_disk_is_accepted_when_the_pending_area_is_full() {
+        let (bs, _disk) = in_mem_store();
+        let block = models::rust::block_implicits::get_random_block_default();
+        bs.put_block_message(&block).unwrap();
+        bs.set_pending_limits(PendingBlockLimits {
+            max_blocks: 0,
+            max_bytes: 0,
+            max_per_sender: 0,
+        });
+        assert_eq!(
+            bs.put_pending(&block, PendingClass::Solicited).unwrap(),
+            PendingInsert::Accepted
+        );
+        assert!(!bs.is_pending(&block.block_hash));
+        assert_eq!(bs.pending_usage().blocks, 0);
     }
 
     #[test]

@@ -1,7 +1,6 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use models::casper::BlockMessageProto;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
@@ -60,7 +59,7 @@ pub enum PendingClass {
     Solicited,
 }
 
-/// What the area holds against its limits: blocks, encoded bytes, and blocks
+/// What the area holds against its limits: blocks, their encoded size, and blocks
 /// per sender (only senders with a block in the area), each counting the room
 /// reserved for blocks not yet inserted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -72,20 +71,13 @@ pub struct PendingUsage {
 }
 
 struct Entry {
-    encoded: Bytes,
-    sender: Bytes,
+    block: Arc<BlockMessage>,
+    bytes: usize,
 }
 
 struct Reservation {
     sender: Bytes,
     bytes: usize,
-}
-
-fn decode(encoded: &Bytes) -> BlockMessage {
-    let proto = BlockMessageProto::decode(encoded.as_ref())
-        .expect("the pending area decodes only bytes it encoded from a BlockMessage");
-    BlockMessage::from_proto(proto)
-        .expect("the pending area decodes only bytes it encoded from a BlockMessage")
 }
 
 struct Inner {
@@ -124,14 +116,15 @@ impl Inner {
 
     fn remove(&mut self, hash: &BlockHash) -> Option<Entry> {
         let entry = self.entries.remove(hash)?;
-        self.bytes -= entry.encoded.len();
+        self.bytes -= entry.bytes;
+        let sender = &entry.block.sender;
         let count = self
             .per_sender
-            .get_mut(&entry.sender)
+            .get_mut(sender)
             .expect("every entry is counted under its sender");
         *count -= 1;
         if *count == 0 {
-            self.per_sender.remove(&entry.sender);
+            self.per_sender.remove(sender);
         }
         Some(entry)
     }
@@ -172,8 +165,10 @@ impl PendingBlocks {
     pub fn set_limits(&self, limits: PendingBlockLimits) { self.lock().limits = limits; }
 
     pub fn insert(&self, block: &BlockMessage, class: PendingClass) -> PendingInsert {
-        let encoded = Bytes::from(block.to_proto().encode_to_vec());
-        let bytes = encoded.len();
+        if self.contains(&block.block_hash) {
+            return PendingInsert::Accepted;
+        }
+        let bytes = block.to_proto().encoded_len();
         let mut inner = self.lock();
         let limits = inner.limits;
 
@@ -213,15 +208,15 @@ impl PendingBlocks {
         *inner.per_sender.entry(block.sender.clone()).or_insert(0) += 1;
         inner.bytes += bytes;
         inner.entries.insert(block.block_hash.clone(), Entry {
-            encoded,
-            sender: block.sender.clone(),
+            block: Arc::new(block.clone()),
+            bytes,
         });
         PendingInsert::Accepted
     }
 
     pub fn get(&self, hash: &BlockHash) -> Option<BlockMessage> {
-        let encoded = self.lock().entries.get(hash)?.encoded.clone();
-        Some(decode(&encoded))
+        let block = Arc::clone(&self.lock().entries.get(hash)?.block);
+        Some(BlockMessage::clone(&block))
     }
 
     pub fn contains(&self, hash: &BlockHash) -> bool { self.lock().entries.contains_key(hash) }
@@ -497,6 +492,7 @@ mod tests {
             PendingInsert::Accepted
         );
         assert_eq!(area.len(), 1);
+        assert_eq!(area.bytes(), size());
     }
 
     #[test]
