@@ -156,6 +156,15 @@ impl ProposeResult {
             ProposeStatus::Failure(ProposeFailure::NoNewDeploys)
         )
     }
+
+    pub fn is_not_bonded(&self) -> bool {
+        matches!(
+            self.propose_status,
+            ProposeStatus::Failure(ProposeFailure::CheckConstraintsFailure(
+                CheckProposeConstraintsFailure::NotBonded
+            ))
+        )
+    }
 }
 
 impl BlockCreatorResult {

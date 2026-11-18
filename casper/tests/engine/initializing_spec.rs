@@ -12,6 +12,7 @@ use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::initializing::Initializing;
 use casper::rust::engine::lfs_tuple_space_requester;
 use casper::rust::errors::CasperError;
+use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::protocol_helper::packet_with_content;
 use comm::rust::test_instances::TransportLayerStub;
 use crypto::rust::hash::blake2b256::Blake2b256;
@@ -44,7 +45,11 @@ impl InitializingSpec {
     }
 
     fn after_each(fixture: &TestFixture) { fixture.transport_layer.reset(); }
-    async fn make_transition_to_running_once_approved_block_received() {
+    async fn make_transition_to_running_once_approved_block_received() -> (
+        Arc<Initializing<TransportLayerStub>>,
+        BlockMessage,
+        PeerNode,
+    ) {
         let _event_bus = shared::rust::shared::f1r3fly_events::F1r3flyEvents::new();
 
         let fixture = TestFixture::new().await;
@@ -365,6 +370,11 @@ impl InitializingSpec {
         test.await;
 
         Self::after_each(&fixture);
+        (
+            initializing_engine,
+            fixture.genesis.clone(),
+            fixture.local.clone(),
+        )
     }
 }
 
@@ -437,6 +447,37 @@ async fn create_initializing_engine_with_dag(
 #[tokio::test]
 async fn make_transition_to_running_once_approved_block_received() {
     InitializingSpec::make_transition_to_running_once_approved_block_received().await;
+}
+
+#[tokio::test]
+async fn a_genesis_restore_and_a_late_block_response_log_no_warnings() {
+    use casper::rust::engine::engine::Engine;
+    use shared::rust::tracing_init::EventCapture;
+    use tracing::Level;
+
+    let capture = EventCapture::new();
+    let _guard = capture.install();
+
+    let (initializing_engine, genesis, peer) =
+        InitializingSpec::make_transition_to_running_once_approved_block_received().await;
+    initializing_engine
+        .handle(peer, CasperMessage::BlockMessage(genesis))
+        .await
+        .expect("a late block response is accepted");
+
+    assert!(capture
+        .with_message("anchored at genesis")
+        .iter()
+        .any(|event| event.level == Level::INFO));
+    assert!(capture
+        .with_message("the LFS block requester is no longer running")
+        .iter()
+        .any(|event| event.level == Level::DEBUG));
+    assert_eq!(capture.with_message("has no floor seed"), vec![]);
+    assert_eq!(
+        capture.with_message("Failed to enqueue BlockMessage"),
+        vec![]
+    );
 }
 
 /// Test that verifies the fix for the race condition where a slow validator

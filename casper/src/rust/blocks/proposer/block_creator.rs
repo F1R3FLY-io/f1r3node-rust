@@ -1576,7 +1576,7 @@ async fn prepare_user_deploys_with_policy(
         .iter()
         .filter(|d| !selected_in_scope_recovery_sigs.contains(&d.sig))
     {
-        tracing::warn!(
+        tracing::debug!(
             "Deploy {}... FILTERED (already in scope): deploy already exists in DAG within lifespan window",
             deploy_sig_prefix(&d.sig)
         );
