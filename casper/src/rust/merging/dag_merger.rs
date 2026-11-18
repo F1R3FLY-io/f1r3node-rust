@@ -1038,6 +1038,7 @@ pub fn merge(
     // recovery path can re-propose them in a subsequent block.
     let mut collateral_lost_pairs: Vec<(Bytes, BlockHash)> = Vec::new();
     let mut dedup_dropped: Vec<DeployChainIndex> = Vec::new();
+    let mut seed_dropped: Vec<DeployChainIndex> = Vec::new();
 
     // Memoized settled-in-base results, one probe per unique sig per merge.
     let mut settled_checked: HashSet<Bytes> = HashSet::new();
@@ -1236,6 +1237,7 @@ pub fn merge(
                 reused.len(),
             );
         }
+        seed_dropped = reused;
     }
 
     // Settled-content protection (#341). Under multi-parent finality a
@@ -1824,9 +1826,12 @@ pub fn merge(
         .map_err(CasperError::HistoryError)
     };
 
+    // A seed-dropped chain's effect is absent from the base, as a rejected
+    // chain's is; a dedup-dropped chain's effect is already in it.
     let removed_before_resolution: Vec<DeployChainIndex> = base_conflicting
         .iter()
         .chain(settled_conflicting.iter())
+        .chain(seed_dropped.iter())
         .cloned()
         .collect();
     let removed_or_dropped: Vec<DeployChainIndex> = removed_before_resolution
