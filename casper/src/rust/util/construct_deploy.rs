@@ -1,5 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/util/ConstructDeploy.scala
 
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crypto::rust::private_key::PrivateKey;
@@ -71,13 +72,28 @@ pub fn source_deploy(
     Signed::create(data, Box::new(Secp256k1), sec).map_err(|e| CasperError::SigningError(e))
 }
 
+/// The current time in milliseconds, strictly greater than every earlier
+/// result. A deploy's unforgeable names derive from its key, timestamp and
+/// valid-after block, so two deploys built back to back by one key must not
+/// share a timestamp.
+fn distinct_now_millis() -> Result<i64, CasperError> {
+    static LAST: AtomicI64 = AtomicI64::new(i64::MIN);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
+    let previous = LAST
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |last| {
+            Some(now.max(last.saturating_add(1)))
+        })
+        .expect("the update closure always yields a value");
+    Ok(now.max(previous.saturating_add(1)))
+}
+
 pub fn source_deploy_now(
     source: String,
     sec: Option<PrivateKey>,
     valid_after_block_number: Option<i64>,
     shard_id: Option<String>,
 ) -> Result<Signed<DeployData>, CasperError> {
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
+    let timestamp = distinct_now_millis()?;
 
     source_deploy(
         source,
@@ -99,7 +115,7 @@ pub fn source_deploy_now_full(
     shard_id: Option<String>,
 ) -> Result<Signed<DeployData>, CasperError> {
     let phlo_limit = phlo_limit.unwrap_or(1000000);
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
+    let timestamp = distinct_now_millis()?;
 
     source_deploy(
         source,

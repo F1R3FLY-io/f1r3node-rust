@@ -109,6 +109,7 @@ fn reserve_deploy(
 ) -> Result<Option<DeployError>, CasperError> {
     const MAX_ATTEMPTS: usize = 3;
     let deploy_id = deploy.sig.to_vec();
+    let seed = models::rust::deploy_seed::deploy_name_seed(deploy);
     let preparation = this.deploy_storage.prepare_checked(deploy);
     let limits = this.casper_shard_conf.deploy_admission;
     for _ in 0..MAX_ATTEMPTS {
@@ -135,6 +136,19 @@ fn reserve_deploy(
             }
             Err(DeployPreparationError::Serialization(error)) => return Err(error.into()),
         };
+        if let Some(holder) = this
+            .block_dag_storage
+            .carrier_index_other_seed_carrier(&seed, &deploy_id)?
+        {
+            return Ok(Some(DeployError::seed_reuse(holder)));
+        }
+        let held_elsewhere = match rejected_store.seed_holder(&seed)? {
+            Some(holder) => Some(holder),
+            None => this.deploy_storage.seed_holder(&seed)?,
+        };
+        if let Some(holder) = held_elsewhere.filter(|holder| *holder != deploy_id) {
+            return Ok(Some(DeployError::seed_reuse(holder)));
+        }
         if let Some(refusal) = this.deploy_storage.refusal(prepared, limits)? {
             return Ok(Some(pool_refusal(refusal)));
         }
@@ -154,6 +168,9 @@ fn reserve_deploy(
             }
             PreparedInsertResult::Refused(refusal) => return Ok(Some(pool_refusal(refusal))),
             PreparedInsertResult::Changed => continue,
+            PreparedInsertResult::SeedHeld(holder) => {
+                return Ok(Some(DeployError::seed_reuse(holder)));
+            }
         }
     }
     Ok(Some(DeployError::AdmissionBusy))

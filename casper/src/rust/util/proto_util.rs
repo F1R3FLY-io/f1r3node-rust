@@ -367,6 +367,39 @@ where
     Ok(None)
 }
 
+/// The name seeds among `deploys` (seed, sig) that the seed carrier index
+/// cannot clear: some carrier of another sig with that seed is indexed, so
+/// only an ancestor scan from `scan_start` can tell whether it is on the
+/// scanned lineage. `None` when the index does not cover a window starting at
+/// `scan_start` (below its watermark or prune cutoff), so every seed must be
+/// scanned.
+pub fn seeds_needing_scan<'a>(
+    dag: &KeyValueDagRepresentation,
+    deploys: impl IntoIterator<Item = (&'a Vec<u8>, &'a [u8])>,
+    scan_start: i64,
+) -> Result<Option<HashSet<Vec<u8>>>, CasperError> {
+    let start = scan_start.max(0);
+    let covers = |bound: Option<i64>| bound.is_none_or(|b| b <= start);
+    let watermark_covers = dag
+        .carrier_index_seed_watermark()?
+        .is_some_and(|w| w <= start);
+    if !watermark_covers || !covers(dag.carrier_index_prune_cutoff()?) {
+        return Ok(None);
+    }
+    let mut needing = HashSet::new();
+    for (seed, sig) in deploys {
+        if !dag.carrier_index_seed_proves_unshared(seed, sig)? {
+            needing.insert(seed.clone());
+        }
+    }
+    // A prune walk runs concurrently and records its cutoff before removing
+    // rows; a cutoff that moved past the window voids the absences read.
+    if !covers(dag.carrier_index_prune_cutoff()?) {
+        return Ok(None);
+    }
+    Ok(Some(needing))
+}
+
 fn unheld_in_scope(
     parent: &BlockHash,
     child: &BlockHash,
