@@ -314,43 +314,32 @@ cargo test -p casper
 
 ## Running Two Checkouts In Parallel
 
-Two side-by-side checkouts can each run `cargo nextest run --release -p <crate>`
-or the full `.githooks/pre-push` gate without the filesystem-level contention
-that bit the single-tree workspace (each checkout has its own `target/`, each
-test opens an LMDB env under a per-process `tempfile::tempdir()`, and the
-process-global `env_cache` in `rspace++/src/rspace/shared/env_cache.rs` cannot
-reach across process boundaries). The remaining contention is kernel
-scheduling pressure on timing-sensitive sentinels listed in
-`.config/nextest.toml`.
+Two side-by-side checkouts can each run `.githooks/pre-push` fire-and-forget.
+The hook serializes them on a host-wide lock dir at
+`$TMPDIR/f1r3node-pre-push.lock.d` (override via `TEST_LOCK_DIR`): the second
+`git push` blocks on the lock with status messages (`[test-lock] attempting
+to acquire …`, `[test-lock] waiting for holder pid …`, `[test-lock] acquired
+after Ns`) until the first run finishes. Normal exit, SIGINT, and SIGTERM
+all release the lock through the EXIT trap; SIGKILL leaves a stale lock dir
+behind, and the next acquirer detects the dead PID with `kill -0`, prints
+`stale lock from dead pid …; clearing`, and takes over.
 
-Those sentinels assert wall-clock bounds — "the scan released the worker
-within scan/4", "the snapshot cost did not scale with store size", "the mutex
-did not contend above 50%". Within one tree they run on an island
-(`threads-required = "num-cpus"`) so no other test in the same run competes.
-The island cannot stop a second `cargo nextest` on the same host from stealing
-CPU, and under enough pressure the kernel delays the sentinel's ticker or
-measurement window and the assertion breaks even though the production
-invariant it guards is intact.
+The lock covers the full pre-push run — the destructive SysV semaphore reap,
+clippy, the dashboard checks, and the test suites — so neither the semaphore
+pool nor the timing sentinels in `.config/nextest.toml` race across trees.
+Opt out with `SKIP_TEST_LOCK=1` when you know you're the only run on the host.
 
-Pick one of:
+If you'd rather run both gates at the same wall-clock instant instead of
+serializing, partition the crates so no sentinel-heavy crate runs in both
+trees at once:
 
-1. **Serialize the gates.** Run one checkout's pre-push at a time. Simplest,
-   zero flake, cost is wall time.
-2. **Partition the crates.** Give each tree disjoint `TEST_CRATES`:
-   ```bash
-   # checkout A
-   TEST_CRATES="crypto shared models graphz block-storage rspace_plus_plus" git push
-   # checkout B (run after A starts)
-   TEST_CRATES="comm rholang casper node deploy-queue" git push
-   ```
-   The sentinel-heavy crates (`rspace_plus_plus`, `casper`) land in different
-   gates and never compete at the same wall-clock instant.
-3. **Skip the Rust tests in one tree.** If you only need the second tree to
-   run clippy / CI script tests:
-   ```bash
-   SKIP_TESTS=1 git push
-   ```
+```bash
+# checkout A — bypass the lock, take the LMDB-heavy half
+SKIP_TEST_LOCK=1 TEST_CRATES="crypto shared models graphz block-storage rspace_plus_plus" git push
+# checkout B — bypass the lock, take the other half
+SKIP_TEST_LOCK=1 TEST_CRATES="comm rholang casper node deploy-queue" git push
+```
 
-If you need two full test gates in parallel for a deadline, (2) is the lowest
-pain: the two trees still get full crate coverage, they just do not race the
-same timing sentinel.
+That path accepts the CPU-bound and fd-bound contention in exchange for
+wall-clock parallelism; it's the right choice only when you've measured that
+your host has the headroom for it.
