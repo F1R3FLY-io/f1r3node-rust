@@ -2642,7 +2642,7 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::GByteArray(lhs), ExprInstance::GByteArray(rhs)) => {
-                            self.cost.charge(byte_array_append_cost(lhs.clone()))?;
+                            self.cost.charge(byte_array_append_cost(lhs.len()))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GByteArray(
                                     lhs.into_iter().chain(rhs.into_iter()).collect(),
@@ -2651,7 +2651,7 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::EListBody(lhs), ExprInstance::EListBody(rhs)) => {
-                            self.cost.charge(list_append_cost(lhs.clone().ps))?;
+                            self.cost.charge(list_append_cost(lhs.ps.len()))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
                                     ps: lhs.ps.into_iter().chain(rhs.ps.into_iter()).collect(),
@@ -2778,8 +2778,8 @@ impl DebruijnInterpreter {
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                     let updated_ps: Vec<Par> = evaled_ps
-                        .iter()
-                        .map(|p| self.update_locally_free_par(p.clone()))
+                        .into_iter()
+                        .map(|p| self.update_locally_free_par(p))
                         .collect();
 
                     Ok(Expr {
@@ -2802,8 +2802,8 @@ impl DebruijnInterpreter {
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                     let updated_ps: Vec<Par> = evaled_ps
-                        .iter()
-                        .map(|p| self.update_locally_free_par(p.clone()))
+                        .into_iter()
+                        .map(|p| self.update_locally_free_par(p))
                         .collect();
 
                     Ok(Expr {
@@ -2827,15 +2827,15 @@ impl DebruijnInterpreter {
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                     let updated_ps: Vec<Par> = evaled_ps
-                        .iter()
-                        .map(|p| self.update_locally_free_par(p.clone()))
+                        .into_iter()
+                        .map(|p| self.update_locally_free_par(p))
                         .collect();
 
-                    let mut cloned_set = set.clone();
-                    cloned_set.ps = SortedParHashSet::create_from_vec(updated_ps);
+                    let mut evaled_set = set;
+                    evaled_set.ps = SortedParHashSet::create_from_vec(updated_ps);
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::ESetBody(
-                            ParSetTypeMapper::par_set_to_eset(cloned_set),
+                            ParSetTypeMapper::par_set_to_eset(evaled_set),
                         )),
                     })
                 }
@@ -2844,20 +2844,20 @@ impl DebruijnInterpreter {
                     let map = ParMapTypeMapper::emap_to_par_map(emap.clone());
                     let evaled_ps = map
                         .ps
-                        .clone()
-                        .into_iter()
+                        .sorted_list
+                        .iter()
                         .map(|(k, v)| {
-                            let e_key = self.eval_expr(&k, env)?;
-                            let e_value = self.eval_expr(&v, env)?;
+                            let e_key = self.eval_expr(k, env)?;
+                            let e_value = self.eval_expr(v, env)?;
                             Ok((e_key, e_value))
                         })
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-                    let mut cloned_map = map.clone();
-                    cloned_map.ps = SortedParMap::create_from_vec(evaled_ps);
+                    let mut evaled_map = map;
+                    evaled_map.ps = SortedParMap::create_from_vec(evaled_ps);
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::EMapBody(
-                            ParMapTypeMapper::par_map_to_emap(cloned_map),
+                            ParMapTypeMapper::par_map_to_emap(evaled_map),
                         )),
                     })
                 }
@@ -2871,8 +2871,8 @@ impl DebruijnInterpreter {
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                     let updated_ps: Vec<Par> = evaled_ps
-                        .iter()
-                        .map(|p| self.update_locally_free_par(p.clone()))
+                        .into_iter()
+                        .map(|p| self.update_locally_free_par(p))
                         .collect();
 
                     Ok(Expr {
