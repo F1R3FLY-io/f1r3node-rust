@@ -52,7 +52,7 @@ pub struct ReplayRSpace<C, P, A, K> {
     event_log: Arc<Mutex<Log>>,
     produce_counter: Arc<Mutex<BTreeMap<Produce, i32>>>,
     matcher: Arc<Box<dyn Match<P, A, K>>>,
-    pub replay_data: Arc<Mutex<MultisetMultiMap<IOEvent, COMM>>>,
+    pub replay_data: Arc<Mutex<MultisetMultiMap<IOEvent, Arc<COMM>>>>,
     // Secondary index over `replay_data`: consume.hash -> produce.hash ->
     // recorded COMMs containing both. A persistent contract's single consume
     // key can hold one recorded COMM PER FIRE (100k+ for a hot loop), and
@@ -64,7 +64,8 @@ pub struct ReplayRSpace<C, P, A, K> {
     // one). Kept strictly in sync with `replay_data` (rig populates, clears
     // clear, remove_bindings_for prunes); on any miss the caller falls back
     // to the full multiset scan, so behavior is unchanged in edge cases.
-    consume_replay_index: Arc<Mutex<HashMap<Blake2b256Hash, HashMap<Blake2b256Hash, Vec<COMM>>>>>,
+    consume_replay_index:
+        Arc<Mutex<HashMap<Blake2b256Hash, HashMap<Blake2b256Hash, Vec<Arc<COMM>>>>>>,
     logger: Arc<Mutex<Box<dyn RSpaceLogger<C, P, A, K>>>>,
     replay_waiting_continuations_estimate: Arc<AtomicI64>,
     // Fixed-size striped locks — mirrors the RSpace fix in rspace.rs (PR #72).
@@ -352,32 +353,21 @@ where
         for event in comm_events {
             match event {
                 Event::Comm(comm) => {
+                    let shared = Arc::new(comm.clone());
                     for produce in &comm.produces {
                         consume_index
                             .entry(comm.consume.hash.clone())
                             .or_default()
                             .entry(produce.hash.clone())
                             .or_default()
-                            .push(comm.clone());
+                            .push(shared.clone());
                     }
-                    let comm_cloned = comm.clone();
-                    let (consume, produces) = (comm_cloned.consume, comm_cloned.produces);
-                    let produce_io_events: Vec<IOEvent> = produces
-                        .into_iter()
-                        .map(|produce| IOEvent::Produce(produce))
-                        .collect();
 
-                    let mut io_events = produce_io_events.clone();
-                    io_events.insert(0, IOEvent::Consume(consume));
-
+                    let io_events = std::iter::once(IOEvent::Consume(comm.consume.clone()))
+                        .chain(comm.produces.iter().cloned().map(IOEvent::Produce));
                     for io_event in io_events {
-                        let io_event_converted: Event = match io_event {
-                            IOEvent::Produce(ref p) => Event::IoEvent(IOEvent::Produce(p.clone())),
-                            IOEvent::Consume(ref c) => Event::IoEvent(IOEvent::Consume(c.clone())),
-                        };
-
-                        if new_stuff.contains(&io_event_converted) {
-                            replay_data.add_binding(io_event, comm.clone());
+                        if new_stuff.contains(&Event::IoEvent(io_event.clone())) {
+                            replay_data.add_binding(io_event, shared.clone());
                         }
                     }
                     Ok(())
@@ -684,18 +674,18 @@ where
                             .collect::<Vec<_>>()
                     })
             };
-            let narrowed: Option<Vec<COMM>> = {
+            let narrowed: Option<Vec<Arc<COMM>>> = {
                 let index = self
                     .consume_replay_index
                     .lock()
                     .expect("consume replay index lock");
                 index.get(&consume_ref.hash).map(|by_produce| {
-                    let mut out: Vec<COMM> = Vec::new();
+                    let mut out: Vec<Arc<COMM>> = Vec::new();
                     let mut seen: HashSet<&COMM> = HashSet::new();
                     for datum in &present_data {
                         if let Some(comms) = by_produce.get(&datum.source.hash) {
                             for comm in comms {
-                                if seen.insert(comm) {
+                                if seen.insert(comm.as_ref()) {
                                     out.push(comm.clone());
                                 }
                             }
@@ -739,7 +729,7 @@ where
                         self.log_comm(&data_candidates, &channels, &wk, &comm_ref, "comm.consume");
 
                         assert!(
-                            comms_list.contains(&comm_ref),
+                            comms_list.iter().any(|comm| **comm == comm_ref),
                             "{}",
                             format!(
                                 "COMM Event {:?} was not contained in the trace {:?}",
@@ -785,7 +775,7 @@ where
     fn get_comm_and_consume_candidates<'c>(
         &self,
         channel_patterns: &[(C, P)],
-        comms: &'c [COMM],
+        comms: &'c [Arc<COMM>],
     ) -> Option<(&'c COMM, Vec<ConsumeCandidate<C, A>>)> {
         self.get_comm_or_candidate(comms, |comm| self.run_matcher_consume(channel_patterns, comm))
     }
@@ -891,7 +881,7 @@ where
         channel: &C,
         data: &A,
         persist: bool,
-        comms: &'c [COMM],
+        comms: &'c [Arc<COMM>],
         produce_ref: &Produce,
         grouped_channels: &[Vec<C>],
     ) -> Option<(&'c COMM, ProduceCandidate<C, P, A, K>)> {
@@ -958,7 +948,7 @@ where
     fn handle_match(
         &self,
         pc: ProduceCandidate<C, P, A, K>,
-        comms: &[COMM],
+        comms: &[Arc<COMM>],
     ) -> MaybeConsumeResult<C, P, A, K> {
         let ProduceCandidate {
             channels,
@@ -986,7 +976,7 @@ where
         self.log_comm(&data_candidates, &channels, &continuation, &comm_ref, "comm.produce");
 
         assert!(
-            comms.contains(&comm_ref),
+            comms.iter().any(|comm| **comm == comm_ref),
             "COMM Event {:?} was not contained in the trace {:?}",
             comm_ref,
             comms
@@ -1006,6 +996,7 @@ where
     }
 
     fn remove_bindings_for(&self, comm_ref: COMM) {
+        let comm_ref = Arc::new(comm_ref);
         {
             let mut index = self
                 .consume_replay_index
@@ -1096,13 +1087,13 @@ where
     /// what the matcher found for it.
     fn get_comm_or_candidate<'c, Candidate>(
         &self,
-        comms: &'c [COMM],
+        comms: &'c [Arc<COMM>],
         run_matcher: impl Fn(&COMM) -> Option<Candidate>,
     ) -> Option<(&'c COMM, Candidate)> {
         assert!(!comms.is_empty(), "List comms must not be empty");
         comms
             .iter()
-            .find_map(|comm| run_matcher(comm).map(|candidate| (comm, candidate)))
+            .find_map(|comm| run_matcher(comm).map(|candidate| (comm.as_ref(), candidate)))
     }
 
     // This function may need to clear 'replay_data'
