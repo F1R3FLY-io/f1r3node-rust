@@ -421,7 +421,14 @@ env:
   #   client's own logger). Verified: descends from 5717054, and differs from
   #   it only in those tests, node.py, the test catalog, pyproject.toml and
   #   poetry.lock; unit tests pass.
-  SYSTEM_INTEGRATION_REF: 3867a22c6fc0d34cc744a5973d296dcb719f417a
+  # 2026-11-18: 3867a22 -> 907f8a5 (system-integration main, PRs #190, #191
+  #   and #192 merged through promotion #193). The load driver reads every
+  #   validator's tip concurrently under a 3 s deadline, deploy timestamps
+  #   come from pyf1r3fly's per-key clock, and test_expired_deploy_admission
+  #   retries when a block already being built misses the deploy at the
+  #   expiry boundary. Verified: descends from 3867a22; differs from it only
+  #   in integration-tests/test and unit-tests (10 files); unit tests pass.
+  SYSTEM_INTEGRATION_REF: 907f8a57f408afd106b36e769d48975f965a1697
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
