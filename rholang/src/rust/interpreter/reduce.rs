@@ -6408,21 +6408,17 @@ impl DebruijnInterpreter {
             fn contains(&self, base_expr: Expr, par: Par) -> Result<Expr, InterpreterError> {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
-                        ExprInstance::ESetBody(eset) => {
-                            let base_ps = ParSetTypeMapper::eset_to_par_set(eset).ps;
+                        ExprInstance::ESetBody(eset) => Ok(Expr {
+                            expr_instance: Some(ExprInstance::GBool(ParSetTypeMapper::contains(
+                                &eset, &par,
+                            ))),
+                        }),
 
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GBool(base_ps.contains(par))),
-                            })
-                        }
-
-                        ExprInstance::EMapBody(emap) => {
-                            let base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GBool(base_ps.contains(par))),
-                            })
-                        }
+                        ExprInstance::EMapBody(emap) => Ok(Expr {
+                            expr_instance: Some(ExprInstance::GBool(
+                                ParMapTypeMapper::contains_key(&emap, &par),
+                            )),
+                        }),
 
                         other => Err(InterpreterError::MethodNotDefined {
                             method: String::from("contains"),
@@ -6473,9 +6469,9 @@ impl DebruijnInterpreter {
             fn get(&self, base_expr: Expr, key: Par) -> Result<Par, InterpreterError> {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
+                        // `get` answers Nil for a missing key.
                         ExprInstance::EMapBody(emap) => {
-                            let base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            Ok(base_ps.get_or_else(key, Par::default()))
+                            Ok(ParMapTypeMapper::lookup(&emap, &key).unwrap_or_default())
                         }
 
                         other => Err(InterpreterError::MethodNotDefined {
@@ -6533,8 +6529,7 @@ impl DebruijnInterpreter {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
                         ExprInstance::EMapBody(emap) => {
-                            let base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            Ok(base_ps.get_or_else(key, default))
+                            Ok(ParMapTypeMapper::lookup(&emap, &key).unwrap_or(default))
                         }
 
                         other => Err(InterpreterError::MethodNotDefined {

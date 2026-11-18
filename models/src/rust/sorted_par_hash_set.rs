@@ -54,8 +54,6 @@ impl SortedParHashSet {
         Self::create_from_set(self.ps.clone())
     }
 
-    pub fn contains(&self, elem: Par) -> bool { self.sorted_ps.contains(&Self::sort(&elem)) }
-
     pub fn union(&self, that: HashSet<Par>) -> SortedParHashSet {
         SortedParHashSet::create_from_set(
             self.sorted_ps
