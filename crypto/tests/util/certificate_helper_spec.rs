@@ -1,6 +1,7 @@
 use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
 use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::pkcs8::EncodePrivateKey;
+use shared::rust::test_tmpdir::ScopedTmpdir;
 
 #[test]
 fn test_generate_key_pair() {
@@ -126,8 +127,8 @@ fn test_from_file_method() {
     // Create a temporary certificate
     match CertificateHelper::generate_certificate(&secret_key, &public_key) {
         Ok(cert_der) => {
-            let temp_dir = tempfile::tempdir().expect("create temp dir");
-            let cert_file_path = temp_dir.path().join("test_cert.der");
+            let _scope = ScopedTmpdir::new();
+            let cert_file_path = std::env::temp_dir().join("test_cert.der");
 
             match std::fs::write(&cert_file_path, &cert_der) {
                 Ok(()) => {
@@ -390,8 +391,8 @@ fn test_read_key_pair_from_file() {
         Ok(der_bytes) => {
             let pem_content = CertificatePrinter::print_private_key(der_bytes.as_bytes());
 
-            let temp_dir = tempfile::tempdir().expect("create temp dir");
-            let key_file_path = temp_dir.path().join("test_key.pem");
+            let _scope = ScopedTmpdir::new();
+            let key_file_path = std::env::temp_dir().join("test_key.pem");
 
             match std::fs::write(&key_file_path, &pem_content) {
                 Ok(()) => {
