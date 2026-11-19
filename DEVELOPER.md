@@ -311,3 +311,35 @@ Build or test a smaller target first:
 cargo build -p node
 cargo test -p casper
 ```
+
+## Running Two Checkouts In Parallel
+
+Two side-by-side checkouts can each run `.githooks/pre-push` fire-and-forget.
+The hook serializes them on a host-wide lock dir at
+`$TMPDIR/f1r3node-pre-push.lock.d` (override via `TEST_LOCK_DIR`): the second
+`git push` blocks on the lock with status messages (`[test-lock] attempting
+to acquire …`, `[test-lock] waiting for holder pid …`, `[test-lock] acquired
+after Ns`) until the first run finishes. Normal exit, SIGINT, and SIGTERM
+all release the lock through the EXIT trap; SIGKILL leaves a stale lock dir
+behind, and the next acquirer detects the dead PID with `kill -0`, prints
+`stale lock from dead pid …; clearing`, and takes over.
+
+The lock covers the full pre-push run — the destructive SysV semaphore reap,
+clippy, the dashboard checks, and the test suites — so neither the semaphore
+pool nor the timing sentinels in `.config/nextest.toml` race across trees.
+Opt out with `SKIP_TEST_LOCK=1` when you know you're the only run on the host.
+
+If you'd rather run both gates at the same wall-clock instant instead of
+serializing, partition the crates so no sentinel-heavy crate runs in both
+trees at once:
+
+```bash
+# checkout A — bypass the lock, take the LMDB-heavy half
+SKIP_TEST_LOCK=1 TEST_CRATES="crypto shared models graphz block-storage rspace_plus_plus" git push
+# checkout B — bypass the lock, take the other half
+SKIP_TEST_LOCK=1 TEST_CRATES="comm rholang casper node deploy-queue" git push
+```
+
+That path accepts the CPU-bound and fd-bound contention in exchange for
+wall-clock parallelism; it's the right choice only when you've measured that
+your host has the headroom for it.
