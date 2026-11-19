@@ -53,7 +53,6 @@ Clients must preserve monetary precision and must not convert these strings to J
 
 This proposal changes execution, consensus encoding, and metadata storage without changing the protocol version.
 Existing or mixed-version networks require a coordinated activation and state migration before deployment.
-See the [economic pipeline design](../designs/pr54-bigint-economic-pipeline.md) for compatibility limits.
 
 ### Existing method with changed semantics
 
