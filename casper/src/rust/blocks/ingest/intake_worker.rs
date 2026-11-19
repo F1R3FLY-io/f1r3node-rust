@@ -2,8 +2,10 @@ use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStora
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::pending_blocks::{PendingClass, PendingInsert};
 use comm::rust::peer_node::PeerNode;
+use models::casper::BlockMessageProto;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use prost::bytes::Bytes;
 use prost::Message;
 
 use super::checked_block::CheckedBlock;
@@ -91,7 +93,8 @@ impl Intake {
         let block = checked.block();
         let hash = block.block_hash.clone();
         let solicited = self.view.is_solicited(&hash);
-        let size = block.to_proto().encoded_len();
+        let proto = block.to_proto();
+        let size = proto.encoded_len();
         let refused = |reason: Refusal| {
             IngestInput::IntakeRefused(Refused {
                 hash: hash.clone(),
@@ -130,18 +133,19 @@ impl Intake {
             (false, true) => PendingClass::KnownSender,
             (false, false) => PendingClass::Unsolicited,
         };
-        let body = match IngestStep::Storage.time(|| self.store(block, authorization, class))? {
-            Ok(body) => body,
-            Err(refusal) => {
-                tracing::warn!(
-                    "Dropping block {} from {}: pending area refused it ({:?}).",
-                    PrettyPrinter::build_string_bytes(&hash),
-                    PrettyPrinter::build_string_bytes(&block.sender),
-                    refusal
-                );
-                return Ok(refused(Refusal::Pending(refusal)));
-            }
-        };
+        let body =
+            match IngestStep::Storage.time(|| self.store(block, &proto, authorization, class))? {
+                Ok(body) => body,
+                Err(refusal) => {
+                    tracing::warn!(
+                        "Dropping block {} from {}: pending area refused it ({:?}).",
+                        PrettyPrinter::build_string_bytes(&hash),
+                        PrettyPrinter::build_string_bytes(&block.sender),
+                        refusal
+                    );
+                    return Ok(refused(Refusal::Pending(refusal)));
+                }
+            };
 
         let mut deps = proto_util::dependencies_hashes_of(block);
         deps.sort_unstable();
@@ -179,6 +183,7 @@ impl Intake {
     fn store(
         &self,
         block: &BlockMessage,
+        proto: &BlockMessageProto,
         authorization: SenderAuthorization,
         class: PendingClass,
     ) -> Result<Result<BodyAt, PendingRefusal>, CasperError> {
@@ -186,7 +191,8 @@ impl Intake {
             self.block_store.put_block_message(block)?;
             return Ok(Ok(BodyAt::Disk));
         }
-        Ok(match self.block_store.put_pending(block, class)? {
+        let encoded = Bytes::from(proto.encode_to_vec());
+        Ok(match self.block_store.put_pending(block, encoded, class)? {
             PendingInsert::Accepted => Ok(BodyAt::Pending),
             PendingInsert::AreaFull => Err(PendingRefusal::AreaFull),
             PendingInsert::SenderLimitReached => Err(PendingRefusal::SenderLimitReached),
