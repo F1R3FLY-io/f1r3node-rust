@@ -11,7 +11,6 @@ use crate::rspace::history::checkpoint_writer::KvCheckpointWriter;
 use crate::rspace::history::history::{History, HistoryInstances};
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::history_repository_impl::HistoryRepositoryImpl;
-use crate::rspace::history::prune_guard::PruneGuard;
 use crate::rspace::history::root_repository::RootRepository;
 use crate::rspace::history::roots_store::RootsStoreInstances;
 use crate::rspace::hot_store_action::HotStoreAction;
@@ -76,21 +75,18 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
 
     /// Atomic mark-and-sweep of the trie-node store against `retained_roots`.
     ///
-    /// Issue #1061: the implementation holds the rspace-level `PruneGuard`
-    /// exclusive side for the whole pass so no runtime `do_checkpoint` or
-    /// `reset` can run its content-addressed `contains` + `put` window
-    /// while the sweep is deleting. Pre-#1061 the helper leaned on LMDB
-    /// per-write serialisation alone and lost nodes to the race between
-    /// the writer's `contains` check (which skips keys already in the
-    /// store) and its subsequent `put`.
+    /// Issue #923, Option D race fix. The sweep MUST hold the history
+    /// store's write lock for the full pass so no runtime writer can
+    /// land a new block's trie nodes between mark and sweep — that was
+    /// the race that could leave a new block's state tree with a
+    /// dangling descendant pointer. LMDB's single-writer rule inside the
+    /// history env provides the mutual exclusion; implementations do the
+    /// whole mark + sweep inside one write transaction.
     ///
-    /// `retained_roots` is the caller-supplied set of roots whose subtrees
-    /// MUST survive. The implementation unions this with its `PruneGuard`
-    /// pinned-roots snapshot (recently-committed checkpoints + recent
-    /// reset targets) before the mark walk, so roots a writer committed
-    /// before the DAG caught up also survive. The casper-side caller
-    /// (`prune_history_once`) builds the caller set from
-    /// `compute_gc_retention_roots` plus the empty root.
+    /// `retained_roots` is the union of every state root whose subtree
+    /// must survive — the caller (casper's `prune_history_once`) builds
+    /// this from `compute_forward_horizon_roots` plus any LFS /
+    /// report-replay / merge-intermediate anchors it holds.
     ///
     /// Returns a pair of counters so operators can see the pass's work.
     fn prune_history_atomic(
@@ -173,7 +169,6 @@ where
             history_kv_store: history_key_value_store,
             rspace_exporter: Arc::new(exporter),
             rspace_importer: Arc::new(importer),
-            prune_guard: Arc::new(PruneGuard::new()),
             _marker: PhantomData,
         }))
     }

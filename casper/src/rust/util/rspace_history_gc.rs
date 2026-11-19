@@ -11,31 +11,22 @@
 //!
 //! The mark-and-sweep itself lives in the rspace++ layer as
 //! `HistoryRepository::prune_history_atomic`, which runs the whole pass
-//! against the backing store. Concurrency against runtime writers is
-//! enforced on two levels: the rspace++ `PruneGuard` serialises every
-//! content-addressed write window against the sweep, and the sweep unions
-//! an LRU of pinned roots (newly committed checkpoints + recent reset
-//! targets) with the caller-supplied set before the mark walk. This
-//! casper-side driver only (1) decides when to run, (2) computes the
-//! caller-supplied retained-root set, and (3) records pass-level metrics.
+//! against the backing store with LMDB's single-writer rule providing
+//! mutual exclusion against the runtime's own writers. This casper-side
+//! driver only (1) decides when to run, (2) computes the retained-root
+//! set, and (3) records pass-level metrics.
 //!
 //! ## Phases
 //!
-//! 1. **Enumerate retention roots.** `compute_gc_retention_roots` walks
-//!    every block in the DAG from the state floor up to the newest held
-//!    block — above the LFB as well — and emits each pre-/post-state.
-//!    Walking up to the LFB alone (as the pre-#1061-fix code did, by
-//!    reusing `compute_forward_horizon_roots`) left the trie nodes for
-//!    every unfinalized block above the LFB unmarked; the sweep deleted
-//!    them, and the next replay panicked. The RSpace empty root is
-//!    appended to the caller set so it survives any pass where no block
-//!    references it.
+//! 1. **Enumerate retention-window roots.** `compute_forward_horizon_roots`
+//!    already emits every post-state root a joiner would need, plus every
+//!    multi-parent pre-state merge intermediate. The same set feeds the
+//!    atomic prune so no legal validation path finds a reachable node
+//!    missing after the sweep.
 //! 2. **Atomic prune.** Hand the root list to
-//!    `HistoryRepository::prune_history_atomic`. That API unions the
-//!    caller set with its pinned-roots snapshot, holds the sweep's
-//!    exclusive lock against runtime writers for the full pass, builds
-//!    the mark set, iterates the trie-node env, and deletes unmarked
-//!    keys.
+//!    `HistoryRepository::prune_history_atomic`. That API builds the mark
+//!    set, iterates the trie-node env, and deletes unmarked keys, all
+//!    serialised with runtime writers via the underlying LMDB write lock.
 //!
 //! ## Scope
 //!
@@ -45,22 +36,19 @@
 //! - A missing trie node encountered during later replay / merge / block
 //!   report is surfaced as `RadixTreeError::MissingNode` and propagates
 //!   through callers (issue #923 Option D error-path fix), not via
-//!   `assert!`. This bounds the blast radius of an unreachable node to
-//!   the one deploy that read it; it does NOT, on its own, restore a
-//!   node a pass incorrectly swept — only the full-DAG retention walk
-//!   and the writer-side pin above prevent that.
+//!   `assert!`. The combination of atomic prune + typed missing-node
+//!   error is what makes `enable_history_pruning = true` safe to ship.
 
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 
 use crate::rust::casper::CasperShardConf;
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rspace_history_horizon::{
-    compute_gc_retention_roots, lfs_min_state_block_number,
+    compute_forward_horizon_roots, lfs_min_state_block_number,
 };
 
 /// Outcome of a single pass. Matches `HistoryPruneResult` on the rspace++
@@ -92,15 +80,7 @@ pub fn prune_history_once(
     }
     let started = std::time::Instant::now();
 
-    // Phase 1: retention roots.
-    //
-    // The state floor still anchors on LFB height because
-    // `lfs_min_state_block_number` describes how far below LFB we might
-    // still need to reset for merge-intermediate reachability. Above the
-    // floor we walk every block in the DAG, not up to the LFB — issue
-    // #1061 traced the "Missing node in database" panic to the LFB-bound
-    // walk, which left every block between LFB and the newest held block
-    // unmarked.
+    // Phase 1: retention-window roots.
     let lfb_hash = dag.last_finalized_block();
     let lfb_block = block_store
         .get(&lfb_hash)
@@ -116,25 +96,14 @@ pub fn prune_history_once(
         conf.max_parent_depth,
         conf.mergeable_channels_gc_depth_buffer,
     );
-    let mut roots = compute_gc_retention_roots(dag, block_store, state_floor)
+    let roots = compute_forward_horizon_roots(dag, block_store, &lfb_block, conf, state_floor)
         .map_err(CasperError::KvStoreError)?;
-    // Always retain the empty root. A trie that transiently contains it
-    // (via a reset-to-empty on an inactive shard or during replay of a
-    // genesis-rooted block) would otherwise lose it on the first pass
-    // where no live block happened to reference it. See
-    // `RadixHistory::empty_root_node_hash`.
-    roots.push(RadixHistory::empty_root_node_hash());
-    if roots.len() == 1 {
-        // Only the empty root — nothing in the DAG above the state floor.
-        // Still worth doing the pass if the sweep's own pinned snapshot
-        // has something, but a pass with an effectively-empty retained
-        // set risks sweeping the entire store if the pinned FIFO is also
-        // empty. Bail: this is the quiescent no-blocks-held case.
+    if roots.is_empty() {
         tracing::debug!(
             target: "f1r3.trace.history_gc",
-            "history GC: no retention roots above state_floor {} (LFB height {}); skipping pass",
-            state_floor,
-            lfb_block.body.state.block_number
+            "history GC: no retention-window roots (LFB height {}, state_floor {}); skipping pass",
+            lfb_block.body.state.block_number,
+            state_floor
         );
         return Ok(HistoryGcResult {
             marked: 0,
@@ -142,14 +111,10 @@ pub fn prune_history_once(
         });
     }
 
-    // Phase 2: atomic prune inside the rspace++ layer.
-    //
-    // `prune_history_atomic` holds the rspace-level sweep lock for the
-    // whole pass (so no runtime writer can slip through the
-    // content-addressed `contains` + `put` window while the sweep is
-    // deleting) and unions our set with its pinned-roots snapshot (so
-    // roots a writer has committed but the DAG has not yet caught up to
-    // still survive). Issue #1061 motivated both.
+    // Phase 2: atomic prune inside the rspace++ layer. One LMDB write
+    // transaction covers the whole pass, so no runtime writer can land a
+    // new block's trie nodes between mark and sweep. This is the fix for
+    // the race the client flagged in review of PR #1045.
     let pruned = runtime
         .history_repo
         .prune_history_atomic(&roots)
