@@ -18,8 +18,9 @@ use super::LOG_TARGET;
 // The retriever's source label is part of the exported name the block-transfer
 // dashboard reads.
 use crate::rust::metrics_constants::{
-    BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC, BLOCK_INGEST_DROPPED_METRIC,
-    BLOCK_INGEST_EVICTIONS_METRIC, BLOCK_INGEST_METRICS_SOURCE, BLOCK_RETRIEVER_METRICS_SOURCE,
+    BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC, BLOCK_INGEST_BELOW_HORIZON_METRIC,
+    BLOCK_INGEST_DROPPED_METRIC, BLOCK_INGEST_EVICTIONS_METRIC, BLOCK_INGEST_METRICS_SOURCE,
+    BLOCK_INGEST_PRUNED_RESPONSES_METRIC, BLOCK_RETRIEVER_METRICS_SOURCE,
 };
 
 pub const LOCAL_LOOKUPS_PER_TICK: usize = 256;
@@ -145,6 +146,17 @@ pub enum IngestInput {
         hash: BlockHash,
         peer: PeerNode,
     },
+    /// A peer answered a `BlockRequest` with `BlockPrunedResponse`: the
+    /// block body has been retention-swept past the peer's horizon. The
+    /// need is dropped so the retry ladder stops burning network, and the
+    /// peer's `prune_floor` is recorded on the ingest view so the operator
+    /// (or a future launch) can take the last-finalized-state path (#1059).
+    BlockPruned {
+        hash: BlockHash,
+        block_height: i64,
+        prune_floor: i64,
+        peer: PeerNode,
+    },
     Need {
         hash: BlockHash,
     },
@@ -255,6 +267,7 @@ pub struct IngestState {
     tracker: DependencyTracker,
     scheduler: FetchScheduler,
     reputation: PeerReputation,
+    view: IngestView,
 }
 
 impl IngestState {
@@ -265,7 +278,8 @@ impl IngestState {
             reserved: HashSet::new(),
             tracker: DependencyTracker::new(view.clone()),
             scheduler: FetchScheduler::new(view.clone()),
-            reputation: PeerReputation::new(view),
+            reputation: PeerReputation::new(view.clone()),
+            view,
         }
     }
 
@@ -323,6 +337,12 @@ impl IngestState {
                     self.scheduler.announce(&hash, &peer, now_ms);
                 }
             }
+            IngestInput::BlockPruned {
+                hash,
+                block_height,
+                prune_floor,
+                peer,
+            } => self.block_pruned(hash, block_height, prune_floor, peer),
             IngestInput::Need { hash } => {
                 if self.tracker.contains(&hash) {
                     self.vouch_for_held(&hash);
@@ -1126,6 +1146,64 @@ impl IngestState {
             strike,
             outcome,
         });
+    }
+
+    /// A peer answered `BlockRequest` for `hash` with `BlockPrunedResponse`:
+    /// the body has been retention-swept past the peer's horizon. The need
+    /// is dropped so the retry ladder (see `fetch_scheduler`) stops burning
+    /// network on a block no peer retains. The peer's prune floor is
+    /// recorded on the shared view so operators / future launches can take
+    /// the last-finalized-state path (#1059).
+    fn block_pruned(
+        &mut self,
+        hash: BlockHash,
+        block_height: i64,
+        prune_floor: i64,
+        peer: PeerNode,
+    ) {
+        metrics::counter!(
+            BLOCK_INGEST_PRUNED_RESPONSES_METRIC,
+            "source" => BLOCK_INGEST_METRICS_SOURCE
+        )
+        .increment(1);
+        let was_below = self.view.below_horizon_floor().is_some();
+        self.view.record_below_horizon(prune_floor);
+        if !was_below {
+            metrics::counter!(
+                BLOCK_INGEST_BELOW_HORIZON_METRIC,
+                "source" => BLOCK_INGEST_METRICS_SOURCE
+            )
+            .increment(1);
+            tracing::warn!(
+                target: LOG_TARGET,
+                block = %short(&hash),
+                block_height,
+                prune_floor,
+                peer = %peer,
+                "Peer reports needed block is below its prune horizon. \
+                 This node has fallen past peers' block-store GC horizon and cannot \
+                 catch up by re-requesting blocks (every peer has deleted the bodies). \
+                 Stop this node, remove its data directory, and restart to re-join via \
+                 the last-finalized-state path (#1059)."
+            );
+        } else {
+            tracing::debug!(
+                target: LOG_TARGET,
+                block = %short(&hash),
+                block_height,
+                prune_floor,
+                peer = %peer,
+                "additional BlockPrunedResponse received while below-horizon flag already set"
+            );
+        }
+        // Drop the need so the retry ladder stops. Held blocks that cited
+        // this pruned hash remain in the tracker: they cannot advance now,
+        // but eviction (pending-area pressure, give-up on validation failure
+        // counts) will settle them through the existing paths. The explicit
+        // drop_with_dependents path is reserved for Invalid / TooLarge /
+        // StateUnavailable, where the holder itself is condemned; here the
+        // holder is honest, the state is irretrievable instead.
+        self.scheduler.remove_block(&hash);
     }
 }
 
