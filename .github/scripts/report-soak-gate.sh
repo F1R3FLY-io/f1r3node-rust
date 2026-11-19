@@ -12,8 +12,9 @@
 # completion marker, passed its integration preflight, and the soak verdict is
 # pass. Anything else is failure, and a cancelled soak is error.
 #
-# A ca-item success also adds the ca-soaked label, which the ca-item queue of
-# .mergify.yml requires. The label is added only when the pull request is open
+# A ca-item success also adds the ca-soaked label. The label records a
+# diagnostic result, and the ca-item queue of .mergify.yml does not require it.
+# The label is added only when the pull request is open
 # and its head is still the soaked commit. A label stays when the head changes,
 # so a label for an older head would pass code that no soak ran. The head is
 # read again after the label is added, and a moved head removes the label. A

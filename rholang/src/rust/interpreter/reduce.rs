@@ -324,6 +324,14 @@ pub struct DebruijnInterpreter {
     /// `Arc<AtomicBool>` so the flag is shared with dispatcher /
     /// system-process closures that clone the reducer.
     pub filter_fs_native_urns: Arc<std::sync::atomic::AtomicBool>,
+    /// Scope-trapped `GPrivate.id` bytes accumulated during this deploy.
+    /// Populated in `eval_new` for rand-allocated binders whose variable
+    /// is used only in channel positions of the new's body. Drained at
+    /// deploy boundary (checkpoint / reset / soft-revert) so the sweep
+    /// in `RhoRuntimeImpl::create_checkpoint` can retire the matching
+    /// rspace entries before the hot-store delta reaches the radix trie.
+    /// See docs/rholang/garbage-collection.md.
+    pub(crate) trapped_gprivates: Arc<std::sync::Mutex<std::collections::HashSet<Vec<u8>>>>,
 }
 
 type Application = Option<(
@@ -359,6 +367,18 @@ impl DebruijnInterpreter {
         self.yielded_single_term_evaluations
             .store(0, Ordering::Relaxed);
         self.spawned_eval_tasks.store(0, Ordering::Relaxed);
+    }
+
+    /// Take ownership of the deploy's scope-trapped `GPrivate.id` set.
+    /// Call at deploy boundary (checkpoint / reset / soft-revert) to
+    /// hand the ids to the rspace sweep and leave an empty set behind.
+    pub(crate) fn drain_trapped(&self) -> Vec<Vec<u8>> {
+        let mut g = self
+            .trapped_gprivates
+            .lock()
+            .expect("trapped_gprivates lock");
+        let drained: Vec<Vec<u8>> = g.drain().collect();
+        drained
     }
 
     pub fn eval<'a>(
@@ -1374,12 +1394,42 @@ impl DebruijnInterpreter {
             }
         }
 
+        self.cost.charge(new_bindings_cost(new.bind_count as i64))?;
+
+        // Scope-trapped GC: for each rand-allocated binder, check whether its
+        // bound variable in the body appears only in channel positions. If so,
+        // record the fresh GPrivate.id in the per-deploy trapped set so the
+        // checkpoint-time sweep can retire rspace entries keyed on it. URN
+        // injections are system unforgeables and are deliberately excluded.
+        // See docs/rholang/garbage-collection.md.
+        let n_rand: usize = new.bind_count as usize - new.uri.len();
+        let body_for_scan: &Par = new.p.as_ref().ok_or_else(|| {
+            InterpreterError::BugFoundError("New body missing in eval_new".to_string())
+        })?;
+        let mut rand_ids: Vec<Vec<u8>> = Vec::with_capacity(n_rand);
+        for i in 0..n_rand {
+            let id: Vec<u8> = rand.next().iter().map(|&x| x as u8).collect();
+            // The i-th rand.next() is pushed first in the env.extended loop
+            // below, so it sits at the deepest level of the n_rand-slot batch
+            // and resolves to de Bruijn index `bind_count - 1 - i` in the body.
+            let body_db_index = (new.bind_count as usize) - 1 - i;
+            if crate::rust::interpreter::garbage::is_scope_trapped(body_db_index, body_for_scan) {
+                self.trapped_gprivates
+                    .lock()
+                    .expect("trapped_gprivates lock")
+                    .insert(id.clone());
+            }
+            rand_ids.push(id);
+        }
+        let mut rand_ids_iter = rand_ids.into_iter();
+
         let mut alloc = |count: usize, urns: Vec<String>| {
             let simple_news = env.extended((0..(count - urns.len())).map(|_| {
+                let id = rand_ids_iter
+                    .next()
+                    .expect("rand_ids pre-allocated for every rand slot");
                 Par::default().with_unforgeables(vec![GUnforgeable {
-                    unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                        id: rand.next().iter().map(|&x| x as u8).collect::<Vec<u8>>(),
-                    })),
+                    unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id })),
                 }])
             }));
 
@@ -1455,7 +1505,6 @@ impl DebruijnInterpreter {
                 .try_fold(simple_news, |acc, urn| add_urn(acc, urn.to_string()))
         };
 
-        self.cost.charge(new_bindings_cost(new.bind_count as i64))?;
         match alloc(new.bind_count as usize, new.uri.clone()) {
             Ok(env) => self.eval(unwrap_option_safe(new.p)?, &env, rand).await,
             Err(e) => Err(e),
@@ -2593,7 +2642,7 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::GByteArray(lhs), ExprInstance::GByteArray(rhs)) => {
-                            self.cost.charge(byte_array_append_cost(lhs.clone()))?;
+                            self.cost.charge(byte_array_append_cost(lhs.len()))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GByteArray(
                                     lhs.into_iter().chain(rhs.into_iter()).collect(),
@@ -2602,7 +2651,7 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::EListBody(lhs), ExprInstance::EListBody(rhs)) => {
-                            self.cost.charge(list_append_cost(lhs.clone().ps))?;
+                            self.cost.charge(list_append_cost(lhs.ps.len()))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
                                     ps: lhs.ps.into_iter().chain(rhs.ps.into_iter()).collect(),
@@ -2729,8 +2778,8 @@ impl DebruijnInterpreter {
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                     let updated_ps: Vec<Par> = evaled_ps
-                        .iter()
-                        .map(|p| self.update_locally_free_par(p.clone()))
+                        .into_iter()
+                        .map(|p| self.update_locally_free_par(p))
                         .collect();
 
                     Ok(Expr {
@@ -2753,8 +2802,8 @@ impl DebruijnInterpreter {
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                     let updated_ps: Vec<Par> = evaled_ps
-                        .iter()
-                        .map(|p| self.update_locally_free_par(p.clone()))
+                        .into_iter()
+                        .map(|p| self.update_locally_free_par(p))
                         .collect();
 
                     Ok(Expr {
@@ -2778,15 +2827,15 @@ impl DebruijnInterpreter {
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                     let updated_ps: Vec<Par> = evaled_ps
-                        .iter()
-                        .map(|p| self.update_locally_free_par(p.clone()))
+                        .into_iter()
+                        .map(|p| self.update_locally_free_par(p))
                         .collect();
 
-                    let mut cloned_set = set.clone();
-                    cloned_set.ps = SortedParHashSet::create_from_vec(updated_ps);
+                    let mut evaled_set = set;
+                    evaled_set.ps = SortedParHashSet::create_from_vec(updated_ps);
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::ESetBody(
-                            ParSetTypeMapper::par_set_to_eset(cloned_set),
+                            ParSetTypeMapper::par_set_to_eset(evaled_set),
                         )),
                     })
                 }
@@ -2795,20 +2844,20 @@ impl DebruijnInterpreter {
                     let map = ParMapTypeMapper::emap_to_par_map(emap.clone());
                     let evaled_ps = map
                         .ps
-                        .clone()
-                        .into_iter()
+                        .sorted_list
+                        .iter()
                         .map(|(k, v)| {
-                            let e_key = self.eval_expr(&k, env)?;
-                            let e_value = self.eval_expr(&v, env)?;
+                            let e_key = self.eval_expr(k, env)?;
+                            let e_value = self.eval_expr(v, env)?;
                             Ok((e_key, e_value))
                         })
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-                    let mut cloned_map = map.clone();
-                    cloned_map.ps = SortedParMap::create_from_vec(evaled_ps);
+                    let mut evaled_map = map;
+                    evaled_map.ps = SortedParMap::create_from_vec(evaled_ps);
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::EMapBody(
-                            ParMapTypeMapper::par_map_to_emap(cloned_map),
+                            ParMapTypeMapper::par_map_to_emap(evaled_map),
                         )),
                     })
                 }
@@ -2822,8 +2871,8 @@ impl DebruijnInterpreter {
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                     let updated_ps: Vec<Par> = evaled_ps
-                        .iter()
-                        .map(|p| self.update_locally_free_par(p.clone()))
+                        .into_iter()
+                        .map(|p| self.update_locally_free_par(p))
                         .collect();
 
                     Ok(Expr {
@@ -7646,6 +7695,7 @@ impl DebruijnInterpreter {
             // Default: reject fs native URNs.  Genesis composition
             // flips the flag off via a yet-to-land runtime slice.
             filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            trapped_gprivates: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         });
 
         reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();

@@ -11,6 +11,7 @@ use crate::rspace::history::checkpoint_writer::KvCheckpointWriter;
 use crate::rspace::history::history::{History, HistoryInstances};
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::history_repository_impl::HistoryRepositoryImpl;
+use crate::rspace::history::prune_guard::PruneGuard;
 use crate::rspace::history::root_repository::RootRepository;
 use crate::rspace::history::roots_store::RootsStoreInstances;
 use crate::rspace::hot_store_action::HotStoreAction;
@@ -64,6 +65,47 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
     /// Companion to `record_root` for joiner-side LFS sync to check whether
     /// a root has already been imported before fetching from peers.
     fn contains_root(&self, root: &Blake2b256Hash) -> Result<bool, HistoryError>;
+
+    /// Raw access to the LMDB-backed trie-node store. Used by rspace-history
+    /// pruning (issue #923, Option D) to walk every node hash in the env
+    /// via `scan_page` + `delete`, after a mark walk from each retained
+    /// root has built the reachable-hash set. Exposes trie nodes only —
+    /// cold-store datums/continuations and the roots store are separate
+    /// environments and not accessible here.
+    fn history_store(&self) -> Arc<dyn KeyValueStore>;
+
+    /// Atomic mark-and-sweep of the trie-node store against `retained_roots`.
+    ///
+    /// Issue #1061: the implementation holds the rspace-level `PruneGuard`
+    /// exclusive side for the whole pass so no runtime `do_checkpoint` or
+    /// `reset` can run its content-addressed `contains` + `put` window
+    /// while the sweep is deleting. Pre-#1061 the helper leaned on LMDB
+    /// per-write serialisation alone and lost nodes to the race between
+    /// the writer's `contains` check (which skips keys already in the
+    /// store) and its subsequent `put`.
+    ///
+    /// `retained_roots` is the caller-supplied set of roots whose subtrees
+    /// MUST survive. The implementation unions this with its `PruneGuard`
+    /// pinned-roots snapshot (recently-committed checkpoints + recent
+    /// reset targets) before the mark walk, so roots a writer committed
+    /// before the DAG caught up also survive. The casper-side caller
+    /// (`prune_history_once`) builds the caller set from
+    /// `compute_gc_retention_roots` plus the empty root.
+    ///
+    /// Returns a pair of counters so operators can see the pass's work.
+    fn prune_history_atomic(
+        &self,
+        retained_roots: &[Blake2b256Hash],
+    ) -> Result<HistoryPruneResult, HistoryError>;
+}
+
+/// Counters for one atomic prune pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HistoryPruneResult {
+    /// Trie nodes reachable from the retained roots at pass time.
+    pub marked: usize,
+    /// Trie nodes deleted (keys present in the env, not in the mark set).
+    pub swept: usize,
 }
 
 pub struct HistoryRepositoryInstances<C, P, A, K> {
@@ -124,12 +166,14 @@ where
             current_history: Arc::new(Mutex::new(Box::new(history))),
             roots_repository: Arc::new(Mutex::new(roots_repository)),
             checkpoint_writer: Arc::new(KvCheckpointWriter {
-                history: history_key_value_store,
+                history: history_key_value_store.clone(),
                 roots: roots_key_value_store,
             }),
             leaf_store: cold_key_value_store,
+            history_kv_store: history_key_value_store,
             rspace_exporter: Arc::new(exporter),
             rspace_importer: Arc::new(importer),
+            prune_guard: Arc::new(PruneGuard::new()),
             _marker: PhantomData,
         }))
     }

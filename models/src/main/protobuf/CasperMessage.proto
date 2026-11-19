@@ -36,6 +36,27 @@ message BlockRequestProto {
   bytes  hash = 1;
 }
 
+// Responder's answer when a requested block has been retention-swept but
+// its DAG metadata still names it. Mirrors the client-API `BlockPrunedError`
+// (PR #1052, Option D) on the peer-to-peer wire so a requester can tell
+// "pruned past my horizon" from "late / packet lost". Absence of this
+// response remains valid on the wire for peers that predate it; in that
+// case the requester falls back to the existing silent-timeout behavior.
+message BlockPrunedResponseProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  // Echo of the requested hash so the receiver can route the answer back to
+  // the originating need without carrying request-id state.
+  bytes hash = 1;
+  // Height of the pruned block when the responder retained its DAG metadata
+  // (block_dag_storage survives body GC).
+  int64 block_height = 2;
+  // The responder's current body-prune floor (effective_anchor). The block
+  // whose body was requested is at or below this floor. A requester can
+  // compare this against its own latest-message height to decide whether to
+  // re-join via the last-finalized-state path.
+  int64 prune_floor = 3;
+}
+
 // -------- Phase 7b-1 snapshot chunk-fetch --------
 // Joiners request individual 4 MiB chunks of a finalized snapshot
 // by (block_hash, chunk_index).  block_hash keys into the

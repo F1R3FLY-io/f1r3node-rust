@@ -12,7 +12,7 @@ use crate::rust::peer_node::PeerNode;
 use crate::rust::transport::limited_buffer::{
     FlumeLimitedBuffer, LimitedBuffer, LimitedBufferObservable,
 };
-use crate::rust::transport::packet_ops::{PacketExt, StreamCache};
+use crate::rust::transport::packet_ops::{OutgoingPacketCache, PacketExt};
 use crate::rust::transport::transport_layer::Blob;
 
 const STREAM_CACHE_STALE_TTL_SECS: i64 = 120;
@@ -31,14 +31,18 @@ pub struct Stream {
 #[derive(Debug)]
 pub struct StreamObservable {
     peer: PeerNode,
-    cache: StreamCache,
+    cache: OutgoingPacketCache,
     subject: FlumeLimitedBuffer<Stream>,
 }
 
 impl StreamObservable {
     fn update_stream_cache_metrics(&self) {
         let entries = self.cache.len();
-        let total_bytes: usize = self.cache.iter().map(|entry| entry.value().len()).sum();
+        let total_bytes: usize = self
+            .cache
+            .iter()
+            .map(|entry| entry.value().content.len())
+            .sum();
         metrics::gauge!(STREAM_CACHE_ENTRIES_METRIC, "source" => TRANSPORT_METRICS_SOURCE)
             .set(entries as f64);
         metrics::gauge!(STREAM_CACHE_BYTES_METRIC, "source" => TRANSPORT_METRICS_SOURCE)
@@ -122,7 +126,7 @@ impl StreamObservable {
     }
 
     /// Create a new StreamObservable with the given peer, buffer size, and cache
-    pub fn new(peer: PeerNode, buffer_size: usize, cache: StreamCache) -> Self {
+    pub fn new(peer: PeerNode, buffer_size: usize, cache: OutgoingPacketCache) -> Self {
         let subject = FlumeLimitedBuffer::drop_new_observable(buffer_size);
 
         Self {
@@ -241,7 +245,7 @@ mod tests {
         }
     }
 
-    fn create_test_cache() -> StreamCache { Arc::new(DashMap::new()) }
+    fn create_test_cache() -> OutgoingPacketCache { Arc::new(DashMap::new()) }
 
     fn create_test_blob(sender: PeerNode, content: Vec<u8>) -> Blob {
         Blob {

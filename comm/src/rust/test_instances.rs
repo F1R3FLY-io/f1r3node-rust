@@ -118,6 +118,8 @@ impl TransportLayerStub {
 
 #[async_trait]
 impl TransportLayer for TransportLayerStub {
+    fn queued_stream_bytes(&self) -> usize { 0 }
+
     async fn send(&self, peer: &PeerNode, msg: &Protocol) -> Result<(), CommError> {
         // Add request to the list
         {

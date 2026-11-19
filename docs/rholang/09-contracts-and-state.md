@@ -329,4 +329,4 @@ This is especially dangerous in multi-hop call chains (A -> B -> C -> D): a miss
 
 To diagnose, use the block report API (`getEventByHash` with `forceReplay=true`, see [Tracing in Tests](../testing-tracing.md#tracing-rholang-execution-via-block-report)) to inspect produces and consumes per deploy. An orphan produce has a `random_state` that no consume matches.
 
-Defensive practice: any contract that exposes an address it computed at runtime and expects to receive sends on it should ensure the receiver is installed *before* the address leaves the contract. See [Vaults and Tokens — Self-Registering Contracts](12-vaults-and-tokens.md#self-registering-contracts).
+Defensive practice: any contract that exposes an address it computed at runtime and expects to receive sends on it should ensure the receiver is installed *before* the address leaves the contract. The vault system handles this internally — see [Vaults and Tokens — Vault Registration](12-vaults-and-tokens.md#vault-registration).

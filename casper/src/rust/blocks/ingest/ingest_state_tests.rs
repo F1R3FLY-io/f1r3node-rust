@@ -203,6 +203,68 @@ fn a_block_is_dispatched_once_its_parents_are_inserted() {
 }
 
 #[test]
+fn a_block_is_dispatched_once_its_parent_is_inserted_when_the_outcome_arrives_first() {
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
+    s.handle(received(meta(10, 2, &[7])), 0, &dag);
+    s.handle(received(meta(7, 1, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(7), Work::Validate)));
+    dag.blocks.insert(hash(7));
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(7),
+            outcome: WorkOutcome::Settled,
+        },
+        0,
+        &dag,
+    );
+    s.handle(IngestInput::Inserted { hash: hash(7) }, 0, &dag);
+    assert!(!s.is_held(&hash(7)));
+    assert_eq!(s.next_dispatch(), Some((hash(10), Work::Validate)));
+}
+
+#[test]
+fn a_settled_block_finishes_its_insert_when_dag_membership_cannot_be_read() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(received(meta(10, 2, &[7])), 0, &dag);
+    s.handle(received(meta(7, 1, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(7), Work::Validate)));
+    s.handle(IngestInput::Inserted { hash: hash(7) }, 0, &dag);
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(7),
+            outcome: WorkOutcome::Settled,
+        },
+        0,
+        &dag,
+    );
+    assert!(!s.is_held(&hash(7)));
+    assert_eq!(s.next_dispatch(), Some((hash(10), Work::Validate)));
+}
+
+#[test]
+fn a_block_inserted_before_its_attempt_failed_finishes_its_insert() {
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
+    s.handle(received(meta(10, 2, &[7])), 0, &dag);
+    s.handle(received(meta(7, 1, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(7), Work::Validate)));
+    dag.blocks.insert(hash(7));
+    s.handle(IngestInput::Inserted { hash: hash(7) }, 0, &dag);
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(7),
+            outcome: WorkOutcome::Failed,
+        },
+        0,
+        &dag,
+    );
+    assert!(!s.is_held(&hash(7)));
+    assert_eq!(s.next_dispatch(), Some((hash(10), Work::Validate)));
+}
+
+#[test]
 fn a_block_received_twice_is_held_and_dispatched_once() {
     let (mut s, _) = state();
     let dag = dag_with(&[0]);
@@ -387,6 +449,97 @@ fn an_announced_hash_is_awaited_but_not_solicited() {
         &dag,
     );
     assert!(!s.is_needed(&hash(0)), "a block in the DAG is not needed");
+}
+
+#[test]
+fn a_block_pruned_response_drops_its_need_and_records_the_floor_on_the_view() {
+    let (mut s, view) = state();
+    let dag = dag_with(&[0]);
+    s.handle(IngestInput::Need { hash: hash(5) }, 0, &dag);
+    assert!(s.is_needed(&hash(5)));
+    assert_eq!(view.below_horizon_floor(), None);
+
+    s.handle(
+        IngestInput::BlockPruned {
+            hash: hash(5),
+            block_height: 42,
+            prune_floor: 300,
+            peer: peer("peer1"),
+        },
+        0,
+        &dag,
+    );
+
+    assert!(!s.is_needed(&hash(5)), "need dropped after pruned response");
+    assert_eq!(view.below_horizon_floor(), Some(300));
+}
+
+#[test]
+fn block_pruned_response_keeps_the_highest_reported_floor() {
+    let (mut s, view) = state();
+    let dag = dag_with(&[0]);
+    s.handle(IngestInput::Need { hash: hash(5) }, 0, &dag);
+    s.handle(IngestInput::Need { hash: hash(7) }, 0, &dag);
+
+    s.handle(
+        IngestInput::BlockPruned {
+            hash: hash(5),
+            block_height: 42,
+            prune_floor: 300,
+            peer: peer("peer1"),
+        },
+        0,
+        &dag,
+    );
+    assert_eq!(view.below_horizon_floor(), Some(300));
+
+    s.handle(
+        IngestInput::BlockPruned {
+            hash: hash(7),
+            block_height: 50,
+            prune_floor: 350,
+            peer: peer("peer2"),
+        },
+        0,
+        &dag,
+    );
+    assert_eq!(view.below_horizon_floor(), Some(350));
+
+    // A later, lower report does not move the floor backward.
+    s.handle(IngestInput::Need { hash: hash(8) }, 0, &dag);
+    s.handle(
+        IngestInput::BlockPruned {
+            hash: hash(8),
+            block_height: 20,
+            prune_floor: 200,
+            peer: peer("peer3"),
+        },
+        0,
+        &dag,
+    );
+    assert_eq!(view.below_horizon_floor(), Some(350));
+}
+
+#[test]
+fn block_pruned_response_for_an_unknown_need_records_the_floor_and_touches_no_need() {
+    let (mut s, view) = state();
+    let dag = dag_with(&[0]);
+    // The Running engine filters unsolicited BlockPrunedResponses before
+    // they reach this layer (see `handle_block_pruned_response`), so this
+    // input shape is not expected on the normal path. The handler still
+    // handles it gracefully: the floor is recorded, no need is created.
+    s.handle(
+        IngestInput::BlockPruned {
+            hash: hash(5),
+            block_height: 42,
+            prune_floor: 300,
+            peer: peer("peer1"),
+        },
+        0,
+        &dag,
+    );
+    assert_eq!(view.below_horizon_floor(), Some(300));
+    assert!(!s.is_needed(&hash(5)));
 }
 
 #[test]

@@ -26,11 +26,12 @@ use crate::rust::key_value_block_store::{BlockDecodeLimits, KeyValueBlockStore};
 
 pub const SNAPSHOT_SCHEMA_VERSION: u32 = 4;
 pub const SNAPSHOT_SCOPE: &str = "batch-b1-bounded-detached-capture";
-pub const EXCLUDED_STORES: [&str; 5] = [
+pub const EXCLUDED_STORES: [&str; 6] = [
     "blocks-approved",
     "deploy-lifecycle-events",
     "deploy-lifecycle-terminal",
     "carrier-index",
+    "carrier-index-seeds",
     "carrier-index-meta",
 ];
 
@@ -993,6 +994,7 @@ impl DetachedDagSnapshot {
             history: None,
             view_sequence: u64::MAX,
             view_max_height: None,
+            pruning_cutoff: 0,
             dag_set: self.dag_set.iter().cloned().collect(),
             latest_messages_map: self
                 .latest_messages
@@ -1091,6 +1093,7 @@ mod tests {
             "deploy-lifecycle-events",
             "deploy-lifecycle-terminal",
             "carrier-index",
+            "carrier-index-seeds",
             "carrier-index-meta",
             "genesis-hash",
             "blocks",

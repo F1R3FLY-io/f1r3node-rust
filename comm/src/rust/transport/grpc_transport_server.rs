@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use models::routing::Protocol;
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::rust::errors::CommError;
@@ -26,8 +26,30 @@ use crate::rust::transport::packet_ops::StreamCache;
 use crate::rust::transport::stream_handler::StreamHandler;
 use crate::rust::transport::transport_layer::Blob;
 
-/// Cancelable resource that can be cancelled/stopped
-pub type Cancelable = JoinHandle<()>;
+/// A running server: its task and the signal that shuts it down. Dropping it
+/// also shuts the server down.
+pub struct Cancelable {
+    task: JoinHandle<()>,
+    shutdown: oneshot::Sender<()>,
+}
+
+impl Cancelable {
+    pub fn new(task: JoinHandle<()>, shutdown: oneshot::Sender<()>) -> Self {
+        Self { task, shutdown }
+    }
+
+    /// Shuts the server down and waits for it to end. The server closes every
+    /// connection and its own listening socket before it ends, so once this
+    /// returns nothing more is dispatched.
+    pub async fn stop(self) {
+        let _ = self.shutdown.send(());
+        if let Err(e) = self.task.await {
+            if e.is_panic() {
+                tracing::error!(error = %e, "F1r3fly gRPC server task panicked");
+            }
+        }
+    }
+}
 
 /// Type alias for dispatch function that handles Protocol messages
 pub type DispatchFn = Arc<
@@ -195,7 +217,7 @@ impl TransportServer {
 
         // Stop any existing server
         if let Some(old_handle) = handle_guard.take() {
-            old_handle.abort();
+            old_handle.stop().await;
         }
 
         // Start new server
@@ -230,7 +252,7 @@ impl TransportServer {
 
         // Stop server if running
         if let Some(handle) = handle_guard.take() {
-            handle.abort();
+            handle.stop().await;
         }
 
         // Update state atomically

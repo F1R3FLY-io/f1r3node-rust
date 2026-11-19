@@ -1,0 +1,8 @@
+Makefile.local
+Makefile.local.conf
+.Makefile.local.d
+theories/*.vo
+theories/*.vok
+theories/*.vos
+theories/*.glob
+theories/.*.aux

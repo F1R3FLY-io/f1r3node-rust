@@ -18,8 +18,9 @@ use super::LOG_TARGET;
 // The retriever's source label is part of the exported name the block-transfer
 // dashboard reads.
 use crate::rust::metrics_constants::{
-    BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC, BLOCK_INGEST_DROPPED_METRIC,
-    BLOCK_INGEST_EVICTIONS_METRIC, BLOCK_INGEST_METRICS_SOURCE, BLOCK_RETRIEVER_METRICS_SOURCE,
+    BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC, BLOCK_INGEST_BELOW_HORIZON_METRIC,
+    BLOCK_INGEST_DROPPED_METRIC, BLOCK_INGEST_EVICTIONS_METRIC, BLOCK_INGEST_METRICS_SOURCE,
+    BLOCK_INGEST_PRUNED_RESPONSES_METRIC, BLOCK_RETRIEVER_METRICS_SOURCE,
 };
 
 pub const LOCAL_LOOKUPS_PER_TICK: usize = 256;
@@ -129,7 +130,13 @@ pub enum StateFetchResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IngestInput {
-    /// Casper runs from an approved block at this height.
+    /// Casper runs from an approved block at this height. The anchor
+    /// here is a snapshot: block-store GC advances the effective
+    /// anchor on the Casper trait, but ingest stays on the initial
+    /// value so vouched below-approved blocks keep their
+    /// settled-history routing while vouched below-GC-anchor blocks
+    /// (on a genesis-rooted node they ARE this node's own history)
+    /// take the normal validation path.
     Attached {
         anchor_height: i64,
     },
@@ -137,6 +144,17 @@ pub enum IngestInput {
     Received(HeldMeta),
     Announced {
         hash: BlockHash,
+        peer: PeerNode,
+    },
+    /// A peer answered a `BlockRequest` with `BlockPrunedResponse`: the
+    /// block body has been retention-swept past the peer's horizon. The
+    /// need is dropped so the retry ladder stops burning network, and the
+    /// peer's `prune_floor` is recorded on the ingest view so the operator
+    /// (or a future launch) can take the last-finalized-state path (#1059).
+    BlockPruned {
+        hash: BlockHash,
+        block_height: i64,
+        prune_floor: i64,
         peer: PeerNode,
     },
     Need {
@@ -235,19 +253,21 @@ enum Shape {
 /// the effects for the owner task to carry out.
 #[derive(Debug)]
 pub struct IngestState {
-    /// Height of the approved block, once casper runs: cited blocks at or
-    /// below it may be admitted as settled history.
+    /// Height of the approved block, once casper runs: cited blocks at
+    /// or below it may be admitted as settled history. Snapshot at
+    /// attach time — GC-advanced effective anchor is NOT reflected
+    /// here, so that a genesis-rooted node (approved block = 0) never
+    /// routes its OWN below-GC-anchor history through the
+    /// settled-admission path.
     anchor_height: Option<i64>,
     /// The most parents a valid block lists; `None` when unlimited.
     max_parents: Option<usize>,
-    /// Blocks inserted while a worker still validated them; their waiters
-    /// are released when the outcome arrives.
-    inserted_while_working: HashSet<BlockHash>,
     /// Needed blocks the pending area keeps room for.
     reserved: HashSet<BlockHash>,
     tracker: DependencyTracker,
     scheduler: FetchScheduler,
     reputation: PeerReputation,
+    view: IngestView,
 }
 
 impl IngestState {
@@ -255,11 +275,11 @@ impl IngestState {
         Self {
             anchor_height: None,
             max_parents: None,
-            inserted_while_working: HashSet::new(),
             reserved: HashSet::new(),
             tracker: DependencyTracker::new(view.clone()),
             scheduler: FetchScheduler::new(view.clone()),
-            reputation: PeerReputation::new(view),
+            reputation: PeerReputation::new(view.clone()),
+            view,
         }
     }
 
@@ -317,6 +337,12 @@ impl IngestState {
                     self.scheduler.announce(&hash, &peer, now_ms);
                 }
             }
+            IngestInput::BlockPruned {
+                hash,
+                block_height,
+                prune_floor,
+                peer,
+            } => self.block_pruned(hash, block_height, prune_floor, peer),
             IngestInput::Need { hash } => {
                 if self.tracker.contains(&hash) {
                     self.vouch_for_held(&hash);
@@ -580,10 +606,9 @@ impl IngestState {
 
     fn inserted(&mut self, hash: &BlockHash, now_ms: u64, stores: &dyn StoreReads) {
         // The worker validating `hash` still applies the insert's effects
-        // (latest messages, finalization); its waiters start after its
-        // outcome.
+        // (latest messages, finalization); its outcome finishes the insert,
+        // whichever of the two arrives first.
         if self.tracker.is_working(hash) {
-            self.inserted_while_working.insert(hash.clone());
             return;
         }
         self.finish_insert(hash, now_ms, stores);
@@ -673,11 +698,11 @@ impl IngestState {
         stores: &dyn StoreReads,
         effects: &mut Vec<Effect>,
     ) {
-        if self.inserted_while_working.remove(hash) {
-            self.finish_insert(hash, now_ms, stores);
+        if !self.tracker.contains(hash) {
             return;
         }
-        if !self.tracker.contains(hash) {
+        if outcome == WorkOutcome::Settled || stores.in_dag(hash) {
+            self.finish_insert(hash, now_ms, stores);
             return;
         }
         let no_verdict = matches!(
@@ -698,7 +723,7 @@ impl IngestState {
         let meta = self.tracker.meta(hash).expect("the block is held");
         let facts = citation(meta);
         match outcome {
-            WorkOutcome::Settled => {}
+            WorkOutcome::Settled => unreachable!("a settled block finished its insert above"),
             WorkOutcome::Rejected { invalid_sender } => {
                 let pusher = meta.pushed_by.clone();
                 if let (true, Some(peer)) = (invalid_sender, &pusher) {
@@ -1121,6 +1146,64 @@ impl IngestState {
             strike,
             outcome,
         });
+    }
+
+    /// A peer answered `BlockRequest` for `hash` with `BlockPrunedResponse`:
+    /// the body has been retention-swept past the peer's horizon. The need
+    /// is dropped so the retry ladder (see `fetch_scheduler`) stops burning
+    /// network on a block no peer retains. The peer's prune floor is
+    /// recorded on the shared view so operators / future launches can take
+    /// the last-finalized-state path (#1059).
+    fn block_pruned(
+        &mut self,
+        hash: BlockHash,
+        block_height: i64,
+        prune_floor: i64,
+        peer: PeerNode,
+    ) {
+        metrics::counter!(
+            BLOCK_INGEST_PRUNED_RESPONSES_METRIC,
+            "source" => BLOCK_INGEST_METRICS_SOURCE
+        )
+        .increment(1);
+        let was_below = self.view.below_horizon_floor().is_some();
+        self.view.record_below_horizon(prune_floor);
+        if !was_below {
+            metrics::counter!(
+                BLOCK_INGEST_BELOW_HORIZON_METRIC,
+                "source" => BLOCK_INGEST_METRICS_SOURCE
+            )
+            .increment(1);
+            tracing::warn!(
+                target: LOG_TARGET,
+                block = %short(&hash),
+                block_height,
+                prune_floor,
+                peer = %peer,
+                "Peer reports needed block is below its prune horizon. \
+                 This node has fallen past peers' block-store GC horizon and cannot \
+                 catch up by re-requesting blocks (every peer has deleted the bodies). \
+                 Stop this node, remove its data directory, and restart to re-join via \
+                 the last-finalized-state path (#1059)."
+            );
+        } else {
+            tracing::debug!(
+                target: LOG_TARGET,
+                block = %short(&hash),
+                block_height,
+                prune_floor,
+                peer = %peer,
+                "additional BlockPrunedResponse received while below-horizon flag already set"
+            );
+        }
+        // Drop the need so the retry ladder stops. Held blocks that cited
+        // this pruned hash remain in the tracker: they cannot advance now,
+        // but eviction (pending-area pressure, give-up on validation failure
+        // counts) will settle them through the existing paths. The explicit
+        // drop_with_dependents path is reserved for Invalid / TooLarge /
+        // StateUnavailable, where the holder itself is condemned; here the
+        // holder is honest, the state is irretrievable instead.
+        self.scheduler.remove_block(&hash);
     }
 }
 

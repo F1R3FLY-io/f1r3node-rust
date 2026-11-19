@@ -258,6 +258,7 @@ impl TestFixture {
         let deploy_storage = KeyValueDeployStorage::from_stores(
             deploy_storage_store,
             Arc::new(MockKeyValueStore::new()),
+            Arc::new(MockKeyValueStore::new()),
         )
         .unwrap();
 
@@ -266,6 +267,7 @@ impl TestFixture {
         let rejected_deploy_buffer = Arc::new(std::sync::Mutex::new(
             KeyValueRejectedDeployBuffer::from_stores(
                 rejected_buffer_store,
+                Arc::new(MockKeyValueStore::new()),
                 Arc::new(MockKeyValueStore::new()),
             )
             .unwrap(),
