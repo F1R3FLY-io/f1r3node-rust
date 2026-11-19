@@ -441,7 +441,12 @@ env:
   #   the PosAPI default limit. Verified: one commit ahead of 646efd0; differs
   #   from it only in integration-tests/test, pyproject.toml and poetry.lock;
   #   unit tests pass. Repin to the merge commit once #197 lands.
-  SYSTEM_INTEGRATION_REF: 8e4c7cdb2905460ae9268567af588834b0bd1307
+  # 2026-11-19: 8e4c7cd -> ac8e0e4 (system-integration PR #197 branch, not yet
+  #   merged). test_validator_lifecycle bonds its deposit-failure case with
+  #   the phlo limit its wallet is funded for. Verified: one commit ahead of
+  #   8e4c7cd; differs from it only in test_validator_lifecycle.py. Repin to
+  #   the merge commit once #197 lands.
+  SYSTEM_INTEGRATION_REF: ac8e0e472000431ba52ff47dd1fcaa21a4eb92b3
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
