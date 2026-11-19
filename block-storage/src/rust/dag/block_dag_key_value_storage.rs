@@ -104,6 +104,12 @@ pub struct KeyValueDagRepresentation {
     pub(crate) history: Option<Arc<DagHistoryIndex>>,
     pub(crate) view_sequence: u64,
     pub(crate) view_max_height: Option<i64>,
+    /// Snapshot of the DAG's pruning cutoff carried from `DagState`.
+    /// Informational right now — no reader on this type — but kept so a
+    /// future walk-termination change can consult it without reaching
+    /// through the metadata-store lock.
+    #[allow(dead_code)]
+    pub(crate) pruning_cutoff: i64,
     pub(crate) dag_set: imbl::HashSet<BlockHash>,
     pub(crate) latest_messages_map: imbl::HashMap<Validator, BlockHash>,
     pub(crate) child_map: imbl::HashMap<BlockHash, imbl::HashSet<BlockHash>>,
@@ -148,6 +154,7 @@ pub struct DagFixture {
     pub history: Option<Arc<DagHistoryIndex>>,
     pub view_sequence: u64,
     pub view_max_height: Option<i64>,
+    pub pruning_cutoff: i64,
     pub dag_set: imbl::HashSet<BlockHash>,
     pub latest_messages_map: imbl::HashMap<Validator, BlockHash>,
     pub child_map: imbl::HashMap<BlockHash, imbl::HashSet<BlockHash>>,
@@ -175,6 +182,7 @@ impl DagFixture {
             history: None,
             view_sequence: self.view_sequence,
             view_max_height: self.view_max_height,
+            pruning_cutoff: self.pruning_cutoff,
             dag_set: self.dag_set,
             latest_messages_map: self.latest_messages_map,
             child_map: self.child_map,
@@ -234,6 +242,7 @@ impl KeyValueDagRepresentation {
             history: None,
             view_sequence: self.view_sequence,
             view_max_height: self.view_max_height,
+            pruning_cutoff: self.pruning_cutoff,
             dag_set: state.dag_set,
             latest_messages_map: self.latest_messages_map.clone(),
             child_map: state.child_map,
@@ -644,6 +653,24 @@ impl KeyValueDagRepresentation {
     /// not a verdict — it routes the sig to the exact ancestor scan.
     pub fn carrier_index_proves_absence(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
         self.carrier_index.read().proves_absence(sig)
+    }
+
+    /// Seed carrier index: the height since which every insert has recorded
+    /// name seeds on this database. `None` keeps the seed fast path off.
+    pub fn carrier_index_seed_watermark(&self) -> Result<Option<i64>, KvStoreError> {
+        self.carrier_index.read().seed_watermark()
+    }
+
+    /// Seed carrier index: true when no carrier of another sig with this
+    /// seed is indexed. Sound as an absence proof only when the window starts
+    /// at or above the seed watermark and the prune cutoff. A `false` routes
+    /// the deploy to the exact ancestor scan.
+    pub fn carrier_index_seed_proves_unshared(
+        &self,
+        seed: &[u8],
+        sig: &[u8],
+    ) -> Result<bool, KvStoreError> {
+        self.carrier_index.read().seed_proves_unshared(seed, sig)
     }
 
     /// Repeat-deploy carrier index: drop entries below the cutoff. The
@@ -1430,6 +1457,22 @@ impl BlockDagKeyValueStorage {
             .map(BlockHash::from))
     }
 
+    /// Seed carrier index: the sig of an indexed carrier of another deploy
+    /// with this seed. A hit is proof at any height; a miss proves nothing.
+    pub fn carrier_index_other_seed_carrier(
+        &self,
+        seed: &[u8],
+        sig: &[u8],
+    ) -> Result<Option<DeployId>, KvStoreError> {
+        self.carrier_index.read().other_seed_carrier(seed, sig)
+    }
+
+    pub fn record_deploy_admitted(&self, sig: &[u8], valid_after: i64) -> Result<(), KvStoreError> {
+        self.lifecycle
+            .write()
+            .append_events(sig, Some(valid_after), Vec::new())
+    }
+
     /// Startup carrier-index initialization (next to the LFB-migration
     /// precedent). On a database that already holds blocks, coverage starts at
     /// the next insert: max height + 1. Blocks below W are never claimed — the
@@ -1514,9 +1557,13 @@ impl BlockDagKeyValueStorage {
         let lifecycle_terminal_kv_store =
             kvm.store("deploy-lifecycle-terminal".to_string()).await?;
         let carrier_index_kv_store = kvm.store("carrier-index".to_string()).await?;
+        let carrier_index_seeds_kv_store = kvm.store("carrier-index-seeds".to_string()).await?;
         let carrier_index_meta_kv_store = kvm.store("carrier-index-meta".to_string()).await?;
-        let carrier_index_tables =
-            CarrierIndex::new(carrier_index_kv_store, carrier_index_meta_kv_store);
+        let carrier_index_tables = CarrierIndex::new(
+            carrier_index_kv_store,
+            carrier_index_seeds_kv_store,
+            carrier_index_meta_kv_store,
+        );
         let lifecycle_tables =
             DeployLifecycleTables::new(lifecycle_events_kv_store, lifecycle_terminal_kv_store);
 
@@ -1572,6 +1619,27 @@ impl BlockDagKeyValueStorage {
             .expect("GC requires transactional DAG storage")
             .gc
             .clone()
+    }
+
+    /// Non-panicking accessor: returns `None` for storages built without
+    /// persistence (test fixtures via `from_parts`). Used by launch code
+    /// that reads GC state from a fallback seed when the storage is
+    /// transactional and skips it otherwise.
+    pub fn try_gc_store(&self) -> Option<Arc<DagGcStore>> {
+        self.persistence.as_ref().map(|p| p.gc.clone())
+    }
+
+    /// Evict DAG metadata below `cutoff`. Called by block-store GC so
+    /// walks cannot descend into pruned bodies. Also persists the new
+    /// anchor via the GC store, so the cutoff survives restart and is
+    /// re-applied by `open_windowed`.
+    pub fn advance_pruning_cutoff(&self, cutoff: i64) -> Result<(), KvStoreError> {
+        let _lock_guard = self.global_lock.write();
+        self.block_metadata_index
+            .write()
+            .advance_pruning_cutoff(cutoff)?;
+        self.gc_store().advance_effective_anchor(cutoff)?;
+        Ok(())
     }
 
     /// Record the shard's genesis block hash. Write-once: recording the same
@@ -1776,6 +1844,7 @@ impl BlockDagKeyValueStorage {
         let block_number_map = dag_state_guard.block_number_map.clone();
         let main_parent_map = dag_state_guard.main_parent_map.clone();
         let self_justification_map = dag_state_guard.self_justification_map.clone();
+        let pruning_cutoff = dag_state_guard.pruning_cutoff;
         let last_finalized_block = match &dag_state_guard.last_finalized_block {
             Some((hash, _)) => hash.clone(),
             None if allow_uninitialized => BlockHash::new(),
@@ -1804,6 +1873,7 @@ impl BlockDagKeyValueStorage {
             history: self.persistence.as_ref().map(|p| p.history.clone()),
             view_sequence,
             view_max_height,
+            pruning_cutoff,
             dag_set,
             latest_messages_map: latest_messages,
             child_map,
@@ -2101,6 +2171,7 @@ impl BlockDagKeyValueStorage {
                 for pd in &block.body.deploys {
                     carrier_guard.record_once(
                         &pd.deploy.sig,
+                        &models::rust::deploy_seed::deploy_name_seed(&pd.deploy),
                         block_number,
                         block.block_hash.to_vec(),
                     )?;
@@ -2449,7 +2520,7 @@ mod tests {
 
     use super::*;
 
-    const DAG_STORES: [&str; 16] = [
+    const DAG_STORES: [&str; 17] = [
         "block-metadata",
         "latest-messages",
         "dag-equivocations-v1",
@@ -2458,6 +2529,7 @@ mod tests {
         "deploy-lifecycle-events",
         "deploy-lifecycle-terminal",
         "carrier-index",
+        "carrier-index-seeds",
         "carrier-index-meta",
         "genesis-hash",
         "dag-membership-v1",

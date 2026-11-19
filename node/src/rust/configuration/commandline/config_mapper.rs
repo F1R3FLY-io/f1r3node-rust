@@ -342,6 +342,13 @@ impl ConfigMapper<Options> for NodeConf {
                 self.casper.enable_mergeable_channel_gc = true;
             }
 
+            // Block-store GC overrides
+            if run.disable_block_store_gc {
+                self.casper.enable_block_store_gc = false;
+            } else if run.enable_block_store_gc {
+                self.casper.enable_block_store_gc = true;
+            }
+
             // Heartbeat configuration overrides
             // Keep backward compatibility with --heartbeat-disabled while preserving
             // explicit enable behavior.
@@ -708,6 +715,8 @@ mod tests {
                 ceremony_master_mode: false,
                 enable_mergeable_channel_gc: false,
                 disable_mergeable_channel_gc: false,
+                enable_block_store_gc: false,
+                disable_block_store_gc: false,
                 heartbeat_enabled: true,
                 heartbeat_disabled: true,
                 heartbeat_check_interval: Some(Duration::from_secs(111111)),
@@ -772,6 +781,7 @@ mod tests {
                 port_http: 40403,
                 port_admin_http: 40405,
                 http_max_body_bytes: 16777216,
+                deploy_max_inflight: None,
                 max_blocks_limit: 100,
                 enable_reporting: false,
                 report_cache_retention_blocks: 0,
@@ -812,6 +822,7 @@ mod tests {
                 max_parent_depth: 1,
                 dag_hot_window_depth: 1024,
                 deploy_lifespan: 50,
+                deploy_admission: Default::default(),
                 deploy_play_budget: Duration::ZERO,
                 fork_choice_stale_threshold: Duration::from_secs(30),
                 fork_choice_check_if_stale_interval: Duration::from_secs(30),
@@ -860,6 +871,8 @@ mod tests {
                 enable_mergeable_channel_gc: false,
                 mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
                 mergeable_channels_gc_depth_buffer: 10,
+                enable_block_store_gc: false,
+                enable_history_pruning: false,
                 synchrony_recovery_stall_window: Duration::from_secs(60),
                 synchrony_recovery_cooldown: Duration::from_secs(20),
                 synchrony_recovery_max_bypasses: 2,

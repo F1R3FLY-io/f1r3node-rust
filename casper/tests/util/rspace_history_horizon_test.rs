@@ -6,7 +6,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::casper::CasperShardConf;
 use casper::rust::util::rspace_history_horizon::{
-    compute_forward_horizon_roots, lfs_min_block_number,
+    compute_forward_horizon_roots, compute_gc_retention_roots, lfs_min_block_number,
 };
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use prost::bytes::Bytes;
@@ -506,6 +506,93 @@ async fn horizon_roots_must_cover_every_block_the_replay_resets_to() {
             missing.len(),
             &missing[..missing.len().min(8)]
         );
+    })
+    .await
+}
+
+// ── GC retention roots (issue #1061) ─────────────────────────────────────
+//
+// `compute_gc_retention_roots` must emit every pre-/post-state root of every
+// block in the DAG from the state floor upward — including blocks above the
+// LFB. The pre-#1061-fix code reused `compute_forward_horizon_roots`, which
+// stopped at the LFB; the next sweep deleted the trie nodes for every block
+// between LFB and the newest tip, and replay panicked within 30 ms.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gc_retention_includes_blocks_above_the_lfb() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let v0 = generate_validator(Some("Validator0"));
+        let bonds = vec![Bond {
+            validator: v0.clone(),
+            stake: 10.into(),
+        }];
+        // Chain of 10 blocks. Imagine LFB at height 5 and three more
+        // unfinalized blocks at heights 6..=9 that the validator is still
+        // processing. `compute_gc_retention_roots` MUST reach up to 9.
+        let chain = build_chain(&mut block_store, &mut block_dag_storage, 10, bonds, v0);
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+
+        // State floor at 3 — anything above should be retained.
+        let roots: std::collections::HashSet<Blake2b256Hash> =
+            compute_gc_retention_roots(&dag, &block_store, 3)
+                .unwrap()
+                .into_iter()
+                .collect();
+
+        // Every block from height 3 upward must contribute its post-state
+        // AND its pre-state. Without the pre-#1061 fix these would only
+        // reach up to whatever height a hypothetical LFB sat at; the GC
+        // function does not take an LFB argument and walks everything in
+        // the DAG above the floor.
+        let mut missing: Vec<String> = Vec::new();
+        for b in chain.iter().filter(|b| b.body.state.block_number >= 3) {
+            for (label, bytes) in [
+                ("pre", &b.body.state.pre_state_hash),
+                ("post", &b.body.state.post_state_hash),
+            ] {
+                if !roots.contains(&Blake2b256Hash::from_bytes_prost(bytes)) {
+                    missing.push(format!("#{}.{}", b.body.state.block_number, label));
+                }
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "gc retention missed {} roots that live above an LFB and must not be swept: {:?}",
+            missing.len(),
+            &missing[..missing.len().min(8)]
+        );
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gc_retention_excludes_blocks_below_the_floor() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let v0 = generate_validator(Some("Validator0"));
+        let bonds = vec![Bond {
+            validator: v0.clone(),
+            stake: 10.into(),
+        }];
+        let chain = build_chain(&mut block_store, &mut block_dag_storage, 10, bonds, v0);
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+
+        // State floor at 7 excludes chain[3]'s post-state: nothing above
+        // height 7 references it (single-parent chain in the fixture), so
+        // it is correctly NOT a retention root.
+        let roots: std::collections::HashSet<Blake2b256Hash> =
+            compute_gc_retention_roots(&dag, &block_store, 7)
+                .unwrap()
+                .into_iter()
+                .collect();
+        let chain_3_post = Blake2b256Hash::from_bytes_prost(&chain[3].body.state.post_state_hash);
+        assert!(!roots.contains(&chain_3_post));
     })
     .await
 }

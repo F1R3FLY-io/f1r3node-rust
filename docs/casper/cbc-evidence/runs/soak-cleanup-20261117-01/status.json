@@ -1,0 +1,335 @@
+{
+  "schema": "soak-cleanup-admission/v1",
+  "control_revision": "09d45f2d29d91eb0bc731bbbe09a152476fe65e2",
+  "candidate_revision": "",
+  "claim_id": "CLAIM-SOAK-CLEANUP-001",
+  "status": "accepted",
+  "gaps": 0,
+  "items": [
+    {
+      "path": ".github/actions/soak-segment/action.yml",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/merge-recovery-soak.yml",
+      "status": "discharged",
+      "artifact_status": "pending",
+      "claims": [
+        {
+          "claim_id": "CLAIM-CASPER-CAMPAIGN-003",
+          "status": "pending",
+          "gate": "pending"
+        },
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-001",
+          "status": "pending",
+          "gate": "pending"
+        },
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "docs/casper/soak-cleanup.json",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "docs/claims/soak-segment-cleanup.md",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "formal/tlaplus/soak_cleanup/EraseReason.cfg",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "formal/tlaplus/soak_cleanup/IgnoreStopFailure.cfg",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "formal/tlaplus/soak_cleanup/SkipOwnerStop.cfg",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "formal/tlaplus/soak_cleanup/SkipResidualStop.cfg",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "formal/tlaplus/soak_cleanup/SoakCleanup.tla",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "formal/tlaplus/soak_cleanup/clean.cfg",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "scripts/bench/test-run-merge-recovery-soak.sh",
+      "status": "discharged",
+      "artifact_status": "acceptance_required",
+      "claims": [
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-001",
+          "status": "discharged",
+          "gate": "acceptance_required"
+        },
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "scripts/bench/test-soak-segment-cleanup.sh",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "scripts/casper-soak/src/host_control.rs",
+      "status": "discharged",
+      "artifact_status": "acceptance_required",
+      "claims": [
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-001",
+          "status": "discharged",
+          "gate": "acceptance_required"
+        },
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "scripts/cbc-runtime.lock.json",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "scripts/cbc.sh",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/check-soak-cleanup.sh",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/configure-cbc-trust.sh",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/install-cbc-runtime.sh",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/soak-cleanup-lock-closure.sh",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/test-cbc-runtime.sh",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/test-soak-cleanup-model.sh",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/test-soak-cleanup-regressions.sh",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/test-soak-cleanup.sh",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/verify-soak-cleanup.sh",
+      "status": "discharged",
+      "artifact_status": "discharged",
+      "claims": [
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    },
+    {
+      "path": "scripts/run-merge-recovery-soak.sh",
+      "status": "discharged",
+      "artifact_status": "acceptance_required",
+      "claims": [
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-001",
+          "status": "discharged",
+          "gate": "acceptance_required"
+        },
+        {
+          "claim_id": "CLAIM-SOAK-CLEANUP-001",
+          "status": "discharged",
+          "gate": "discharged"
+        }
+      ]
+    }
+  ]
+}

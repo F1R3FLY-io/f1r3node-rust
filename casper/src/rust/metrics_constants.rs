@@ -31,6 +31,8 @@ pub const BLOCK_INGEST_REQUESTS_OUTSTANDING_METRIC: &str = "block.ingest.request
 pub const BLOCK_INGEST_EVICTIONS_METRIC: &str = "block.ingest.evictions";
 pub const BLOCK_INGEST_DROPPED_METRIC: &str = "block.ingest.dropped";
 pub const BLOCK_INGEST_NEEDS_DROPPED_METRIC: &str = "block.ingest.needs.dropped";
+pub const BLOCK_INGEST_PRUNED_RESPONSES_METRIC: &str = "block.ingest.pruned-responses";
+pub const BLOCK_INGEST_BELOW_HORIZON_METRIC: &str = "block.ingest.below-horizon";
 pub const BLOCK_INGEST_INSERTS_PENDING_METRIC: &str = "block.ingest.inserts-pending";
 pub const BLOCK_INGEST_LANE_DROPS_METRIC: &str = "block.ingest.lane-drops";
 pub const BLOCK_INGEST_OUTBOUND_DROPS_METRIC: &str = "block.ingest.outbound-drops";
@@ -520,3 +522,4 @@ pub const DEPLOY_LIFECYCLE_RELEASE_FAILURES_METRIC: &str = "deploy-lifecycle.rel
 // each is retried by the next settle.
 pub const DEPLOY_LIFECYCLE_SETTLE_ROW_FAILURES_METRIC: &str =
     "deploy-lifecycle.settle.row-failures";
+pub const DEPLOY_ADMISSION_REFUSED_METRIC: &str = "deploy-admission.refused";

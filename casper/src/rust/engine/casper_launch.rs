@@ -204,6 +204,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             disable_validator_progress_check: standalone,
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,
             mergeable_channels_gc_depth_buffer: conf.mergeable_channels_gc_depth_buffer,
+            enable_block_store_gc: conf.enable_block_store_gc,
+            enable_history_pruning: conf.enable_history_pruning,
             synchrony_recovery_stall_window: conf.synchrony_recovery_stall_window,
             synchrony_recovery_cooldown: conf.synchrony_recovery_cooldown,
             synchrony_recovery_max_bypasses: conf.synchrony_recovery_max_bypasses,
@@ -211,6 +213,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             synchrony_finalized_baseline_max_distance: conf
                 .synchrony_finalized_baseline_max_distance,
             max_user_deploys_per_block: conf.max_user_deploys_per_block,
+            deploy_admission: conf.deploy_admission,
             native_token_name: conf.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.genesis_block_data.native_token_decimals,
@@ -293,6 +296,26 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             Box::pin(async move {
                 ask_peers_for_fork_choice_tips(&*transport_layer, &connections_cell, &rp_conf_ask)
                     .await?;
+
+                // Startup horizon probe (#1059). Ask peers for their current
+                // ApprovedBlock with trim_state=true: the response carries a
+                // `FinalizedFloorSeed` whose `floor_number` is each peer's
+                // current finalized floor. The incoming response is routed
+                // through Running's `handle_approved_block_response`, which
+                // compares that floor against our stored DAG height and
+                // records a below-horizon signal when we are past peers'
+                // GC horizon. Failure to send is not fatal: Running without
+                // the probe still works, the user just loses the early
+                // signal.
+                if let Err(error) = transport_layer
+                    .request_approved_block(&rp_conf_ask, Some(true))
+                    .await
+                {
+                    tracing::warn!(
+                        error = ?error,
+                        "startup horizon probe (ApprovedBlockRequest) failed to broadcast; running without early below-horizon detection"
+                    );
+                }
 
                 if let Some(propose_f) = propose_f_opt.as_ref() {
                     // Clone the Arc and cast to trait object
