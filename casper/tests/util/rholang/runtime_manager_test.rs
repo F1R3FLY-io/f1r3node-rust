@@ -209,7 +209,7 @@ async fn comput_state_should_charge_for_deploys() {
 fn bitmask_flags_deploy(body: &str) -> Signed<DeployData> {
     construct_deploy::source_deploy_now_full(
         format!(r#"new t(`rho:system:bitmaskMergeableTag`) in {{ {body} }}"#),
-        Some(100000),
+        Some(1_000_000),
         None,
         None,
         None,
