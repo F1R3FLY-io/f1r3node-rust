@@ -859,6 +859,7 @@ mod tests {
                     ceremony_master_mode: false,
                 },
                 min_phlo_price: (1).into(),
+                max_phlo_limit: 20_000_000,
                 heartbeat_conf: casper::rust::casper_conf::HeartbeatConf {
                     enabled: false,
                     check_interval: Duration::from_secs(30),

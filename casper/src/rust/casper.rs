@@ -331,8 +331,9 @@ pub async fn hash_set_casper(
 
     // Same adoption, same reasoning, for the parameters the VALIDITY rules
     // fork on: parent spread (max-parent-depth), expiry and repeat-deploy
-    // windows (deploy-lifespan), the phlo floor (min-phlo-price), and the
-    // epoch slash authorization and neglect are judged in (epoch-length). The
+    // windows (deploy-lifespan), the phlo floor (min-phlo-price), the epoch
+    // slash authorization and neglect are judged in (epoch-length), and the
+    // per-deploy phlo cap (max-phlo-limit). The
     // assignment is unconditional — `reconcile(local, onchain) = onchain` —
     // and absent/out-of-range fails the node (see
     // `read_on_chain_consensus_parameters`).
@@ -346,6 +347,7 @@ pub async fn hash_set_casper(
         deploy_lifespan: casper_shard_conf.deploy_lifespan,
         min_phlo_price: casper_shard_conf.min_phlo_price.clone(),
         epoch_length: casper_shard_conf.epoch_length,
+        max_phlo_limit: casper_shard_conf.max_phlo_limit,
     };
     if onchain != local {
         tracing::info!(
@@ -358,6 +360,7 @@ pub async fn hash_set_casper(
     casper_shard_conf.deploy_lifespan = onchain.deploy_lifespan;
     casper_shard_conf.min_phlo_price = onchain.min_phlo_price;
     casper_shard_conf.epoch_length = onchain.epoch_length;
+    casper_shard_conf.max_phlo_limit = onchain.max_phlo_limit;
 
     // Startup validation ran on the LOCAL values; everything derived from or
     // judged against max-parent-depth is finished HERE, on the adopted one.
@@ -598,6 +601,7 @@ pub struct CasperShardConf {
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub min_phlo_price: TokenAmount,
+    pub max_phlo_limit: i64,
     /// When `true`, `add_deploy` triggers an immediate heartbeat-signal
     /// wake so the heartbeat task picks up the new deploy on the next
     /// tick rather than waiting up to `check_interval` seconds. Defaults
@@ -667,6 +671,7 @@ impl CasperShardConf {
             epoch_length: 0,
             quarantine_length: 0,
             min_phlo_price: (0).into(),
+            max_phlo_limit: i64::MAX,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,

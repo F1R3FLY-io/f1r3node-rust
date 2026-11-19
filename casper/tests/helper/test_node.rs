@@ -1073,12 +1073,12 @@ impl TestNode {
             floor_seed: None,
             sigs: vec![],
         };
-        let epoch_length = runtime_manager
+        let consensus_parameters = runtime_manager
             .get_consensus_parameters(&genesis.body.state.post_state_hash)
             .await
             .expect("consensus parameters read from the test genesis")
-            .expect("test genesis exposes getConsensusParameters")
-            .epoch_length;
+            .expect("test genesis exposes getConsensusParameters");
+        let epoch_length = consensus_parameters.epoch_length;
         let shard_conf = CasperShardConf {
             fault_tolerance_threshold: 0.1,
             fault_tolerance_threshold_ppm: 100_000,
@@ -1103,6 +1103,7 @@ impl TestNode {
             epoch_length,
             quarantine_length: 20000,
             min_phlo_price: (1).into(),
+            max_phlo_limit: consensus_parameters.max_phlo_limit,
             deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled

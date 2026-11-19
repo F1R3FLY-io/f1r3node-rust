@@ -3857,10 +3857,11 @@ async fn fault_tolerance_threshold_ppm_round_trips_through_genesis() {
 }
 
 /// Consensus-parameters round-trip: genesis bakes (max-parent-depth,
-/// deploy-lifespan, min-phlo-price) into the PoS contract and any node can
-/// read them back from any post-state — the same shard-uniformity mechanism
-/// as the protocol FTT, extended to the parameters the validity rules
-/// (parent spread, expiry, repeat-deploy, phlo floor) fork on.
+/// deploy-lifespan, min-phlo-price, epoch-length, max-phlo-limit) into the PoS
+/// contract and any node can read them back from any post-state — the same
+/// shard-uniformity mechanism as the protocol FTT, extended to the parameters
+/// the validity rules (parent spread, expiry, repeat-deploy, phlo floor, phlo
+/// cap) fork on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_parameters_round_trip_through_genesis() {
     use crate::util::genesis_builder::GenesisBuilder;
@@ -3874,6 +3875,7 @@ async fn consensus_parameters_round_trip_through_genesis() {
     parameters.2.proof_of_stake.deploy_lifespan = 70;
     parameters.2.proof_of_stake.min_phlo_price = (3).into();
     parameters.2.proof_of_stake.epoch_length = 9;
+    parameters.2.proof_of_stake.max_phlo_limit = 7_000_000;
 
     let genesis_context = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
@@ -3901,6 +3903,7 @@ async fn consensus_parameters_round_trip_through_genesis() {
             deploy_lifespan: 70,
             min_phlo_price: 3.into(),
             epoch_length: 9,
+            max_phlo_limit: 7_000_000,
         }),
         "genesis must bake the consensus parameters into the PoS contract and \
          expose them via getConsensusParameters"
@@ -3944,6 +3947,41 @@ async fn consensus_parameters_read_rejects_out_of_range_values() {
     );
 }
 
+/// A chain whose phlo cap admits no deploy fails the strict read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consensus_parameters_read_rejects_a_non_positive_phlo_cap() {
+    use crate::util::genesis_builder::GenesisBuilder;
+    use crate::util::rholang::resources::{
+        mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
+    parameters.2.proof_of_stake.max_phlo_limit = 0;
+
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("genesis with a zero phlo cap");
+    let post_state = genesis_context
+        .genesis_block
+        .body
+        .state
+        .post_state_hash
+        .clone();
+
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) = mk_runtime_manager_with_history_at(&mut *kvm).await;
+
+    let err = runtime_manager
+        .get_consensus_parameters(&post_state)
+        .await
+        .expect_err("a zero maxPhloLimit must fail the strict read");
+    assert!(
+        err.to_string().contains("maxPhloLimit out of range"),
+        "the error must name the offending parameter, got: {err}"
+    );
+}
+
 /// The adoption gap this pins: a node whose LOCAL configuration diverges from
 /// the chain must still RUN the on-chain consensus parameters — local config
 /// is not a fork input. `hash_set_casper` is the single adoption point (the
@@ -3972,6 +4010,7 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     parameters.2.proof_of_stake.deploy_lifespan = 70;
     parameters.2.proof_of_stake.min_phlo_price = (3).into();
     parameters.2.proof_of_stake.epoch_length = 9;
+    parameters.2.proof_of_stake.max_phlo_limit = 7_000_000;
 
     let genesis_context = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
@@ -4005,6 +4044,7 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     local_conf.deploy_lifespan = 50;
     local_conf.min_phlo_price = (1).into();
     local_conf.epoch_length = 10000;
+    local_conf.max_phlo_limit = 20_000_000;
 
     let casper = hash_set_casper(
         ingest,
@@ -4029,9 +4069,10 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
             adopted.max_parent_depth,
             adopted.deploy_lifespan,
             adopted.min_phlo_price.clone(),
-            adopted.epoch_length
+            adopted.epoch_length,
+            adopted.max_phlo_limit
         ),
-        (21, 70, 3.into(), 9),
+        (21, 70, 3.into(), 9, 7_000_000),
         "the on-chain consensus parameters must be adopted over local configuration"
     );
 }

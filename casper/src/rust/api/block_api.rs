@@ -791,6 +791,15 @@ impl BlockAPI {
                     ),
                 }));
             }
+            let max_phlo_limit = casper.casper_shard_conf().max_phlo_limit;
+            if d.data.phlo_limit > max_phlo_limit {
+                return Err(eyre::Report::new(DeployValidationError {
+                    message: format!(
+                        "Phlo limit {} is greater than maximum limit {}.",
+                        d.data.phlo_limit, max_phlo_limit
+                    ),
+                }));
+            }
             let dag = casper.block_dag().await?;
             if !casper.is_local_validator_bonded() {
                 return Err(eyre::Report::new(ValidatorNotBondedError));

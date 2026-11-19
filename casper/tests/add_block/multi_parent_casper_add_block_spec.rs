@@ -807,6 +807,47 @@ async fn multi_parent_casper_should_reject_block_carrying_underpriced_deploy() {
     );
 }
 
+/// A block carrying a deploy whose phlo limit exceeds the chain's
+/// max-phlo-limit is invalid: the cap bounds how long every validator spends
+/// replaying one deploy, so a proposer cannot buy more than it.
+#[tokio::test]
+async fn multi_parent_casper_should_reject_block_carrying_deploy_above_phlo_cap() {
+    let ctx = TestContext::new().await;
+
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+        .await
+        .unwrap();
+    let cap = nodes[0].casper.casper_shard_conf().max_phlo_limit;
+
+    // One above the chain's cap; the deploy enters the pool directly, modeling
+    // a proposer that skipped the API gate.
+    let above_cap = construct_deploy::source_deploy_now_full(
+        "Nil".to_string(),
+        Some(cap + 1),
+        None,
+        None,
+        None,
+        Some(ctx.shard_id.clone()),
+    )
+    .unwrap();
+
+    let result = nodes[0]
+        .add_block_status(&[above_cap], |s| {
+            matches!(
+                s,
+                Either::Left(BlockError::Invalid(InvalidBlock::ExcessivePhloLimit))
+            )
+        })
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "a block carrying a deploy above the phlo cap must validate as ExcessivePhloLimit, \
+         got: {:?}",
+        result.err()
+    );
+}
+
 #[tokio::test]
 async fn multi_parent_casper_should_add_a_valid_block_from_peer() {
     let ctx = TestContext::new().await;
