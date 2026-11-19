@@ -59,6 +59,10 @@ pub enum DeployError {
     /// Another deploy, named by its sig, already has this deploy's name seed.
     SeedReuse(DeployId),
     InvalidFreshness,
+    PhloLimitAboveCap {
+        phlo_limit: i64,
+        max_phlo_limit: i64,
+    },
     RecordTooLarge {
         record_bytes: u64,
         limit: u64,
@@ -91,6 +95,11 @@ impl Display for DeployError {
             DeployError::ParsingError(details) => write!(f, "Parsing error: {}", details),
             DeployError::MissingUser => write!(f, "Missing user"),
             DeployError::InvalidFreshness => write!(f, "invalid_deploy_window: deploy validity height is beyond the admission horizon. Retry the same deploy after the chain advances."),
+            DeployError::PhloLimitAboveCap { phlo_limit, max_phlo_limit } => write!(
+                f,
+                "Phlo limit {} is greater than maximum limit {}.",
+                phlo_limit, max_phlo_limit
+            ),
             DeployError::RecordTooLarge { record_bytes, limit } => write!(
                 f,
                 "deploy_too_large: deploy record size {} exceeds the configured pool byte limit {}",

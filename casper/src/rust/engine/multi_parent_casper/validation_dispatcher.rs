@@ -287,7 +287,8 @@ async fn validate_contents(
         Validate::phlo_limit(block, this.casper_shard_conf.max_phlo_limit)
     {
         tracing::warn!(
-            "One or more deploys has a phlo limit above {}",
+            "Block {} carries a deploy with a phlo limit above {}",
+            PrettyPrinter::build_string_bytes(&block.block_hash),
             this.casper_shard_conf.max_phlo_limit
         );
         return Ok(Either::Left(block_error));

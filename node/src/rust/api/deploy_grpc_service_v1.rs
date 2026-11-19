@@ -179,6 +179,7 @@ impl DeployGrpcServiceV1Impl {
                                 | DeployError::PoolBusy { .. }
                                 | DeployError::AdmissionBusy
                                 | DeployError::InvalidFreshness
+                                | DeployError::PhloLimitAboveCap { .. }
                                 | DeployError::RecordTooLarge { .. }
                         )
                     ) || cause
