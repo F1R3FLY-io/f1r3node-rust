@@ -19,9 +19,9 @@ pub struct SortedParHashSet {
 
 impl SortedParHashSet {
     pub fn create_from_vec(vec: Vec<Par>) -> Self {
-        let set: HashSet<Par> = vec.clone().into_iter().collect();
-        let sorted_pars = Ordering::sort_pars(&set.clone().into_iter().collect());
-        let sorted_ps: HashSet<Par> = sorted_pars.clone().into_iter().collect();
+        let set: HashSet<Par> = vec.into_iter().collect();
+        let sorted_pars = Ordering::sort_pars(&set);
+        let sorted_ps: HashSet<Par> = sorted_pars.iter().cloned().collect();
 
         SortedParHashSet {
             ps: set,

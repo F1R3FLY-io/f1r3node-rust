@@ -428,7 +428,14 @@ env:
   #   retries when a block already being built misses the deploy at the
   #   expiry boundary. Verified: descends from 3867a22; differs from it only
   #   in integration-tests/test and unit-tests (10 files); unit tests pass.
-  SYSTEM_INTEGRATION_REF: 907f8a57f408afd106b36e769d48975f965a1697
+  # 2026-11-18: 907f8a5 -> 646efd0 (system-integration main, PR #194 merged
+  #   through promotion #196). conftest.py deselects opt-in tests such as
+  #   test_capacity_ramp when their environment variable is not set, so
+  #   pytest no longer reports them as skipped and the soak preflight
+  #   (which requires skipped=0) passes again. Verified: descends from
+  #   907f8a5 (4 commits ahead, 0 behind); differs from it only in
+  #   conftest.py, WRITING_TESTS.md, two custom tests and one unit test.
+  SYSTEM_INTEGRATION_REF: 646efd00a11df7e17610d2c6399aaf32abbb4eda
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"

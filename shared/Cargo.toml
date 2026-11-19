@@ -35,6 +35,8 @@ thiserror = { workspace = true }
 indexmap = { workspace = true }
 metrics = { workspace = true }
 tempfile = { workspace = true }
+libc = "0.2"
+signal-hook-registry = "1.4"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

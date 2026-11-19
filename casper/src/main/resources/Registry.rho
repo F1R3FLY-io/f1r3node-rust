@@ -68,7 +68,7 @@ in {
   // }
 
   new MakeNode, ByteArrayToNybbleList,
-      TreeHashMapSetter, TreeHashMapGetter, TreeHashMapContains, TreeHashMapUpdater, TreeHashMapDeleter, TreeHashMapToMapVisiter, loopTreeMapNodes,
+      TreeHashMapSetter, TreeHashMapGetter, TreeHashMapContains, TreeHashMapUpdater, TreeHashMapGetOrCreateWalker, TreeHashMapDeleter, TreeHashMapToMapVisiter, loopTreeMapNodes,
       storeToken, nodeGet, depthP in {
     match [1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536] {
       powers => {
@@ -340,6 +340,130 @@ in {
                 ByteArrayToNybbleList!(hash, 0, depth, [], *nybListCh) |
                 for (@nybList <- nybListCh) {
                   TreeHashMapUpdater!(map, nybList, 0, 2 * depth, *update, key, *ret)
+                }
+              }
+            }
+          }
+        } |
+
+        // Atomically return the value at key or, if absent, call factory to
+        // produce one, store it, and return it. The factory runs under the
+        // leaf-node lock (the linear consume on `@(*bitmaskTag, node, *storeToken)`),
+        // so two parallel callers for the same fresh key serialize and the
+        // second one sees the first one's result instead of creating a
+        // duplicate. Factory receives one ret channel and must send the new
+        // value on it exactly once.
+        contract TreeHashMapGetOrCreateWalker(@map, @nybList, @n, @len, factory, @suffix, ret) = {
+          match (map, nybList.slice(0, n)) {
+            node => {
+              for (@val <<- @(*bitmaskTag, node, *storeToken)) {
+                if (n == len) {
+                  // Fast path via peek only: an already-registered key reads
+                  // the leaf non-destructively. The leaf stores a Rholang Map
+                  // (non-numeric), so it is not in the mergeable number-channel
+                  // registry; a destructive consume+produce would show up in
+                  // every sibling block's event log for every system-vault
+                  // lookup and race at multi-parent merge. Keeping fast reads
+                  // peek-only matches the pre-existing `TreeHashMap.get`
+                  // semantics those system deploys already relied on.
+                  match val {
+                    0 => {
+                      // Empty leaf: slow path. Acquire the lock, re-check,
+                      // call factory if still absent.
+                      for (@val2 <- @(*bitmaskTag, node, *storeToken)) {
+                        if (val2 == 0) {
+                          new newValCh in {
+                            factory!(*newValCh) |
+                            for (@newVal <- newValCh) {
+                              @(*bitmaskTag, node, *storeToken)!({suffix: newVal}) |
+                              ret!(newVal)
+                            }
+                          }
+                        } else {
+                          if (val2.contains(suffix)) {
+                            @(*bitmaskTag, node, *storeToken)!(val2) |
+                            ret!(val2.get(suffix))
+                          } else {
+                            new newValCh in {
+                              factory!(*newValCh) |
+                              for (@newVal <- newValCh) {
+                                @(*bitmaskTag, node, *storeToken)!(val2.set(suffix, newVal)) |
+                                ret!(newVal)
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                    _ => {
+                      if (val.contains(suffix)) {
+                        // Fast path: key is already in the leaf map, no lock.
+                        ret!(val.get(suffix))
+                      } else {
+                        // Non-empty leaf but suffix absent: slow path.
+                        for (@val2 <- @(*bitmaskTag, node, *storeToken)) {
+                          if (val2 == 0) {
+                            new newValCh in {
+                              factory!(*newValCh) |
+                              for (@newVal <- newValCh) {
+                                @(*bitmaskTag, node, *storeToken)!({suffix: newVal}) |
+                                ret!(newVal)
+                              }
+                            }
+                          } else {
+                            if (val2.contains(suffix)) {
+                              @(*bitmaskTag, node, *storeToken)!(val2) |
+                              ret!(val2.get(suffix))
+                            } else {
+                              new newValCh in {
+                                factory!(*newValCh) |
+                                for (@newVal <- newValCh) {
+                                  @(*bitmaskTag, node, *storeToken)!(val2.set(suffix, newVal)) |
+                                  ret!(newVal)
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                } else {
+                  // Interior node: make the path exist, mirrors TreeHashMapSetter.
+                  if ((val/powers.nth(nybList.nth(n))) % 2 == 0) {
+                    for (@val <- @(*bitmaskTag, node, *storeToken)) {
+                      if ((val/powers.nth(nybList.nth(n))) % 2 == 0) {
+                        MakeNode!(0, (map, nybList.slice(0, n + 1))) |
+                        match nybList.nth(n) {
+                          bit => {
+                            @(*bitmaskTag, node, *storeToken)!((val % powers.nth(bit)) +
+                              (val / powers.nth(bit + 1)) * powers.nth(bit + 1) +
+                              powers.nth(bit))
+                          }
+                        } |
+                        TreeHashMapGetOrCreateWalker!(map, nybList, n + 1, len, *factory, suffix, *ret)
+                      } else {
+                        @(*bitmaskTag, node, *storeToken)!(val) |
+                        TreeHashMapGetOrCreateWalker!(map, nybList, n + 1, len, *factory, suffix, *ret)
+                      }
+                    }
+                  } else {
+                    TreeHashMapGetOrCreateWalker!(map, nybList, n + 1, len, *factory, suffix, *ret)
+                  }
+                }
+              }
+            }
+          }
+        } |
+
+        contract TreeHashMap(@"getOrCreate", @map, @key, factory, ret) = {
+          new hashCh, nybListCh, keccak256Hash(`rho:crypto:keccak256Hash`) in {
+            keccak256Hash!(key.toByteArray(), *hashCh) |
+            for (@hash <- hashCh) {
+              for (@depth <<- @(map, *depthP)) {
+                ByteArrayToNybbleList!(hash, 0, depth, [], *nybListCh) |
+                for (@nybList <- nybListCh) {
+                  TreeHashMapGetOrCreateWalker!(map, nybList, 0, 2 * depth, *factory, key, *ret)
                 }
               }
             }

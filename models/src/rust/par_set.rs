@@ -30,17 +30,19 @@ impl ParSet {
     }
 
     pub fn create_from_vec_and_remainder(vec: Vec<Par>, remainder: Option<Var>) -> Self {
-        let shs = SortedParHashSet::create_from_vec(vec.clone());
+        let connective_used = ParSet::connective_used(&vec) || remainder.is_some();
+        let shs = SortedParHashSet::create_from_vec(vec);
+        let locally_free = ParSet::update_locally_free(&shs);
         ParSet {
-            ps: shs.clone(),
-            connective_used: ParSet::connective_used(&vec) || remainder.is_some(),
-            locally_free: ParSet::update_locally_free(&shs),
+            ps: shs,
+            connective_used,
+            locally_free,
             remainder,
         }
     }
 
     pub fn create_from_vec(vec: Vec<Par>) -> Self {
-        ParSet::create_from_vec_and_remainder(vec.clone(), None)
+        ParSet::create_from_vec_and_remainder(vec, None)
     }
 
     pub fn equals(&self, other: ParSet) -> bool {
@@ -53,9 +55,8 @@ impl ParSet {
 
     fn update_locally_free(ps: &SortedParHashSet) -> Vec<u8> {
         ps.sorted_pars
-            .clone()
-            .into_iter()
-            .fold(Vec::new(), |acc, p| union(acc, p.locally_free))
+            .iter()
+            .fold(Vec::new(), |acc, p| union(acc, p.locally_free.clone()))
     }
 }
 
