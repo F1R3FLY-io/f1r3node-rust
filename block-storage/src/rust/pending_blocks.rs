@@ -1,6 +1,7 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
+use models::casper::BlockMessageProto;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
@@ -59,7 +60,7 @@ pub enum PendingClass {
     Solicited,
 }
 
-/// What the area holds against its limits: blocks, their encoded size, and blocks
+/// What the area holds against its limits: blocks, encoded bytes, and blocks
 /// per sender (only senders with a block in the area), each counting the room
 /// reserved for blocks not yet inserted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -71,13 +72,20 @@ pub struct PendingUsage {
 }
 
 struct Entry {
-    block: Arc<BlockMessage>,
-    bytes: usize,
+    encoded: Bytes,
+    sender: Bytes,
 }
 
 struct Reservation {
     sender: Bytes,
     bytes: usize,
+}
+
+fn decode(encoded: &Bytes) -> BlockMessage {
+    let proto = BlockMessageProto::decode(encoded.as_ref())
+        .expect("the pending area holds only the encoding of a BlockMessage");
+    BlockMessage::from_proto(proto)
+        .expect("the pending area holds only the encoding of a BlockMessage")
 }
 
 struct Inner {
@@ -116,15 +124,14 @@ impl Inner {
 
     fn remove(&mut self, hash: &BlockHash) -> Option<Entry> {
         let entry = self.entries.remove(hash)?;
-        self.bytes -= entry.bytes;
-        let sender = &entry.block.sender;
+        self.bytes -= entry.encoded.len();
         let count = self
             .per_sender
-            .get_mut(sender)
+            .get_mut(&entry.sender)
             .expect("every entry is counted under its sender");
         *count -= 1;
         if *count == 0 {
-            self.per_sender.remove(sender);
+            self.per_sender.remove(&entry.sender);
         }
         Some(entry)
     }
@@ -164,11 +171,15 @@ impl PendingBlocks {
     /// New limits apply to later inserts; blocks already held stay.
     pub fn set_limits(&self, limits: PendingBlockLimits) { self.lock().limits = limits; }
 
-    pub fn insert(&self, block: &BlockMessage, class: PendingClass) -> PendingInsert {
-        if self.contains(&block.block_hash) {
-            return PendingInsert::Accepted;
-        }
-        let bytes = block.to_proto().encoded_len();
+    /// Hold `encoded`, the encoding of `block`; the area counts and keeps
+    /// exactly these bytes.
+    pub fn insert(
+        &self,
+        block: &BlockMessage,
+        encoded: Bytes,
+        class: PendingClass,
+    ) -> PendingInsert {
+        let bytes = encoded.len();
         let mut inner = self.lock();
         let limits = inner.limits;
 
@@ -208,15 +219,18 @@ impl PendingBlocks {
         *inner.per_sender.entry(block.sender.clone()).or_insert(0) += 1;
         inner.bytes += bytes;
         inner.entries.insert(block.block_hash.clone(), Entry {
-            block: Arc::new(block.clone()),
-            bytes,
+            encoded,
+            sender: block.sender.clone(),
         });
         PendingInsert::Accepted
     }
 
     pub fn get(&self, hash: &BlockHash) -> Option<BlockMessage> {
-        let block = Arc::clone(&self.lock().entries.get(hash)?.block);
-        Some(BlockMessage::clone(&block))
+        Some(decode(&self.get_encoded(hash)?))
+    }
+
+    pub fn get_encoded(&self, hash: &BlockHash) -> Option<Bytes> {
+        Some(self.lock().entries.get(hash)?.encoded.clone())
     }
 
     pub fn contains(&self, hash: &BlockHash) -> bool { self.lock().entries.contains_key(hash) }
@@ -283,6 +297,12 @@ mod tests {
 
     fn size() -> usize { block(1, 1).to_proto().encoded_len() }
 
+    fn encode(b: &BlockMessage) -> Bytes { Bytes::from(b.to_proto().encode_to_vec()) }
+
+    fn insert(area: &PendingBlocks, b: &BlockMessage, class: PendingClass) -> PendingInsert {
+        area.insert(b, encode(b), class)
+    }
+
     fn limits(max_blocks: usize, max_bytes: usize, max_per_sender: usize) -> PendingBlockLimits {
         PendingBlockLimits {
             max_blocks,
@@ -296,7 +316,7 @@ mod tests {
         let area = PendingBlocks::new(PendingBlockLimits::default());
         let b = block(1, 1);
         assert_eq!(
-            area.insert(&b, PendingClass::Unsolicited),
+            insert(&area, &b, PendingClass::Unsolicited),
             PendingInsert::Accepted
         );
         assert_eq!(area.get(&b.block_hash), Some(b.clone()));
@@ -313,28 +333,28 @@ mod tests {
         let area = PendingBlocks::new(limits(10, usize::MAX, 100));
         for i in 0..8 {
             assert_eq!(
-                area.insert(&block(i, i), PendingClass::Unsolicited),
+                insert(&area, &block(i, i), PendingClass::Unsolicited),
                 PendingInsert::Accepted
             );
         }
         assert_eq!(
-            area.insert(&block(8, 8), PendingClass::Unsolicited),
+            insert(&area, &block(8, 8), PendingClass::Unsolicited),
             PendingInsert::AreaFull
         );
         assert_eq!(
-            area.insert(&block(8, 8), PendingClass::KnownSender),
+            insert(&area, &block(8, 8), PendingClass::KnownSender),
             PendingInsert::Accepted
         );
         assert_eq!(
-            area.insert(&block(9, 9), PendingClass::KnownSender),
+            insert(&area, &block(9, 9), PendingClass::KnownSender),
             PendingInsert::AreaFull
         );
         assert_eq!(
-            area.insert(&block(9, 9), PendingClass::Solicited),
+            insert(&area, &block(9, 9), PendingClass::Solicited),
             PendingInsert::Accepted
         );
         assert_eq!(
-            area.insert(&block(10, 10), PendingClass::Solicited),
+            insert(&area, &block(10, 10), PendingClass::Solicited),
             PendingInsert::AreaFull
         );
         assert_eq!(area.len(), 10, "the area never evicts");
@@ -345,20 +365,20 @@ mod tests {
         let area = PendingBlocks::new(limits(100, size() * 10, 100));
         for i in 0..8 {
             assert_eq!(
-                area.insert(&block(i, i), PendingClass::Unsolicited),
+                insert(&area, &block(i, i), PendingClass::Unsolicited),
                 PendingInsert::Accepted
             );
         }
         assert_eq!(
-            area.insert(&block(8, 8), PendingClass::Unsolicited),
+            insert(&area, &block(8, 8), PendingClass::Unsolicited),
             PendingInsert::AreaFull
         );
         assert_eq!(
-            area.insert(&block(8, 8), PendingClass::KnownSender),
+            insert(&area, &block(8, 8), PendingClass::KnownSender),
             PendingInsert::Accepted
         );
         assert_eq!(
-            area.insert(&block(9, 9), PendingClass::Solicited),
+            insert(&area, &block(9, 9), PendingClass::Solicited),
             PendingInsert::Accepted
         );
         assert!(area.bytes() <= size() * 10);
@@ -369,11 +389,11 @@ mod tests {
         let area = PendingBlocks::new(limits(20, usize::MAX, 10));
         let known = block(200, 200);
         assert_eq!(
-            area.insert(&known, PendingClass::KnownSender),
+            insert(&area, &known, PendingClass::KnownSender),
             PendingInsert::Accepted
         );
         for i in 0..=150u8 {
-            area.insert(&block(i, i), PendingClass::Unsolicited);
+            insert(&area, &block(i, i), PendingClass::Unsolicited);
         }
         assert!(area.contains(&known.block_hash));
         assert_eq!(area.len(), PendingBlockLimits::unknown_sender_mark(20));
@@ -383,14 +403,14 @@ mod tests {
     fn a_known_sender_block_is_admitted_while_unknown_senders_fill_their_share() {
         let area = PendingBlocks::new(limits(20, usize::MAX, 10));
         for i in 0..=150u8 {
-            area.insert(&block(i, i), PendingClass::Unsolicited);
+            insert(&area, &block(i, i), PendingClass::Unsolicited);
         }
         assert_eq!(
-            area.insert(&block(200, 200), PendingClass::Unsolicited),
+            insert(&area, &block(200, 200), PendingClass::Unsolicited),
             PendingInsert::AreaFull
         );
         assert_eq!(
-            area.insert(&block(200, 200), PendingClass::KnownSender),
+            insert(&area, &block(200, 200), PendingClass::KnownSender),
             PendingInsert::Accepted
         );
     }
@@ -400,12 +420,12 @@ mod tests {
         let area = PendingBlocks::new(limits(10, usize::MAX, 100));
         for i in 0..9 {
             assert_eq!(
-                area.insert(&block(i, i), PendingClass::KnownSender),
+                insert(&area, &block(i, i), PendingClass::KnownSender),
                 PendingInsert::Accepted
             );
         }
         assert_eq!(
-            area.insert(&block(9, 9), PendingClass::Unsolicited),
+            insert(&area, &block(9, 9), PendingClass::Unsolicited),
             PendingInsert::AreaFull
         );
         assert!((0..9).all(|i| area.contains(&block(i, i).block_hash)));
@@ -416,28 +436,28 @@ mod tests {
         let area = PendingBlocks::new(limits(100, usize::MAX, 10));
         for i in 0..9 {
             assert_eq!(
-                area.insert(&block(i, 7), PendingClass::KnownSender),
+                insert(&area, &block(i, 7), PendingClass::KnownSender),
                 PendingInsert::Accepted
             );
         }
         assert_eq!(
-            area.insert(&block(9, 7), PendingClass::KnownSender),
+            insert(&area, &block(9, 7), PendingClass::KnownSender),
             PendingInsert::SenderLimitReached
         );
         assert_eq!(
-            area.insert(&block(9, 7), PendingClass::Unsolicited),
+            insert(&area, &block(9, 7), PendingClass::Unsolicited),
             PendingInsert::SenderLimitReached
         );
         assert_eq!(
-            area.insert(&block(9, 8), PendingClass::Unsolicited),
+            insert(&area, &block(9, 8), PendingClass::Unsolicited),
             PendingInsert::Accepted
         );
         assert_eq!(
-            area.insert(&block(10, 7), PendingClass::Solicited),
+            insert(&area, &block(10, 7), PendingClass::Solicited),
             PendingInsert::Accepted
         );
         assert_eq!(
-            area.insert(&block(11, 7), PendingClass::Solicited),
+            insert(&area, &block(11, 7), PendingClass::Solicited),
             PendingInsert::SenderLimitReached
         );
         assert_eq!(area.usage().by_sender.get(&block(0, 7).sender), Some(&10));
@@ -446,8 +466,11 @@ mod tests {
     #[test]
     fn a_block_larger_than_the_area_is_too_large() {
         assert_eq!(
-            PendingBlocks::new(limits(100, size() - 1, 100))
-                .insert(&block(1, 1), PendingClass::Solicited),
+            insert(
+                &PendingBlocks::new(limits(100, size() - 1, 100)),
+                &block(1, 1),
+                PendingClass::Solicited
+            ),
             PendingInsert::TooLarge
         );
     }
@@ -455,12 +478,12 @@ mod tests {
     #[test]
     fn shrinking_the_limits_keeps_held_blocks_and_refuses_new_ones() {
         let area = PendingBlocks::new(limits(10, usize::MAX, 10));
-        area.insert(&block(1, 1), PendingClass::Solicited);
-        area.insert(&block(2, 2), PendingClass::Unsolicited);
+        insert(&area, &block(1, 1), PendingClass::Solicited);
+        insert(&area, &block(2, 2), PendingClass::Unsolicited);
         area.set_limits(limits(1, usize::MAX, 10));
         assert_eq!(area.len(), 2);
         assert_eq!(
-            area.insert(&block(3, 3), PendingClass::Solicited),
+            insert(&area, &block(3, 3), PendingClass::Solicited),
             PendingInsert::AreaFull
         );
         assert_eq!(area.limits().max_blocks, 1);
@@ -469,15 +492,15 @@ mod tests {
     #[test]
     fn a_sender_above_a_lowered_cap_is_refused_even_a_requested_block() {
         let area = PendingBlocks::new(limits(10, usize::MAX, 10));
-        area.insert(&block(1, 1), PendingClass::Solicited);
-        area.insert(&block(2, 1), PendingClass::Solicited);
+        insert(&area, &block(1, 1), PendingClass::Solicited);
+        insert(&area, &block(2, 1), PendingClass::Solicited);
         area.set_limits(limits(10, usize::MAX, 1));
         assert_eq!(
-            area.insert(&block(3, 1), PendingClass::Solicited),
+            insert(&area, &block(3, 1), PendingClass::Solicited),
             PendingInsert::SenderLimitReached
         );
         assert_eq!(
-            area.insert(&block(4, 2), PendingClass::Solicited),
+            insert(&area, &block(4, 2), PendingClass::Solicited),
             PendingInsert::Accepted
         );
         assert_eq!(area.len(), 3);
@@ -486,9 +509,9 @@ mod tests {
     #[test]
     fn a_duplicate_insert_is_accepted_without_a_second_entry() {
         let area = PendingBlocks::new(limits(10, usize::MAX, 10));
-        area.insert(&block(1, 1), PendingClass::Unsolicited);
+        insert(&area, &block(1, 1), PendingClass::Unsolicited);
         assert_eq!(
-            area.insert(&block(1, 1), PendingClass::Solicited),
+            insert(&area, &block(1, 1), PendingClass::Solicited),
             PendingInsert::Accepted
         );
         assert_eq!(area.len(), 1);
@@ -506,13 +529,14 @@ mod tests {
                 latest_block_hash: Bytes::copy_from_slice(&[i.to_be_bytes(); 8].concat()),
             })
             .collect();
-        let encoded = big.to_proto().encoded_len();
+        let encoded = encode(&big);
         let area = PendingBlocks::new(PendingBlockLimits::default());
 
-        area.insert(&big, PendingClass::Unsolicited);
+        insert(&area, &big, PendingClass::Unsolicited);
 
-        assert_eq!(area.bytes(), encoded);
-        assert_eq!(area.usage().bytes, encoded);
+        assert_eq!(area.bytes(), encoded.len());
+        assert_eq!(area.usage().bytes, encoded.len());
+        assert_eq!(area.get_encoded(&big.block_hash), Some(encoded));
         assert_eq!(area.get(&big.block_hash), Some(big));
     }
 
@@ -523,11 +547,11 @@ mod tests {
         area.reserve(&kept.block_hash, &kept.sender, size());
         assert_eq!(area.usage().blocks, 1);
         assert_eq!(
-            area.insert(&other, PendingClass::Solicited),
+            insert(&area, &other, PendingClass::Solicited),
             PendingInsert::AreaFull
         );
         assert_eq!(
-            area.insert(&kept, PendingClass::Solicited),
+            insert(&area, &kept, PendingClass::Solicited),
             PendingInsert::Accepted
         );
         assert_eq!(
@@ -549,7 +573,7 @@ mod tests {
             ..PendingUsage::default()
         });
         assert_eq!(
-            area.insert(&other, PendingClass::Solicited),
+            insert(&area, &other, PendingClass::Solicited),
             PendingInsert::Accepted
         );
     }
@@ -560,15 +584,15 @@ mod tests {
         let kept = block(1, 7);
         area.reserve(&kept.block_hash, &kept.sender, size());
         assert_eq!(
-            area.insert(&block(2, 7), PendingClass::Solicited),
+            insert(&area, &block(2, 7), PendingClass::Solicited),
             PendingInsert::SenderLimitReached
         );
         assert_eq!(
-            area.insert(&block(3, 8), PendingClass::Solicited),
+            insert(&area, &block(3, 8), PendingClass::Solicited),
             PendingInsert::Accepted
         );
         assert_eq!(
-            area.insert(&kept, PendingClass::Solicited),
+            insert(&area, &kept, PendingClass::Solicited),
             PendingInsert::Accepted
         );
     }

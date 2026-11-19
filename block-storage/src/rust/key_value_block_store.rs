@@ -8,6 +8,7 @@ use models::casper::{ApprovedBlockProto, BlockMessageProto};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
+use prost::bytes::Bytes;
 use prost::Message;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
@@ -127,8 +128,8 @@ impl KeyValueBlockStore {
             Some(bytes) => Self::decompress_block_bytes(&bytes).map(Some),
             None => Ok(self
                 .pending
-                .get(block_hash)
-                .map(|block| block.to_proto().encode_to_vec())),
+                .get_encoded(block_hash)
+                .map(|encoded| encoded.to_vec())),
         }
     }
 
@@ -316,12 +317,14 @@ impl KeyValueBlockStore {
         Ok(true)
     }
 
+    /// Hold `block` in the pending area as `encoded`, its encoding.
     pub fn put_pending(
         &self,
         block: &BlockMessage,
+        encoded: Bytes,
         class: PendingClass,
     ) -> Result<PendingInsert, KvStoreError> {
-        let outcome = self.pending.insert(block, class);
+        let outcome = self.pending.insert(block, encoded, class);
         // `put` writes the body before it removes the pending copy, so whichever
         // of the two runs second removes it.
         if self.disk_contains(&block.block_hash)? {
@@ -715,6 +718,8 @@ mod tests {
     use shared::rust::{ByteBuffer, ByteString};
 
     use super::*;
+
+    fn encoded(block: &BlockMessage) -> Bytes { Bytes::from(block.to_proto().encode_to_vec()) }
 
     struct MockKeyValueStore {
         get_result: Option<ByteString>,
@@ -1439,7 +1444,8 @@ mod tests {
         let stored = models::rust::block_implicits::get_random_block_default();
         let pending = models::rust::block_implicits::get_random_block_default();
         bs.put_block_message(&stored).unwrap();
-        bs.put_pending(&pending, PendingClass::Unsolicited).unwrap();
+        bs.put_pending(&pending, encoded(&pending), PendingClass::Unsolicited)
+            .unwrap();
 
         for block in [&stored, &pending] {
             let encoded = bs
@@ -1472,7 +1478,8 @@ mod tests {
         let hash = block.block_hash.clone();
 
         assert_eq!(
-            bs.put_pending(&block, PendingClass::Unsolicited).unwrap(),
+            bs.put_pending(&block, encoded(&block), PendingClass::Unsolicited)
+                .unwrap(),
             PendingInsert::Accepted
         );
 
@@ -1489,7 +1496,8 @@ mod tests {
         let (bs, disk) = in_mem_store();
         let block = models::rust::block_implicits::get_random_block_default();
         let hash = block.block_hash.clone();
-        bs.put_pending(&block, PendingClass::Solicited).unwrap();
+        bs.put_pending(&block, encoded(&block), PendingClass::Solicited)
+            .unwrap();
 
         bs.persist_block(&block).unwrap();
 
@@ -1504,7 +1512,7 @@ mod tests {
     fn persist_block_writes_a_block_that_the_pending_area_no_longer_holds() {
         let (bs, disk) = in_mem_store();
         let discarded = models::rust::block_implicits::get_random_block_default();
-        bs.put_pending(&discarded, PendingClass::Unsolicited)
+        bs.put_pending(&discarded, encoded(&discarded), PendingClass::Unsolicited)
             .unwrap();
         assert!(bs.discard_pending(&discarded.block_hash));
         assert!(bs.get(&discarded.block_hash).unwrap().is_none());
@@ -1522,7 +1530,8 @@ mod tests {
     fn pending_usage_reports_the_area_totals() {
         let (bs, _disk) = in_mem_store();
         let block = models::rust::block_implicits::get_random_block_default();
-        bs.put_pending(&block, PendingClass::Unsolicited).unwrap();
+        bs.put_pending(&block, encoded(&block), PendingClass::Unsolicited)
+            .unwrap();
         let usage = bs.pending_usage();
         assert_eq!(usage.blocks, 1);
         assert_eq!(usage.bytes, bs.pending_blocks().bytes());
@@ -1533,13 +1542,15 @@ mod tests {
     fn put_and_discard_clear_the_pending_entry() {
         let (bs, disk) = in_mem_store();
         let stored = models::rust::block_implicits::get_random_block_default();
-        bs.put_pending(&stored, PendingClass::Unsolicited).unwrap();
+        bs.put_pending(&stored, encoded(&stored), PendingClass::Unsolicited)
+            .unwrap();
         bs.put_block_message(&stored).unwrap();
         assert!(!bs.is_pending(&stored.block_hash));
         assert!(disk.get_one(&stored.block_hash.to_vec()).unwrap().is_some());
 
         let dropped = models::rust::block_implicits::get_random_block_default();
-        bs.put_pending(&dropped, PendingClass::Unsolicited).unwrap();
+        bs.put_pending(&dropped, encoded(&dropped), PendingClass::Unsolicited)
+            .unwrap();
         assert!(bs.discard_pending(&dropped.block_hash));
         assert!(bs.get(&dropped.block_hash).unwrap().is_none());
         assert!(!bs.contains_key(&dropped.block_hash).unwrap());
@@ -1551,7 +1562,8 @@ mod tests {
         let block = models::rust::block_implicits::get_random_block_default();
         bs.put_block_message(&block).unwrap();
         assert_eq!(
-            bs.put_pending(&block, PendingClass::Unsolicited).unwrap(),
+            bs.put_pending(&block, encoded(&block), PendingClass::Unsolicited)
+                .unwrap(),
             PendingInsert::Accepted
         );
         assert!(!bs.is_pending(&block.block_hash));
@@ -1568,7 +1580,8 @@ mod tests {
             max_per_sender: 0,
         });
         assert_eq!(
-            bs.put_pending(&block, PendingClass::Solicited).unwrap(),
+            bs.put_pending(&block, encoded(&block), PendingClass::Solicited)
+                .unwrap(),
             PendingInsert::Accepted
         );
         assert!(!bs.is_pending(&block.block_hash));
@@ -1588,7 +1601,8 @@ mod tests {
         assert_eq!(bs.get(&stored.block_hash).unwrap(), None);
 
         let pending = models::rust::block_implicits::get_random_block_default();
-        bs.put_pending(&pending, PendingClass::Unsolicited).unwrap();
+        bs.put_pending(&pending, encoded(&pending), PendingClass::Unsolicited)
+            .unwrap();
         assert!(bs.discard_copy(&pending).unwrap());
         assert!(!bs.is_pending(&pending.block_hash));
     }
