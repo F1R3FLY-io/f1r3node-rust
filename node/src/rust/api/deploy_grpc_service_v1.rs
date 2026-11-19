@@ -19,11 +19,11 @@ use crypto::rust::public_key::PublicKey;
 use graphz::{GraphSerializer, ListSerializer};
 use models::casper::v1::deploy_service_server::DeployService;
 use models::casper::v1::{
-    BlockInfoResponse, BlockResponse, BondStatusResponse, ContinuationAtNameResponse,
-    DeployFinalizationStatusResponse, DeployResponse, EventInfoResponse, ExploratoryDeployResponse,
-    FindDeployResponse, IsFinalizedResponse, LastFinalizedBlockResponse, MachineVerifyResponse,
-    PendingDeploysResponse, PrivateNamePreviewResponse, RhoDataResponse, StatusResponse,
-    VisualizeBlocksResponse,
+    BlockInfoResponse, BlockPrunedInfo, BlockResponse, BlockUnavailableInfo, BondStatusResponse,
+    ContinuationAtNameResponse, DeployFinalizationStatusResponse, DeployResponse,
+    EventInfoResponse, ExploratoryDeployResponse, FindDeployResponse, IsFinalizedResponse,
+    LastFinalizedBlockResponse, MachineVerifyResponse, PendingDeploysResponse,
+    PrivateNamePreviewResponse, RhoDataResponse, StatusResponse, VisualizeBlocksResponse,
 };
 use models::casper::{
     BlockQuery, BlocksQuery, BlocksQueryByHeight, BondStatusQuery, ContinuationAtNameQuery,
@@ -1046,17 +1046,57 @@ impl DeployService for DeployGrpcServiceV1Impl {
             )
             .await
             {
-                Ok(blocks) => {
-                    for block_info in blocks {
-                        let response = BlockInfoResponse {
+                Ok(response) => {
+                    let prune_floor = response.prune_floor;
+                    for block_info in response.served {
+                        let msg = BlockInfoResponse {
                             message: Some(
                                 models::casper::v1::block_info_response::Message::BlockInfo(
                                     block_info,
                                 ),
                             ),
                         };
-                        if tx.send(Ok(response)).await.is_err() {
-                            break;
+                        if tx.send(Ok(msg)).await.is_err() {
+                            return;
+                        }
+                    }
+                    // Trailing missing entries let a client distinguish
+                    // "topo_sort listed N, we held fewer" from the common
+                    // "all N held". `pruned` and `unavailable` split by the
+                    // retention floor so the client knows which hashes are
+                    // retry-eligible on this node. Each message carries
+                    // `prune_floor` so a caller reacting item-by-item has
+                    // the context without waiting for a terminal summary.
+                    for entry in response.pruned {
+                        let msg = BlockInfoResponse {
+                            message: Some(
+                                models::casper::v1::block_info_response::Message::Pruned(
+                                    BlockPrunedInfo {
+                                        hash: entry.hash,
+                                        block_height: entry.block_height,
+                                        prune_floor,
+                                    },
+                                ),
+                            ),
+                        };
+                        if tx.send(Ok(msg)).await.is_err() {
+                            return;
+                        }
+                    }
+                    for entry in response.unavailable {
+                        let msg = BlockInfoResponse {
+                            message: Some(
+                                models::casper::v1::block_info_response::Message::Unavailable(
+                                    BlockUnavailableInfo {
+                                        hash: entry.hash,
+                                        block_height: entry.block_height,
+                                        prune_floor,
+                                    },
+                                ),
+                            ),
+                        };
+                        if tx.send(Ok(msg)).await.is_err() {
+                            return;
                         }
                     }
                 }

@@ -7,6 +7,7 @@ use axum::Router;
 use serde::Deserialize;
 
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
+use crate::rust::api::serde_types::blocks_by_heights_response::BlocksByHeightsResponseSerde;
 use crate::rust::api::web_api::{
     DataAtNameByBlockHashRequest, DeployResponse, PrepareRequest, PrepareResponse, ReadyResponse,
     RhoDataResponse, WebApi,
@@ -201,7 +202,7 @@ pub async fn last_finalized_block_handler(
         ("view" = Option<String>, Query, description = "Response view: `summary` (default) returns block headers only; `full` includes deploy list"),
     ),
     responses(
-        (status = 200, description = "Blocks in the requested height range; may be empty if no blocks exist yet", body = Vec<BlockInfoSerde>),
+        (status = 200, description = "Envelope of blocks, pruned-sibling hashes, and the current prune floor for the walked range; may be empty if no blocks exist yet. 200 holds even when `pruned` is non-empty — partial success is the normal case under retention sweeps.", body = BlocksByHeightsResponseSerde),
         (status = 400, description = "Non-integer path segment (`invalid_path_parameter`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`, `history_error`)", body = ApiErrorResponse),
     ),
@@ -728,7 +729,9 @@ mod tests {
             _: i64,
             _: i64,
             _: ViewMode,
-        ) -> eyre::Result<Vec<crate::rust::api::serde_types::block_info::BlockInfoSerde>> {
+        ) -> eyre::Result<
+            crate::rust::api::serde_types::blocks_by_heights_response::BlocksByHeightsResponseSerde,
+        > {
             unimplemented!()
         }
         async fn is_finalized(&self, _: String) -> eyre::Result<bool> { unimplemented!() }
@@ -1195,8 +1198,13 @@ mod router_tests {
             _: i64,
             _: i64,
             _: ViewMode,
-        ) -> eyre::Result<Vec<BlockInfoSerde>> {
-            Ok(vec![block_info()])
+        ) -> eyre::Result<BlocksByHeightsResponseSerde> {
+            Ok(BlocksByHeightsResponseSerde {
+                blocks: vec![block_info()],
+                pruned: Vec::new(),
+                unavailable: Vec::new(),
+                prune_floor: 0,
+            })
         }
 
         async fn is_finalized(&self, _: String) -> eyre::Result<bool> { Ok(true) }
@@ -1662,7 +1670,11 @@ mod router_tests {
 
         let (status, json) = get_response("/blocks/1/5").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json.as_array().unwrap().len(), 1);
+        // #1087: the by-heights route returns an envelope, not a bare array.
+        assert_eq!(json["blocks"].as_array().unwrap().len(), 1);
+        assert!(json["pruned"].as_array().unwrap().is_empty());
+        assert!(json["unavailable"].as_array().unwrap().is_empty());
+        assert_eq!(json["pruneFloor"].as_i64().unwrap(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]

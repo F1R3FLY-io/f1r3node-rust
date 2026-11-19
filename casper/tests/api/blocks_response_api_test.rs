@@ -480,20 +480,217 @@ async fn get_blocks_by_heights_should_return_blocks_between_start_and_end() {
     let engine_cell = EngineCell::init();
     engine_cell.set(Arc::new(engine)).await;
 
-    let blocks_response = BlockAPI::get_blocks_by_heights(&engine_cell, 2, 5, MAX_BLOCK_LIMIT)
+    let response = BlockAPI::get_blocks_by_heights(&engine_cell, 2, 5, MAX_BLOCK_LIMIT)
         .await
         .unwrap();
 
-    assert_eq!(blocks_response.len(), 4, "Should return 4 blocks");
+    assert_eq!(response.served.len(), 4, "Should return 4 served blocks");
+    assert!(
+        response.pruned.is_empty(),
+        "Happy path should report no pruned siblings"
+    );
+    assert!(
+        response.unavailable.is_empty(),
+        "Happy path should report no unavailable siblings"
+    );
     assert_eq!(
-        blocks_response.first().unwrap().block_number,
+        response.prune_floor, 0,
+        "Prune floor should reflect anchor default when no override was set"
+    );
+    assert_eq!(
+        response.served.first().unwrap().block_number,
         2,
         "First block should be at height 2"
     );
     assert_eq!(
-        blocks_response.last().unwrap().block_number,
+        response.served.last().unwrap().block_number,
         5,
         "Last block should be at height 5"
+    );
+}
+
+/// Build the engine around a DAG of 8 blocks, delete one block's body
+/// so the DAG metadata survives but the body is gone, and set the
+/// retention-sweep floor to the given value. Returns `(engine_cell,
+/// pruned_hash, pruned_height)` so tests can assert against the exact
+/// missing hash. The DAG metadata-index survives
+/// [`KeyValueBlockStore::discard_stored`] because retention does not
+/// sweep metadata (#1010 / #1045).
+async fn setup_dag_with_discarded_body(
+    scope_label: &str,
+    prune_floor: i64,
+    target_block_height: i64,
+) -> (
+    EngineCell,
+    BlockHash,
+    i64,
+    std::sync::Arc<std::sync::atomic::AtomicI64>,
+) {
+    let shared_kvm_data = Arc::new(Mutex::new(HashMap::<Vec<u8>, Vec<u8>>::new()));
+
+    let mut block_store = KeyValueBlockStore::new(
+        Arc::new(MockKeyValueStore::with_shared_data(shared_kvm_data.clone())),
+        Arc::new(MockKeyValueStore::with_shared_data(shared_kvm_data.clone())),
+    );
+
+    let mut dag_storage = create_storage(scope_label).await;
+
+    let genesis = create_dag_with_8_blocks(&mut block_store, &mut dag_storage);
+
+    let mut dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
+
+    let latest_messages = dag.latest_message_hashes().into_iter().collect();
+    let tips = Estimator::apply()
+        .tips_with_latest_messages(
+            &mut dag,
+            &BlockMetadata::from_block(&genesis, None, None, None),
+            latest_messages,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Pick a block at the requested height from the topo_sort rows.
+    let rows = dag.topo_sort(0, Some(10)).expect("topo_sort");
+    let mut target_hash: Option<BlockHash> = None;
+    for row in &rows {
+        for hash in row {
+            let meta = dag.lookup(hash).unwrap().expect("metadata present");
+            if meta.block_number == target_block_height {
+                target_hash = Some(hash.clone());
+                break;
+            }
+        }
+        if target_hash.is_some() {
+            break;
+        }
+    }
+    let target_hash = target_hash.expect("no block at target height");
+    let target_height = dag
+        .lookup(&target_hash)
+        .unwrap()
+        .expect("metadata")
+        .block_number;
+
+    // Delete only the body. DAG metadata survives — the sweep does
+    // not touch BlockMetadata (#1010 / #1045), so `dag.lookup` keeps
+    // returning the height for the deleted hash.
+    block_store
+        .discard_stored(&target_hash)
+        .expect("discard body");
+
+    let scope_id = generate_scope_id();
+    let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
+    let runtime_manager = mk_runtime_manager_at(&mut *kvm, None).await;
+
+    let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
+        Some(tips.tips),
+        Arc::new(runtime_manager),
+        block_store.clone(),
+        dag.clone(),
+        shared_kvm_data.clone(),
+    );
+    let anchor_handle = casper_effect.anchor_handle();
+    anchor_handle.store(prune_floor, std::sync::atomic::Ordering::Release);
+
+    let engine = EngineWithCasper::new(Arc::new(casper_effect));
+    let engine_cell = EngineCell::init();
+    engine_cell.set(Arc::new(engine)).await;
+
+    (engine_cell, target_hash, target_height, anchor_handle)
+}
+
+#[tokio::test]
+async fn get_blocks_by_heights_reports_pruned_siblings_below_floor() {
+    // Put the floor above the target height so the missing body is
+    // classified as pruned-permanent.
+    let (engine_cell, pruned_hash, pruned_height, _anchor) =
+        setup_dag_with_discarded_body("gbh-pruned-", 100, 2).await;
+
+    let response = BlockAPI::get_blocks_by_heights(&engine_cell, 0, 10, MAX_BLOCK_LIMIT)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.prune_floor, 100,
+        "envelope prune_floor mirrors the anchor snapshot"
+    );
+    assert!(
+        response
+            .served
+            .iter()
+            .all(|b| b.block_hash != hex::encode(&pruned_hash)),
+        "the pruned hash must not appear in served"
+    );
+    assert_eq!(
+        response.pruned.len(),
+        1,
+        "exactly the one deleted hash should be reported as pruned"
+    );
+    assert_eq!(response.pruned[0].hash, pruned_hash);
+    assert_eq!(response.pruned[0].block_height, pruned_height);
+    assert!(
+        response.unavailable.is_empty(),
+        "height is below the floor, so no entries should be unavailable"
+    );
+}
+
+#[tokio::test]
+async fn get_blocks_by_heights_reports_unavailable_siblings_above_floor() {
+    // Put the floor below the target height so the missing body is
+    // classified as transiently unavailable.
+    let (engine_cell, missing_hash, missing_height, _anchor) =
+        setup_dag_with_discarded_body("gbh-unavail-", 1, 2).await;
+
+    let response = BlockAPI::get_blocks_by_heights(&engine_cell, 0, 10, MAX_BLOCK_LIMIT)
+        .await
+        .unwrap();
+
+    assert_eq!(response.prune_floor, 1);
+    assert_eq!(
+        response.unavailable.len(),
+        1,
+        "the missing hash is above the floor and belongs to `unavailable`"
+    );
+    assert_eq!(response.unavailable[0].hash, missing_hash);
+    assert_eq!(response.unavailable[0].block_height, missing_height);
+    assert!(
+        response.pruned.is_empty(),
+        "height is above the floor, so no entries should be pruned"
+    );
+    assert!(response
+        .served
+        .iter()
+        .all(|b| b.block_hash != hex::encode(&missing_hash)),);
+}
+
+#[tokio::test]
+async fn get_block_single_hash_splits_pruned_and_unavailable_by_floor() {
+    use casper::rust::api::block_api::{BlockPrunedError, BlockUnavailableError};
+
+    // Same setup; the single-hash path should classify by the same
+    // threshold the by-heights path does.
+    let (engine_cell_pruned, pruned_hash, _pruned_height, _) =
+        setup_dag_with_discarded_body("gb-single-pruned-", 100, 2).await;
+    let err = BlockAPI::get_block(&engine_cell_pruned, &hex::encode(&pruned_hash))
+        .await
+        .expect_err("body deleted below floor should error");
+    assert!(
+        err.downcast_ref::<BlockPrunedError>().is_some(),
+        "expected BlockPrunedError, got {err:?}"
+    );
+
+    let (engine_cell_unavail, missing_hash, _missing_height, _) =
+        setup_dag_with_discarded_body("gb-single-unavail-", 1, 2).await;
+    let err = BlockAPI::get_block(&engine_cell_unavail, &hex::encode(&missing_hash))
+        .await
+        .expect_err("body deleted above floor should error");
+    assert!(
+        err.downcast_ref::<BlockUnavailableError>().is_some(),
+        "expected BlockUnavailableError, got {err:?}"
     );
 }
 
