@@ -165,6 +165,15 @@ impl ProposeResult {
             ))
         )
     }
+
+    pub fn is_history_incomplete(&self) -> bool {
+        matches!(
+            self.propose_status,
+            ProposeStatus::Failure(ProposeFailure::CheckConstraintsFailure(
+                CheckProposeConstraintsFailure::HistoryIncomplete
+            ))
+        )
+    }
 }
 
 impl BlockCreatorResult {

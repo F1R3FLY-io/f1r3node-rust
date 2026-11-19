@@ -417,7 +417,7 @@ pub(crate) fn classify_propose_error(
 }
 
 fn log_unproposed(propose_result: &ProposeResult) {
-    if propose_result.is_no_new_deploys() {
+    if propose_result.is_no_new_deploys() || propose_result.is_history_incomplete() {
         tracing::info!("Propose: {}", propose_result.propose_status)
     } else if propose_result.is_not_bonded() {
         tracing::warn!(status = %propose_result.propose_status, "propose failed")
@@ -540,5 +540,24 @@ mod tests {
 
         let levels: Vec<Level> = capture.events().into_iter().map(|e| e.level).collect();
         assert_eq!(levels, vec![Level::WARN, Level::INFO, Level::ERROR]);
+    }
+
+    #[test]
+    fn a_node_still_catching_up_on_its_history_logs_its_refusal_as_info() {
+        use shared::rust::tracing_init::EventCapture;
+        use tracing::Level;
+
+        let capture = EventCapture::new();
+        {
+            let _guard = capture.install();
+            log_unproposed(&ProposeResult::failure(
+                ProposeFailure::CheckConstraintsFailure(
+                    CheckProposeConstraintsFailure::HistoryIncomplete,
+                ),
+            ));
+        }
+
+        let levels: Vec<Level> = capture.events().into_iter().map(|e| e.level).collect();
+        assert_eq!(levels, vec![Level::INFO]);
     }
 }
