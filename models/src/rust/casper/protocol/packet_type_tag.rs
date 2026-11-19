@@ -4,12 +4,12 @@ use prost::Message;
 
 use crate::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
-    BlockMessageProto, BlockRequestProto, FloorCacheRequestProto, FloorCacheResponseProto,
-    ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto, GetWalPayloadRequestProto,
-    HasBlockProto, HasBlockRequestProto, HasSnapshotProto, HasSnapshotRequestProto,
-    HasWalPayloadProto, HasWalPayloadRequestProto, NoApprovedBlockAvailableProto,
-    SnapshotChunkResponseProto, StoreItemsMessageProto, StoreItemsMessageRequestProto,
-    UnapprovedBlockProto, WalPayloadResponseProto,
+    BlockMessageProto, BlockPrunedResponseProto, BlockRequestProto, FloorCacheRequestProto,
+    FloorCacheResponseProto, ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto,
+    GetWalPayloadRequestProto, HasBlockProto, HasBlockRequestProto, HasSnapshotProto,
+    HasSnapshotRequestProto, HasWalPayloadProto, HasWalPayloadRequestProto,
+    NoApprovedBlockAvailableProto, SnapshotChunkResponseProto, StoreItemsMessageProto,
+    StoreItemsMessageRequestProto, UnapprovedBlockProto, WalPayloadResponseProto,
 };
 use crate::routing::Packet;
 
@@ -67,6 +67,7 @@ impl_packet!(
         Push
     ),
     (BlockRequestProto, "BlockRequest", Pull),
+    (BlockPrunedResponseProto, "BlockPrunedResponse", Push),
     (ApprovedBlockRequestProto, "ApprovedBlockRequest", Pull),
     (HasBlockRequestProto, "HasBlockRequest", Pull),
     (HasBlockProto, "HasBlock", Push),

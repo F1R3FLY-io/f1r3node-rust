@@ -4,6 +4,7 @@ use models::rhoapi::{
     connective, g_unforgeable, Bundle, Connective, EMap, GPrivate, GUnforgeable, KeyValuePair, Par,
     Send,
 };
+use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::rholang::sorter::ordering::Ordering;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
@@ -21,21 +22,16 @@ fn to_kv_pair(pair: (Par, Par)) -> KeyValuePair {
     }
 }
 
-fn serialize_emap(map: &SortedParMap) -> Vec<u8> {
-    let kv_pairs: Vec<KeyValuePair> = map
-        .sorted_list
-        .iter()
-        .map(|pair| to_kv_pair(pair.clone()))
-        .collect();
-
+fn emap_of(kvs: &[(Par, Par)]) -> EMap {
     EMap {
-        kvs: kv_pairs,
+        kvs: kvs.iter().map(|pair| to_kv_pair(pair.clone())).collect(),
         locally_free: vec![],
         connective_used: false,
         remainder: None,
     }
-    .encode_to_vec()
 }
+
+fn serialize_emap(map: &SortedParMap) -> Vec<u8> { emap_of(&map.sorted_list).encode_to_vec() }
 
 fn create_pars() -> Vec<(Par, Par)> {
     vec![
@@ -244,18 +240,14 @@ fn sorted_par_map_should_sort_all_input() {
             unsorted_key.clone(),
             sorted_key.clone(),
         );
+        let emap = emap_of(&kvs);
         check_sorted_input(
-            |key| map.contains(key),
+            |key| ParMapTypeMapper::contains_key(&emap, &key),
             unsorted_key.clone(),
             sorted_key.clone(),
         );
         check_sorted_input(
-            |key| map.apply(key),
-            unsorted_key.clone(),
-            sorted_key.clone(),
-        );
-        check_sorted_input(
-            |key| map.get_or_else(key, Par::default()),
+            |key| ParMapTypeMapper::lookup(&emap, &key),
             unsorted_key.clone(),
             sorted_key.clone(),
         );
@@ -333,8 +325,7 @@ fn check_sorted_par_map(sorted_par_map: &SortedParMap) {
             value
         );
 
-        let fetched_value = sorted_par_map
-            .get(key.clone())
+        let fetched_value = ParMapTypeMapper::lookup(&emap_of(&sorted_par_map.sorted_list), key)
             .expect("Key not found in SortedParMap");
 
         assert!(
