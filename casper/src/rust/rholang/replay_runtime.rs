@@ -129,6 +129,7 @@ impl ReplayRuntimeOps {
         } else {
             None
         };
+        let _genesis = is_genesis.then(|| self.runtime_ops.runtime.enter_genesis_phase());
 
         self.replay_deploys(start_hash, terms, system_deploys, !is_genesis, block_data)
             .await
@@ -342,6 +343,18 @@ impl ReplayRuntimeOps {
             .data
             .validate_amounts()
             .map_err(CasperError::RuntimeError)?;
+        if processed_deploy.system_deploy_error.is_some() {
+            if !processed_deploy.is_failed {
+                return Err(CasperError::ReplayFailure(
+                    ReplayFailure::replay_status_mismatch(false, true),
+                ));
+            }
+            if processed_deploy.cost.cost != 0 {
+                return Err(CasperError::ReplayFailure(
+                    ReplayFailure::replay_cost_mismatch(processed_deploy.cost.cost, 0),
+                ));
+            }
+        }
         let mut pre_charge_deploy = PreChargeDeploy {
             charge_amount: processed_deploy.deploy.data.total_phlo_charge(),
             pk: processed_deploy.deploy.pk.clone(),
@@ -529,6 +542,15 @@ impl ReplayRuntimeOps {
         block_data: &BlockData,
         processed_system_deploy: &ProcessedSystemDeploy,
     ) -> Result<NumberChannelsEndVal, CasperError> {
+        if let ProcessedSystemDeploy::Failed { error_msg, .. } = processed_system_deploy {
+            if self.runtime_ops.trace_close_failure
+                && error_msg.starts_with(crate::rust::rholang::runtime::CLOSE_FAILED_PREFIX)
+            {
+                return Err(self
+                    .replay_failed_close(block_data, processed_system_deploy, error_msg)
+                    .await);
+            }
+        }
         let system_deploy = match processed_system_deploy {
             ProcessedSystemDeploy::Succeeded {
                 ref system_deploy, ..
@@ -628,6 +650,45 @@ impl ReplayRuntimeOps {
                 ReplayFailure::internal_error("Expected system deploy".to_string()),
             )),
         }
+    }
+
+    async fn replay_failed_close(
+        &mut self,
+        block_data: &BlockData,
+        processed_system_deploy: &ProcessedSystemDeploy,
+        recorded: &str,
+    ) -> CasperError {
+        let mut close = CloseBlockDeploy {
+            initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_validator(
+                block_data.sender.bytes.clone(),
+                block_data.seq_num,
+            ),
+        };
+        if let Err(error) = self.rig_system_deploy(processed_system_deploy).await {
+            return error;
+        }
+        let failure = match self.runtime_ops.eval_system_deploy(&mut close).await {
+            Err(CasperError::SystemRuntimeError(failure)) => failure,
+            Err(other) => return other,
+            Ok(_) => {
+                return CasperError::ReplayFailure(ReplayFailure::replay_status_mismatch(
+                    true, false,
+                ))
+            }
+        };
+        let replayed = crate::rust::rholang::runtime::close_failure_message(&failure);
+        if replayed != recorded {
+            return CasperError::ReplayFailure(ReplayFailure::system_deploy_error_mismatch(
+                recorded.to_string(),
+                replayed,
+            ));
+        }
+        if let Err(error) = self.runtime_ops.runtime.check_replay_data().await {
+            return CasperError::RuntimeError(format!(
+                "the failed close does not consume its recorded trace: {error}"
+            ));
+        }
+        CasperError::SystemRuntimeError(failure)
     }
 
     #[tracing::instrument(

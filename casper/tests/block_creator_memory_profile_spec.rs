@@ -82,6 +82,8 @@ fn create_deploy(
         shard_id: shard_id.to_string(),
         expiration_timestamp: None,
         parameters: Vec::new(),
+        cosignatures: Vec::new(),
+        required_cosigners: Vec::new(),
     };
 
     Signed::create(deploy_data, Box::new(Secp256k1), validator_sk.clone())

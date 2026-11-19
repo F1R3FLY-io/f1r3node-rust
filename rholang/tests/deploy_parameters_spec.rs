@@ -69,6 +69,8 @@ async fn deploy_parameters_execute_as_rholang_values() {
                         name: "input".into(),
                         value,
                     }],
+                    cosignatures: Vec::new(),
+                    required_cosigners: Vec::new(),
                 },
                 Box::new(Secp256k1),
                 PrivateKey::from_bytes(&[1; 32]),
