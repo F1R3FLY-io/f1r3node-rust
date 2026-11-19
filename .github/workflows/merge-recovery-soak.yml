@@ -435,7 +435,13 @@ env:
   #   (which requires skipped=0) passes again. Verified: descends from
   #   907f8a5 (4 commits ahead, 0 behind); differs from it only in
   #   conftest.py, WRITING_TESTS.md, two custom tests and one unit test.
-  SYSTEM_INTEGRATION_REF: 646efd00a11df7e17610d2c6399aaf32abbb4eda
+  # 2026-11-19: 646efd0 -> 8e4c7cd (system-integration PR #197 branch, not yet
+  #   merged). Test deploys declare phlo limits within the node's 20,000,000
+  #   max-phlo-limit, and pyf1r3fly is pinned to pyf1r3fly PR #15, which lowers
+  #   the PosAPI default limit. Verified: one commit ahead of 646efd0; differs
+  #   from it only in integration-tests/test, pyproject.toml and poetry.lock;
+  #   unit tests pass. Repin to the merge commit once #197 lands.
+  SYSTEM_INTEGRATION_REF: 8e4c7cdb2905460ae9268567af588834b0bd1307
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
