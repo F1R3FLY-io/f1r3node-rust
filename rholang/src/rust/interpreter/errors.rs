@@ -18,6 +18,9 @@ pub enum InterpreterError {
     UnexpectedBundleContent(String),
     UnrecognizedNormalizerError(String),
     OutOfPhlogistonsError,
+    NestingLimitExceeded {
+        limit: usize,
+    },
     HostWorkRejected,
     UserAbortError,
     TopLevelWildcardsNotAllowedError(String),
@@ -157,6 +160,10 @@ impl fmt::Display for InterpreterError {
 
             InterpreterError::OutOfPhlogistonsError => {
                 write!(f, "Computation ran out of phlogistons.")
+            }
+
+            InterpreterError::NestingLimitExceeded { limit } => {
+                write!(f, "Nesting is deeper than the limit of {}.", limit)
             }
 
             InterpreterError::HostWorkRejected => {

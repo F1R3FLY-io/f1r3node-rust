@@ -26,6 +26,7 @@ use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 use models::rust::utils::union;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::stack::with_stack_headroom;
 
 use super::accounting::_cost;
 use super::accounting::costs::Cost;
@@ -367,6 +368,23 @@ impl SubstituteTrait<Par> for Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Par, InterpreterError> {
+        with_stack_headroom(|| self.substitute_par_level(term, depth, env))
+    }
+
+    fn substitute(&self, term: Par, depth: i32, env: &Env<Par>) -> Result<Par, InterpreterError> {
+        self.substitute_no_sort(term, depth, env)
+            .map(|p| ParSortMatcher::sort_match(&p))
+            .map(|st| st.term)
+    }
+}
+
+impl Substitute {
+    fn substitute_par_level(
+        &self,
+        term: Par,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<Par, InterpreterError> {
         let exprs = self.sub_exp(term.exprs, depth, env)?;
         let connectives = self.sub_conn(term.connectives, depth, env)?;
         let sends = self.substitute_all_no_sort(term.sends, depth, env)?;
@@ -392,12 +410,6 @@ impl SubstituteTrait<Par> for Substitute {
                 connective_used: term.connective_used,
             }),
         ))
-    }
-
-    fn substitute(&self, term: Par, depth: i32, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        self.substitute_no_sort(term, depth, env)
-            .map(|p| ParSortMatcher::sort_match(&p))
-            .map(|st| st.term)
     }
 }
 

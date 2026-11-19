@@ -517,6 +517,11 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
             "out_of_phlogistons",
             ie.to_string(),
         ),
+        NestingLimitExceeded { .. } => (
+            S::UNPROCESSABLE_ENTITY,
+            "nesting_limit_exceeded",
+            ie.to_string(),
+        ),
         HostWorkRejected => (
             S::UNPROCESSABLE_ENTITY,
             "host_work_rejected",
