@@ -645,7 +645,11 @@ async fn multi_parent_casper_should_persist_a_block_whose_pending_body_was_disca
 
     nodes[1]
         .block_store
-        .put_pending(&block, PendingClass::Unsolicited)
+        .put_pending(
+            &block,
+            prost::bytes::Bytes::from(prost::Message::encode_to_vec(&block.to_proto())),
+            PendingClass::Unsolicited,
+        )
         .unwrap();
     assert!(nodes[1].block_store.discard_pending(&block.block_hash));
     assert!(nodes[1]
