@@ -47,8 +47,8 @@ use super::accounting::costs::{
     bigrat_subtraction_cost, bigrat_sum_cost, boolean_and_cost, boolean_or_cost,
     byte_array_append_cost, comparison_cost, division_cost, equality_check_cost, list_append_cost,
     method_call_cost, modulo_cost, multiplication_cost, new_bindings_cost, op_call_cost,
-    receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
-    var_eval_cost,
+    receive_eval_cost, send_eval_cost, string_append_cost, string_comparison_cost,
+    subtraction_cost, sum_cost, var_eval_cost,
 };
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
@@ -1268,10 +1268,12 @@ impl DebruijnInterpreter {
      *                  an exception.
      */
     fn eval_var(&self, valproc: &Var, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        self.cost.charge(var_eval_cost())?;
         match valproc.var_instance {
             Some(VarInstance::BoundVar(level)) => match env.get(&level) {
-                Some(p) => Ok(p),
+                Some(p) => {
+                    self.cost.charge(var_eval_cost(&p))?;
+                    Ok(p)
+                }
                 None => Err(InterpreterError::ReduceError(format!(
                     "Unbound variable: {} in {:?}",
                     level, env
@@ -1677,7 +1679,8 @@ impl DebruijnInterpreter {
                 }
 
                 (ExprInstance::GString(s1), ExprInstance::GString(s2)) => {
-                    self.cost.charge(comparison_cost())?;
+                    self.cost
+                        .charge(string_comparison_cost(s1.len(), s2.len()))?;
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::GBool(relops(s1, s2))),
                     })
@@ -2685,7 +2688,8 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::GByteArray(lhs), ExprInstance::GByteArray(rhs)) => {
-                            self.cost.charge(byte_array_append_cost(lhs.len()))?;
+                            self.cost
+                                .charge(byte_array_append_cost(lhs.len(), rhs.len()))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GByteArray(
                                     lhs.into_iter().chain(rhs.into_iter()).collect(),
