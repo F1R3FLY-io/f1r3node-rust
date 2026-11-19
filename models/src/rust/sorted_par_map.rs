@@ -18,7 +18,7 @@ pub struct SortedParMap {
 impl SortedParMap {
     pub fn create_from_map(map: HashMap<Par, Par>) -> Self {
         let sorted_list = Ordering::sort_map(&map);
-        let sorted_map = sorted_list.clone().into_iter().collect();
+        let sorted_map = sorted_list.iter().cloned().collect();
 
         SortedParMap {
             ps: map,
@@ -84,21 +84,9 @@ impl SortedParMap {
         }
     }
 
-    pub fn keys(&self) -> Vec<Par> {
-        self.sorted_list
-            .clone()
-            .into_iter()
-            .map(|kv| kv.0)
-            .collect()
-    }
+    pub fn keys(&self) -> Vec<Par> { self.sorted_list.iter().map(|kv| kv.0.clone()).collect() }
 
-    pub fn values(&self) -> Vec<Par> {
-        self.sorted_list
-            .clone()
-            .into_iter()
-            .map(|kv| kv.1)
-            .collect()
-    }
+    pub fn values(&self) -> Vec<Par> { self.sorted_list.iter().map(|kv| kv.1.clone()).collect() }
 
     pub fn equals(&self, that: SortedParMap) -> bool { self.sorted_list == that.sorted_list }
 
