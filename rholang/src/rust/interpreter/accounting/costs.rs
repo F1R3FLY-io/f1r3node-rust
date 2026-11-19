@@ -322,6 +322,11 @@ const BYTES_COPIED_PER_PHLO: usize = 32;
 
 fn copy_cost(bytes: usize) -> i64 { bytes.div_ceil(BYTES_COPIED_PER_PHLO) as i64 }
 
+// Evaluating a collection evaluates each of its elements.
+pub fn collection_eval_cost(elements: usize) -> Cost {
+    Cost::create(10 * elements as i64, "collection eval")
+}
+
 // Reading a variable copies its bound value.
 pub fn var_eval_cost(value: &Par) -> Cost {
     Cost::create(10 + copy_cost(value.encoded_len()), "var eval")
