@@ -29,8 +29,7 @@ use crate::rspace::metrics_constants::{
     HOT_STORE_HISTORY_CONT_CACHE_SIZE_METRIC, HOT_STORE_HISTORY_DATA_CACHE_ITEMS_METRIC,
     HOT_STORE_HISTORY_DATA_CACHE_SIZE_METRIC, HOT_STORE_HISTORY_JOINS_CACHE_ITEMS_METRIC,
     HOT_STORE_HISTORY_JOINS_CACHE_SIZE_METRIC, HOT_STORE_PUT_CONT_CALLS_METRIC,
-    HOT_STORE_PUT_CONT_DUPLICATES_METRIC, HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC,
-    HOT_STORE_PUT_CONT_HISTORY_FILL_METRIC, HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC,
+    HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC, HOT_STORE_PUT_CONT_HISTORY_FILL_METRIC,
     HOT_STORE_PUT_CONT_TIME_NS_METRIC, HOT_STORE_PUT_DATUM_CALLS_METRIC,
     HOT_STORE_PUT_DATUM_HISTORY_FILL_METRIC, HOT_STORE_PUT_DATUM_TIME_NS_METRIC,
     HOT_STORE_PUT_JOIN_CALLS_METRIC, HOT_STORE_PUT_JOIN_HISTORY_FILL_METRIC,
@@ -187,7 +186,7 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     // Hot-path variant: returns Arc-shared continuations so the matcher can
     // probe patterns without deep-cloning the continuation body.
     fn get_continuations_arc(&self, channels: &[C]) -> Vec<Arc<WaitingContinuation<P, K>>>;
-    fn put_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<bool>;
+    fn put_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<()>;
     fn install_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<()>;
     fn remove_continuation(&self, channels: &[C], index: i32) -> Option<()>;
 
@@ -439,9 +438,9 @@ where
 impl<C, P, A, K> HotStore<C, P, A, K> for InMemHotStore<C, P, A, K>
 where
     C: Clone + Debug + Hash + Eq + Send + Sync,
-    P: Clone + Debug + PartialEq + Send + Sync,
+    P: Clone + Debug + Send + Sync,
     A: Clone + Debug + Send + Sync,
-    K: Clone + Debug + PartialEq + Send + Sync,
+    K: Clone + Debug + Send + Sync,
 {
     fn snapshot(&self) -> HotStoreState<C, P, A, K> {
         let _guard = self.checkpoint_lock.lock().expect("checkpoint lock");
@@ -506,61 +505,34 @@ where
         }
     }
 
-    fn put_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<bool> {
+    fn put_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<()> {
         let __put_start = std::time::Instant::now();
         metrics::counter!(HOT_STORE_PUT_CONT_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
 
         let channels_vec = channels.to_vec();
-        let mut inserted = false;
         self.continuations.with_entry(&channels_vec, |map| {
             match map.get_mut(&channels_vec) {
                 Some(existing) => {
-                    let existing_count = existing.len() as u64;
                     metrics::counter!(HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                        .increment(existing_count);
-                    let __cmp_start = std::time::Instant::now();
-                    let dup = existing
-                        .iter()
-                        .any(|e| Self::same_continuation(e.as_ref(), &wc));
-                    metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                        .increment(__cmp_start.elapsed().as_nanos() as u64);
-                    if !dup {
-                        existing.insert(0, Arc::new(wc));
-                        inserted = true;
-                    } else {
-                        metrics::counter!(HOT_STORE_PUT_CONT_DUPLICATES_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                            .increment(1);
-                    }
+                        .increment(existing.len() as u64);
+                    existing.insert(0, Arc::new(wc));
                 }
                 None => {
                     metrics::counter!(HOT_STORE_PUT_CONT_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
                         .increment(1);
                     let mut new_continuations: Vec<Arc<WaitingContinuation<P, K>>> = self
                         .get_cont_from_history_store(channels);
-                    let existing_count = new_continuations.len() as u64;
                     metrics::counter!(HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                        .increment(existing_count);
-                    let __cmp_start = std::time::Instant::now();
-                    let dup = new_continuations
-                        .iter()
-                        .any(|e| Self::same_continuation(e.as_ref(), &wc));
-                    metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                        .increment(__cmp_start.elapsed().as_nanos() as u64);
-                    if !dup {
-                        new_continuations.insert(0, Arc::new(wc));
-                        inserted = true;
-                    } else {
-                        metrics::counter!(HOT_STORE_PUT_CONT_DUPLICATES_METRIC, "source" => RSPACE_METRICS_SOURCE)
-                            .increment(1);
-                    }
+                        .increment(new_continuations.len() as u64);
+                    new_continuations.insert(0, Arc::new(wc));
                     map.insert(channels_vec.clone(), new_continuations);
                 }
             }
         });
         metrics::counter!(HOT_STORE_PUT_CONT_TIME_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__put_start.elapsed().as_nanos() as u64);
-        Some(inserted)
+        Some(())
     }
 
     fn install_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<()> {
@@ -991,26 +963,10 @@ where
 impl<C, P, A, K> InMemHotStore<C, P, A, K>
 where
     C: Clone + Debug + Hash + Eq + Sync + Send,
-    P: Clone + Debug + PartialEq + Sync + Send,
+    P: Clone + Debug + Sync + Send,
     A: Clone + Debug + Sync + Send,
-    K: Clone + Debug + PartialEq + Sync + Send,
+    K: Clone + Debug + Sync + Send,
 {
-    /// Whether two waiting continuations are duplicates: equal patterns, body,
-    /// persistence and peeks, counting fields the models' `PartialEq` skips
-    /// (such as `locally_free`), which only their `Debug` output carries.
-    /// Continuations that print the same are also `==`, so testing `==` first
-    /// changes no answer and leaves the formatting to pairs `==` cannot tell
-    /// apart.
-    fn same_continuation(a: &WaitingContinuation<P, K>, b: &WaitingContinuation<P, K>) -> bool {
-        a.source.hash == b.source.hash &&
-            a.persist == b.persist &&
-            a.peeks == b.peeks &&
-            a.patterns == b.patterns &&
-            a.continuation == b.continuation &&
-            format!("{:?}|{:?}", a.patterns, a.continuation) ==
-                format!("{:?}|{:?}", b.patterns, b.continuation)
-    }
-
     fn now_millis() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1185,9 +1141,9 @@ impl HotStoreInstances {
     ) -> Box<dyn HotStore<C, P, A, K>>
     where
         C: Default + Clone + Debug + Eq + Hash + Send + Sync + 'static,
-        P: Default + Clone + Debug + PartialEq + Send + Sync + 'static,
+        P: Default + Clone + Debug + Send + Sync + 'static,
         A: Default + Clone + Debug + Send + Sync + 'static,
-        K: Default + Clone + Debug + PartialEq + Send + Sync + 'static,
+        K: Default + Clone + Debug + Send + Sync + 'static,
     {
         let store = InMemHotStore {
             data: ShardedMap::from_shards(cache.data),
@@ -1212,9 +1168,9 @@ impl HotStoreInstances {
     ) -> Box<dyn HotStore<C, P, A, K>>
     where
         C: Default + Clone + Debug + Eq + Hash + 'static + Send + Sync,
-        P: Default + Clone + Debug + PartialEq + 'static + Send + Sync,
+        P: Default + Clone + Debug + 'static + Send + Sync,
         A: Default + Clone + Debug + 'static + Send + Sync,
-        K: Default + Clone + Debug + PartialEq + 'static + Send + Sync,
+        K: Default + Clone + Debug + 'static + Send + Sync,
     {
         HotStoreInstances::create_from_hs_and_hr(HotStoreState::default(), history_reader)
     }
