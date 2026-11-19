@@ -67,23 +67,6 @@ impl SortedParMap {
         Self::create_from_map(self.sorted_map.clone())
     }
 
-    pub fn apply(&self, key: Par) -> Option<Par> { self.sorted_map.get(&Self::sort(&key)).cloned() }
-
-    pub fn contains(&self, par: Par) -> bool {
-        self.sorted_map.contains_key(&SortedParMap::sort(&par))
-    }
-
-    pub fn get(&self, key: Par) -> Option<Par> {
-        self.sorted_map.get(&SortedParMap::sort(&key)).cloned()
-    }
-
-    pub fn get_or_else(&self, key: Par, default: Par) -> Par {
-        match self.sorted_map.get(&SortedParMap::sort(&key)) {
-            Some(value) => value.clone(),
-            None => default,
-        }
-    }
-
     pub fn keys(&self) -> Vec<Par> { self.sorted_list.iter().map(|kv| kv.0.clone()).collect() }
 
     pub fn values(&self) -> Vec<Par> { self.sorted_list.iter().map(|kv| kv.1.clone()).collect() }
