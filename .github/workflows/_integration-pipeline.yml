@@ -1103,6 +1103,12 @@ jobs:
           done
           [ "$LFB" -ge 10 ] 2>/dev/null || (echo "FAIL: LFB only at #$LFB after 300s" && exit 1)
 
+      - name: Check malformed deploy rejection through the queue
+        run: |
+          bash scripts/ci/test-malformed-deploy.sh http://127.0.0.1:14403 \
+            docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml \
+            exec -T deploy-queue /opt/docker/bin/node --grpc-host 127.0.0.1 --grpc-port 40401
+
       - name: Collect logs
         if: always()
         shell: bash {0}
