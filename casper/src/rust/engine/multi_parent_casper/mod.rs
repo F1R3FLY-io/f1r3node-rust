@@ -36,6 +36,7 @@ pub(crate) mod block_admission;
 pub(crate) mod bond_cache;
 pub(crate) mod events;
 pub(crate) mod finalization_runner;
+pub(crate) mod own_history_gate;
 pub use finalization_runner::{DivergenceMonitor, FinalizationContext, Finalizer};
 pub(crate) mod snapshot;
 pub(crate) mod dispatch;
@@ -47,4 +48,5 @@ pub(crate) mod validation_dispatcher;
 // circular alias path (engine → shim → engine).
 pub use bond_cache::FinalizedBondCache;
 pub use events::{added_event, created_event, finalised_event};
+pub use own_history_gate::{OwnHistoryGate, OWN_HISTORY_WAIT_LIMIT};
 pub use types::MultiParentCasperImpl;

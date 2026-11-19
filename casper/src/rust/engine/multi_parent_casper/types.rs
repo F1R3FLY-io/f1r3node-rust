@@ -120,6 +120,7 @@ pub struct MultiParentCasperImpl {
     pub active_validators_cache: Arc<tokio::sync::Mutex<HashMap<Vec<u8>, Vec<Validator>>>>,
     /// Final verdicts on the contents of equivocations held as parents.
     pub judged_twins: Arc<BoundedCache<BlockHash, Result<(), InvalidBlock>>>,
+    pub own_history_gate: Arc<crate::rust::engine::multi_parent_casper::OwnHistoryGate>,
 }
 
 impl MultiParentCasperImpl {

@@ -133,6 +133,10 @@ pub trait Casper {
 
     fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError>;
 
+    fn awaiting_own_history(&self, _snapshot: &CasperSnapshot) -> Result<bool, CasperError> {
+        Ok(false)
+    }
+
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError>;
 
     /// Current effective anchor height: blocks at or below this height are
@@ -462,6 +466,7 @@ pub async fn hash_set_casper(
         judged_twins: Arc::new(crate::rust::util::bounded_cache::BoundedCache::new(
             MultiParentCasperImpl::MAX_JUDGED_TWINS,
         )),
+        own_history_gate: Arc::default(),
     })
 }
 
