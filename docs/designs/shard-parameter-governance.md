@@ -168,6 +168,16 @@ pub trait ReplicationMedium {
 
 - **P5. The bound class stays out of governance.** No authorization can change a bound value. A change of the medium, the shard identity, or the token metadata makes a new shard. This keeps decision D2.
 
+### 6.1 Isolation of neutral and mechanism values
+
+Today the code does not separate the two namespaces. The proof-of-stake contract stores the neutral values (deploy lifespan and minimum phlo price) beside the Casper values. `getConsensusParameters` returns them in one tuple. `hash_set_casper` adopts all of them into `CasperShardConf`. A second medium has no source for a neutral value. These proposals separate them:
+
+- **P6. Neutral storage.** A neutral system contract, or one registry entry, stores the bound and governed neutral values. The proof-of-stake contract keeps only the values of the CBC Casper namespace.
+- **P7. Neutral adoption.** A neutral node service adopts the neutral values and gives them to the deploy pool and the APIs. The CBC Casper adapter adopts only its own namespace. No neutral service reads `CasperShardConf`.
+- **P8. A migration step without a behavior change.** The boundary design lists the mixed storage and adoption as a CBC Casper leak, with its own migration task. An existing shard keeps its genesis values. The neutral service reads them from the new store, or from the proof-of-stake contract on a shard that started before the move.
+- **P9. A stub check.** The test-only stub medium has an empty mechanism namespace. It must get the neutral values and pass the deploy validity tests.
+- **P10. Neutral authorization.** Option B (section 7.2) keeps the authorization check neutral. Option C (section 7.3) puts the check in a contract for each medium. If the review selects option C, the neutral values need their own contract check, and that check calls the coalition rule of the bound medium.
+
 ---
 
 ## 7. Authorization options
@@ -198,7 +208,7 @@ The change deploy carries the signatures as data. A governance contract checks e
 
 - **Benefit.** The rule is contract code, so a later contract upgrade can change it. `MultiSigSystemVault.rho` already does an M-of-N check in this style.
 - **Cost.** Every validator replays the signature checks in Rholang, at a cost in phlo. The contract must read the bonds and the threshold at the same commit as the check. Each medium needs its own contract logic for its coalition rule, which makes the neutral part smaller.
-- **Fit.** It is the shortest path for CBC Casper alone. It is less neutral than option B.
+- **Fit.** It is the shortest path for CBC Casper alone. It is less neutral than option B, because the check is in a contract for one medium (proposal P10).
 
 ### 7.4 Comparison
 
@@ -260,6 +270,7 @@ This branch only records these conflicts.
 | A node never applies a local value where a governed value exists | Extend the adoption tests to every governed row, and add a test that changes a local value and expects the same verdict |
 | No aligned setting remains at production launch | A configuration test fails when a validity rule reads a node-local value |
 | Only an actionable coalition can authorize a change | Property tests over `is_actionable` with random signer sets, including equivocating signers |
+| Neutral services get neutral values without CBC Casper (P6, P7) | The stub medium with an empty mechanism namespace passes the deploy validity tests (P9) |
 | Validators agree on the activation point | A model in TLA+ with delayed messages and a change in flight, which checks one value per commit |
 | V1 to V3 hold | A slashing model case with a validator that has not seen the change |
 | A bound value cannot change | A negative test: an authorized change of a bound value is rejected |
@@ -278,6 +289,7 @@ The change path changes validity rules. It therefore becomes Correct-by-Construc
 6. Is the progress-check skip allowed only in a single-validator shard?
 7. Can a parameter change take effect before the protocol version that adds it (section 10)?
 8. Does a governed value need limits that even an authorized change cannot pass, for example a fault-tolerance threshold between 0 and 1?
+9. Does the neutral store (P6) use a new system contract or a registry entry? How does a shard that started before the move find its neutral values?
 
 ---
 

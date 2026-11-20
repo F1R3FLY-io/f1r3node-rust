@@ -349,6 +349,7 @@ The coupling survey of 2026-10-05 found five places where CBC Casper leaks past 
 | 5 | TASK-025-6 | The execution glue takes boundary types | `CasperSnapshot` and the finality floor types in `interpreter_util.rs` | Pending |
 | 6 | TASK-025-7 | Cordial Miners adapter (issue #625) | None. This is the first real second protocol | Pending |
 | 7 | TASK-025-8 | Test-only stub mechanism and a soak | None. This step proves the boundary | Pending |
+| 8 | TASK-025-10 | A neutral store and adoption service for the neutral shard parameters (section 17.2) | The proof-of-stake contract stores the deploy lifespan and the minimum phlo price, and `hash_set_casper` adopts them into `CasperShardConf` | Proposed, after the governance review |
 
 Step 5 also starts the move of the three Rholang runtime files out of the casper crate. Section 9 of the architecture note calls them execution glue in the medium crate.
 
@@ -361,6 +362,7 @@ Step 5 also starts the move of the three Rholang runtime files out of the casper
 - **The stub proves neutrality.** A test-only mechanism runs the node wiring tests with no CBC code linked into the test binary.
 - **Lifecycle checks.** The PR #651 tests cover recovery, readiness, bounded ingress, command deadlines, capability errors, drain, and cleanup.
 - **Binding check.** A test starts a node with one protocol and restarts it with another. The node must refuse the restart.
+- **Parameter isolation.** The stub mechanism has an empty mechanism namespace. It gets the neutral shard parameters and passes the deploy validity tests.
 - **CbC claims follow the split.** Section 9 of the architecture note assigns formal checks to machine, substrate, and medium. The interface crate becomes the stated boundary for those claims.
 
 ---
@@ -440,6 +442,7 @@ The aligned class is a defect class. A production shard must start with no align
 - Neutral services own the bound values and the neutral governed values: the shard identity, the token metadata, the deploy lifespan, and the minimum phlo price.
 - The medium owns its mechanism namespace: for CBC Casper, the fault-tolerance threshold, the parent bounds, the epoch and quarantine lengths, and the bond limits.
 - One register stores both, so that one change process serves every medium.
+- Neutral values do not live in a medium contract. A neutral service stores and adopts them. The medium adopts only its namespace. Today the CBC Casper proof-of-stake contract stores both, and `hash_set_casper` adopts both. Section 13 lists this as a leak.
 
 ### 17.3 Contract additions
 
@@ -463,7 +466,7 @@ pub trait ReplicationMedium {
 - No change can alter a bound value. This keeps decision D2.
 - A message is judged with the values that apply in its own causal past. This is the [visibility rule](../Glossary.md#visibility-rule).
 - A medium that has no governed parameter returns an empty mechanism namespace.
-- The authorization option (off-chain, checked by the node, or checked in Rholang) is open. Section 7 of the governance design compares them.
+- The authorization option (off-chain, checked by the node, or checked in Rholang) is open. Section 7 of the governance design compares them. A check in the node stays neutral. A check in Rholang needs one contract for each medium.
 
 ---
 

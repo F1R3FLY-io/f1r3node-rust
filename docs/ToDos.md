@@ -325,6 +325,7 @@ coupling_survey:
     - "The gRPC and HTTP APIs serialize justifications, bonds, and faultTolerance."
     - "casper util/rholang/interpreter_util.rs takes CasperSnapshot and the finality floor types."
     - "block-storage KeyValueDagRepresentation, a CBC DAG type, is part of the Casper trait signatures."
+    - "The PoS contract stores the neutral shard parameters (deploy lifespan, minimum phlo price) beside the Casper parameters, and hash_set_casper adopts all of them into CasperShardConf (added 2026-11-20)."
 tasks:
   - id: TASK-025-1
     title: "Write the replication boundary design document"
@@ -456,6 +457,18 @@ tasks:
       - "The architecture documents (f1r3fly_architecture.md, CONSENSUS_PROTOCOL.md, CONSENSUS_PHILOSOPHY.md, and docs/casper/README.md) point to the design and state the current facts."
       - "The design records the D-01 protocol-version conflict for the versioning follow-up on ca-canary and ca-release, and does not resolve it."
       - "metaweta and spreston8 review the pull request. The maintainers select options in a later review."
+      - "The designs separate neutral and CBC Casper parameters in storage, adoption, and authorization (governance design section 6.1, boundary design sections 13 and 17)."
+  - id: TASK-025-10
+    title: "Move the neutral shard parameters to a neutral store and a neutral adoption service"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-025-9]
+    origin: "Leak added 2026-11-20. The PoS contract stores the neutral shard parameters, and hash_set_casper adopts them into CasperShardConf."
+    acceptance:
+      - "A neutral store holds the neutral shard parameters. The PoS contract keeps only the CBC Casper namespace."
+      - "A neutral node service adopts the neutral values. The CBC Casper adapter adopts only its namespace, and no neutral service reads CasperShardConf."
+      - "A shard that started before the move keeps its genesis values with no behavior change."
+      - "The test-only stub mechanism gets the neutral values and passes the deploy validity tests."
 ---
 ```
 
