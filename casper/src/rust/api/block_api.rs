@@ -1732,69 +1732,67 @@ impl BlockAPI {
                 )))
             })?;
 
-            let get_block = async {
-                let block_hash = prost::bytes::Bytes::from(hash_byte_string);
-                casper
-                    .block_store()
-                    .get(&block_hash)
-                    .map_err(|e| eyre::eyre!(e.to_string()))
-            };
-
-            let find_block = async {
+            // Resolve to the full 32-byte block hash up front, then use
+            // that same value for both the body lookup and (on miss) the
+            // DAG metadata classification. Reusing the resolved hash
+            // keeps a prefix query like `/block/aabbcc` and the matching
+            // full hash on the same classification path — without it a
+            // 6-char prefix returned 404 for a pruned block because the
+            // metadata index is keyed by full hash. See PR #1097 review.
+            let resolved_hash: Option<BlockHash> = if hash.len() == 64 {
+                Some(prost::bytes::Bytes::from(hash_byte_string))
+            } else {
                 let dag = casper
                     .block_dag()
                     .await
                     .map_err(|e| eyre::eyre!(e.to_string()))?;
-                match dag.find(hash).map_err(|e| eyre::eyre!(e.to_string()))? {
-                    Some(block_hash) => casper
-                        .block_store()
-                        .get(&block_hash)
-                        .map_err(|e| eyre::eyre!(e.to_string())),
-                    None => Ok(None),
-                }
+                dag.find(hash).map_err(|e| eyre::eyre!(e.to_string()))?
             };
 
-            let block_f = if hash.len() == 64 {
-                get_block.await
-            } else {
-                find_block.await
+            let block_opt = match resolved_hash.as_ref() {
+                Some(bytes) => casper
+                    .block_store()
+                    .get(bytes)
+                    .map_err(|e| eyre::eyre!(e.to_string()))?,
+                None => None,
             };
 
-            let block = match block_f? {
+            let block = match block_opt {
                 Some(block) => block,
                 None => {
-                    // The body is missing. Split "never seen"
-                    // (BlockNotFoundError) from the "DAG metadata present but
-                    // body absent" cases, which the retention sweep's floor
-                    // further splits into pruned-permanent (height <= floor)
-                    // vs transiently-unavailable (height > floor). The DAG
-                    // metadata index is not swept by #1010 / #1045, so
-                    // metadata presence tells us we knew the block once.
+                    // Body is missing. Split "never seen"
+                    // (BlockNotFoundError) from the "DAG metadata present
+                    // but body absent" cases, which the retention sweep's
+                    // floor further splits into pruned-permanent (height
+                    // <= floor) vs transiently-unavailable (height >
+                    // floor). The DAG metadata index is not swept by
+                    // #1010 / #1045, so metadata presence tells us we
+                    // knew the block once.
                     let dag = casper.block_dag().await?;
-                    let padded_hash = pad_hex_string(hash);
-                    let hash_bytes = hex::decode(&padded_hash).map_err(|_| {
-                        eyre::Report::new(InvalidHashError(format!(
-                            "'{}' is not valid block hash",
-                            hash
-                        )))
-                    })?;
-                    let dag_hash: prost::bytes::Bytes = hash_bytes.into();
                     let prune_floor = casper
                         .effective_anchor_handle()
                         .load(std::sync::atomic::Ordering::Acquire);
-                    return Err(match dag.lookup(&dag_hash)? {
-                        Some(metadata) if metadata.block_number <= prune_floor => {
-                            eyre::Report::new(BlockPrunedError {
-                                hash: hash.to_string(),
-                                block_height: metadata.block_number,
-                                prune_floor,
-                            })
+                    return Err(match resolved_hash {
+                        Some(resolved) => {
+                            let full_hash = hex::encode(&resolved);
+                            match dag.lookup(&resolved)? {
+                                Some(metadata) if metadata.block_number <= prune_floor => {
+                                    eyre::Report::new(BlockPrunedError {
+                                        hash: full_hash,
+                                        block_height: metadata.block_number,
+                                        prune_floor,
+                                    })
+                                }
+                                Some(metadata) => eyre::Report::new(BlockUnavailableError {
+                                    hash: full_hash,
+                                    block_height: metadata.block_number,
+                                    prune_floor,
+                                }),
+                                None => eyre::Report::new(BlockNotFoundError {
+                                    hash: hash.to_string(),
+                                }),
+                            }
                         }
-                        Some(metadata) => eyre::Report::new(BlockUnavailableError {
-                            hash: hash.to_string(),
-                            block_height: metadata.block_number,
-                            prune_floor,
-                        }),
                         None => eyre::Report::new(BlockNotFoundError {
                             hash: hash.to_string(),
                         }),

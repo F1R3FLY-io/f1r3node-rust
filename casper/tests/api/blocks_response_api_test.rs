@@ -695,6 +695,45 @@ async fn get_block_single_hash_splits_pruned_and_unavailable_by_floor() {
 }
 
 #[tokio::test]
+async fn get_block_prefix_and_full_hash_classify_identically() {
+    use casper::rust::api::block_api::BlockPrunedError;
+
+    // Regression for PR #1097 review: when the body is missing, the
+    // classification branch must look up DAG metadata by the *resolved*
+    // full hash, not by the caller's prefix. Without that, a 6-char
+    // prefix for a pruned block returned 404 while the same block's
+    // 64-char hash returned 410 — same block, different status.
+    let (engine_cell, pruned_hash, _pruned_height, _) =
+        setup_dag_with_discarded_body("gb-prefix-parity-", 100, 2).await;
+
+    let full_hex = hex::encode(&pruned_hash);
+    let prefix_hex: String = full_hex.chars().take(6).collect();
+    assert_eq!(prefix_hex.len(), 6, "prefix must exercise the find path");
+
+    let err_full = BlockAPI::get_block(&engine_cell, &full_hex)
+        .await
+        .expect_err("full hash: pruned body must error");
+    let err_prefix = BlockAPI::get_block(&engine_cell, &prefix_hex)
+        .await
+        .expect_err("prefix: pruned body must error with the same kind");
+
+    let full_pruned = err_full
+        .downcast_ref::<BlockPrunedError>()
+        .expect("full hash should classify as pruned");
+    let prefix_pruned = err_prefix
+        .downcast_ref::<BlockPrunedError>()
+        .expect("prefix should classify as pruned, matching the full hash");
+
+    assert_eq!(
+        full_pruned.hash, prefix_pruned.hash,
+        "both paths resolve to the same full hex"
+    );
+    assert_eq!(prefix_pruned.hash, full_hex);
+    assert_eq!(full_pruned.block_height, prefix_pruned.block_height);
+    assert_eq!(full_pruned.prune_floor, prefix_pruned.prune_floor);
+}
+
+#[tokio::test]
 async fn get_blocks_by_heights_classifies_floor_boundary_as_pruned() {
     // block_height == prune_floor must go into `pruned`. GC advances the
     // effective anchor with fetch_max to the target height *before* the

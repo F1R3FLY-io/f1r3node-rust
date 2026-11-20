@@ -76,3 +76,18 @@ impl BlocksByHeightsResponseSerde {
         }
     }
 }
+
+/// Union of the two shapes `/blocks/{start}/{end}` can return.
+/// `include_missing=false` (default) yields `BareArray`; `=true`
+/// yields `Envelope`. Serialized untagged so the on-wire shape
+/// exactly matches each variant, and declared as the response body
+/// so clients generated from the OpenAPI schema see a `oneOf` and
+/// decode either shape. Without this a client that didn't opt in
+/// would try to decode the envelope schema against a bare array and
+/// fail on a successful request.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum BlocksByHeightsHttpResponse {
+    BareArray(Vec<BlockInfoSerde>),
+    Envelope(BlocksByHeightsResponseSerde),
+}

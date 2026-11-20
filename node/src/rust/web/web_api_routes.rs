@@ -7,7 +7,7 @@ use axum::Router;
 use serde::Deserialize;
 
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
-use crate::rust::api::serde_types::blocks_by_heights_response::BlocksByHeightsResponseSerde;
+use crate::rust::api::serde_types::blocks_by_heights_response::BlocksByHeightsHttpResponse;
 use crate::rust::api::web_api::{
     DataAtNameByBlockHashRequest, DeployResponse, PrepareRequest, PrepareResponse, ReadyResponse,
     RhoDataResponse, WebApi,
@@ -213,7 +213,7 @@ pub async fn last_finalized_block_handler(
         ("include_missing" = Option<bool>, Query, description = "Opt into the #1087 envelope: when true, the body is `{ blocks, pruned, unavailable, pruneFloor }` where `pruned` (block_height <= pruneFloor, permanent on this node) and `unavailable` (block_height > pruneFloor, retry eligible) carry hashes topo_sort named at a walked height whose bodies this node no longer holds. Absent or false returns the pre-#1087 bare array of served blocks for backward compatibility."),
     ),
     responses(
-        (status = 200, description = "Bare array of blocks (default) or the #1087 envelope with `blocks`, `pruned`, `unavailable`, and `pruneFloor` when `include_missing=true`. 200 holds for the envelope even when `pruned` or `unavailable` are non-empty — partial success is the normal case under retention sweeps.", body = BlocksByHeightsResponseSerde),
+        (status = 200, description = "Bare array of blocks (default) or the #1087 envelope with `blocks`, `pruned`, `unavailable`, and `pruneFloor` when `include_missing=true`. 200 holds for the envelope even when `pruned` or `unavailable` are non-empty — partial success is the normal case under retention sweeps. The `oneOf` reflects the two shapes so code-generated clients can decode either.", body = BlocksByHeightsHttpResponse),
         (status = 400, description = "Non-integer path segment (`invalid_path_parameter`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`, `history_error`)", body = ApiErrorResponse),
     ),
@@ -237,9 +237,15 @@ pub async fn get_blocks_by_heights_handler(
     {
         // Default to the pre-#1087 bare array so existing consumers are
         // unaffected. Only opted-in callers receive the envelope with the
-        // pruned / unavailable / prune_floor metadata.
-        Ok(response) if include_missing => Json(response).into_response(),
-        Ok(response) => Json(response.blocks).into_response(),
+        // pruned / unavailable / prune_floor metadata. The untagged enum
+        // keeps the wire shape identical to each variant while letting
+        // the response-body schema cover both.
+        Ok(response) if include_missing => {
+            Json(BlocksByHeightsHttpResponse::Envelope(response)).into_response()
+        }
+        Ok(response) => {
+            Json(BlocksByHeightsHttpResponse::BareArray(response.blocks)).into_response()
+        }
         Err(e) => AppError(e).into_response(),
     }
 }
@@ -1065,6 +1071,7 @@ mod router_tests {
 
     use super::*;
     use crate::rust::api::admin_web_api::AdminWebApi;
+    use crate::rust::api::serde_types::blocks_by_heights_response::BlocksByHeightsResponseSerde;
     use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
     use crate::rust::api::web_api::{
         ApiStatus, BalanceResponse, BondStatusResponse, DeployFinalizationStatusJson,
