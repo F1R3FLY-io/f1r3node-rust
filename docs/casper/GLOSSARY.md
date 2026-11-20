@@ -720,6 +720,11 @@ identity (D-04). The ledger entries name protocol 6, which was the PR #216
 value at comparison time. The
 [ratification meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) of 2026-09-16 superseded it.
 
+Protocol 7 is the cost-accounted protocol, and a new genesis uses it by
+default. On `ca-canary`, the code named it protocol 6 (`PROTOCOL_V6`) until
+2026-11-20. The status API reports the protocol of the shard as
+`casperProtocolVersion`.
+
 **Preferred usage.** Use for the version boundary at which a ratified wire
 or semantics change activates.
 *Distinguish from* [accounting authority version 8](#accounting-authority-version-8),
@@ -733,7 +738,8 @@ Accounting authority version 8 is the version of the reusable node-level
 accounting module that the cost-accounting work introduces. It is
 independent of the Casper protocol version. Ledger entry
 [D-01](./design/decision-ledger/01-protocol-version-authority.md) records the
-separation.
+separation. The constant `ACCOUNTING_AUTHORITY_VERSION` holds the value, and
+the status API reports it as `accountingAuthorityVersion`.
 
 **Preferred usage.** Use for the accounting module version when a document
 must name it beside the protocol version.

@@ -259,7 +259,15 @@ Activation from state (section 8) gives V1 to V3 directly. Activation at a final
 - **Version constant and ledger.** The compiled constant is `1`, and the ledger names protocol 7. The follow-up aligns the numbers on `ca-canary` and `ca-release`.
 - **Cost accounting.** The accounting authority version is independent of the protocol version (D-01). A governed minimum phlo price must keep that independence.
 
-This branch only records these conflicts.
+### 10.1 Resolution on `ca/shard-parameter-gov-casper-v7` (2026-11-20)
+
+This branch applies D-01 on `ca-canary`. It changes no ratified rule.
+
+- **Protocol 7 is the cost-accounted protocol.** On `ca-canary`, the cost-accounting code named this protocol 6 (`PROTOCOL_V6 = 6`). The branch renames the constant to `PROTOCOL_V7 = 7`. The finality check (`ALinPolicy`) then halts on protocol 7 and raises an alarm on other versions.
+- **A new genesis uses protocol 7 by default.** `CASPER_PROTOCOL_VERSION` and the `protocol-version` default change from 1 to 7. A shard that started with protocol 1 keeps protocol 1.
+- **The fresh-genesis rule stays.** Protocol 7 starts only through a fresh genesis, so the D-01 rule and this design agree. A parameter change replaces a value inside one protocol version, so it needs no fresh genesis. But the change path itself is a validity rule. If the production genesis does not include the selected path, the path needs a later protocol version and one more fresh genesis.
+- **Accounting authority version 8.** The constant `ACCOUNTING_AUTHORITY_VERSION = 8` belongs to the accounting module. It is independent of the protocol version. The status API reports it as `accountingAuthorityVersion` beside `casperProtocolVersion`.
+- **`ca-release`.** The change reaches `ca-release` through the normal promotion from `ca-canary`.
 
 ---
 

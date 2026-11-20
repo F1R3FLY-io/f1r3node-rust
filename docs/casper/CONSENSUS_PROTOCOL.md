@@ -78,6 +78,7 @@ Genesis creates the first block containing:
 - Initial validator bonds (from `bonds.txt`)
 - Initial wallet balances (from `wallets.txt`)
 - Shard parameters in the proof-of-stake contract (section 10 lists them)
+- The protocol version (`protocol-version`). A new genesis uses protocol 7 by default. Section 10 lists the versions.
 - System contracts (PoS, vault, registry)
 
 **Why this matters**: These shard parameters are on-chain values. Every node adopts them at startup, whatever its local configuration says. No method changes them on a running shard, so a change requires a new genesis (new network).
@@ -579,6 +580,15 @@ Operator config files are minimal overrides — HOCON's fallback semantics merge
 - `quarantine-length`, `bond-minimum`, `bond-maximum`, `number-of-active-validators` — macro parameters of the PoS contract. The contract enforces them in state.
 
 Changing any of these requires a new genesis (new network).
+
+**Protocol versions.** The genesis block records the protocol version of the shard. The ceremony master writes the configured `protocol-version`, and each approver compares it with its own value. Every node then compares the version of each received block with the version of the approved block. Ledger entry [D-01](./design/decision-ledger/01-protocol-version-authority.md) states these rules. A new protocol version activates only through a fresh genesis.
+
+| Version | Meaning | Activation | Status |
+|---|---|---|---|
+| 7 | Cost-accounted protocol: order then execute, the shard resource policy, and the D-04, D-08, and D-10 positions. The default for a new genesis | Fresh genesis after FIP approval | Ratified 2026-09-16 ([D-01](./design/decision-ledger/01-protocol-version-authority.md)). Before 2026-11-20, `ca-canary` named this protocol 6 (`PROTOCOL_V6`) |
+| 1 | The protocol before cost accounting | Existing shards only | Supported for shards that started with it |
+
+The **accounting authority version** is 8. It versions the node accounting module, not the Casper protocol. The constant `ACCOUNTING_AUTHORITY_VERSION` holds it, and the status API reports it as `accountingAuthorityVersion` beside the protocol version of the shard (`casperProtocolVersion`). The two numbers change independently.
 
 **Node-local settings that validity reads.** Two settings are local but change block validity, so every validator must set the same value:
 - `max-number-of-parents` — `Validate::parents` returns `InvalidParents` for a block with more parents.
