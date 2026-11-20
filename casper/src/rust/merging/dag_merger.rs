@@ -924,6 +924,7 @@ pub fn merge(
     // instead of starving to expiry.
     prior_rejection_counts: &HashMap<Bytes, u64>,
     name_seeds: &NameSeeds,
+    rejection_search: conflict_set_merger::RejectionSearch,
 ) -> Result<
     (
         Blake2b256Hash,
@@ -1822,6 +1823,7 @@ pub fn merge(
             &compute_branches_fn,
             &compute_conflict_map_fn,
             &pinned,
+            rejection_search,
         )
         .map_err(CasperError::HistoryError)
     };
@@ -2301,6 +2303,7 @@ mod tests {
         let par_with_rnd = ListParWithRandom {
             pars: vec![RhoNumber::create_par(num)],
             random_state: rnd.to_bytes(),
+            seal: None,
         };
         let data_hash =
             stable_hash_provider::hash_produce(channel_hash.bytes(), &par_with_rnd, false);
@@ -2754,6 +2757,7 @@ mod tests {
             &compute_branches,
             &compute_conflict_map,
             &pinned,
+            conflict_set_merger::RejectionSearch::EXHAUSTIVE,
         )
         .expect("conflict resolution");
 
@@ -2843,6 +2847,7 @@ mod tests {
             &compute_branches,
             &compute_conflict_map,
             &pinned,
+            conflict_set_merger::RejectionSearch::EXHAUSTIVE,
         )
         .expect("resolution must still succeed — refusing here is a propose wedge");
 
@@ -2915,6 +2920,7 @@ mod tests {
                 &compute_branches,
                 &compute_conflict_map,
                 &HashSet::new(),
+                conflict_set_merger::RejectionSearch::EXHAUSTIVE,
             )
         };
         let split_unavailable =
@@ -3078,6 +3084,7 @@ mod tests {
                     &compute_branches,
                     &compute_conflict_map,
                     &HashSet::new(),
+                    conflict_set_merger::RejectionSearch::EXHAUSTIVE,
                 )
             };
             // Exactly what `merge` runs per iteration: availability, then the
@@ -3229,6 +3236,7 @@ mod tests {
                 &one_branch,
                 &no_conflicts,
                 &HashSet::new(),
+                conflict_set_merger::RejectionSearch::EXHAUSTIVE,
             )
             .expect("conflict resolution should succeed")
         };
@@ -3351,6 +3359,7 @@ mod tests {
                 &compute_branches,
                 &compute_conflict_map,
                 &HashSet::new(),
+                conflict_set_merger::RejectionSearch::EXHAUSTIVE,
             )
         };
         let split_unavailable =

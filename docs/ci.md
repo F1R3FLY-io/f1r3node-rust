@@ -620,7 +620,7 @@ The dispatcher runs `merge-recovery-soak.yml` from `master` with the inputs `gat
 
 - It has its own concurrency group: one for each `ca/*` pull request, and one for `ca-release`. Item soaks run in parallel, and a gate run never cancels a `daily` or `weekend` run.
 - Its soak runner registers under a label of its own run, `f1r3fly-rust-soak-run-<run ID>`, so a parallel soak cannot take its VM.
-- It publishes no checkpoint and no dashboard series.
+- It publishes no dashboard series. Its segments end on the same 07:30 and 13:00 Pacific checkpoints as a `daily` or `weekend` run. At each checkpoint, `soak-checkpoint-publish.yml` updates the pending `Soak Gate` status. The description gives the hours soaked, the iterations, and the failures.
 - Its one restart after an infrastructure failure soaks a full new window, not the rest of the old one.
 
 At the start, the run posts `Soak Gate (22h)` or `Soak Gate (60h)` as pending on the soaked commit. At the end, `.github/scripts/report-soak-gate.sh` posts the result:

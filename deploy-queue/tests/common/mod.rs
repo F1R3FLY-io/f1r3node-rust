@@ -212,6 +212,8 @@ pub fn deploy_with_phlo_limit(
             shard_id: shard_id.to_string(),
             expiration_timestamp: None,
             parameters: Vec::new(),
+            cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         },
         Box::new(Secp256k1),
         PrivateKey::from_bytes(&[seed; 32]),

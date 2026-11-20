@@ -440,6 +440,7 @@ mod tests {
                 ret_unforg_for_data,
             ],
             random_state: vec![],
+            seal: None,
         };
 
         ReportCommProto {
@@ -1466,6 +1467,7 @@ mod tests {
                                     RhoString::create_par(fail_reason.to_string()),
                                 ))],
                                 random_state: vec![],
+                                seal: None,
                             }),
                         })),
                     });

@@ -1,13 +1,23 @@
-new retCh, PoSCh, rl(`rho:registry:lookup`), stdout(`rho:io:stdout`) in {
-  stdout!("About to lookup pos contract...") |
-  rl!(`rho:system:pos`, *PoSCh) |
-  for(@(_, PoS) <- PoSCh) {
-    stdout!("About to bond...") |
-    new deployerId(`rho:system:deployerId`) in {
-      @PoS!("bond", *deployerId, 100n, *retCh) |
-      for ( @(true, message) <- retCh) {
-        stdout!("Successfully bonded!")
+new rb(`rho:rev:bond`), deployerId(`rho:system:deployerId`), PoSCh, bondedCh, registeredCh, handleCh,
+    rl(`rho:registry:lookup`), stdout(`rho:io:stdout`) in {
+  stdout!("About to bond 100 natively...") |
+  rb!("bond", (*deployerId, 100), *bondedCh) |
+  for (@(true, receipt) <- bondedCh) {
+    rl!(`rho:system:pos`, *PoSCh) |
+    for (@(_, PoS) <- PoSCh) {
+      @PoS!("bond", receipt, 100, *registeredCh, *handleCh) |
+      for (@(true, _) <- registeredCh) {
+        stdout!("The bond is pending until the block closes.")
       }
+    }
+  } |
+  for (@(false, message) <- bondedCh) {
+    stdout!(("The native bond failed:", message))
+  } |
+  for (@result <- handleCh) {
+    match result {
+      (true, _) => { stdout!("Bonded. The handle arrived on the handle channel.") }
+      (false, message) => { stdout!(("The bond was dropped:", message)) }
     }
   }
 }

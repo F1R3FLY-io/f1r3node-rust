@@ -25,7 +25,7 @@ fn pos_call(validator_pk_hex: &str, amount: i64) -> String {
 new rl(`rho:registry:lookup`), poSCh, retCh, deployerId(`rho:system:deployerId`) in {{
   rl!(`rho:system:pos`, *poSCh) |
   for(@(_, PoS) <- poSCh) {{
-    @PoS!("delegate", *deployerId, "{validator_pk_hex}".hexToBytes(), {amount}, *retCh)
+    @PoS!("noSuchMethod", *deployerId, "{validator_pk_hex}".hexToBytes(), {amount}, *retCh)
   }}
 }}
 "#

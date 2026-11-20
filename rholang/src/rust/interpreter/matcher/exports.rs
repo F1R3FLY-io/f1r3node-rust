@@ -16,11 +16,11 @@ pub use models::rhoapi::var::VarInstance::{BoundVar, FreeVar, Wildcard};
 pub use models::rhoapi::var::{VarInstance, WildcardMsg};
 pub use models::rhoapi::{
     BindPattern, Bundle, ConnFixedPointBody as ConnFixedPointBodyMsg, Connective, ConnectiveBody,
-    EAnd, EApp, EDiv, EEq, EGt, EGte, ELambda, EList, ELt, ELte, EMap, EMatches, EMinus,
-    EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPi, EPlus,
-    EPlusPlus, ESet, ETuple, EVar, Expr, GBigRational, GPrivate, GUnforgeable, KeyValuePair,
-    ListParWithRandom, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, TaggedContinuation,
-    Var, VarRef,
+    CostSignature, CostSignedTerm, CostStack, EAnd, EApp, EDiv, EEq, EGt, EGte, ELambda, EList,
+    ELt, ELte, EMap, EMatches, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap,
+    EPercentPercent, EPi, EPlus, EPlusPlus, ESet, ETuple, EVar, Expr, GBigRational, GPrivate,
+    GUnforgeable, KeyValuePair, ListParWithRandom, Match, MatchCase, New, Par, Receive,
+    ReceiveBind, Send, TaggedContinuation, Var, VarRef,
 };
 
 pub use crate::rust::interpreter::matcher::maximum_bipartite_match::MaximumBipartiteMatch;

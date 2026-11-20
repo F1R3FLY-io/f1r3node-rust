@@ -1,11 +1,11 @@
 {
   "schema": "soak-cleanup-verification/v1",
-  "verified_at": "2026-11-20T17:19:13Z",
-  "control_revision": "093fc1b4bc4d1d43407fd36b40f19ee65367b394",
+  "verified_at": "2026-11-20T18:45:40Z",
+  "control_revision": "a9f67e88b735d0c2691370204196a4d5f66d6644",
   "source_digests": {
     ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
-    ".github/actions/soak-segment/action.yml": "57073f84f9206c150ba9a73bf70a8f9193d7a82f9c91ed31abcb1fb65984d5e3",
-    ".github/workflows/merge-recovery-soak.yml": "652cf64b693ee577bf3da6804f631562e53ab9cb26ee5601348636e9cd8a330c",
+    ".github/actions/soak-segment/action.yml": "b3a4b9fcdf18f88726e3789b9f756edeec3d4a008e32c8be4513405a26c0cafd",
+    ".github/workflows/merge-recovery-soak.yml": "bb12b396c90e6afccad774eb76e6a8421deddfe5399d9df2a34876353cee8619",
     "docs/casper/soak-cleanup.json": "abe2fcce14b927b0ac39ada4fe4e24d4d6b4ac78eb5fca1d03434d7b1a9aa1b3",
     "docs/claims/casper-campaign-execution.md": "1574f70fc5b1f432b7bf1fa98a6deca125d3221e3b29864686a42da70a2b31bb",
     "docs/claims/casper-soak-harness.md": "92c82d3eb42331aa2fda2e6c53dd4b74dd3a1cd166855dd0c2db4b38cdbbda2c",
@@ -209,7 +209,7 @@
     ]
   },
   "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
-  "harness_binary_sha256": "b9e0e7baefddc6a6f1b6d92a461bf8f2432814d1b03771525924d000f04c43bb",
+  "harness_binary_sha256": "8c9ebeff87f39eced88176cca36ab335f25439ff3bb8800826928fea64d9d92f",
   "lock_closure_sha256": "957074979c0ef70c2deb0e761b4c0ba2d2f40ddeba05dac04073309dc57d0633",
   "scope": "bounded-segment-cleanup",
   "node_execution": false,

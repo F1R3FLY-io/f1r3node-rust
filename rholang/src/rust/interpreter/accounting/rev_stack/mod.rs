@@ -1,0 +1,50 @@
+pub mod bond;
+pub mod cell;
+pub mod channel;
+pub mod funders;
+pub mod compute;
+pub mod genesis;
+pub mod grant;
+pub mod hooks;
+pub mod journal;
+pub mod kind;
+pub mod native;
+pub mod ops;
+pub mod owner;
+pub mod process;
+pub mod region;
+pub mod reserve;
+pub mod seal;
+
+#[cfg(test)]
+mod tests;
+
+pub use channel::{wallet_channel, wallet_channel_id, wallet_channel_id_of, wallet_channel_of};
+pub use kind::TokenKind;
+pub use ops::{CellStore, HotStoreCells, RevStacks};
+pub use owner::WalletOwner;
+
+pub type RevAmount = u64;
+
+pub const MAX_AMOUNT: RevAmount = i64::MAX as RevAmount;
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RevStackError {
+    #[error("invalid wallet owner: {0}")]
+    InvalidOwner(String),
+    #[error("invalid cell amount {0}: must be in 1..=i64::MAX")]
+    InvalidAmount(RevAmount),
+    #[error("insufficient funds: balance {balance}, requested {requested}")]
+    InsufficientFunds {
+        balance: RevAmount,
+        requested: RevAmount,
+    },
+    #[error("wallet balance overflow")]
+    Overflow,
+    #[error("corrupt wallet: {0}")]
+    CorruptWallet(String),
+    #[error("no term can mint REV")]
+    RevMint,
+    #[error("store error: {0}")]
+    Store(String),
+}
