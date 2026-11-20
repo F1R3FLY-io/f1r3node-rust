@@ -16,7 +16,7 @@ Organization:
 
 - [§1 — Why TLA⁺ at all](#1--why-tla-at-all)
 - [§2 — TLC vs. Apalache](#2--tlc-vs-apalache)
-- [§3 — The seven slashing models](#3--the-seven-slashing-models-overview)
+- [§3 — The seven slashing models](#3--the-seven-slashing-models--overview)
 - [§4 — Anatomy of a model-checked invariant](#4--anatomy-of-a-model-checked-invariant)
 - [§5 — Concurrency and the `ConcurrentTracker` toggle](#5--concurrency-and-the-concurrenttracker-toggle)
 - [§6 — Pitfalls](#6--pitfalls)

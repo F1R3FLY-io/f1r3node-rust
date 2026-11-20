@@ -40,9 +40,8 @@ static GLOBAL: CountingAllocator = CountingAllocator;
 /// The allocator counter is process-wide, so measurements must not overlap.
 static MEASURING: Mutex<()> = Mutex::new(());
 
-const DAG_STORES: [&str; 18] = [
+const DAG_STORES: [&str; 20] = [
     "block-metadata",
-    "equivocation-tracker",
     "latest-messages",
     "dag-equivocations-v1",
     "floor-index",
@@ -52,6 +51,9 @@ const DAG_STORES: [&str; 18] = [
     "carrier-index",
     "carrier-index-seeds",
     "carrier-index-meta",
+    "v6-executor-state",
+    "finalization-commit-marker",
+    "lfb-pointer",
     "genesis-hash",
     "dag-membership-v1",
     "dag-height-v1",

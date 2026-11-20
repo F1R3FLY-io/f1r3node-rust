@@ -39,6 +39,7 @@ fn trapped_pure_receive_channel() {
         source: Some(bv(0)),
         remainder: None,
         free_count: 1,
+        cost_signature: None,
     };
     let body = Par::default();
     let recv = new_receive_par(
@@ -108,6 +109,7 @@ fn unsafe_in_receive_pattern() {
         source: Some(int(42)),
         remainder: None,
         free_count: 0,
+        cost_signature: None,
     };
     let recv = new_receive_par(
         vec![bind],
@@ -273,6 +275,7 @@ fn receive_body_mentioning_x_is_rejected() {
         source: Some(bv(0)),
         remainder: None,
         free_count: 1,
+        cost_signature: None,
     };
     let recv = new_receive_par(
         vec![bind],
@@ -310,6 +313,7 @@ fn receive_body_on_other_channel_leaks_x() {
         source: Some(int(42)),
         remainder: None,
         free_count: 1,
+        cost_signature: None,
     };
     let recv = new_receive_par(
         vec![bind],
@@ -334,12 +338,14 @@ fn trapped_in_join() {
         source: Some(bv(0)),
         remainder: None,
         free_count: 1,
+        cost_signature: None,
     };
     let bind_y = ReceiveBind {
         patterns: vec![Par::default()],
         source: Some(int(99)),
         remainder: None,
         free_count: 1,
+        cost_signature: None,
     };
     let recv = new_receive_par(
         vec![bind_x, bind_y],

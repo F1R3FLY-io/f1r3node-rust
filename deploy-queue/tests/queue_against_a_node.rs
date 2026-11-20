@@ -34,6 +34,8 @@ fn signed(valid_after: i64, number: i64, key: [u8; 32]) -> Signed<DeployData> {
             shard_id: "root".to_string(),
             expiration_timestamp: None,
             parameters: Vec::new(),
+            cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         },
         Box::new(Secp256k1),
         PrivateKey::from_bytes(&key),

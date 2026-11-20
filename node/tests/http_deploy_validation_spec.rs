@@ -142,6 +142,8 @@ mod http_deploy_validation {
             valid_after_block_number: 0,
             shard_id: "root".into(),
             expiration_timestamp: None,
+            cosignatures: vec![],
+            required_cosigners: vec![],
             parameters: vec![
                 models::rust::deploy_parameters::DeployParameter {
                     name: "input".into(),

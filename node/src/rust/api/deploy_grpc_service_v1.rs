@@ -180,6 +180,7 @@ impl DeployGrpcServiceV1Impl {
                                 | DeployError::AdmissionBusy
                                 | DeployError::InvalidFreshness
                                 | DeployError::RecordTooLarge { .. }
+                                | DeployError::PoolFull { .. }
                         )
                     ) || cause
                         .downcast_ref::<casper::rust::api::block_api::DeployExpiredError>()
@@ -1291,6 +1292,8 @@ mod tests {
             shard_id: "root".to_string(),
             expiration_timestamp: None,
             parameters: Vec::new(),
+            cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         };
         let signed =
             crypto::rust::signatures::signed::Signed::create(deploy_data, Box::new(Secp256k1), sk)

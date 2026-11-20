@@ -5,6 +5,7 @@ pub mod dag_history_index;
 pub mod dag_gc_store;
 pub(crate) mod dag_persistence;
 pub mod deploy_lifecycle_types;
+pub mod finalization_commit;
 pub mod soak_snapshot;
 
 use serde::de::DeserializeOwned;

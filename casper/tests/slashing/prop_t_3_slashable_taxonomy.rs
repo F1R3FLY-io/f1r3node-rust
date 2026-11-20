@@ -12,9 +12,9 @@
 //
 // Property: the post-fix slashable set is exactly the 18-element set
 // listed in spec §4 — the 17 pre-fix slashable variants plus
-// `IgnorableEquivocation`. The 8 remaining variants (InvalidFormat,
+// `IgnorableEquivocation`. The 9 remaining variants (InvalidFormat,
 // InvalidSignature, InvalidSender, InvalidVersion, InvalidTimestamp,
-// InvalidRejectedDeploy, NotOfInterest, LowDeployCost) are not
+// InvalidRejectedDeploy, NotOfInterest, LowDeployCost, InvalidDeployCost) are not
 // slashable.
 //
 // This test exercises the *production* `InvalidBlock::is_slashable`
@@ -75,7 +75,7 @@ fn t_3_slashable_set_is_the_equivocation_class() {
 }
 
 #[test]
-fn t_3_non_slashable_set_is_8_elements() {
+fn t_3_non_slashable_set_is_9_elements() {
     let non_slashable = vec![
         InvalidBlock::InvalidFormat,
         InvalidBlock::InvalidSignature,
@@ -85,8 +85,9 @@ fn t_3_non_slashable_set_is_8_elements() {
         InvalidBlock::InvalidRejectedDeploy,
         InvalidBlock::NotOfInterest,
         InvalidBlock::LowDeployCost,
+        InvalidBlock::InvalidDeployCost,
     ];
-    assert_eq!(non_slashable.len(), 8, "non-slashable set has 8 variants");
+    assert_eq!(non_slashable.len(), 9, "non-slashable set has 9 variants");
     for v in &non_slashable {
         assert!(
             !v.is_slashable(),
