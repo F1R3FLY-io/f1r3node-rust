@@ -50,6 +50,21 @@ pub(crate) fn admit_deploy(
         return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
     }
 
+    let cap = deploy_pool_cap(
+        this.casper_shard_conf.max_user_deploys_per_block,
+        this.casper_shard_conf.deploy_pool_blocks_of_backlog,
+    );
+    let pending = this.deploy_storage.pending_count()?;
+    if let Some(error) = pool_admission(pending, cap) {
+        tracing::info!(
+            target: "f1r3fly.casper.deploy_lifecycle",
+            event = "pool_full",
+            cap,
+            "deploy lifecycle"
+        );
+        return Ok(Either::Left(error));
+    }
+
     // Create normalizer environment from deploy
     let normalizer_env = match normalizer_env_from_deploy(&deploy) {
         Ok(env) => env,
@@ -85,6 +100,17 @@ pub(crate) fn admit_deploy(
     }
 }
 
+pub(crate) fn deploy_pool_cap(max_user_deploys_per_block: u32, blocks_of_backlog: usize) -> usize {
+    (max_user_deploys_per_block.max(1) as usize).saturating_mul(blocks_of_backlog)
+}
+
+pub(crate) fn pool_admission(pending: Option<usize>, cap: usize) -> Option<DeployError> {
+    match pending {
+        Some(pending) if pending >= cap => Some(DeployError::pool_full(pending, cap)),
+        _ => None,
+    }
+}
+
 fn deploy_is_known(
     this: &MultiParentCasperImpl,
     deploy_id: &DeployId,
@@ -103,10 +129,16 @@ fn deploy_is_known(
     rejected_deploys.contains_sig(deploy_id).map_err(Into::into)
 }
 
+enum Reservation {
+    Added,
+    Refused(DeployError),
+    PoolFull(DeployError),
+}
+
 fn reserve_deploy(
     this: &MultiParentCasperImpl,
     deploy: &Signed<DeployData>,
-) -> Result<Option<DeployError>, CasperError> {
+) -> Result<Reservation, CasperError> {
     const MAX_ATTEMPTS: usize = 3;
     let deploy_id = deploy.sig.to_vec();
     let seed = models::rust::deploy_seed::deploy_name_seed(deploy);
@@ -119,20 +151,28 @@ fn reserve_deploy(
             .deploy_canonical_appearance(&deploy_id)?
             .is_some()
         {
-            return Ok(Some(DeployError::duplicate_deploy(deploy_id)));
+            return Ok(Reservation::Refused(DeployError::duplicate_deploy(
+                deploy_id,
+            )));
         }
         let pool = this.deploy_storage.inspect_sig(&deploy_id)?;
         let rejected = rejected_store.inspect_sig(&deploy_id)?;
         if pool.is_present() || rejected.is_present() {
-            return Ok(Some(DeployError::duplicate_deploy(deploy_id)));
+            return Ok(Reservation::Refused(DeployError::duplicate_deploy(
+                deploy_id,
+            )));
         }
         let prepared = match preparation {
             Ok(ref prepared) => prepared,
             Err(DeployPreparationError::InvalidSignature) => {
-                return Ok(Some(DeployError::signature_verification_failed()));
+                return Ok(Reservation::Refused(
+                    DeployError::signature_verification_failed(),
+                ));
             }
             Err(DeployPreparationError::UnsupportedAlgorithm(algorithm)) => {
-                return Ok(Some(DeployError::unknown_signature_algorithm(algorithm)));
+                return Ok(Reservation::Refused(
+                    DeployError::unknown_signature_algorithm(algorithm),
+                ));
             }
             Err(DeployPreparationError::Serialization(error)) => return Err(error.into()),
         };
@@ -140,21 +180,28 @@ fn reserve_deploy(
             .block_dag_storage
             .carrier_index_other_seed_carrier(&seed, &deploy_id)?
         {
-            return Ok(Some(DeployError::seed_reuse(holder)));
+            return Ok(Reservation::Refused(DeployError::seed_reuse(holder)));
         }
         let held_elsewhere = match rejected_store.seed_holder(&seed)? {
             Some(holder) => Some(holder),
             None => this.deploy_storage.seed_holder(&seed)?,
         };
         if let Some(holder) = held_elsewhere.filter(|holder| *holder != deploy_id) {
-            return Ok(Some(DeployError::seed_reuse(holder)));
+            return Ok(Reservation::Refused(DeployError::seed_reuse(holder)));
         }
         if let Some(refusal) = this.deploy_storage.refusal(prepared, limits)? {
-            return Ok(Some(pool_refusal(refusal)));
+            return Ok(Reservation::Refused(pool_refusal(refusal)));
         }
         let rejected_guard = this.rejected_deploy_buffer.lock()?;
         if !rejected_guard.matches_snapshot(&rejected)? {
             continue;
+        }
+        let cap = deploy_pool_cap(
+            this.casper_shard_conf.max_user_deploys_per_block,
+            this.casper_shard_conf.deploy_pool_blocks_of_backlog,
+        );
+        if let Some(error) = pool_admission(this.deploy_storage.pending_count()?, cap) {
+            return Ok(Reservation::PoolFull(error));
         }
         this.block_dag_storage
             .record_deploy_admitted(&deploy_id, deploy.data.valid_after_block_number)?;
@@ -162,18 +209,22 @@ fn reserve_deploy(
             .deploy_storage
             .add_prepared_if_unchanged(prepared, &pool, limits)?
         {
-            PreparedInsertResult::Inserted => return Ok(None),
+            PreparedInsertResult::Inserted => return Ok(Reservation::Added),
             PreparedInsertResult::AlreadyPresent => {
-                return Ok(Some(DeployError::duplicate_deploy(deploy_id)));
+                return Ok(Reservation::Refused(DeployError::duplicate_deploy(
+                    deploy_id,
+                )));
             }
-            PreparedInsertResult::Refused(refusal) => return Ok(Some(pool_refusal(refusal))),
+            PreparedInsertResult::Refused(refusal) => {
+                return Ok(Reservation::Refused(pool_refusal(refusal)))
+            }
             PreparedInsertResult::Changed => continue,
             PreparedInsertResult::SeedHeld(holder) => {
-                return Ok(Some(DeployError::seed_reuse(holder)));
+                return Ok(Reservation::Refused(DeployError::seed_reuse(holder)));
             }
         }
     }
-    Ok(Some(DeployError::AdmissionBusy))
+    Ok(Reservation::Refused(DeployError::AdmissionBusy))
 }
 
 fn pool_refusal(refusal: PoolRefusal) -> DeployError {
@@ -249,8 +300,17 @@ pub(crate) fn add_deploy(
     deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
-    if let Some(error) = reserve_deploy(this, &deploy)? {
-        return Ok(Either::Left(error));
+    match reserve_deploy(this, &deploy)? {
+        Reservation::Added => {}
+        Reservation::Refused(error) => return Ok(Either::Left(error)),
+        Reservation::PoolFull(error) => {
+            tracing::info!(
+                target: "f1r3fly.casper.deploy_lifecycle",
+                event = "pool_full",
+                "deploy lifecycle"
+            );
+            return Ok(Either::Left(error));
+        }
     }
 
     // Log the received deploy
@@ -460,8 +520,38 @@ pub(crate) async fn admit_list_pending_deploys(
 
 #[cfg(test)]
 mod tests {
-    use super::stored_deploy_is_pending_for_snapshot;
+    use super::{deploy_pool_cap, pool_admission, stored_deploy_is_pending_for_snapshot};
     use crate::rust::casper::test_helpers::TestCasperWithSnapshot;
+    use crate::rust::casper::{
+        DeployError, DEPLOY_POOL_BLOCKS_OF_BACKLOG_DEFAULT as DEPLOY_POOL_BLOCKS_OF_BACKLOG,
+    };
+
+    #[test]
+    fn the_pool_cap_scales_with_the_per_block_limit() {
+        assert_eq!(
+            deploy_pool_cap(128, DEPLOY_POOL_BLOCKS_OF_BACKLOG),
+            128 * DEPLOY_POOL_BLOCKS_OF_BACKLOG
+        );
+        assert_eq!(
+            deploy_pool_cap(0, DEPLOY_POOL_BLOCKS_OF_BACKLOG),
+            DEPLOY_POOL_BLOCKS_OF_BACKLOG
+        );
+    }
+
+    #[test]
+    fn admission_refuses_only_at_or_over_the_cap() {
+        assert_eq!(pool_admission(Some(0), 10), None);
+        assert_eq!(pool_admission(Some(9), 10), None);
+        assert_eq!(
+            pool_admission(Some(10), 10),
+            Some(DeployError::PoolFull {
+                pending: 10,
+                cap: 10
+            })
+        );
+        assert!(pool_admission(Some(11), 10).is_some());
+        assert_eq!(pool_admission(None, 0), None);
+    }
     use crate::rust::util::construct_deploy;
 
     #[test]

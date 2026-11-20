@@ -461,6 +461,8 @@ mod tests {
             shard_id: "root".into(),
             expiration_timestamp: Some(500),
             parameters,
+            cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         }
     }
 

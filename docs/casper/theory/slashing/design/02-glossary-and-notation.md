@@ -1,5 +1,11 @@
 # 02 · Glossary & Notation
 
+> **PR #54 proposal scope:** The verdict lists and formal taxonomy below describe historical behavior.
+> They do not prove the current Rust verdict set or the BigInt proposal.
+> Current production code permits slashing only for admissible or ignorable equivocation.
+> The proposal adds `InvalidDeployCost` as a non-slashable admission rejection.
+> The models do not include that verdict. Updating the historical taxonomy proofs remains separate work.
+
 This document defines every symbol, acronym, and term used in the
 remainder of the design document **before** it is used. If you encounter
 a term you do not recognize while reading later sections, return here.
@@ -100,7 +106,7 @@ bisimilarity discussion (§10).
 | `neglect graph`   | Directed evidence graph | The graph with vertices = validators, edges = `neglecter → offender` whenever the neglecter cited an invalid offender block without an accompanying slash. §08.2. |
 | `delimiter-free`  | Key-encoding scheme  | A bytestring concatenation key without separator bytes, vulnerable to prefix-collision attacks. T-5DF; §05.4.3 record-key collision. |
 | `canonical visible self-chain child` | Detector input | The lowest-sequence visible self-child block above `baseSeq` in the canonical traversal; T-9.7. |
-| `T-Idem`          | Slash idempotence    | "A second slash on the same validator is a no-op." Alias for legacy `T-9`. See `PoSContract.v:117`. |
+| `T-Idem`          | Slash idempotence    | "A second slash on the same validator is a no-op." Alias for legacy `T-9`. See `PoSContract.v:140`. |
 | `T-Auth`          | Auth-token correctness | Family of theorems: invalid-auth slash deploys are no-ops; valid-auth execution is equivalent to ordinary slash semantics. See `MainTheorem.v:252,257`. |
 | `T-LivenessGap`   | Authorized-index liveness | The proposer derives slash candidates from the authorized invalid-block evidence index, not from `invalid_latest_messages`; one slash deploy per current offender epoch. `deploy_epoch_matches_target`; Bug #14 / §9.16. |
 
