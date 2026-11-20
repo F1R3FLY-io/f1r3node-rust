@@ -44,10 +44,25 @@ fn reaches_ancestor_check(
     //    deletable set while merges still needed it. Anchoring on the floor is
     //    strictly more conservative: the floor never leads the tip, so this can
     //    only delete less than before, never more.
+    //
+    // When body-store GC is enabled the allowance widens by `deploy_lifespan`.
+    // Validation of a block proposed from a stale view (`compute_parents_post_state`)
+    // reads block bodies down to `block_floor - deploy_lifespan`
+    // (`settled_sigs_of_lineage` and the `scope_prior_rejection_counts` walk
+    // in `interpreter_util.rs`), where `block_floor` comes from the block's
+    // frozen justification snapshot. The caller folds the stale-view floor
+    // into `pass.floor` already; we just need the window to reach past the
+    // walk edge, otherwise `reaches_ancestor_check` lets through blocks a
+    // restarted-but-stale validator's return block still needs the bodies for.
     let block_meta = dag.lookup_unsafe(block_hash)?;
     let depth_from_floor = floor.block_number - block_meta.block_number;
     let max_allowed_depth = (casper_shard_conf.max_parent_depth as i64)
-        + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64);
+        + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64)
+        + if casper_shard_conf.enable_block_store_gc {
+            casper_shard_conf.deploy_lifespan
+        } else {
+            0
+        };
 
     if depth_from_floor <= max_allowed_depth {
         return Ok(false);
@@ -618,6 +633,42 @@ mod tests {
                     );
                 }
             }
+        }
+
+        /// `stale_view_floor` must return the lowest floor the pass could
+        /// anchor on. Every signed active validator pulls the anchor down to
+        /// its cached view floor, and the local LFB is the ceiling. A
+        /// placeholder slot (no own testimony) cannot pull the anchor
+        /// anywhere — it is filtered out by the same `own_testimony` rule
+        /// `active_latest` entries use.
+        #[test]
+        fn stale_view_floor_minimizes_across_every_signed_latest(
+            local in 0u8..=TOP,
+            a_floor in 0u8..=TOP,
+            b_floor in 0u8..=TOP,
+        ) {
+            let dag = forked_chain_dag();
+            let validator_a = Bytes::from(vec![0xEEu8; 65]);
+            let validator_b = Bytes::from(vec![0xDDu8; 65]);
+            let side6 = Bytes::from(b"side6".to_vec());
+            dag.put_cached_floor(hash(TOP), hash(a_floor)).unwrap();
+            dag.put_cached_floor(side6.clone(), hash(b_floor)).unwrap();
+            let local_floor = Floor {
+                hash: hash(local),
+                block_number: local as i64,
+            };
+            let active: HashMap<Validator, BlockHash> = [
+                (validator_a, hash(TOP)),
+                (validator_b, side6),
+            ]
+            .into_iter()
+            .collect();
+            let result = super::job::stale_view_floor(&dag, local_floor, &active)
+                .expect("stale_view_floor");
+            let expected = (local as i64)
+                .min(a_floor as i64)
+                .min(b_floor as i64);
+            prop_assert_eq!(result.block_number, expected);
         }
     }
 

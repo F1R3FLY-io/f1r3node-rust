@@ -1260,4 +1260,132 @@ mod prune_history_atomic {
         assert!(history_store.get_one(&shared.bytes()).unwrap().is_some());
         assert!(history_store.get_one(&dead_root.bytes()).unwrap().is_none());
     }
+
+    /// Issue #1098: a root pinned before any pass has run, with no
+    /// caller-supplied retained root referring to it, is eventually
+    /// evicted by `PIN_RETENTION_PASSES`-bounded age eviction and its
+    /// subtree is swept. This is the lever that keeps the mark set from
+    /// growing without bound under long-running load.
+    ///
+    /// `PIN_RETENTION_PASSES` is a module-private constant in
+    /// `history_repository_impl`; the test runs a conservative number of
+    /// passes (6, well above the current retention + 1) so it does not
+    /// fail if the constant is later tuned slightly.
+    #[test]
+    fn pin_is_evicted_after_retention_window_and_its_subtree_is_swept() {
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        // One pinned root with a child, reachable ONLY via the pin — no
+        // caller retention root will reference it.
+        let doomed_leaf = put_node(&history_store, &leaf_node(0, vec![0x01], vec![0xaa; 32]));
+        let doomed_root = put_node(&history_store, &pointer_node(2, doomed_leaf.bytes()));
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+        repo.prune_guard.pin(doomed_root.clone());
+
+        // Precondition: the pin exists and nothing has been swept.
+        assert!(
+            repo.prune_guard
+                .pinned_snapshot()
+                .iter()
+                .any(|h| h == &doomed_root)
+        );
+
+        // Run passes until the pin is evicted and the subtree is swept.
+        // Bail out as soon as both doomed nodes are gone — keeps the test
+        // tolerant to small changes in the retention constant.
+        let mut evicted_pass: Option<usize> = None;
+        for pass in 1..=6 {
+            let result = repo.prune_history_atomic(&[]).expect("atomic prune");
+            if history_store
+                .get_one(&doomed_root.bytes())
+                .unwrap()
+                .is_none() &&
+                history_store
+                    .get_one(&doomed_leaf.bytes())
+                    .unwrap()
+                    .is_none()
+            {
+                evicted_pass = Some(pass);
+                // The pass that swept the subtree must also report the
+                // eviction via `pins_evicted` — the hook operators use to
+                // see the mark set contracting.
+                assert!(
+                    result.pins_evicted >= 1,
+                    "the pass that swept the pin must report pins_evicted >= 1 (got {})",
+                    result.pins_evicted
+                );
+                break;
+            }
+        }
+        assert!(
+            evicted_pass.is_some(),
+            "pin must be evicted within 6 passes under any reasonable retention setting"
+        );
+    }
+
+    /// Issue #1098: a pin that is refreshed every pass must survive
+    /// indefinitely. This models a root that `reset` keeps hitting during
+    /// a long replay — age eviction must NOT drop it while it is actively
+    /// in use.
+    #[test]
+    fn repinned_root_survives_age_eviction_indefinitely() {
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        let leaf = put_node(&history_store, &leaf_node(0, vec![0x01], vec![0xaa; 32]));
+        let root = put_node(&history_store, &pointer_node(2, leaf.bytes()));
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+
+        for _ in 0..8 {
+            // Simulate a writer / replay pinning this same root every pass.
+            repo.prune_guard.pin(root.clone());
+            let result = repo.prune_history_atomic(&[]).expect("atomic prune");
+            assert_eq!(result.swept, 0, "refreshed pin must retain its subtree");
+            assert!(history_store.get_one(&root.bytes()).unwrap().is_some());
+            assert!(history_store.get_one(&leaf.bytes()).unwrap().is_some());
+        }
+    }
+
+    /// Issue #1098: `prune_history_atomic` returns the new observability
+    /// counters so the casper-side driver can log them. This test does
+    /// not assert exact values beyond basic shape — the unit tests on
+    /// `PruneGuard::begin_pass` and the batched sweep cover the exact
+    /// arithmetic.
+    #[test]
+    fn prune_history_atomic_reports_pin_and_batch_counters() {
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        let leaf = put_node(&history_store, &leaf_node(0, vec![0x01], vec![0xaa; 32]));
+        let root = put_node(&history_store, &pointer_node(2, leaf.bytes()));
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+        repo.prune_guard.pin(root.clone());
+
+        let result = repo.prune_history_atomic(&[]).expect("atomic prune");
+        assert_eq!(result.marked, 2);
+        assert_eq!(result.swept, 0);
+        assert_eq!(result.pins_initial, 1);
+        assert_eq!(
+            result.marked_from_pins, 2,
+            "the root and leaf are both reachable from the single pin"
+        );
+        assert!(result.batches >= 1, "a non-empty store must run at least one delete batch");
+        assert_eq!(result.pins_mid_pass_added, 0, "no concurrent writers here");
+    }
 }
