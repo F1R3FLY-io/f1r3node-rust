@@ -370,11 +370,27 @@ impl fmt::Display for InterpreterError {
 }
 
 impl From<RSpaceError> for InterpreterError {
-    fn from(err: RSpaceError) -> InterpreterError { InterpreterError::RSpaceError(err) }
+    fn from(err: RSpaceError) -> InterpreterError {
+        match err {
+            RSpaceError::OutOfPhlogistons => InterpreterError::OutOfPhlogistonsError,
+            RSpaceError::NestingLimitExceeded { limit } => {
+                InterpreterError::NestingLimitExceeded { limit }
+            }
+            other => InterpreterError::RSpaceError(other),
+        }
+    }
 }
 
 impl From<InterpreterError> for RSpaceError {
-    fn from(error: InterpreterError) -> Self { RSpaceError::InterpreterError(error.to_string()) }
+    fn from(error: InterpreterError) -> Self {
+        match error {
+            InterpreterError::OutOfPhlogistonsError => RSpaceError::OutOfPhlogistons,
+            InterpreterError::NestingLimitExceeded { limit } => {
+                RSpaceError::NestingLimitExceeded { limit }
+            }
+            other => RSpaceError::InterpreterError(other.to_string()),
+        }
+    }
 }
 
 impl From<openai_api_rs::v1::error::APIError> for InterpreterError {
@@ -669,6 +685,15 @@ mod tests {
             back,
             RSpaceError::InterpreterError("Reduce error: r".to_string())
         );
+
+        for typed in [
+            InterpreterError::OutOfPhlogistonsError,
+            InterpreterError::NestingLimitExceeded { limit: 128 },
+        ] {
+            let crossed: RSpaceError = typed.clone().into();
+            let back: InterpreterError = crossed.into();
+            assert_eq!(back, typed);
+        }
 
         let io = std::io::Error::other("disk gone");
         let from_io: InterpreterError = io.into();

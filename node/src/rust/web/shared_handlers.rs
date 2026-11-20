@@ -300,6 +300,13 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
             return classify_casper_error(ce);
         }
         match cause.downcast_ref::<DeployError>() {
+            Some(DeployError::ParsingError(_)) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "rholang_bad_term",
+                    cause.to_string(),
+                );
+            }
             Some(DeployError::DuplicateDeploy(_)) => {
                 return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
             }
@@ -973,6 +980,23 @@ mod tests {
                 classify(DeployError::InvalidFreshness),
                 (StatusCode::BAD_REQUEST, "invalid_deploy_window".to_string())
             );
+        }
+
+        #[tokio::test]
+        async fn deploy_parsing_errors_return_bad_term() {
+            let err = DeployError::parsing_error("unexpected end of input".into());
+            let response =
+                AppError(eyre::Report::new(err).wrap_err("deploy failed")).into_response();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "rholang_bad_term");
+            assert!(body["message"]
+                .as_str()
+                .unwrap()
+                .contains("unexpected end of input"));
         }
 
         #[tokio::test]
