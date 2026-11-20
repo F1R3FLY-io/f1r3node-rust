@@ -20,8 +20,6 @@ fn main() {
         "ProposeServiceV1.proto",
         "RhoTypes.proto",
         "ServiceError.proto",
-        "ExternalCommunicationServiceCommon.proto",
-        "ExternalCommunicationServiceV1.proto",
         "routing.proto",
     ];
 
