@@ -431,6 +431,7 @@ async fn create_initializing_engine_with_dag(
         fixture.estimator.clone(),
         casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
         None,
+        None,
     )))
 }
 
@@ -907,6 +908,7 @@ fn transition_to_initializing_invokes_init_immediately() {
                     &fixture.runtime_manager,
                     &fixture.estimator,
                     &heartbeat_signal_ref,
+                    None,
                     None,
                 )
                 .await

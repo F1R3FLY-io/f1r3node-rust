@@ -15,21 +15,18 @@ use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
+use models::rust::casper::protocol::casper_message::ApprovedBlock;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
-use crate::rust::casper::{hash_set_casper, CasperShardConf, MultiParentCasper};
+use crate::rust::casper::CasperShardConf;
 use crate::rust::casper_conf::CasperConf;
 use crate::rust::engine::approve_block_protocol::ApproveBlockProtocolFactory;
 use crate::rust::engine::block_approver_protocol::BlockApproverProtocol;
-use crate::rust::engine::engine::{
-    record_direct_to_running_init_metrics, transition_to_initializing, transition_to_running,
-};
+use crate::rust::engine::engine::transition_to_initializing;
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::genesis_ceremony_master::GenesisCeremonyMaster;
 use crate::rust::engine::genesis_validator::GenesisValidator;
-use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
@@ -62,7 +59,6 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
 
     // Explicit parameters from Scala (in same order as Scala signature)
     ingest: IngestHandle,
-    propose_f_opt: Option<Arc<crate::rust::ProposeFunction>>,
     conf: CasperConf,
     trim_state: bool,
     disable_state_exporter: bool,
@@ -103,32 +99,6 @@ pub(crate) fn ensure_compatible_approved_block(
 }
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
-    /// Helper method to create MultiParentCasper instance
-    /// Scala equivalent: MultiParentCasper.hashSetCasper[F](validatorId, casperShardConf, ab)
-    async fn create_casper(
-        &self,
-        validator_id: Option<ValidatorIdentity>,
-        ab: BlockMessage,
-    ) -> Result<MultiParentCasperImpl, CasperError> {
-        let runtime_manager = self.runtime_manager.clone();
-
-        hash_set_casper(
-            self.ingest.clone(),
-            self.event_publisher.clone(),
-            runtime_manager,
-            self.estimator.clone(),
-            self.block_store.clone(),
-            self.block_dag_storage.clone(),
-            self.deploy_storage.clone(),
-            self.rejected_deploy_buffer.clone(),
-            validator_id,
-            self.casper_shard_conf.clone(),
-            ab,
-            self.heartbeat_signal_ref.clone(),
-        )
-        .await
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         // Infrastructure dependencies (Scala implicit parameters)
@@ -147,7 +117,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         estimator: Estimator,
         // Explicit parameters (matching Scala signature order)
         ingest: IngestHandle,
-        propose_f_opt: Option<Arc<crate::rust::ProposeFunction>>,
         conf: CasperConf,
         trim_state: bool,
         disable_state_exporter: bool,
@@ -239,7 +208,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             casper_shard_conf,
             // Explicit parameters
             ingest,
-            propose_f_opt,
             conf,
             trim_state,
             disable_state_exporter,
@@ -247,225 +215,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             fs_bundle,
             state_items_tx,
         }
-    }
-
-    async fn connect_to_existing_network(
-        &self,
-        approved_block: ApprovedBlock,
-        disable_state_exporter: bool,
-    ) -> Result<(), CasperError> {
-        async fn ask_peers_for_fork_choice_tips<T: TransportLayer + Send + Sync + Clone>(
-            transport_layer: &T,
-            connections_cell: &ConnectionsCell,
-            rp_conf_ask: &RPConf,
-        ) -> Result<(), CasperError> {
-            transport_layer
-                .send_fork_choice_tip_request(connections_cell, rp_conf_ask)
-                .await?;
-            Ok(())
-        }
-
-        let validator_id = ValidatorIdentity::from_private_key_with_logging(
-            self.conf.validator_private_key.as_deref(),
-        );
-
-        let ab = approved_block.candidate.block.clone();
-        let genesis_post_state_hash = ab.body.state.post_state_hash.clone();
-
-        let casper = self.create_casper(validator_id.clone(), ab).await?;
-        let casper_arc = Arc::new(casper);
-
-        // Startup: the peers' fork-choice tips arrive as announcements, and
-        // block ingest resolves their ancestry from the block store first.
-        // Note: Double cloning is necessary because:
-        // 1. First clone: capture in outer closure (needs to be Fn, not FnOnce)
-        // 2. Second clone: move into inner async block
-        let transport_layer_for_init = self.transport_layer.clone();
-        let connections_cell_for_init = self.connections_cell.clone();
-        let rp_conf_ask_for_init = self.rp_conf_ask.clone();
-        let casper_for_init = casper_arc.clone();
-        let propose_f_opt_for_init = self.propose_f_opt.clone();
-
-        let the_init = Arc::new(move || {
-            let transport_layer = transport_layer_for_init.clone();
-            let connections_cell = connections_cell_for_init.clone();
-            let rp_conf_ask = rp_conf_ask_for_init.clone();
-            let casper = casper_for_init.clone();
-            let propose_f_opt = propose_f_opt_for_init.clone();
-
-            Box::pin(async move {
-                ask_peers_for_fork_choice_tips(&*transport_layer, &connections_cell, &rp_conf_ask)
-                    .await?;
-
-                // Startup horizon probe (#1059). Ask peers for their current
-                // ApprovedBlock with trim_state=true: the response carries a
-                // `FinalizedFloorSeed` whose `floor_number` is each peer's
-                // current finalized floor. The incoming response is routed
-                // through Running's `handle_approved_block_response`, which
-                // compares that floor against our stored DAG height and
-                // records a below-horizon signal when we are past peers'
-                // GC horizon. Failure to send is not fatal: Running without
-                // the probe still works, the user just loses the early
-                // signal.
-                if let Err(error) = transport_layer
-                    .request_approved_block(&rp_conf_ask, Some(true))
-                    .await
-                {
-                    tracing::warn!(
-                        error = ?error,
-                        "startup horizon probe (ApprovedBlockRequest) failed to broadcast; running without early below-horizon detection"
-                    );
-                }
-
-                if let Some(propose_f) = propose_f_opt.as_ref() {
-                    // Clone the Arc and cast to trait object
-                    let casper_arc: Arc<dyn MultiParentCasper + Send + Sync> =
-                        Arc::clone(&casper) as Arc<dyn MultiParentCasper + Send + Sync>;
-                    propose_f(casper_arc, true).await?;
-                }
-
-                Ok(())
-            }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
-        });
-
-        // Direct-to-running path: emit init metrics that are otherwise produced in Initializing.
-        record_direct_to_running_init_metrics();
-
-        // Phase 7b-1: build the snapshot chunk-fetch context if
-        // this node has an `fs_snapshot_writer`.  On observer
-        // nodes or misconfigured deployments the builder returns
-        // `None` and snapshot dispatch stays disabled.  When
-        // `Some`, spawn the periodic tick loop that drives
-        // outbound snapshot-chunk requests.  The `JoinHandle` is
-        // intentionally dropped — the task lives for the lifetime
-        // of the running engine (process shutdown ends it).
-        let snapshot_chunk_ctx = {
-            let ctx = crate::rust::engine::snapshot_chunk_sync::build_snapshot_chunk_context(
-                &self.runtime_manager,
-            )
-            .await;
-            if let Some(ref ctx) = ctx {
-                let _tick_handle = crate::rust::engine::snapshot_chunk_sync::spawn_periodic_tick(
-                    std::sync::Arc::clone(&ctx.sync_driver),
-                    self.transport_layer.clone(),
-                    self.rp_conf_ask.clone(),
-                    self.connections_cell.clone(),
-                );
-            }
-            ctx
-        };
-
-        // Phase 7b-2: build the WAL payload-fetch context from
-        // the shared `RuntimeManager.payload_store` slot.  Spawn
-        // the periodic tick loop and attach its stop handle to
-        // the context — the block-processing catch-up detector
-        // (or shutdown orchestrator) can later call
-        // `tick_stop.stop()` for a graceful exit at the next
-        // select boundary.  See
-        // [`WalPayloadContext::from_runtime_manager`] for the
-        // production vs. test-harness fallback discipline.
-        let wal_payload_ctx = {
-            let mut ctx = crate::rust::engine::running::WalPayloadContext::from_runtime_manager(
-                &self.runtime_manager,
-            )
-            .await;
-            let tick = crate::rust::engine::wal_payload_sync::spawn_periodic_tick(
-                std::sync::Arc::clone(&ctx.sync_driver),
-                self.transport_layer.clone(),
-                self.rp_conf_ask.clone(),
-                self.connections_cell.clone(),
-            );
-            ctx.tick_stop = Some(tick.stop);
-            // JoinHandle intentionally dropped: the task either lives
-            // for the process lifetime or exits cleanly when
-            // `tick_stop.stop()` fires.  Preferring graceful stop to
-            // `JoinHandle::abort` lets the current in-flight
-            // `driver.tick(...)` finish before exit.
-            drop(tick.join_handle);
-            Some(ctx)
-        };
-
-        // Phase 7b-2 boot wire-in: install a completion sink on
-        // the snapshot chunk driver + spawn the subscriber that
-        // decodes each completed snapshot and drives the WAL
-        // payload fetch + applier (slice 5.130).  Only wired when
-        // BOTH contexts are Some — otherwise there's no fetch
-        // driver or snapshot dir to drive against.
-        //
-        // `allowed_roots` is empty for now (follow-up slice will
-        // thread the operator's consensus-static roots via
-        // `RuntimeManager::consensus_static_roots` when that API
-        // lands).  Empty vector skips the applier's `allowed_roots`
-        // validation — same behavior as pre-Shape-A applies.
-        //
-        // `payload_lookup` is cloned from the WAL payload context's
-        // own lookup — Tier 1 reducer uses the local
-        // `DirectoryPayloadStore` (or `InMemoryPayloadStore`
-        // fallback) to short-circuit peer fetches for hashes the
-        // joiner already has.
-        if let (Some(snap_ctx), Some(wal_ctx)) =
-            (snapshot_chunk_ctx.as_ref(), wal_payload_ctx.as_ref())
-        {
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
-                crate::rust::engine::snapshot_chunk_sync::SnapshotCompletion,
-            >();
-            snap_ctx.sync_driver.install_completion_sink(tx);
-            // Share the manager's `RootIdentityRegistry` into the
-            // subscriber via `.clone()` — the two-layer indirection
-            // means Clone shares the outer slot, so any post-spawn
-            // `register(logical, root)` on the manager is visible
-            // through this handle.  Registry and `allowed_roots`
-            // are populated at boot by
-            // `node::rust::runtime::setup::register_consensus_bundle_roots`
-            // from the operator's merged static-provisioning entries.
-            let registry = self.runtime_manager.root_registry.clone();
-            let allowed_roots = self.runtime_manager.consensus_static_roots().await;
-            let _subscriber_handle =
-                crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
-                    rx,
-                    std::sync::Arc::clone(&wal_ctx.sync_driver),
-                    snap_ctx.snapshot_dir.clone(),
-                    registry,
-                    allowed_roots,
-                    Some(std::sync::Arc::clone(&wal_ctx.payload_lookup)),
-                );
-            // JoinHandle intentionally dropped — the subscriber
-            // exits naturally when the completion-sink sender is
-            // dropped (snapshot driver teardown at process shutdown).
-        }
-
-        // Scala equivalent: Engine.transitionToRunning[F](...)
-        transition_to_running(
-            self.ingest.clone(),
-            casper_arc,
-            approved_block,
-            the_init,
-            disable_state_exporter,
-            self.transport_layer.clone(),
-            self.rp_conf_ask.clone(),
-            snapshot_chunk_ctx,
-            wal_payload_ctx,
-            &self.engine_cell,
-            &self.event_publisher,
-            self.state_items_tx.clone(),
-        )
-        .await?;
-
-        // Guard against config drift: a joiner's local native-token-* values
-        // must match what this network actually baked into the TokenMetadata
-        // contract at genesis. If they disagree, the node's /api/status would
-        // advertise values that contradict on-chain state, which misleads
-        // block explorers and wallets.
-        crate::rust::util::token_metadata_check::verify_token_metadata_matches_config(
-            &self.runtime_manager,
-            &genesis_post_state_hash,
-            &self.conf.genesis_block_data.native_token_name,
-            &self.conf.genesis_block_data.native_token_symbol,
-            self.conf.genesis_block_data.native_token_decimals,
-        )
-        .await?;
-
-        Ok(())
     }
 
     #[tracing::instrument(level = "info", skip(self))]
@@ -714,10 +463,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         Ok(())
     }
 
+    /// The unified has-data / no-data launch path. `stored_approved_block`
+    /// carries the on-disk approved block (if any) into Initializing's
+    /// startup horizon probe: within window, Initializing short-circuits
+    /// to Running using that anchor and no LFS is performed; below window,
+    /// Initializing runs the usual `request_approved_state` flow (#1059).
     async fn connect_and_query_approved_block(
         &self,
         trim_state: bool,
         disable_state_exporter: bool,
+        stored_approved_block: Option<ApprovedBlock>,
     ) -> Result<(), CasperError> {
         let validator_id = ValidatorIdentity::from_private_key_with_logging(
             self.conf.validator_private_key.as_deref(),
@@ -762,6 +517,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             &self.estimator,
             &self.heartbeat_signal_ref,
             self.state_items_tx.clone(),
+            stored_approved_block,
         )
         .await?;
 
@@ -776,10 +532,21 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunch for CasperL
 
         let (msg, action_result) = match approved_block_opt {
             Some(approved_block) => {
+                // #1059: has-data resume no longer commits to Running up
+                // front. The stored block is handed to Initializing, which
+                // sends `ApprovedBlockRequest(trim_state=true)`, learns the
+                // peer-reported `floor_seed.floor_number`, and either
+                // short-circuits to Running (within window) or runs LFS
+                // (below horizon). TLA+ contract:
+                // `formal/tlaplus/below_horizon_recovery`.
                 ensure_compatible_approved_block(&approved_block)?;
-                let msg = "Approved block found, reconnecting to existing network";
+                let msg = "Approved block found, probing peer horizon before resuming";
                 let action_result = self
-                    .connect_to_existing_network(approved_block, self.disable_state_exporter)
+                    .connect_and_query_approved_block(
+                        true,
+                        self.disable_state_exporter,
+                        Some(approved_block),
+                    )
                     .await;
                 (msg, action_result)
             }
@@ -799,7 +566,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunch for CasperL
             None => {
                 let msg = "Approved block not found, connecting to existing network";
                 let action_result = self
-                    .connect_and_query_approved_block(self.trim_state, self.disable_state_exporter)
+                    .connect_and_query_approved_block(
+                        self.trim_state,
+                        self.disable_state_exporter,
+                        None,
+                    )
                     .await;
                 (msg, action_result)
             }
