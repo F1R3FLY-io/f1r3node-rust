@@ -140,7 +140,12 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
   "isReadOnly": false,
   "isReady": true,
   "currentEpoch": 12,
-  "epochLength": 100
+  "epochLength": 100,
+  "latestBlockNumber": 1237,
+  "deployLifespan": 300,
+  "maxUserDeploysPerBlock": 128,
+  "maxParentDepth": 25,
+  "maxPhloLimit": 20000000
 }
 ```
 
@@ -148,6 +153,7 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
 - `isValidator` — true if the node has a configured validator key; this does not confirm current bond status
 - `isReadOnly` — true if the node is running in read-only mode
 - `isReady` — true after the engine enters Running state; clients can poll this instead of parsing logs
+- `latestBlockNumber`, `deployLifespan`, `maxUserDeploysPerBlock`, `maxParentDepth`, `maxPhloLimit` — the chain values a deploy client needs, `null` until casper is up; see the [API reference](api-reference.md#get-apistatus)
 - `currentEpoch` — `lastFinalizedBlockNumber / epochLength`
 - `epochLength` — blocks per epoch, from genesis configuration
 
@@ -324,7 +330,7 @@ The error chain propagates cleanly: `verify_token_metadata_matches_config → Er
 
 `bind_tcp_listener_with_retry()` in `servers_instances.rs` handles `AddrInUse` resilience for HTTP/Admin servers: 60 attempts with 500ms delay between retries.
 
-`APIServers::build()` in `api_servers.rs` constructs all gRPC services (Repl, Propose, Deploy, LSP) with shared dependencies (engine cell, block store, connections, epoch_length, is_ready). `WebApiImpl` in `web_api.rs` handles the HTTP REST layer and caches config-derived values (network-id, shard-id, native token metadata, epoch-length) for fast `/api/status` responses without per-request config reads; `min-phlo-price` is the exception, read from the running casper's chain-adopted shard conf per request so `/api/status` advertises the floor admission actually enforces. The `is_ready` flag is a shared `AtomicBool` set by the event listener in `setup.rs` when `EnteredRunningState` fires.
+`APIServers::build()` in `api_servers.rs` constructs all gRPC services (Repl, Propose, Deploy, LSP) with shared dependencies (engine cell, block store, connections, epoch_length, is_ready). `WebApiImpl` in `web_api.rs` handles the HTTP REST layer and caches config-derived values (network-id, shard-id, native token metadata) for fast `/api/status` responses without per-request config reads. `min-phlo-price`, `epoch-length` and the deploy values (`latestBlockNumber` through `maxPhloLimit`) are read per request from the running casper and its chain-adopted shard conf, so `/api/status` advertises what admission actually enforces; before casper is up, the first two fall back to configuration and the deploy values are `null`. The `is_ready` flag is a shared `AtomicBool` set by the event listener in `setup.rs` when `EnteredRunningState` fires.
 
 ## Transfer Extraction
 

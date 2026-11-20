@@ -300,11 +300,25 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
             return classify_casper_error(ce);
         }
         match cause.downcast_ref::<DeployError>() {
+            Some(DeployError::ParsingError(_)) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "rholang_bad_term",
+                    cause.to_string(),
+                );
+            }
             Some(DeployError::DuplicateDeploy(_)) => {
                 return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
             }
             Some(DeployError::SeedReuse(_)) => {
                 return (StatusCode::CONFLICT, "seed_reuse", cause.to_string());
+            }
+            Some(DeployError::PhloLimitAboveCap { .. }) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "illegal_argument",
+                    cause.to_string(),
+                );
             }
             _ => {}
         }
@@ -515,6 +529,11 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         OutOfPhlogistonsError => (
             S::UNPROCESSABLE_ENTITY,
             "out_of_phlogistons",
+            ie.to_string(),
+        ),
+        NestingLimitExceeded { .. } => (
+            S::UNPROCESSABLE_ENTITY,
+            "nesting_limit_exceeded",
             ie.to_string(),
         ),
         HostWorkRejected => (
@@ -963,11 +982,39 @@ mod tests {
         }
 
         #[test]
+        fn a_phlo_limit_above_the_cap_is_an_illegal_argument() {
+            assert_eq!(
+                classify(DeployError::PhloLimitAboveCap {
+                    phlo_limit: 20_000_001,
+                    max_phlo_limit: 20_000_000,
+                }),
+                (StatusCode::BAD_REQUEST, "illegal_argument".to_string())
+            );
+        }
+
+        #[test]
         fn invalid_deploy_window_is_a_client_error() {
             assert_eq!(
                 classify(DeployError::InvalidFreshness),
                 (StatusCode::BAD_REQUEST, "invalid_deploy_window".to_string())
             );
+        }
+
+        #[tokio::test]
+        async fn deploy_parsing_errors_return_bad_term() {
+            let err = DeployError::parsing_error("unexpected end of input".into());
+            let response =
+                AppError(eyre::Report::new(err).wrap_err("deploy failed")).into_response();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "rholang_bad_term");
+            assert!(body["message"]
+                .as_str()
+                .unwrap()
+                .contains("unexpected end of input"));
         }
 
         #[tokio::test]

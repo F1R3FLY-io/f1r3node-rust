@@ -1,7 +1,7 @@
 //! Coordination between runtime trie-node writers and the history
-//! mark-and-sweep pruner (issue #1061).
+//! mark-and-sweep pruner (issues #1061, #1098).
 //!
-//! Two races motivate this type:
+//! Three races motivate this type:
 //!
 //! 1. **In-flight writes race the sweep.** `RadixTreeImpl::pending_writes`
 //!    skips nodes whose hashes are already in the store (content-addressed
@@ -17,106 +17,164 @@
 //!    enumeration walks the DAG, so it misses these roots. The sweep then
 //!    deletes their new trie nodes and the next replay fails with
 //!    `MissingNode`.
+//! 3. **Stale pins keep the mark set too large (issue #1098).** A pure
+//!    count-bounded LRU of up to `PINNED_ROOTS_CAP` roots keeps load-period
+//!    roots pinned long after their blocks reached the DAG. At idle the DAG
+//!    walk alone would retain a few roots, but every pinned root also drags its
+//!    full subtree into the mark set. A two-hour soak showed ~1M nodes still
+//!    marked at idle, so pruning barely reduced growth.
 //!
-//! `PruneGuard` fixes both:
+//! `PruneGuard` fixes all three:
 //!
 //! * A `RwLock<()>` protects the content-addressed write window. Writers take
 //!   the shared side around their `stage` + `write` sequence (the full
-//!   read-then-conditional-write span); the sweep takes the exclusive side for
-//!   the whole pass. Writers in flight when the sweep tries to acquire the
-//!   exclusive side block it until they complete.
+//!   read-then-conditional-write span); the sweep takes the exclusive side in
+//!   short bursts (once at pass start to quiesce in-flight writers, and once
+//!   per delete batch) rather than for the whole pass.
 //! * A pinned-roots LRU carries roots that a writer recently committed or that
-//!   a `reset` locked in. The sweep unions every pinned root with its
-//!   caller-supplied `retained_roots` set before the mark walk, so their
-//!   subtrees survive even if the DAG walk did not reach them.
+//!   a `reset` locked in. Each pin also records the sweep generation when it
+//!   landed. `begin_pass` bumps the generation and drops pins older than
+//!   `retention_passes` passes, so a pin from a block that has since reached
+//!   the DAG does not keep its subtree pinned forever.
+//! * The sweep unions every pinned root with its caller-supplied
+//!   `retained_roots` set before the mark walk, so their subtrees survive even
+//!   if the DAG walk did not reach them.
 //!
 //! # Lock poisoning
 //!
-//! `pin`, `pinned_snapshot`, `enter_write`, and `enter_sweep` recover from
-//! `PoisonError` by taking the inner value. A panic inside the critical
-//! section leaves `Pinned` in a safe over-retention state (see the invariant
-//! comment on `Pinned`), so continuing is safer than cascading one panic
-//! into a chain of writer panics on lock acquisition.
+//! `pin`, `pinned_snapshot`, `enter_write`, `enter_sweep`, and `begin_pass`
+//! recover from `PoisonError` by taking the inner value. A panic inside the
+//! critical section leaves `Pinned` in a safe over-retention state (see the
+//! invariant comment on `Pinned`), so continuing is safer than cascading one
+//! panic into a chain of writer panics on lock acquisition.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
 /// Upper bound on the size of the pinned-roots LRU. 4096 covers many
 /// minutes of in-flight blocks at realistic rates while using less than
-/// 200 KiB of resident memory (32 bytes per hash). Eviction is strictly
-/// LRU, so re-pinning a root (via a repeat `reset` or the same post-state
-/// from a reorg replay) refreshes its position.
+/// 200 KiB of resident memory (40 bytes per entry — a hash plus a u64
+/// generation). Eviction is LRU on count, and generation-based on age;
+/// re-pinning a root refreshes both.
 const PINNED_ROOTS_CAP: usize = 4096;
+
+/// Sentinel used for the "pass start" generation before the first pass.
+/// Pins recorded before any pass are stamped with `INITIAL_GENERATION` and
+/// are evicted by the first `begin_pass` whose `retention_passes` argument
+/// is finite and smaller than the current generation.
+const INITIAL_GENERATION: u64 = 0;
 
 /// LRU + membership index for pinned roots.
 ///
 /// # Invariants
 ///
-/// * Every hash in `index` appears exactly once in `order`.
-/// * Every hash in `order` appears in `index`.
+/// * Every hash in `generations` appears exactly once in `order`.
+/// * Every hash in `order` appears in `generations`.
 ///
 /// If a panic inside `insert` breaks the first invariant, the worst case is
-/// a stale entry in `index` (dedup won't admit it; the snapshot then still
-/// returns it — safe over-retention). The second invariant can't be broken
-/// because `insert` only pushes to `order` after inserting into `index`.
+/// a stale entry in `generations` (dedup won't admit it; the snapshot then
+/// still returns it — safe over-retention). The second invariant can't be
+/// broken because `insert` only pushes to `order` after inserting into
+/// `generations`.
 struct Pinned {
     order: VecDeque<Blake2b256Hash>,
-    index: HashSet<Blake2b256Hash>,
+    generations: HashMap<Blake2b256Hash, u64>,
 }
 
 impl Pinned {
     fn new() -> Self {
         Self {
             order: VecDeque::new(),
-            index: HashSet::new(),
+            generations: HashMap::new(),
         }
     }
 
-    /// Insert `root` or refresh its LRU position if already present.
+    /// Insert `root` at the given generation, or refresh its LRU position
+    /// and generation if already present.
     ///
     /// Complexity: O(1) on a new root (the common case), O(n) on a re-pin
     /// because `VecDeque::remove` shifts elements. Re-pins are rare: a
     /// caller only re-pins by resetting to an older post-state or by
     /// re-checkpointing to the same content-addressed hash.
-    fn insert(&mut self, root: Blake2b256Hash) {
-        if self.index.contains(&root) {
-            // Refresh LRU position.
+    fn insert(&mut self, root: Blake2b256Hash, generation: u64) {
+        if self.generations.contains_key(&root) {
             if let Some(pos) = self.order.iter().position(|h| h == &root) {
                 self.order.remove(pos);
             }
-            self.order.push_back(root);
+            self.order.push_back(root.clone());
+            self.generations.insert(root, generation);
             return;
         }
-        self.index.insert(root.clone());
+        self.generations.insert(root.clone(), generation);
         self.order.push_back(root);
         while self.order.len() > PINNED_ROOTS_CAP {
             if let Some(evicted) = self.order.pop_front() {
-                self.index.remove(&evicted);
+                self.generations.remove(&evicted);
             }
         }
     }
 
+    /// Remove pins strictly older than `min_generation`. Returns the count
+    /// evicted so the caller can record it in metrics.
+    fn evict_older_than(&mut self, min_generation: u64) -> usize {
+        let mut evicted = 0usize;
+        // Build the retained-order deque by walking the current order and
+        // keeping the entries whose generation is current enough. Doing it
+        // this way (O(n)) rather than by repeatedly calling `remove` keeps
+        // eviction linear even when many pins are stale at once.
+        let kept: VecDeque<Blake2b256Hash> = std::mem::take(&mut self.order)
+            .into_iter()
+            .filter(|h| match self.generations.get(h) {
+                Some(&g) if g >= min_generation => true,
+                _ => {
+                    self.generations.remove(h);
+                    evicted += 1;
+                    false
+                }
+            })
+            .collect();
+        self.order = kept;
+        evicted
+    }
+
     fn snapshot(&self) -> Vec<Blake2b256Hash> {
-        // In debug builds, verify the two invariants. A mismatch here is
-        // a programming bug in this module, not something a caller can
-        // trigger.
         debug_assert_eq!(
             self.order.len(),
-            self.index.len(),
-            "Pinned invariant broken: order and index diverged"
+            self.generations.len(),
+            "Pinned invariant broken: order and generations diverged"
         );
-        // Iterate the set — order is irrelevant for the sweep's mark walk,
-        // and HashSet iteration avoids rebuilding a Vec that will just be
-        // fed back into a HashSet inside atomic_prune_via_store.
-        self.index.iter().cloned().collect()
+        // Iterate the map — order is irrelevant for the sweep's mark walk,
+        // and HashMap iteration avoids rebuilding a Vec that will just be
+        // fed back into a HashSet inside atomic_prune_via_store_batched.
+        self.generations.keys().cloned().collect()
     }
+
+    fn len(&self) -> usize { self.generations.len() }
 }
 
 pub struct PruneGuard {
     rw: RwLock<()>,
     pinned: Mutex<Pinned>,
+    /// Monotonic pass counter. `begin_pass` increments it and returns the
+    /// new value; `pin` stamps the current value onto new pins. Writes to
+    /// this counter happen under `pinned`'s Mutex so a `pin` and a
+    /// concurrent `begin_pass` cannot stamp the new pin with a stale
+    /// generation.
+    generation: AtomicU64,
+}
+
+/// Counters a `begin_pass` call hands back so the caller can log how much
+/// age-based eviction trimmed from the pinned FIFO (issue #1098
+/// observability).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PassStart {
+    pub generation: u64,
+    pub pins_before: usize,
+    pub pins_evicted: usize,
+    pub pins_after: usize,
 }
 
 impl PruneGuard {
@@ -124,17 +182,20 @@ impl PruneGuard {
         Self {
             rw: RwLock::new(()),
             pinned: Mutex::new(Pinned::new()),
+            generation: AtomicU64::new(INITIAL_GENERATION),
         }
     }
 
     /// Record a root so the sweep retains its subtree even if the DAG walk
     /// did not reach it. Re-pinning an existing root refreshes its LRU
-    /// position; eviction is LRU once `PINNED_ROOTS_CAP` is exceeded.
+    /// position AND its generation; eviction is LRU once `PINNED_ROOTS_CAP`
+    /// is exceeded, and generation-based on `begin_pass`.
     pub fn pin(&self, root: Blake2b256Hash) {
+        let gen = self.generation.load(Ordering::Acquire);
         self.pinned
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(root);
+            .insert(root, gen);
     }
 
     #[must_use]
@@ -145,6 +206,37 @@ impl PruneGuard {
             .snapshot()
     }
 
+    /// Begin a new sweep pass: bump the generation counter and evict any
+    /// pin older than `retention_passes` passes. Returns a struct with
+    /// before/after counts so the caller can log and emit metrics.
+    ///
+    /// `retention_passes = 0` would evict every pin from before this pass;
+    /// use a value of at least 1 in production so a pin from a writer that
+    /// committed between passes still survives into the next sweep.
+    pub fn begin_pass(&self, retention_passes: u64) -> PassStart {
+        // Hold the pinned mutex across the generation bump AND the
+        // eviction so no concurrent `pin` can race in between and get the
+        // wrong generation. (Writers hold `enter_write` but not this
+        // Mutex.) Minimum hold time: one atomic add + one HashMap walk.
+        let mut pinned = self.pinned.lock().unwrap_or_else(PoisonError::into_inner);
+        let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let pins_before = pinned.len();
+        // `min_generation` guards against underflow when a brand-new guard
+        // ticks its first pass before any pin has been recorded.
+        let min_generation = generation.saturating_sub(retention_passes);
+        let pins_evicted = pinned.evict_older_than(min_generation);
+        PassStart {
+            generation,
+            pins_before,
+            pins_evicted,
+            pins_after: pinned.len(),
+        }
+    }
+
+    /// Current generation. Call `begin_pass` to bump it; this accessor is
+    /// a read-only observation used by tests.
+    pub fn generation(&self) -> u64 { self.generation.load(Ordering::Acquire) }
+
     /// Acquire the shared side of the sweep RW lock. Writers hold this
     /// around their content-addressed `pending_writes` + `write` sequence
     /// so the sweep cannot delete a node between the writer's `contains`
@@ -154,9 +246,11 @@ impl PruneGuard {
         self.rw.read().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Acquire the exclusive side of the sweep RW lock. The sweep holds
-    /// this for the full pass; concurrent writers wait on the shared side
-    /// until the sweep releases.
+    /// Acquire the exclusive side of the sweep RW lock. The sweep takes
+    /// this briefly — once at pass start to quiesce in-flight writers for
+    /// a consistent pin snapshot, and once per delete batch — rather than
+    /// for the whole pass. Concurrent writers wait on the shared side
+    /// until the current holder releases.
     #[must_use = "the guard releases the lock when dropped"]
     pub fn enter_sweep(&self) -> RwLockWriteGuard<'_, ()> {
         self.rw.write().unwrap_or_else(PoisonError::into_inner)
@@ -312,7 +406,8 @@ mod tests {
         fresh[..8].copy_from_slice(&(PINNED_ROOTS_CAP as u64).to_le_bytes());
         g.pin(Blake2b256Hash::from_bytes(fresh.to_vec()));
 
-        let snap: HashSet<Blake2b256Hash> = g.pinned_snapshot().into_iter().collect();
+        let snap: std::collections::HashSet<Blake2b256Hash> =
+            g.pinned_snapshot().into_iter().collect();
         assert!(snap.contains(&root0), "re-pinned root must survive LRU eviction");
         let mut evicted = [0u8; 32];
         evicted[..8].copy_from_slice(&1u64.to_le_bytes());
@@ -321,5 +416,75 @@ mod tests {
             !snap.contains(&evicted_hash),
             "second-oldest root must be evicted now that #0 was refreshed"
         );
+    }
+
+    /// Age-based eviction (issue #1098). Pins recorded before the previous
+    /// pass are dropped at the start of the next pass with retention = 1.
+    /// This is the lever that keeps the mark set from growing without
+    /// bound under long-running load.
+    #[test]
+    fn begin_pass_evicts_pins_older_than_retention() {
+        let g = PruneGuard::new();
+        // Pass 1: pin three roots.
+        g.begin_pass(1);
+        g.pin(h(1));
+        g.pin(h(2));
+        g.pin(h(3));
+        // Pass 2: pin one more. Previous-pass pins must survive (retention = 1).
+        g.begin_pass(1);
+        g.pin(h(4));
+        let snap: std::collections::HashSet<Blake2b256Hash> =
+            g.pinned_snapshot().into_iter().collect();
+        for i in 1..=4 {
+            assert!(snap.contains(&h(i)), "pin h({i}) must survive retention = 1 across one pass");
+        }
+        // Pass 3: evict pins older than this pass by 1 — i.e., pass-1 pins
+        // (h(1), h(2), h(3)) are now too old and must be dropped. The pass-2
+        // pin h(4) survives one more pass.
+        let start = g.begin_pass(1);
+        assert_eq!(start.pins_evicted, 3);
+        let snap: std::collections::HashSet<Blake2b256Hash> =
+            g.pinned_snapshot().into_iter().collect();
+        for i in 1..=3 {
+            assert!(!snap.contains(&h(i)), "pin h({i}) must be evicted after 2 passes");
+        }
+        assert!(snap.contains(&h(4)));
+    }
+
+    /// Re-pinning refreshes generation too, so an active root survives
+    /// age-based eviction across many passes.
+    #[test]
+    fn repin_refreshes_generation() {
+        let g = PruneGuard::new();
+        g.begin_pass(1);
+        g.pin(h(1));
+        // Several passes go by. Each pass re-pins h(1) (e.g., a reset that
+        // keeps hitting the same post-state during replay).
+        for _ in 0..5 {
+            g.begin_pass(1);
+            g.pin(h(1));
+        }
+        // One more pass with retention = 1 would evict pins older than
+        // that pass. h(1) was re-pinned in the previous pass, so it stays.
+        let start = g.begin_pass(1);
+        assert_eq!(start.pins_evicted, 0);
+        assert!(g.pinned_snapshot().contains(&h(1)));
+    }
+
+    /// `begin_pass` counts the pin population before and after eviction so
+    /// the caller can log it (issue #1098 observability action).
+    #[test]
+    fn begin_pass_reports_counts() {
+        let g = PruneGuard::new();
+        g.begin_pass(1);
+        g.pin(h(1));
+        g.pin(h(2));
+        g.begin_pass(1);
+        g.pin(h(3));
+        let start = g.begin_pass(1);
+        assert_eq!(start.pins_before, 3);
+        assert_eq!(start.pins_evicted, 2, "h(1) and h(2) are two passes old");
+        assert_eq!(start.pins_after, 1);
+        assert_eq!(start.generation, 3);
     }
 }

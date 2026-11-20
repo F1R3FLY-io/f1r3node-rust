@@ -35,6 +35,7 @@ use models::rust::utils::{
 use prost::Message;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
+use shared::rust::stack::with_stack_headroom;
 use tokio::sync::RwLock;
 use tokio::task::{JoinError, JoinHandle};
 
@@ -59,6 +60,7 @@ use super::metrics_constants::{
     REDUCER_EVAL_RECEIVE_CALLS_METRIC, REDUCER_EVAL_RECEIVE_TIME_NS_METRIC,
     REDUCER_EVAL_SEND_CALLS_METRIC, REDUCER_EVAL_SEND_TIME_NS_METRIC, RHOLANG_METRICS_SOURCE,
 };
+use super::nesting::{check_nesting, MAX_EVALUATION_DEPTH};
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{bigint_to_bytes, bytes_to_bigint, RhoExpression, RhoUnforgeable};
 use super::substitute::Substitute;
@@ -83,6 +85,34 @@ const STACK_RED_ZONE: usize = 1024 * 1024; // 1 MB
 /// Size of each new stack segment allocated when the red zone is reached.
 const STACK_GROW_SIZE: usize = 2 * 1024 * 1024; // 2 MB
 const SINGLE_TERM_YIELD_INTERVAL: u64 = 256;
+
+// Synchronous expression evaluation never awaits, so the nesting it reaches on
+// a thread depends only on the expression and its values.
+thread_local! {
+    static EVALUATION_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+struct EvaluationDepth;
+
+impl EvaluationDepth {
+    fn enter() -> Result<Self, InterpreterError> {
+        EVALUATION_DEPTH.with(|depth| {
+            let next = depth.get() + 1;
+            if next > MAX_EVALUATION_DEPTH {
+                Err(InterpreterError::NestingLimitExceeded {
+                    limit: MAX_EVALUATION_DEPTH,
+                })
+            } else {
+                depth.set(next);
+                Ok(EvaluationDepth)
+            }
+        })
+    }
+}
+
+impl Drop for EvaluationDepth {
+    fn drop(&mut self) { EVALUATION_DEPTH.with(|depth| depth.set(depth.get() - 1)); }
+}
 
 /// A Future wrapper that dynamically grows the thread stack during polling.
 ///
@@ -1573,6 +1603,15 @@ impl DebruijnInterpreter {
     }
 
     fn eval_expr_to_expr(&self, expr: &Expr, env: &Env<Par>) -> Result<Expr, InterpreterError> {
+        let _level = EvaluationDepth::enter()?;
+        with_stack_headroom(|| self.eval_expr_to_expr_at_level(expr, env))
+    }
+
+    fn eval_expr_to_expr_at_level(
+        &self,
+        expr: &Expr,
+        env: &Env<Par>,
+    ) -> Result<Expr, InterpreterError> {
         let relop = |p1: &Par,
                      p2: &Par,
                      relopb: fn(bool, bool) -> bool,
@@ -2965,6 +3004,7 @@ impl DebruijnInterpreter {
                                 .iter()
                                 .map(|a| self.eval_expr(a, env))
                                 .collect::<Result<Vec<_>, InterpreterError>>()?;
+                            check_nesting(&evaled_args)?;
 
                             let new_env = env.extended(evaled_args.into_iter().rev());
 
@@ -6408,21 +6448,17 @@ impl DebruijnInterpreter {
             fn contains(&self, base_expr: Expr, par: Par) -> Result<Expr, InterpreterError> {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
-                        ExprInstance::ESetBody(eset) => {
-                            let base_ps = ParSetTypeMapper::eset_to_par_set(eset).ps;
+                        ExprInstance::ESetBody(eset) => Ok(Expr {
+                            expr_instance: Some(ExprInstance::GBool(ParSetTypeMapper::contains(
+                                &eset, &par,
+                            ))),
+                        }),
 
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GBool(base_ps.contains(par))),
-                            })
-                        }
-
-                        ExprInstance::EMapBody(emap) => {
-                            let base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GBool(base_ps.contains(par))),
-                            })
-                        }
+                        ExprInstance::EMapBody(emap) => Ok(Expr {
+                            expr_instance: Some(ExprInstance::GBool(
+                                ParMapTypeMapper::contains_key(&emap, &par),
+                            )),
+                        }),
 
                         other => Err(InterpreterError::MethodNotDefined {
                             method: String::from("contains"),
@@ -6473,9 +6509,9 @@ impl DebruijnInterpreter {
             fn get(&self, base_expr: Expr, key: Par) -> Result<Par, InterpreterError> {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
+                        // `get` answers Nil for a missing key.
                         ExprInstance::EMapBody(emap) => {
-                            let base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            Ok(base_ps.get_or_else(key, Par::default()))
+                            Ok(ParMapTypeMapper::lookup(&emap, &key).unwrap_or_default())
                         }
 
                         other => Err(InterpreterError::MethodNotDefined {
@@ -6533,8 +6569,7 @@ impl DebruijnInterpreter {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
                         ExprInstance::EMapBody(emap) => {
-                            let base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            Ok(base_ps.get_or_else(key, default))
+                            Ok(ParMapTypeMapper::lookup(&emap, &key).unwrap_or(default))
                         }
 
                         other => Err(InterpreterError::MethodNotDefined {

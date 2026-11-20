@@ -1283,31 +1283,9 @@ impl BlockAPI {
 
             let topo_sort_dag = dag.topo_sort(start_block_number, Some(end_block_number))?;
 
-            let mut block_infos_at_height_acc = Vec::new();
-            for block_hashes_at_height in topo_sort_dag {
-                // A height window can name blocks this node does not hold
-                // (an LFS restore horizon); serve the held ones.
-                let mut blocks_at_height: Vec<BlockMessage> =
-                    Vec::with_capacity(block_hashes_at_height.len());
-                for block_hash in block_hashes_at_height.iter() {
-                    match casper.block_store().get(block_hash)? {
-                        Some(block) => blocks_at_height.push(block),
-                        None => tracing::debug!(
-                            "get-blocks-by-heights skipping unheld block {}",
-                            PrettyPrinter::build_string_bytes(block_hash)
-                        ),
-                    }
-                }
-
-                for block in blocks_at_height {
-                    let block_info =
-                        BlockAPI::get_block_info_with_dag(casper, &dag, &block, constructor)
-                            .await?;
-                    block_infos_at_height_acc.push(block_info);
-                }
-            }
-
-            Ok(block_infos_at_height_acc)
+            let hashes: Vec<BlockHash> = topo_sort_dag.into_iter().flatten().collect();
+            BlockAPI::held_block_infos(casper, &dag, &hashes, constructor, "get-blocks-by-heights")
+                .await
         }
 
         let effective_end_block_number =
@@ -1444,31 +1422,17 @@ impl BlockAPI {
         let latest_block_number = dag.latest_block_number();
         let topo_sort = dag.topo_sort(latest_block_number - effective_depth as i64, None)?;
 
-        let mut block_infos_acc = Vec::new();
-        for block_hashes_at_height in topo_sort {
-            for block_hash in block_hashes_at_height {
-                // A height window can name blocks this node does not hold
-                // (an LFS restore horizon); serve the held ones.
-                let Some(block) = casper.block_store().get(&block_hash)? else {
-                    tracing::debug!(
-                        "get-blocks skipping unheld block {}",
-                        PrettyPrinter::build_string_bytes(&block_hash)
-                    );
-                    continue;
-                };
-                let block_info = BlockAPI::get_block_info_with_dag(
-                    casper.as_ref(),
-                    &dag,
-                    &block,
-                    Self::construct_light_block_info,
-                )
-                .await?;
-                block_infos_acc.push(block_info);
-            }
-        }
-
-        block_infos_acc.reverse();
-        Ok(block_infos_acc)
+        let hashes: Vec<BlockHash> = topo_sort.into_iter().flatten().collect();
+        let mut block_infos = BlockAPI::held_block_infos(
+            casper.as_ref(),
+            &dag,
+            &hashes,
+            Self::construct_light_block_info,
+            "get-blocks",
+        )
+        .await?;
+        block_infos.reverse();
+        Ok(block_infos)
     }
 
     /// Like `get_blocks` but returns full `BlockInfo` (with deploys).
@@ -1490,31 +1454,17 @@ impl BlockAPI {
         let latest_block_number = dag.latest_block_number();
         let topo_sort = dag.topo_sort(latest_block_number - effective_depth as i64, None)?;
 
-        let mut block_infos_acc = Vec::new();
-        for block_hashes_at_height in topo_sort {
-            for block_hash in block_hashes_at_height {
-                // A height window can name blocks this node does not hold
-                // (an LFS restore horizon); serve the held ones.
-                let Some(block) = casper.block_store().get(&block_hash)? else {
-                    tracing::debug!(
-                        "get-blocks-full skipping unheld block {}",
-                        PrettyPrinter::build_string_bytes(&block_hash)
-                    );
-                    continue;
-                };
-                let block_info = BlockAPI::get_block_info_with_dag(
-                    casper.as_ref(),
-                    &dag,
-                    &block,
-                    Self::construct_block_info,
-                )
-                .await?;
-                block_infos_acc.push(block_info);
-            }
-        }
-
-        block_infos_acc.reverse();
-        Ok(block_infos_acc)
+        let hashes: Vec<BlockHash> = topo_sort.into_iter().flatten().collect();
+        let mut block_infos = BlockAPI::held_block_infos(
+            casper.as_ref(),
+            &dag,
+            &hashes,
+            Self::construct_block_info,
+            "get-blocks-full",
+        )
+        .await?;
+        block_infos.reverse();
+        Ok(block_infos)
     }
 
     pub async fn show_main_chain(
@@ -1548,19 +1498,13 @@ impl BlockAPI {
                 depth,
             )?;
 
-            let mut block_infos = Vec::new();
-            for block in main_chain {
-                let block_info = BlockAPI::get_block_info_with_dag(
-                    casper,
-                    &dag_mut,
-                    &block,
-                    BlockAPI::construct_light_block_info,
-                )
-                .await?;
-                block_infos.push(block_info);
-            }
-
-            Ok(block_infos)
+            BlockAPI::block_infos_with_dag(
+                casper,
+                &dag_mut,
+                &main_chain,
+                BlockAPI::construct_light_block_info,
+            )
+            .await
         }
 
         let effective_depth = clamp_depth(depth, max_depth_limit, "show-main-chain");
@@ -1730,16 +1674,69 @@ impl BlockAPI {
         block: &BlockMessage,
         constructor: fn(&BlockMessage, f32, bool) -> A,
     ) -> ApiErr<A> {
-        let is_finalized = dag.is_finalized(&block.block_hash)?;
+        let metadata = dag.lookup(&block.block_hash)?;
+        Self::block_info_from_metadata(casper, dag, block, metadata.as_ref(), constructor).await
+    }
 
-        let normalized_fault_tolerance = if is_finalized {
-            if let Some(meta) = dag.lookup(&block.block_hash)? {
-                meta.fault_tolerance_value
-            } else {
-                Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?
+    /// Infos for the held blocks among `hashes`, in order, with every block's
+    /// metadata read in one `lookup_many`: a response never mixes state from
+    /// before and after a finalization. A height window can name blocks this
+    /// node does not hold (an LFS restore horizon); those are skipped.
+    async fn held_block_infos<M: MultiParentCasper + ?Sized, A: Sized + Send>(
+        casper: &M,
+        dag: &KeyValueDagRepresentation,
+        hashes: &[BlockHash],
+        constructor: fn(&BlockMessage, f32, bool) -> A,
+        operation: &str,
+    ) -> ApiErr<Vec<A>> {
+        let mut held = Vec::with_capacity(hashes.len());
+        for block_hash in hashes {
+            match casper.block_store().get(block_hash)? {
+                Some(block) => held.push(block),
+                None => tracing::debug!(
+                    "{operation} skipping unheld block {}",
+                    PrettyPrinter::build_string_bytes(block_hash)
+                ),
             }
-        } else {
-            Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?
+        }
+        Self::block_infos_with_dag(casper, dag, &held, constructor).await
+    }
+
+    /// Infos for `blocks`, in order, with every block's metadata read in one
+    /// `lookup_many`.
+    async fn block_infos_with_dag<M: MultiParentCasper + ?Sized, A: Sized + Send>(
+        casper: &M,
+        dag: &KeyValueDagRepresentation,
+        blocks: &[BlockMessage],
+        constructor: fn(&BlockMessage, f32, bool) -> A,
+    ) -> ApiErr<Vec<A>> {
+        let hashes: Vec<BlockHash> = blocks.iter().map(|b| b.block_hash.clone()).collect();
+        let metadata = dag.lookup_many(&hashes)?;
+        let mut block_infos = Vec::with_capacity(blocks.len());
+        for (block, metadata) in blocks.iter().zip(&metadata) {
+            block_infos.push(
+                Self::block_info_from_metadata(casper, dag, block, metadata.as_ref(), constructor)
+                    .await?,
+            );
+        }
+        Ok(block_infos)
+    }
+
+    async fn block_info_from_metadata<M: MultiParentCasper + ?Sized, A: Sized + Send>(
+        casper: &M,
+        dag: &KeyValueDagRepresentation,
+        block: &BlockMessage,
+        metadata: Option<&BlockMetadata>,
+        constructor: fn(&BlockMessage, f32, bool) -> A,
+    ) -> ApiErr<A> {
+        let is_finalized = match metadata {
+            Some(meta) => meta.finalized,
+            None => dag.is_finalized(&block.block_hash)?,
+        };
+
+        let normalized_fault_tolerance = match metadata {
+            Some(meta) if meta.finalized => meta.fault_tolerance_value,
+            _ => Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?,
         };
 
         let weights_map = proto_util::weight_map(block);

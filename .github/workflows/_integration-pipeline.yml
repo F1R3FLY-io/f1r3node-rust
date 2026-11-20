@@ -55,7 +55,7 @@ env:
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit,
   # via `just repin-system-integration <sha>`.
-  SYSTEM_INTEGRATION_REF: 646efd00a11df7e17610d2c6399aaf32abbb4eda
+  SYSTEM_INTEGRATION_REF: 9243d3b219c63597c5670dfc1da79265c37d1091
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -1102,6 +1102,12 @@ jobs:
             sleep 5
           done
           [ "$LFB" -ge 10 ] 2>/dev/null || (echo "FAIL: LFB only at #$LFB after 300s" && exit 1)
+
+      - name: Check malformed deploy rejection through the queue
+        run: |
+          bash scripts/ci/test-malformed-deploy.sh http://127.0.0.1:14403 \
+            docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml \
+            exec -T deploy-queue /opt/docker/bin/node --grpc-host 127.0.0.1 --grpc-port 40401
 
       - name: Collect logs
         if: always()

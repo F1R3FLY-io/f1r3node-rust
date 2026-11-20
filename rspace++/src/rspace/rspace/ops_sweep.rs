@@ -41,9 +41,9 @@ pub fn locked_sweep<C, P, A, K>(
 ) -> Result<(), RSpaceError>
 where
     C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + PartialEq + Serialize + 'static + Sync + Send,
+    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + PartialEq + Serialize + 'static + Sync + Send,
+    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
     if trapped_channels.is_empty() {
         return Ok(());

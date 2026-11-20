@@ -14,17 +14,19 @@
 //!    node's shard and chain.
 //! 2. `EquivocationDetector::equivocation_verdict` — a second block of the
 //!    sender at a held sequence number is an equivocation.
-//! 3. `block_summary` — wire-format + parent + justification structural
+//! 3. `phlo_limit` — no deploy declares a phlo limit above the chain's cap,
+//!    judged before any step that replays deploys.
+//! 4. `block_summary` — wire-format + parent + justification structural
 //!    checks (T-1, T-2).
-//! 4. `validate_block_checkpoint` — replay deploys against the pre-state
+//! 5. `validate_block_checkpoint` — replay deploys against the pre-state
 //!    hash and verify the resulting state matches the block's
 //!    `post_state_hash`.
-//! 5. `bonds_cache` — verify the block's bonds map matches the bonds
+//! 6. `bonds_cache` — verify the block's bonds map matches the bonds
 //!    computed from the parent post-state hash.
-//! 6. `check_neglected_equivocations` — reject the block if both blocks of
+//! 7. `check_neglected_equivocations` — reject the block if both blocks of
 //!    an equivocation are in its justifications and it leaves the
 //!    equivocator bonded.
-//! 7. `phlo_price` — minimum phlo-price check.
+//! 8. `phlo_price` — minimum phlo-price check.
 //!
 //! ## Slashing-protocol position
 //!
@@ -2051,6 +2053,19 @@ impl Validate {
             Either::Right(ValidBlock::Valid)
         } else {
             Either::Left(BlockError::Invalid(InvalidBlock::LowDeployCost))
+        }
+    }
+
+    /// No user deploy may declare a phlo limit above `max_phlo_limit`.
+    pub fn phlo_limit(b: &BlockMessage, max_phlo_limit: i64) -> ValidBlockProcessing {
+        if b.body
+            .deploys
+            .iter()
+            .all(|deploy| deploy.deploy.data.phlo_limit <= max_phlo_limit)
+        {
+            Either::Right(ValidBlock::Valid)
+        } else {
+            Either::Left(BlockError::Invalid(InvalidBlock::ExcessivePhloLimit))
         }
     }
 }
