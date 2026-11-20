@@ -19,6 +19,7 @@ pub mod rspace_interface;
 pub mod tuplespace_interface;
 pub mod replay_rspace_interface;
 pub mod errors;
+pub mod gc_roots;
 pub mod replay_rspace;
 pub mod merger;
 pub mod operation_context;

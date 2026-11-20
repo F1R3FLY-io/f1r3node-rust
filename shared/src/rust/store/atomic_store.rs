@@ -5,6 +5,7 @@ use std::sync::Arc;
 use heed::types::SerdeBincode;
 use heed::{Database, Env, RoTxn, RwTxn};
 
+pub use super::key_value_store::StorePage;
 use super::key_value_store::{KeyValueStore, KvStoreError};
 use super::lmdb_key_value_store::LmdbKeyValueStore;
 use super::memory_key_value_store::{MemoryEnvironment, MemoryKeyValueStore, MemoryState};
@@ -13,12 +14,6 @@ use crate::rust::blocking::in_blocking;
 
 type LmdbDatabase = Database<SerdeBincode<Vec<u8>>, SerdeBincode<Vec<u8>>>;
 type Changes = BTreeMap<u64, BTreeMap<Vec<u8>, Option<Vec<u8>>>>;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StorePage {
-    pub rows: Vec<(Vec<u8>, Vec<u8>)>,
-    pub next: Option<Vec<u8>>,
-}
 
 #[derive(Clone)]
 pub struct AtomicStoreGroup {

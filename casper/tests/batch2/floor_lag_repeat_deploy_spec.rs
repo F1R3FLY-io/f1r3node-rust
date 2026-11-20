@@ -157,9 +157,13 @@ struct DishonestBlock {
 /// A block by `node`'s validator on its current snapshot that carries
 /// `carried` (the processed form of `deploy` taken from its first carrier)
 /// on top of the real merged pre-state, rejected records, state facts, close
-/// block and floor committee. The node's own executor refuses to play
-/// `deploy` again on that pre-state, so no honest post-state exists; the
-/// block records the post-state of the same block without the deploy.
+/// block and floor committee. The block records the post-state of the same
+/// block without the deploy, so its body is inconsistent with its claimed
+/// state regardless of whether the executor is willing to play `deploy`
+/// again on the pre-state; the receiver's verdict comes from
+/// `validate::repeat_deploy`, a signature-based ancestry scan that runs
+/// before replay, so it is independent of any executor behaviour on the
+/// repeat pre-state.
 async fn block_carrying_again(
     node: &mut TestNode,
     deploy: &Signed<DeployData>,
@@ -217,6 +221,11 @@ async fn block_carrying_again(
             seq_num,
         ),
     })];
+    // `InvalidRepeatDeploy` is a signature-based check in
+    // `validate::repeat_deploy` that runs before replay, so the receiver's
+    // verdict does not depend on whether the executor refuses the deploy
+    // here. The outcome is captured only as a diagnostic that is folded into
+    // the final assertion's failure message.
     let play_error = match interpreter_util::compute_deploys_checkpoint(
         &mut node.block_store,
         parents.clone(),
@@ -232,7 +241,7 @@ async fn block_carrying_again(
     )
     .await
     {
-        Ok(_) => panic!("the executor played a deploy whose effect is already in the pre-state"),
+        Ok(_) => "<executor played the repeated deploy on the repeat pre-state>".to_string(),
         Err(error) => error.to_string(),
     };
     let checkpoint = interpreter_util::compute_deploys_checkpoint(

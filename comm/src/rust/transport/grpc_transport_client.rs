@@ -19,13 +19,11 @@ use crate::rust::peer_node::{NodeIdentifier, PeerNode};
 use crate::rust::rp::chain_id::ChainIdCell;
 use crate::rust::transport::f1r3fly_connector::F1r3flyConnector;
 use crate::rust::transport::grpc_transport::{GrpcTransport, TransportLayerClientTrait};
-use crate::rust::transport::packet_ops::PacketOps;
+use crate::rust::transport::packet_ops::{OutgoingPacketCache, PacketOps};
 use crate::rust::transport::ssl_session_client_interceptor::SslSessionClientInterceptor;
 use crate::rust::transport::stream_observable::StreamObservable;
 use crate::rust::transport::transport_layer::{best_effort, Blob, TransportLayer};
 use crate::rust::utils::resolve_hostname_to_ip;
-
-type StreamCache = Arc<dashmap::DashMap<String, Vec<u8>>>;
 
 /// GRPC channel with a message buffer protecting it from resource exhaustion
 #[derive(Debug)]
@@ -91,7 +89,7 @@ pub struct GrpcTransportClient {
     channels_map: Arc<Mutex<HashMap<PeerNode, Arc<OnceCell<Arc<BufferedGrpcStreamChannel>>>>>>,
     dns_failures: Arc<Mutex<HashMap<NodeIdentifier, String>>>,
     default_send_timeout: Duration,
-    cache: StreamCache,
+    cache: OutgoingPacketCache,
 }
 
 const MIN_PEER_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
@@ -125,7 +123,7 @@ async fn send_cached_stream<T: TransportLayerClientTrait>(
     client: &mut T,
     peer: &PeerNode,
     sender: &PeerNode,
-    cache: &StreamCache,
+    cache: &OutgoingPacketCache,
     network_id: &str,
     chain_id: Bytes,
     default_send_timeout: Duration,
@@ -535,7 +533,7 @@ impl GrpcTransportClient {
         key: &str,
         peer: &PeerNode,
         sender: &PeerNode,
-        cache: &StreamCache,
+        cache: &OutgoingPacketCache,
         network_id: &str,
         chain_id: &ChainIdCell,
         default_send_timeout: Duration,
@@ -720,6 +718,13 @@ impl TransportLayer for GrpcTransportClient {
         best_effort("stream", peers, results)
     }
 
+    fn queued_stream_bytes(&self) -> usize {
+        self.cache
+            .iter()
+            .map(|entry| entry.value().content.len())
+            .sum()
+    }
+
     /// Disconnect from a peer, shutting down any gRPC channels
     async fn disconnect(&self, peer: &PeerNode) -> Result<(), CommError> {
         self.clear_dns_failure(peer).await;
@@ -804,6 +809,23 @@ mod tests {
     fn new_accepts_normal_and_too_low_timeouts() {
         client(Duration::from_secs(5));
         client(Duration::from_millis(1));
+    }
+
+    #[test]
+    fn queued_stream_bytes_sums_the_unsent_packets() {
+        let client = client(Duration::from_secs(5));
+        assert_eq!(client.queued_stream_bytes(), 0);
+
+        let packet = |len: usize| Packet {
+            type_id: "test".to_string(),
+            content: Bytes::from(vec![0; len]),
+        };
+        client.cache.insert("a".to_string(), packet(10));
+        client.cache.insert("b".to_string(), packet(32));
+        assert_eq!(client.queued_stream_bytes(), 42);
+
+        client.cache.remove("a");
+        assert_eq!(client.queued_stream_bytes(), 32);
     }
 
     #[test]

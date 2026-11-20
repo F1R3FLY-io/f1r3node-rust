@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
+use std::ops::Bound;
 use std::sync::{Arc, RwLock};
 
-use super::key_value_store::{KeyValueStore, KvStoreError};
+use super::key_value_store::{check_scan_limit, KeyValueStore, KvStoreError, StorePage};
 use super::soak_snapshot::encode_length_prefixed;
 use crate::rust::ByteBuffer;
 
@@ -159,6 +160,31 @@ impl KeyValueStore for MemoryKeyValueStore {
         Ok(())
     }
 
+    /// Cursor-paginated scan matching [`KeyValueStore::scan_page`] semantics.
+    /// Rows are stored length-prefixed internally (8-byte big-endian length
+    /// via `encode_length_prefixed`), but the cursor and returned keys are
+    /// raw bytes. The order BTreeMap visits them in is the same as the order
+    /// `LmdbKeyValueStore::scan_page` returns, by construction: both encode
+    /// the length prefix before the raw bytes, so same-length keys sort by
+    /// raw bytes and different-length keys sort by length first.
+    fn scan_page(&self, after: Option<&[u8]>, limit: usize) -> Result<StorePage, KvStoreError> {
+        check_scan_limit(limit)?;
+        let encoded_after = after.map(encode_length_prefixed);
+        let start: Bound<Vec<u8>> = match encoded_after {
+            Some(bytes) => Bound::Excluded(bytes),
+            None => Bound::Unbounded,
+        };
+        let rows: Vec<(ByteBuffer, ByteBuffer)> = self.with_rows(|rows| {
+            rows.range((start, Bound::Unbounded))
+                .take(limit)
+                .map(|(key, value)| (key[8..].to_vec(), value.clone()))
+                .collect()
+        });
+        let next =
+            (rows.len() == limit).then(|| rows.last().expect("positive page limit").0.clone());
+        Ok(StorePage { rows, next })
+    }
+
     fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
 
     fn to_map(&self) -> Result<BTreeMap<ByteBuffer, ByteBuffer>, KvStoreError> {
@@ -185,5 +211,121 @@ impl KeyValueStore for MemoryKeyValueStore {
 
     fn size_bytes(&self) -> usize {
         self.with_rows(|rows| rows.iter().map(|(k, v)| k.len() - 8 + v.len()).sum())
+    }
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+
+    fn seeded(keys: &[&[u8]]) -> MemoryKeyValueStore {
+        let store = MemoryKeyValueStore::new();
+        let pairs: Vec<(ByteBuffer, ByteBuffer)> =
+            keys.iter().map(|k| (k.to_vec(), k.to_vec())).collect();
+        store.put(pairs).unwrap();
+        store
+    }
+
+    #[test]
+    fn empty_store_returns_empty_page_without_next() {
+        let page = MemoryKeyValueStore::new().scan_page(None, 16).unwrap();
+        assert!(page.rows.is_empty());
+        assert!(page.next.is_none());
+    }
+
+    #[test]
+    fn walks_same_length_keys_in_byte_order() {
+        let keys: Vec<Vec<u8>> = (0u8..10).map(|n| vec![n; 32]).collect();
+        let refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+        let store = seeded(&refs);
+
+        let mut seen: Vec<ByteBuffer> = Vec::new();
+        let mut cursor: Option<ByteBuffer> = None;
+        loop {
+            let page = store.scan_page(cursor.as_deref(), 3).unwrap();
+            seen.extend(page.rows.iter().map(|(k, _)| k.clone()));
+            match page.next {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(seen, keys);
+    }
+
+    #[test]
+    fn cursor_is_exclusive() {
+        let keys: Vec<Vec<u8>> = (0u8..5).map(|n| vec![n; 32]).collect();
+        let refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+        let store = seeded(&refs);
+
+        let first = store.scan_page(None, 2).unwrap();
+        assert_eq!(first.rows.iter().map(|(k, _)| k).collect::<Vec<_>>(), vec![
+            &keys[0], &keys[1]
+        ]);
+        let second = store.scan_page(first.next.as_deref(), 2).unwrap();
+        assert_eq!(
+            second.rows.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            vec![&keys[2], &keys[3]]
+        );
+        let third = store.scan_page(second.next.as_deref(), 2).unwrap();
+        assert_eq!(third.rows.iter().map(|(k, _)| k).collect::<Vec<_>>(), vec![
+            &keys[4]
+        ]);
+        assert!(third.next.is_none());
+    }
+
+    #[test]
+    fn limit_out_of_range_is_rejected() {
+        let store = MemoryKeyValueStore::new();
+        assert!(matches!(
+            store.scan_page(None, 0),
+            Err(KvStoreError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            store.scan_page(None, 1025),
+            Err(KvStoreError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn cursor_past_the_end_returns_empty() {
+        let keys: Vec<Vec<u8>> = (0u8..3).map(|n| vec![n; 32]).collect();
+        let refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+        let store = seeded(&refs);
+
+        let past_end = vec![0xff; 32];
+        let page = store.scan_page(Some(&past_end), 16).unwrap();
+        assert!(page.rows.is_empty());
+        assert!(page.next.is_none());
+    }
+
+    /// Matches the LMDB impl: for same-length keys, visitation order is raw
+    /// byte-order. Different-length keys sort by length first (both impls
+    /// encode a length prefix; both are therefore length-then-bytes).
+    #[test]
+    fn lmdb_memory_visitation_order_matches_for_same_length_keys() {
+        let keys: Vec<Vec<u8>> = vec![
+            vec![0x10; 32],
+            vec![0x01; 32],
+            vec![0xff; 32],
+            vec![0x80; 32],
+            vec![0x00; 32],
+        ];
+        let refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+        let store = seeded(&refs);
+
+        let mut seen: Vec<ByteBuffer> = Vec::new();
+        let mut cursor: Option<ByteBuffer> = None;
+        loop {
+            let page = store.scan_page(cursor.as_deref(), 2).unwrap();
+            seen.extend(page.rows.iter().map(|(k, _)| k.clone()));
+            match page.next {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        let mut expected = keys.clone();
+        expected.sort();
+        assert_eq!(seen, expected, "memory impl must yield keys in byte order");
     }
 }

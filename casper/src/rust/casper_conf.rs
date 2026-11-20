@@ -114,6 +114,8 @@ pub struct CasperConf {
     )]
     pub max_user_deploys_per_block: u32,
 
+    #[serde(rename = "deploy-admission", default)]
+    pub deploy_admission: block_storage::rust::deploy::key_value_deploy_storage::DeployPoolLimits,
     #[serde(
         rename = "v6-execution-lag-threshold",
         default = "default_v6_execution_lag_threshold"
@@ -152,6 +154,32 @@ pub struct CasperConf {
     )]
     pub mergeable_channels_gc_depth_buffer: i32,
 
+    /// Delete finalized block bodies from the block store once no honest
+    /// validator can still cite them. Piggybacks on the mergeable-channels
+    /// GC pass: a block is deleted at the same horizon
+    /// (`floor.block_number - block.block_number > max-parent-depth +
+    /// mergeable-channels-gc-depth-buffer`, and every active validator has
+    /// moved past it). Requires `enable-mergeable-channel-gc` to be on.
+    #[serde(
+        rename = "enable-block-store-gc",
+        default = "default_enable_block_store_gc"
+    )]
+    pub enable_block_store_gc: bool,
+
+    /// Mark-and-sweep the `rspace/history` radix-trie LMDB env, deleting
+    /// nodes no retained state root can reach (issue #923, Option D).
+    /// Shipped default off: first release of trie-store-mutating code.
+    /// LMDB file does not shrink when enabled — reclaimed pages are
+    /// reused by future writes; an offline compaction tool would be
+    /// needed to reduce the on-disk footprint. Requires
+    /// `enable-mergeable-channel-gc` for cadence (sweep runs on the same
+    /// loop tick), but deletion is independent and does not require
+    /// `enable-block-store-gc`.
+    #[serde(
+        rename = "enable-history-pruning",
+        default = "default_enable_history_pruning"
+    )]
+    pub enable_history_pruning: bool,
     #[serde(
         rename = "finalizer-oracle-cache-justifications",
         default = "default_finalizer_oracle_cache_justifications"
@@ -272,6 +300,17 @@ fn default_mergeable_channels_gc_interval() -> Duration {
 }
 
 fn default_mergeable_channels_gc_depth_buffer() -> i32 { 10 }
+
+/// Matches the shipped defaults.conf value: a sparse operator conf that
+/// omits the key must not silently disable block-store GC. Public so the
+/// node's config tests pin shipped-vs-fallback agreement.
+pub fn default_enable_block_store_gc() -> bool { true }
+
+/// Default off for the first release. Flip on after a soak run confirms
+/// no `UnknownRootError` regressions. Public so the node's config tests
+/// pin shipped-vs-fallback agreement.
+pub fn default_enable_history_pruning() -> bool { false }
+
 fn default_dag_hot_window_depth() -> i64 { 1024 }
 
 pub fn default_finalizer_oracle_cache_justifications() -> usize {

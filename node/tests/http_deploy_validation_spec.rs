@@ -111,7 +111,7 @@ mod http_deploy_validation {
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use crypto::rust::signatures::signed::Signed;
     use models::rust::casper::protocol::casper_message::{CasperMessage, DeployData};
-    use node::rust::api::web_api::DeployRequest;
+    use models::rust::deploy_request::DeployRequest;
     use node::rust::web::web_api_routes::WebApiRoutes;
     use serde_json::{json, Value};
     use shared::rust::token_amount::TokenAmount;

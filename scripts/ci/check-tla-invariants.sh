@@ -117,6 +117,7 @@ POST_FIX_CONFIGS=(
     node_observation/MC_BoundedCapture
     node_observation/MC_PairedForkChoice
     node_observation/MC_DisplayProjection
+    scope_trapped_gc/MC_ScopeTrappedGC
 )
 
 TLC_WORKERS=auto
@@ -277,6 +278,8 @@ NEGATIVE_CONTROLS=(
     casper_soak/MC_CasperSoakHarness_samples_unsafe:MissingIsUnknown
     casper_soak/MC_CasperSoakHarness_merge_unsafe:PostMergeGate
     casper_soak/MC_CasperSoakHarness_control_unsafe:ControlVerdictExact
+    scope_trapped_gc/MC_ScopeTrappedGC_payload_leak_pre_fix:Inv_N_NeverInParkedData
+    scope_trapped_gc/MC_ScopeTrappedGC_body_mention_pre_fix:Inv_N_NeverInParkedBodyOnForgeable
 )
 
 # Areas whose expected-violation configurations are all registered. A
@@ -284,7 +287,7 @@ NEGATIVE_CONTROLS=(
 # directories that is absent from NEGATIVE_CONTROLS is a broken registration,
 # not a manual control. Other areas keep manual controls until they opt in
 # (docs/formal-verification.md).
-REGISTERED_CONTROL_AREAS=(carrier_index deploy_storage soak_disk casper_soak node_observation)
+REGISTERED_CONTROL_AREAS=(carrier_index deploy_storage soak_disk casper_soak node_observation scope_trapped_gc)
 for entry in "${POST_FIX_CONFIGS[@]}"; do
     area="${entry%%/*}"
     printf '%s\n' "${REGISTERED_CONTROL_AREAS[@]}" | grep -Fx "$area" >/dev/null || continue

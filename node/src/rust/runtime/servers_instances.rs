@@ -125,6 +125,12 @@ impl ServersInstances {
         startup_events: shared::rust::shared::f1r3fly_events::StartupBuffer,
         kademlia_store: Arc<KademliaStore<T>>,
     ) -> eyre::Result<Self> {
+        let deploy_limiter =
+            crate::rust::api::DeployRequestLimiter::new(node_conf.api_server.deploy_max_inflight)?;
+        let deploy_service = api_servers
+            .deploy
+            .clone()
+            .with_deploy_limiter(deploy_limiter.clone());
         // Read current RPConf
         let rp_conf = rp_conf_cell
             .read()
@@ -193,7 +199,7 @@ impl ServersInstances {
 
         // Acquire external API server router
         let external_api_router = acquire_external_server(
-            api_servers.deploy.clone(),
+            deploy_service.clone(),
             node_conf.api_server.grpc_max_recv_message_size as usize,
             node_conf.api_server.keep_alive_time,
             node_conf.api_server.keep_alive_timeout,
@@ -220,7 +226,7 @@ impl ServersInstances {
         // Acquire internal API server router
         let internal_api_router = acquire_internal_server(
             api_servers.repl.clone(),
-            api_servers.deploy.clone(),
+            deploy_service,
             api_servers.propose.clone(),
             api_servers.lsp.clone(),
             node_conf.api_server.grpc_max_recv_message_size as usize,
@@ -257,7 +263,8 @@ impl ServersInstances {
             node_discovery.clone(),
             Arc::new(event_stream.new_subscribe()),
             startup_events,
-        );
+        )
+        .with_deploy_limiter(deploy_limiter);
 
         let http_router = Routes::create_main_routes(
             node_conf.api_server.enable_reporting,

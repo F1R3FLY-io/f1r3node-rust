@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
+use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -10,11 +11,11 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
 };
 use block_storage::rust::deploy::key_value_deploy_storage::{
-    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+    DeployPoolLimits, KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
 use models::rust::validator::Validator;
@@ -81,7 +82,23 @@ pub enum DeployError {
     UnknownSignatureAlgorithm(String),
     SignatureVerificationFailed,
     DuplicateDeploy(DeployId),
-    PoolFull { pending: usize, cap: usize },
+    /// Another deploy, named by its sig, already has this deploy's name seed.
+    SeedReuse(DeployId),
+    InvalidFreshness,
+    RecordTooLarge {
+        record_bytes: u64,
+        limit: u64,
+    },
+    PoolBusy {
+        resource: &'static str,
+        required: u64,
+        limit: u64,
+    },
+    AdmissionBusy,
+    PoolFull {
+        pending: usize,
+        cap: usize,
+    },
 }
 
 impl DeployError {
@@ -95,6 +112,7 @@ impl DeployError {
 
     pub fn signature_verification_failed() -> Self { DeployError::SignatureVerificationFailed }
     pub fn duplicate_deploy(deploy_id: DeployId) -> Self { DeployError::DuplicateDeploy(deploy_id) }
+    pub fn seed_reuse(holder: DeployId) -> Self { DeployError::SeedReuse(holder) }
 
     pub fn pool_full(pending: usize, cap: usize) -> Self { DeployError::PoolFull { pending, cap } }
 }
@@ -104,6 +122,12 @@ impl Display for DeployError {
         match self {
             DeployError::ParsingError(details) => write!(f, "Parsing error: {}", details),
             DeployError::MissingUser => write!(f, "Missing user"),
+            DeployError::InvalidFreshness => write!(f, "invalid_deploy_window: deploy validity height is beyond the admission horizon. Retry the same deploy after the chain advances."),
+            DeployError::RecordTooLarge { record_bytes, limit } => write!(
+                f,
+                "deploy_too_large: deploy record size {} exceeds the configured pool byte limit {}",
+                record_bytes, limit
+            ),
             DeployError::UnknownSignatureAlgorithm(alg) => {
                 write!(f, "Unknown signature algorithm '{}'", alg)
             }
@@ -111,6 +135,21 @@ impl Display for DeployError {
             DeployError::DuplicateDeploy(deploy_id) => {
                 write!(f, "Deploy already known: {}", hex::encode(deploy_id))
             }
+            DeployError::SeedReuse(holder) => write!(
+                f,
+                "seed_reuse: deploy {} has the same deployer, timestamp and valid-after block, \
+                 so it would create the same names. Sign this deploy with a different timestamp.",
+                hex::encode(holder)
+            ),
+            DeployError::PoolBusy { resource, required, limit } => write!(
+                f,
+                "deploy_pool_busy: {} would require {}, above the configured limit {}. Retry later or submit to another validator.",
+                resource, required, limit
+            ),
+            DeployError::AdmissionBusy => write!(
+                f,
+                "deploy_admission_busy: admission state changed during retries. Deploy was not accepted. Retry later."
+            ),
             DeployError::PoolFull { pending, cap } => write!(
                 f,
                 "Deploy pool is full ({} pending, cap {}); retry later",
@@ -141,6 +180,28 @@ pub trait Casper {
     fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError>;
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError>;
+
+    /// Current effective anchor height: blocks at or below this height are
+    /// treated as settled history, so walks are not expected to reach them
+    /// and `BlockNotHeld` below the anchor defers rather than judging. On
+    /// a sync-rooted node this is the restore anchor; on a genesis-rooted
+    /// node it starts at zero and advances as block-store GC prunes past
+    /// the citation horizon. Default reads the approved block's height so
+    /// effect mocks inherit "genesis-rooted at approved-block height".
+    fn effective_anchor_number(&self) -> i64 {
+        self.get_approved_block()
+            .ok()
+            .map(crate::rust::util::proto_util::block_number)
+            .unwrap_or(0)
+    }
+
+    /// Shared handle on the effective-anchor height. Used by block ingest
+    /// to admit below-anchor settled history live and by GC to advance the
+    /// anchor after a successful prune. Defaulted to a fresh atomic seeded
+    /// with the current anchor so effect mocks need no shared state.
+    fn effective_anchor_handle(&self) -> Arc<AtomicI64> {
+        Arc::new(AtomicI64::new(self.effective_anchor_number()))
+    }
 
     fn deploy(
         &self,
@@ -407,6 +468,19 @@ pub async fn hash_set_casper(
 
     let finalized_bond_cache =
         FinalizedBondCache::from_storage(&block_dag_storage, validator_id.as_ref())?;
+    // Effective anchor: whichever is higher — the approved block's height
+    // (startup baseline) or the persisted GC pruning cutoff (survives
+    // restart). Block-store GC only advances this, so the max is monotone.
+    // Test fixtures build the storage without persistence; skip the
+    // persisted read there — GC is unreachable on such storages anyway.
+    let anchor_from_approved = crate::rust::util::proto_util::block_number(&approved_block);
+    let anchor_persisted = match block_dag_storage.try_gc_store() {
+        Some(gc) => gc.effective_anchor()?.unwrap_or(anchor_from_approved),
+        None => anchor_from_approved,
+    };
+    let effective_anchor = Arc::new(std::sync::atomic::AtomicI64::new(
+        anchor_from_approved.max(anchor_persisted),
+    ));
     let deploy_storage = Arc::new(deploy_storage);
     let v6 = if casper_shard_conf.v6_order_then_execute {
         let policy = match crate::rust::v6::genesis_policy::read_genesis_policy(
@@ -471,6 +545,7 @@ pub async fn hash_set_casper(
         finalized_bond_cache,
         casper_shard_conf: finalization.shard_conf.clone(),
         approved_block,
+        effective_anchor,
         finalizer: crate::rust::engine::multi_parent_casper::Finalizer::start(finalization),
         heartbeat_signal_ref,
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
@@ -510,6 +585,10 @@ pub struct CasperSnapshot {
     /// was executed in one block and rejected during a descendant merge; the block
     /// creator uses this set to know which in-scope deploys are eligible for re-inclusion.
     pub rejected_in_scope: Arc<DashSet<Bytes>>,
+    /// Unforgeable-name seed of each deploy in the ancestry window, mapped to
+    /// the signatures of the deploys carrying it. A deploy whose seed maps to
+    /// another signature would create that deploy's names.
+    pub seeds_in_scope: Arc<DashMap<Vec<u8>, Vec<Bytes>>>,
     pub max_block_num: i64,
     pub max_seq_nums: HashMap<Validator, u64>,
     pub on_chain_state: OnChainCasperState,
@@ -540,6 +619,7 @@ impl CasperSnapshot {
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
             rejected_in_scope: Arc::new(DashSet::new()),
+            seeds_in_scope: Arc::new(DashMap::new()),
             max_block_num: 0,
             max_seq_nums: HashMap::new(),
             on_chain_state: OnChainCasperState::new(CasperShardConf::new()),
@@ -630,12 +710,25 @@ pub struct CasperShardConf {
     /// Depth buffer for mergeable channels garbage collection.
     /// Additional safety margin beyond max-parent-depth before deleting data.
     pub mergeable_channels_gc_depth_buffer: i32,
+    /// Delete finalized block bodies from the block store once no honest
+    /// validator can still cite them. Shares the mergeable-channel GC
+    /// horizon and predicate; requires `enable_mergeable_channel_gc = true`.
+    pub enable_block_store_gc: bool,
+    /// Mark-and-sweep the `rspace/history` radix-trie LMDB env, deleting
+    /// nodes no retained state root can reach. Issue #923, Option D.
+    /// Default off: enabling mutates the trie-node store, and the sweep's
+    /// correctness envelope assumes a stable `compute_forward_horizon_roots`
+    /// enumeration — a soak run should confirm no `UnknownRootError`
+    /// regressions before flipping on by default. File does not shrink
+    /// after sweeping (LMDB holds freed pages for reuse).
+    pub enable_history_pruning: bool,
     pub synchrony_recovery_stall_window: Duration,
     pub synchrony_recovery_cooldown: Duration,
     pub synchrony_recovery_max_bypasses: u32,
     pub synchrony_finalized_baseline_enabled: bool,
     pub synchrony_finalized_baseline_max_distance: u64,
     pub max_user_deploys_per_block: u32,
+    pub deploy_admission: DeployPoolLimits,
     pub v6_execution_lag_threshold: u64,
     pub v6_fallback_distance: usize,
     /// Native token metadata baked into the TokenMetadata contract at genesis.
@@ -690,12 +783,15 @@ impl CasperShardConf {
             v6_conservation_audit_interval:
                 crate::rust::v6::conservation::CONSERVATION_AUDIT_INTERVAL_DEFAULT,
             mergeable_channels_gc_depth_buffer: 10,
+            enable_block_store_gc: false,
+            enable_history_pruning: false,
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),
             synchrony_recovery_max_bypasses: 2,
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
             max_user_deploys_per_block: 128,
+            deploy_admission: DeployPoolLimits::default(),
             v6_execution_lag_threshold: crate::rust::v6::lag::DEFAULT_LAG_THRESHOLD,
             v6_fallback_distance: crate::rust::v6::core::DEFAULT_FALLBACK_DISTANCE,
             native_token_name: "F1R3CAP".to_string(),
@@ -789,6 +885,7 @@ pub mod test_helpers {
             let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
                 history: None,
                 view_sequence: u64::MAX,
+            pruning_cutoff: 0,
                 view_max_height: None,
                 dag_set: imbl::HashSet::new(),
                 latest_messages_map: imbl::HashMap::new(),

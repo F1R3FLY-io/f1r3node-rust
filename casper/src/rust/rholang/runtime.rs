@@ -1196,7 +1196,7 @@ impl RuntimeOps {
             )?;
 
             // Create return channel as first private name created in deploy term
-            let mut rand = Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp);
+            let mut rand = Tools::deploy_name_rng(&deploy);
             let return_name = Par::default().with_unforgeables(vec![GUnforgeable {
                 unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
                     id: rand.next().into_iter().map(|b| b as u8).collect(),
@@ -1360,7 +1360,7 @@ impl RuntimeOps {
         deploy: &Signed<DeployData>,
     ) -> Result<Vec<Par>, CasperError> {
         // Create return channel as first unforgeable name created in deploy term
-        let mut rand = Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp);
+        let mut rand = Tools::deploy_name_rng(deploy);
         let return_name = Par::default().with_unforgeables(vec![GUnforgeable {
             unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
                 id: rand.next().into_iter().map(|b| b as u8).collect(),
@@ -1422,7 +1422,7 @@ impl RuntimeOps {
                 ),
                 normalizer_env_from_deploy(deploy)
                     .map_err(|error| CasperError::RuntimeError(error.to_string()))?,
-                Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp),
+                Tools::deploy_name_rng(deploy),
             )
             .await;
 
@@ -1569,9 +1569,14 @@ impl RuntimeOps {
     }
 
     pub async fn compute_bonds(&mut self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
-        let bonds_pars = self
+        let mut bonds_pars = self
             .play_exploratory_par(Self::bonds_query_par().clone(), hash)
             .await?;
+        if bonds_pars.is_empty() {
+            bonds_pars = self
+                .play_exploratory_par(Self::self_bonds_query_par().clone(), hash)
+                .await?;
+        }
 
         if bonds_pars.is_empty() {
             tracing::warn!(
@@ -1835,7 +1840,7 @@ impl RuntimeOps {
         new return, rl(`rho:registry:lookup`), poSCh in {
           rl!(`rho:system:pos`, *poSCh) |
           for(@(_, PoS) <- poSCh) {
-            @PoS!("getBonds", *return)
+            @PoS!("getEffectiveBonds", *return)
           }
         }
       "#
@@ -1847,6 +1852,23 @@ impl RuntimeOps {
         QUERY.get_or_init(|| {
             Compiler::source_to_adt(&Self::bonds_query_source())
                 .expect("Failed to compile bonds query source")
+        })
+    }
+
+    fn self_bonds_query_par() -> &'static Par {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        QUERY.get_or_init(|| {
+            Compiler::source_to_adt(
+                r#"
+                new return, rl(`rho:registry:lookup`), poSCh in {
+                  rl!(`rho:system:pos`, *poSCh) |
+                  for(@(_, PoS) <- poSCh) {
+                    @PoS!("getBonds", *return)
+                  }
+                }
+                "#,
+            )
+            .expect("Failed to compile self bonds query source")
         })
     }
 

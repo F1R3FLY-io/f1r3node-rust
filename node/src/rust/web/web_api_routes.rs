@@ -73,6 +73,8 @@ impl WebApiRoutes {
             .route("/balance/{address}", get(balance_handler))
             .route("/registry/{uri}", get(registry_handler))
             .route("/validators", get(validators_handler))
+            .route("/delegations", get(delegations_handler))
+            .route("/delegations/{pubkey}", get(delegator_handler))
             .route("/validator/{pubkey}", get(validator_handler))
             .route("/epoch", get(epoch_handler))
             .route("/epoch/rewards", get(epoch_rewards_handler))
@@ -322,7 +324,8 @@ pub async fn is_finalized_handler(
 }
 
 use crate::rust::api::web_api::{
-    BalanceResponse, EpochResponse, PendingDeploysJson, RegistryResponse, ValidatorsResponse,
+    BalanceResponse, DelegationsResponse, DelegatorStateResponse, EpochResponse,
+    PendingDeploysJson, RegistryResponse, ValidatorsResponse,
 };
 
 #[utoipa::path(
@@ -455,7 +458,7 @@ pub async fn registry_handler(
         ("block_hash" = Option<String>, Query, description = "Block hash to query against; defaults to the last-finalized block"),
     ),
     responses(
-        (status = 200, description = "Active validator set with stake weights", body = ValidatorsResponse),
+        (status = 200, description = "Validator set with effective, self-bond, and delegated stake weights", body = ValidatorsResponse),
         (status = 400, description = "Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
         (status = 422, description = "Exploratory deploy execution failed (`rholang_execution_error`)", body = ApiErrorResponse),
@@ -469,6 +472,62 @@ pub async fn validators_handler(
 ) -> Response {
     let web_api = app_state.web_api.clone();
     match offload(move || async move { web_api.get_validators(query.block_hash).await }).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => AppError(e).into_response(),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/delegations",
+    params(
+        ("block_hash" = Option<String>, Query, description = "Block hash to query against; defaults to the last-finalized block"),
+    ),
+    responses(
+        (status = 200, description = "Full PoS delegation state: active delegations, delegated totals, claimable rewards, and pending undelegations", body = DelegationsResponse),
+        (status = 400, description = "Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
+        (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
+        (status = 422, description = "Exploratory deploy execution failed (`rholang_execution_error`, `out_of_phlogistons`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
+    ),
+    tag = "Query"
+)]
+pub async fn delegations_handler(
+    State(app_state): State<AppState>,
+    AppQuery(query): AppQuery<BlockHashQuery>,
+) -> Response {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.get_delegations(query.block_hash).await }).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => AppError(e).into_response(),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/delegations/{pubkey}",
+    params(
+        ("pubkey" = String, Path, description = "Delegator secp256k1 public key as a 65-byte uncompressed hex string"),
+        ("block_hash" = Option<String>, Query, description = "Block hash to query against; defaults to the last-finalized block"),
+    ),
+    responses(
+        (status = 200, description = "Delegation state for one delegator: active stake, pending undelegations, and claimable rewards", body = DelegatorStateResponse),
+        (status = 400, description = "Invalid public key or block hash, or node is not read-only (`illegal_argument`, `invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
+        (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
+        (status = 422, description = "Exploratory deploy execution failed (`rholang_execution_error`, `out_of_phlogistons`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
+    ),
+    tag = "Query"
+)]
+pub async fn delegator_handler(
+    State(app_state): State<AppState>,
+    AppPath(pubkey): AppPath<String>,
+    AppQuery(query): AppQuery<BlockHashQuery>,
+) -> Response {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.get_delegator(pubkey, query.block_hash).await })
+        .await
+    {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -573,7 +632,7 @@ pub async fn epoch_rewards_handler(
         ("block_hash" = Option<String>, Query, description = "Block hash to query against; defaults to the last-finalized block"),
     ),
     responses(
-        (status = 200, description = "Validator bond status and stake at the given block", body = ValidatorStatusResponse),
+        (status = 200, description = "Validator bond status plus effective, self-bond, and delegated stake at the given block", body = ValidatorStatusResponse),
         (status = 400, description = "Invalid public key or block hash, or node is not read-only (`illegal_argument`, `invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
         (status = 422, description = "Exploratory deploy execution failed (`rholang_execution_error`)", body = ApiErrorResponse),
@@ -625,12 +684,12 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::StatusCode;
+    use models::rust::deploy_request::DeployRequest;
     use tower::ServiceExt;
 
     use super::*;
     use crate::rust::api::web_api::{
-        ApiStatus, DataAtNameByBlockHashRequest, DeployRequest, DeployResponse, RhoDataResponse,
-        ViewMode, WebApi,
+        ApiStatus, DataAtNameByBlockHashRequest, DeployResponse, RhoDataResponse, ViewMode, WebApi,
     };
 
     /// Stub WebApi that returns sample DeployResponse for testing.
@@ -827,6 +886,19 @@ mod tests {
             &self,
             _: Option<String>,
         ) -> eyre::Result<crate::rust::api::web_api::ValidatorsResponse> {
+            unimplemented!()
+        }
+        async fn get_delegations(
+            &self,
+            _: Option<String>,
+        ) -> eyre::Result<crate::rust::api::web_api::DelegationsResponse> {
+            unimplemented!()
+        }
+        async fn get_delegator(
+            &self,
+            _: String,
+            _: Option<String>,
+        ) -> eyre::Result<crate::rust::api::web_api::DelegatorStateResponse> {
             unimplemented!()
         }
         async fn get_epoch(
@@ -1104,6 +1176,7 @@ mod router_tests {
     use comm::rust::peer_node::{NodeIdentifier, PeerNode};
     use comm::rust::rp::connect::ConnectionsCell;
     use comm::rust::rp::rp_conf::{RPConf, RPConfCell};
+    use models::rust::deploy_request::DeployRequest;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
     use tower::ServiceExt;
@@ -1112,11 +1185,19 @@ mod router_tests {
     use crate::rust::api::admin_web_api::AdminWebApi;
     use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
     use crate::rust::api::web_api::{
-        ApiStatus, BalanceResponse, BondStatusResponse, DeployFinalizationStatusJson,
-        DeployRequest, DeployerIdentity, EpochResponse, EpochRewardsResponse, EstimateCostResponse,
-        PendingDeploysJson, PrepareResponse, RegistryResponse, RhoExpr, ValidatorInfo,
+        ApiStatus, BalanceResponse, BondStatusResponse, DelegationEntry, DelegationsResponse,
+        DelegatorStateResponse, DeployFinalizationStatusJson, DeployerIdentity, EpochResponse,
+        EpochRewardsResponse, EstimateCostResponse, PendingDeploysJson, PendingUndelegationEntry,
+        PendingUndelegationInfo, PrepareResponse, RegistryResponse, RhoExpr, ValidatorInfo,
         ValidatorStatusResponse, ValidatorsResponse, VersionInfo, ViewMode, WebApi,
     };
+
+    fn stub_self_stake() -> shared::rust::token_amount::TokenAmount {
+        shared::rust::token_amount::TokenAmount::new(
+            shared::rust::token_amount::TokenAmount::max().into_bigint() - 3,
+        )
+        .unwrap()
+    }
 
     struct StubAdminWebApi;
 
@@ -1196,6 +1277,10 @@ mod router_tests {
                 is_ready: self.is_ready,
                 current_epoch: 0,
                 epoch_length: 100,
+                latest_block_number: Some(7),
+                deploy_lifespan: Some(50),
+                max_user_deploys_per_block: Some(4),
+                max_parent_depth: Some(25),
             })
         }
 
@@ -1316,8 +1401,64 @@ mod router_tests {
                 validators: vec![ValidatorInfo {
                     public_key: "vk".to_string(),
                     stake: shared::rust::token_amount::TokenAmount::max(),
+                    self_stake: stub_self_stake(),
+                    delegated_stake: 3.into(),
                 }],
                 total_stake: shared::rust::token_amount::TokenAmount::max().into_bigint(),
+                total_self_stake: stub_self_stake().into_bigint(),
+                total_delegated_stake: 3.into(),
+                block_number: 5,
+                block_hash: "aa".to_string(),
+            })
+        }
+
+        async fn get_delegations(&self, _: Option<String>) -> eyre::Result<DelegationsResponse> {
+            Ok(DelegationsResponse {
+                delegations: [(
+                    "delegator".to_string(),
+                    [("validator".to_string(), 30.into())].into_iter().collect(),
+                )]
+                .into_iter()
+                .collect(),
+                delegated_totals: [("validator".to_string(), 30.into())].into_iter().collect(),
+                delegator_rewards: [("delegator".to_string(), "9223372036854775808".to_string())]
+                    .into_iter()
+                    .collect(),
+                pending_undelegations: [(
+                    "delegator".to_string(),
+                    [("validator".to_string(), PendingUndelegationInfo {
+                        amount: 7.into(),
+                        unlock_block: 55,
+                    })]
+                    .into_iter()
+                    .collect(),
+                )]
+                .into_iter()
+                .collect(),
+                block_number: 5,
+                block_hash: "aa".to_string(),
+            })
+        }
+
+        async fn get_delegator(
+            &self,
+            pubkey: String,
+            _: Option<String>,
+        ) -> eyre::Result<DelegatorStateResponse> {
+            Ok(DelegatorStateResponse {
+                public_key: pubkey,
+                active_delegations: vec![DelegationEntry {
+                    validator_public_key: "validator".to_string(),
+                    amount: 30.into(),
+                }],
+                pending_undelegations: vec![PendingUndelegationEntry {
+                    validator_public_key: "validator".to_string(),
+                    amount: 7.into(),
+                    unlock_block: 55,
+                }],
+                claimable_rewards: "9223372036854775808".to_string(),
+                total_active_delegated: 30.into(),
+                total_pending_undelegation: 7.into(),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })
@@ -1369,6 +1510,8 @@ mod router_tests {
                 public_key: pubkey,
                 is_bonded: true,
                 stake: Some(shared::rust::token_amount::TokenAmount::max()),
+                self_stake: Some(stub_self_stake()),
+                delegated_stake: Some(3.into()),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })
@@ -1431,6 +1574,98 @@ mod router_tests {
     }
 
     fn router() -> Router { WebApiRoutes::create_router().with_state(app_state()) }
+
+    #[tokio::test]
+    async fn ingress_shared_permit_rejects_both_http_deploy_routes_before_reading_the_body() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use crate::rust::api::DeployRequestLimiter;
+        use crate::rust::web::routes::Routes;
+
+        let limiter = DeployRequestLimiter::new(Some(1)).unwrap();
+        let permit = limiter.try_acquire().unwrap();
+        let router = Routes::create_main_routes(false, 1024)
+            .with_state(app_state().with_deploy_limiter(limiter.clone()));
+        for uri in ["/api/deploy", "/api/v1/deploy"] {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let counter = reads.clone();
+            let body = Body::from_stream(futures::stream::once(async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, std::convert::Infallible>(tonic::codegen::Bytes::from_static(
+                    b"invalid json",
+                ))
+            }));
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(body)
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let bytes = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["error"],
+                "deploy_admission_busy"
+            );
+            assert_eq!(reads.load(Ordering::SeqCst), 0);
+        }
+        let ready = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ready.status(), StatusCode::OK);
+        drop(permit);
+        let invalid = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deploy")
+                    .header("content-type", "application/json")
+                    .body(Body::from("invalid json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        assert!(limiter.try_acquire().is_ok());
+    }
+
+    #[tokio::test]
+    async fn ingress_json_offload_preserves_body_limit_and_releases_its_slot() {
+        use crate::rust::api::DeployRequestLimiter;
+        use crate::rust::web::routes::Routes;
+
+        let limiter = DeployRequestLimiter::new(Some(1)).unwrap();
+        let router = Routes::create_main_routes(false, 16)
+            .with_state(app_state().with_deploy_limiter(limiter.clone()));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deploy")
+                    .header("content-type", "application/json")
+                    .body(Body::from(" ".repeat(17)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(limiter.try_acquire().is_ok());
+    }
 
     async fn get_response(uri: &str) -> (StatusCode, serde_json::Value) {
         let response = router()
@@ -1515,11 +1750,22 @@ mod router_tests {
 
         let (status, json) = post_response(
             "/prepare-deploy",
-            r#"{"deployer":"04aa","timestamp":1,"nameQty":1}"#,
+            r#"{"deployer":"04aa","timestamp":1,"validAfterBlockNumber":3,"nameQty":1}"#,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["names"][0], "04aa");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prepare_deploy_post_requires_the_valid_after_block_number() {
+        let (status, json) = post_response(
+            "/prepare-deploy",
+            r#"{"deployer":"04aa","timestamp":1,"nameQty":1}"#,
+        )
+        .await;
+        assert!(status.is_client_error());
+        assert_eq!(json["error"], "invalid_request_body");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1661,8 +1907,47 @@ mod router_tests {
         let (status, json) = get_response("/validators").await;
         assert_eq!(status, StatusCode::OK);
         let max = shared::rust::token_amount::TokenAmount::max().to_string();
+        let self_stake = stub_self_stake().to_string();
         assert_eq!(json["totalStake"], max);
+        assert_eq!(json["totalSelfStake"], self_stake);
+        assert_eq!(json["totalDelegatedStake"], "3");
         assert_eq!(json["validators"][0]["stake"], max);
+        assert_eq!(json["validators"][0]["selfStake"], self_stake);
+        assert_eq!(json["validators"][0]["delegatedStake"], "3");
+        assert_eq!(json["blockNumber"], 5);
+
+        let (status, json) = get_response("/delegations").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["delegations"]["delegator"]["validator"], "30");
+        assert_eq!(json["delegatedTotals"]["validator"], "30");
+        assert_eq!(json["delegatorRewards"]["delegator"], "9223372036854775808");
+        assert_eq!(
+            json["pendingUndelegations"]["delegator"]["validator"]["amount"],
+            "7"
+        );
+        assert_eq!(
+            json["pendingUndelegations"]["delegator"]["validator"]["unlockBlock"],
+            55
+        );
+
+        let (status, json) = get_response("/delegations/delegator").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["publicKey"], "delegator");
+        assert_eq!(
+            json["activeDelegations"][0]["validatorPublicKey"],
+            "validator"
+        );
+        assert_eq!(json["activeDelegations"][0]["amount"], "30");
+        assert_eq!(
+            json["pendingUndelegations"][0]["validatorPublicKey"],
+            "validator"
+        );
+        assert_eq!(json["pendingUndelegations"][0]["amount"], "7");
+        assert_eq!(json["pendingUndelegations"][0]["unlockBlock"], 55);
+        assert_eq!(json["claimableRewards"], "9223372036854775808");
+        assert_eq!(json["totalActiveDelegated"], "30");
+        assert_eq!(json["totalPendingUndelegation"], "7");
+        assert_eq!(json["blockNumber"], 5);
 
         let (status, json) = get_response("/validator/04aa").await;
         assert_eq!(status, StatusCode::OK);

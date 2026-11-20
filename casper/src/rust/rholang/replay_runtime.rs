@@ -343,6 +343,18 @@ impl ReplayRuntimeOps {
             .data
             .validate_amounts()
             .map_err(CasperError::RuntimeError)?;
+        if processed_deploy.system_deploy_error.is_some() {
+            if !processed_deploy.is_failed {
+                return Err(CasperError::ReplayFailure(
+                    ReplayFailure::replay_status_mismatch(false, true),
+                ));
+            }
+            if processed_deploy.cost.cost != 0 {
+                return Err(CasperError::ReplayFailure(
+                    ReplayFailure::replay_cost_mismatch(processed_deploy.cost.cost, 0),
+                ));
+            }
+        }
         let mut pre_charge_deploy = PreChargeDeploy {
             charge_amount: processed_deploy.deploy.data.total_phlo_charge(),
             pk: processed_deploy.deploy.pk.clone(),

@@ -51,7 +51,7 @@ pub async fn mint_on_parents(
     )
     .await
     .unwrap_or_else(|e| panic!("create[{label}] must succeed: {:?}", e));
-    let BlockCreatorResult::Created(block, _pre, _post) = created else {
+    let BlockCreatorResult::Created(block, ..) = created else {
         panic!("create[{label}] must mint on the ordered parent set");
     };
     node.process_block(block.clone())
