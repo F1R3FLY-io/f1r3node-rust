@@ -1691,31 +1691,15 @@ impl BlockAPI {
     ) -> ApiErr<Vec<A>> {
         let mut held = Vec::with_capacity(hashes.len());
         for block_hash in hashes {
-            if casper.block_store().contains_key(block_hash)? {
-                held.push(block_hash.clone());
-            } else {
-                tracing::debug!(
+            match casper.block_store().get(block_hash)? {
+                Some(block) => held.push(block),
+                None => tracing::debug!(
                     "{operation} skipping unheld block {}",
                     PrettyPrinter::build_string_bytes(block_hash)
-                );
+                ),
             }
         }
-        let metadata = dag.lookup_many(&held)?;
-        let mut block_infos = Vec::with_capacity(held.len());
-        for (block_hash, metadata) in held.iter().zip(&metadata) {
-            let Some(block) = casper.block_store().get(block_hash)? else {
-                tracing::debug!(
-                    "{operation} skipping unheld block {}",
-                    PrettyPrinter::build_string_bytes(block_hash)
-                );
-                continue;
-            };
-            block_infos.push(
-                Self::block_info_from_metadata(casper, dag, &block, metadata.as_ref(), constructor)
-                    .await?,
-            );
-        }
-        Ok(block_infos)
+        Self::block_infos_with_dag(casper, dag, &held, constructor).await
     }
 
     /// Infos for `blocks`, in order, with every block's metadata read in one
