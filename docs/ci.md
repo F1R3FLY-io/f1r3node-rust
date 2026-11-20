@@ -314,9 +314,8 @@ A fork head that a maintainer pushes to a branch of this repository is accepted.
 | Integration Tests (*arch*-*provider*, ucc) | Integration test |
 | Reclaim Ephemeral Runners | Setup |
 | Smoke Test (Docker Standalone), (Docker Shard), (Local Standalone) | Integration test |
-| Identity Registry Tests (Docker Shard) | Integration test |
 
-The input `oci_tests` (default `true`) controls Launch Ephemeral Runners. When it is `false`, the integration and UCC tests and Reclaim Ephemeral Runners skip too. The image build, the smoke tests, and the identity registry tests always run.
+The input `oci_tests` (default `true`) controls Launch Ephemeral Runners. When it is `false`, the integration and UCC tests and Reclaim Ephemeral Runners skip too. The image build and the smoke tests always run.
 
 ## Old and new check names
 
@@ -347,7 +346,7 @@ A push to `dev` carries the commit that its merge group tested. The target step 
 
 Mergify merges a pull request with a merge commit whose second parent is the pull request head. Without a merge group run, the target step compares the tree of the pushed commit with the tree of that head. If they are equal, it reads the newest `ci.yml` pull request run of that head. If both Integration Gate jobs of that run concluded success, the push run sets `oci_tests` to `false`. Any other commit always runs the OCI tests. The Integration Pipeline then builds the images and runs the smoke tests, but it launches no OCI runners.
 
-When the push run reuses a merge group or pull request result, both Integration Gate jobs name the reused run. They pass only if the image build, the smoke tests, and the identity registry tests of the push run succeeded. Release Docker Image still publishes the images. If the target step finds no such run, or an API call fails, the push run runs the OCI tests. A push to `master`, a tag, a pull request, and a merge group always run them.
+When the push run reuses a merge group or pull request result, both Integration Gate jobs name the reused run. They pass only if the image build and the smoke tests of the push run succeeded. Release Docker Image still publishes the images. If the target step finds no such run, or an API call fails, the push run runs the OCI tests. A push to `master`, a tag, a pull request, and a merge group always run them.
 
 `ci-fork-pr.yml` also has Integration Gate jobs, and it runs for every pull request. For a pull request from this repository, these jobs are skipped and report as Integration Gate (amd64, fork PRs only) and (arm64, fork PRs only). A skipped check counts as a pass. With the required names, the skipped checks would pass the gate before the `ci.yml` gate finishes. A `ci-heavy` pull request could then enter the merge queue during its own heavy run, and the merge group would run the Integration Pipeline again. `check-workflow-invariants.sh` rejects a fork-only job that reports a `ci.yml` check name when it is skipped.
 

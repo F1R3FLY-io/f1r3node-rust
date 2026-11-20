@@ -17,7 +17,6 @@ members = [
 	"scripts/supply-chain",
 	"scripts/casper-soak",
 	"scripts/file-read-service",
-  "identity-registry",
 ]
 
 [workspace.dependencies]
