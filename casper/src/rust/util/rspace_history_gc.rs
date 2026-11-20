@@ -63,13 +63,19 @@ use crate::rust::util::rspace_history_horizon::{
     compute_gc_retention_roots, lfs_min_state_block_number,
 };
 
-/// Outcome of a single pass. Matches `HistoryPruneResult` on the rspace++
-/// side 1-to-1; kept separate so callers that only depend on the casper
-/// crate do not need to import rspace++ types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Outcome of a single pass. Mirrors `HistoryPruneResult` on the rspace++
+/// side; kept separate so callers that only depend on the casper crate do
+/// not need to import rspace++ types.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HistoryGcResult {
     pub marked: usize,
     pub swept: usize,
+    /// Issue #1098 observability (see rspace++ `HistoryPruneResult`).
+    pub pins_initial: usize,
+    pub pins_evicted: usize,
+    pub pins_mid_pass_added: usize,
+    pub marked_from_pins: usize,
+    pub batches: usize,
 }
 
 /// Run one full mark-and-sweep pass over `rspace/history`.
@@ -85,10 +91,7 @@ pub fn prune_history_once(
     conf: &CasperShardConf,
 ) -> Result<HistoryGcResult, CasperError> {
     if !conf.enable_history_pruning {
-        return Ok(HistoryGcResult {
-            marked: 0,
-            swept: 0,
-        });
+        return Ok(HistoryGcResult::default());
     }
     let started = std::time::Instant::now();
 
@@ -136,10 +139,7 @@ pub fn prune_history_once(
             state_floor,
             lfb_block.body.state.block_number
         );
-        return Ok(HistoryGcResult {
-            marked: 0,
-            swept: 0,
-        });
+        return Ok(HistoryGcResult::default());
     }
 
     // Phase 2: atomic prune inside the rspace++ layer.
@@ -158,11 +158,26 @@ pub fn prune_history_once(
     metrics::histogram!("rspace_history_gc.marked").record(pruned.marked as f64);
     metrics::counter!("rspace_history_gc_deleted").increment(pruned.swept as u64);
     metrics::histogram!("rspace_history_gc.pass.time").record(started.elapsed().as_secs_f64());
+    // Issue #1098: expose the pinned-roots view so operators can see
+    // whether the mark set is dominated by pins (meaning age-based
+    // eviction, not DAG walk, is doing the heavy lifting against bloat).
+    metrics::histogram!("rspace_history_gc.pins.initial").record(pruned.pins_initial as f64);
+    metrics::histogram!("rspace_history_gc.pins.evicted").record(pruned.pins_evicted as f64);
+    metrics::histogram!("rspace_history_gc.pins.mid_pass_added")
+        .record(pruned.pins_mid_pass_added as f64);
+    metrics::histogram!("rspace_history_gc.marked_from_pins")
+        .record(pruned.marked_from_pins as f64);
+    metrics::histogram!("rspace_history_gc.batches").record(pruned.batches as f64);
     tracing::info!(
         target: "f1r3.trace.history_gc",
         marked = pruned.marked,
         swept = pruned.swept,
         roots = roots.len(),
+        pins_initial = pruned.pins_initial,
+        pins_evicted = pruned.pins_evicted,
+        pins_mid_pass_added = pruned.pins_mid_pass_added,
+        marked_from_pins = pruned.marked_from_pins,
+        batches = pruned.batches,
         elapsed_s = started.elapsed().as_secs_f64(),
         "history GC pass complete"
     );
@@ -170,6 +185,11 @@ pub fn prune_history_once(
     Ok(HistoryGcResult {
         marked: pruned.marked,
         swept: pruned.swept,
+        pins_initial: pruned.pins_initial,
+        pins_evicted: pruned.pins_evicted,
+        pins_mid_pass_added: pruned.pins_mid_pass_added,
+        marked_from_pins: pruned.marked_from_pins,
+        batches: pruned.batches,
     })
 }
 
