@@ -32,9 +32,7 @@ fn nested_value(depth: usize) -> Par {
 }
 
 fn is_nesting_error(error: &InterpreterError) -> bool {
-    error
-        .to_string()
-        .contains("Nesting is deeper than the limit")
+    matches!(error, InterpreterError::NestingLimitExceeded { .. })
 }
 
 #[test]
