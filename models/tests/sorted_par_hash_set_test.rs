@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use models::create_bit_vector;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{ESet, GPrivate, GUnforgeable, Par};
+use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::sorted_par_hash_set::SortedParHashSet;
@@ -183,8 +184,14 @@ fn sorted_par_hash_set_should_sort_all_input() {
             unsorted.clone(),
             sorted.clone(),
         );
+        let eset = ESet {
+            ps: pars.clone(),
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        };
         check_sorted_input(
-            |elem: Par| set.contains(elem),
+            |elem: Par| ParSetTypeMapper::contains(&eset, &elem),
             unsorted.clone(),
             sorted.clone(),
         );

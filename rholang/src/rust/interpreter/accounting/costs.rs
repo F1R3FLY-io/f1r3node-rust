@@ -7,7 +7,6 @@ use models::rhoapi::{
 };
 use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash;
-use shared::rust::ByteString;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/Costs.scala
 #[derive(Debug, Clone, PartialEq, Default, Eq, Hash)]
@@ -264,17 +263,17 @@ pub fn union_cost(num_elements: i64) -> Cost {
 
 // GByteArray uses ByteString internally which in turn are implemented using
 // data structure called Rope for which append operation is O(logN)
-pub fn byte_array_append_cost(left: ByteString) -> Cost {
-    if left.is_empty() {
+pub fn byte_array_append_cost(left_len: usize) -> Cost {
+    if left_len == 0 {
         Cost::create(0, "byte array append")
     } else {
-        let size = left.len() as f64;
+        let size = left_len as f64;
         Cost::create(size.log(10.0) as i64, "byte array append")
     }
 }
 
 // According to scala doc Vector#append is eC so it's n*eC.
-pub fn list_append_cost(right: Vec<Par>) -> Cost { Cost::create(right.len() as i64, "list append") }
+pub fn list_append_cost(left_len: usize) -> Cost { Cost::create(left_len as i64, "list append") }
 
 // String append creates a char[] of size n + m and then copies all elements to it.
 pub fn string_append_cost(n: i64, m: i64) -> Cost { Cost::create(n + m, "string append") }

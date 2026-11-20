@@ -182,6 +182,32 @@ impl IngestHandle {
         }
     }
 
+    /// A peer answered a `BlockRequest` with `BlockPrunedResponse`: the
+    /// body has been retention-swept past the peer's horizon. The need is
+    /// dropped and the peer's prune floor is recorded on the ingest view
+    /// (#1059).
+    pub fn block_pruned(
+        &self,
+        hash: BlockHash,
+        block_height: i64,
+        prune_floor: i64,
+        peer: PeerNode,
+    ) {
+        if self
+            .inputs
+            .try_send(IngestInput::BlockPruned {
+                hash,
+                block_height,
+                prune_floor,
+                peer,
+            })
+            .is_err()
+        {
+            metrics::counter!(BLOCK_INGEST_LANE_DROPS_METRIC, "source" => BLOCK_INGEST_METRICS_SOURCE, "lane" => "pruned-responses")
+                .increment(1);
+        }
+    }
+
     /// `peer` sent a block message that failed the integrity check. It never
     /// waits: when the owner's input is full the strike is dropped and counted.
     pub fn misbehaved(&self, peer: PeerNode, strike: Strike) {

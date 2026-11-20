@@ -315,6 +315,26 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 ask_peers_for_fork_choice_tips(&*transport_layer, &connections_cell, &rp_conf_ask)
                     .await?;
 
+                // Startup horizon probe (#1059). Ask peers for their current
+                // ApprovedBlock with trim_state=true: the response carries a
+                // `FinalizedFloorSeed` whose `floor_number` is each peer's
+                // current finalized floor. The incoming response is routed
+                // through Running's `handle_approved_block_response`, which
+                // compares that floor against our stored DAG height and
+                // records a below-horizon signal when we are past peers'
+                // GC horizon. Failure to send is not fatal: Running without
+                // the probe still works, the user just loses the early
+                // signal.
+                if let Err(error) = transport_layer
+                    .request_approved_block(&rp_conf_ask, Some(true))
+                    .await
+                {
+                    tracing::warn!(
+                        error = ?error,
+                        "startup horizon probe (ApprovedBlockRequest) failed to broadcast; running without early below-horizon detection"
+                    );
+                }
+
                 if let Some(propose_f) = propose_f_opt.as_ref() {
                     // Clone the Arc and cast to trait object
                     let casper_arc: Arc<dyn MultiParentCasper + Send + Sync> =

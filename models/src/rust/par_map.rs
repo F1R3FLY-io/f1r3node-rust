@@ -30,12 +30,9 @@ impl ParMap {
     }
 
     pub fn create_from_vec(vec: Vec<(Par, Par)>) -> Self {
-        ParMap::new(
-            vec.clone(),
-            ParMap::connective_used(&vec),
-            ParMap::update_locally_free(&vec),
-            None,
-        )
+        let connective_used = ParMap::connective_used(&vec);
+        let locally_free = ParMap::update_locally_free(&vec);
+        ParMap::new(vec, connective_used, locally_free, None)
     }
 
     pub fn create_from_sorted_par_map(map: SortedParMap) -> Self {
