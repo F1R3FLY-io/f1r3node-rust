@@ -358,7 +358,11 @@ async fn settled_admission_persists_a_pending_block() {
     );
     fixture
         .block_store
-        .put_pending(&straggler, PendingClass::Solicited)
+        .put_pending(
+            &straggler,
+            prost::bytes::Bytes::from(prost::Message::encode_to_vec(&straggler.to_proto())),
+            PendingClass::Solicited,
+        )
         .unwrap();
     assert!(fixture.block_store.is_pending(&straggler.block_hash));
 

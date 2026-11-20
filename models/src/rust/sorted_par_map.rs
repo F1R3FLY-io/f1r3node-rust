@@ -18,7 +18,7 @@ pub struct SortedParMap {
 impl SortedParMap {
     pub fn create_from_map(map: HashMap<Par, Par>) -> Self {
         let sorted_list = Ordering::sort_map(&map);
-        let sorted_map = sorted_list.clone().into_iter().collect();
+        let sorted_map = sorted_list.iter().cloned().collect();
 
         SortedParMap {
             ps: map,
@@ -67,38 +67,9 @@ impl SortedParMap {
         Self::create_from_map(self.sorted_map.clone())
     }
 
-    pub fn apply(&self, key: Par) -> Option<Par> { self.sorted_map.get(&Self::sort(&key)).cloned() }
+    pub fn keys(&self) -> Vec<Par> { self.sorted_list.iter().map(|kv| kv.0.clone()).collect() }
 
-    pub fn contains(&self, par: Par) -> bool {
-        self.sorted_map.contains_key(&SortedParMap::sort(&par))
-    }
-
-    pub fn get(&self, key: Par) -> Option<Par> {
-        self.sorted_map.get(&SortedParMap::sort(&key)).cloned()
-    }
-
-    pub fn get_or_else(&self, key: Par, default: Par) -> Par {
-        match self.sorted_map.get(&SortedParMap::sort(&key)) {
-            Some(value) => value.clone(),
-            None => default,
-        }
-    }
-
-    pub fn keys(&self) -> Vec<Par> {
-        self.sorted_list
-            .clone()
-            .into_iter()
-            .map(|kv| kv.0)
-            .collect()
-    }
-
-    pub fn values(&self) -> Vec<Par> {
-        self.sorted_list
-            .clone()
-            .into_iter()
-            .map(|kv| kv.1)
-            .collect()
-    }
+    pub fn values(&self) -> Vec<Par> { self.sorted_list.iter().map(|kv| kv.1.clone()).collect() }
 
     pub fn equals(&self, that: SortedParMap) -> bool { self.sorted_list == that.sorted_list }
 

@@ -11,6 +11,7 @@ use crate::rspace::history::checkpoint_writer::KvCheckpointWriter;
 use crate::rspace::history::history::{History, HistoryInstances};
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::history_repository_impl::HistoryRepositoryImpl;
+use crate::rspace::history::prune_guard::PruneGuard;
 use crate::rspace::history::root_repository::RootRepository;
 use crate::rspace::history::roots_store::RootsStoreInstances;
 use crate::rspace::hot_store_action::HotStoreAction;
@@ -75,18 +76,21 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
 
     /// Atomic mark-and-sweep of the trie-node store against `retained_roots`.
     ///
-    /// Issue #923, Option D race fix. The sweep MUST hold the history
-    /// store's write lock for the full pass so no runtime writer can
-    /// land a new block's trie nodes between mark and sweep — that was
-    /// the race that could leave a new block's state tree with a
-    /// dangling descendant pointer. LMDB's single-writer rule inside the
-    /// history env provides the mutual exclusion; implementations do the
-    /// whole mark + sweep inside one write transaction.
+    /// Issue #1061: the implementation holds the rspace-level `PruneGuard`
+    /// exclusive side for the whole pass so no runtime `do_checkpoint` or
+    /// `reset` can run its content-addressed `contains` + `put` window
+    /// while the sweep is deleting. Pre-#1061 the helper leaned on LMDB
+    /// per-write serialisation alone and lost nodes to the race between
+    /// the writer's `contains` check (which skips keys already in the
+    /// store) and its subsequent `put`.
     ///
-    /// `retained_roots` is the union of every state root whose subtree
-    /// must survive — the caller (casper's `prune_history_once`) builds
-    /// this from `compute_forward_horizon_roots` plus any LFS /
-    /// report-replay / merge-intermediate anchors it holds.
+    /// `retained_roots` is the caller-supplied set of roots whose subtrees
+    /// MUST survive. The implementation unions this with its `PruneGuard`
+    /// pinned-roots snapshot (recently-committed checkpoints + recent
+    /// reset targets) before the mark walk, so roots a writer committed
+    /// before the DAG caught up also survive. The casper-side caller
+    /// (`prune_history_once`) builds the caller set from
+    /// `compute_gc_retention_roots` plus the empty root.
     ///
     /// Returns a pair of counters so operators can see the pass's work.
     fn prune_history_atomic(
@@ -102,6 +106,23 @@ pub struct HistoryPruneResult {
     pub marked: usize,
     /// Trie nodes deleted (keys present in the env, not in the mark set).
     pub swept: usize,
+    /// Issue #1098 observability. Pinned roots in the initial snapshot,
+    /// after age-based eviction at `begin_pass`.
+    pub pins_initial: usize,
+    /// Pinned roots evicted by age at the start of this pass.
+    pub pins_evicted: usize,
+    /// Pinned roots that appeared between delete batches during the pass
+    /// (writer committed a checkpoint mid-sweep). Each such root triggers
+    /// an under-exclusive DFS into the mark set.
+    pub pins_mid_pass_added: usize,
+    /// Trie nodes reached by walking from the initial-snapshot pins alone.
+    /// Compare with `marked` to see how much of the mark set the pins
+    /// contribute vs. the caller's DAG walk.
+    pub marked_from_pins: usize,
+    /// Number of delete batches (brief exclusive-lock windows) the pass
+    /// executed. A high count with low per-batch stalls is the shape the
+    /// #1098 fix aims for; the pre-fix code held one long batch instead.
+    pub batches: usize,
 }
 
 pub struct HistoryRepositoryInstances<C, P, A, K> {
@@ -169,6 +190,7 @@ where
             history_kv_store: history_key_value_store,
             rspace_exporter: Arc::new(exporter),
             rspace_importer: Arc::new(importer),
+            prune_guard: Arc::new(PruneGuard::new()),
             _marker: PhantomData,
         }))
     }
