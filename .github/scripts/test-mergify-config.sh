@@ -42,6 +42,11 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
 
   expected = %w[dev master ca-item ca-daily ca-release]
   errors << "the queues are #{queues.keys.sort.join(", ")}, not #{expected.sort.join(", ")}" unless queues.keys.sort == expected.sort
+  queues.each do |name, q|
+    parity = checks.(q).include?("CI Parity")
+    errors << "queue ca-release does not require CI Parity" if name == "ca-release" && !parity
+    errors << "queue #{name} requires CI Parity, which runs only for a ca-release promotion" if name != "ca-release" && parity
+  end
 
   mq = doc["merge_queue"] || {}
   errors << "the merge queue is not serial" unless mq["mode"] == "serial"
