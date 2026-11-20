@@ -239,6 +239,7 @@ async fn from_input_files(
             max_parent_depth: 15,
             deploy_lifespan: 50,
             min_phlo_price: (0).into(),
+            max_phlo_limit: 20_000_000,
             validators,
             pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
             pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,

@@ -19,6 +19,7 @@ pub struct ProofOfStake {
     pub max_parent_depth: i32,
     pub deploy_lifespan: i64,
     pub min_phlo_price: TokenAmount,
+    pub max_phlo_limit: i64,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
 }

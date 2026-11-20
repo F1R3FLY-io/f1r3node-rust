@@ -179,6 +179,7 @@ impl DeployGrpcServiceV1Impl {
                                 | DeployError::PoolBusy { .. }
                                 | DeployError::AdmissionBusy
                                 | DeployError::InvalidFreshness
+                                | DeployError::PhloLimitAboveCap { .. }
                                 | DeployError::RecordTooLarge { .. }
                         )
                     ) || cause
@@ -1176,6 +1177,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             deploy_lifespan: pacing.map(|p| p.deploy_lifespan),
             max_user_deploys_per_block: pacing.map(|p| p.max_user_deploys_per_block),
             max_parent_depth: pacing.map(|p| p.max_parent_depth),
+            max_phlo_limit: pacing.map(|p| p.max_phlo_limit),
         };
 
         Ok(tonic::Response::new(StatusResponse {

@@ -26,7 +26,9 @@ block in the open window:
 - above `latestBlockNumber - deployLifespan`, or the deploy is expired (`deploy_expired`);
 - at most `latestBlockNumber + maxParentDepth`, or the deploy is refused (`invalid_deploy_window`).
 
-Read `latestBlockNumber`, `deployLifespan` and `maxParentDepth` from
+`phloLimit` must be at most `maxPhloLimit`, or the deploy is refused (`illegal_argument`).
+
+Read `latestBlockNumber`, `deployLifespan`, `maxParentDepth` and `maxPhloLimit` from
 [`GET /api/status`](api-reference.md#get-apistatus).
 
 ## Refusals

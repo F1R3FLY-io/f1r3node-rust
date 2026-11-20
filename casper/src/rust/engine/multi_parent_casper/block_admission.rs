@@ -44,6 +44,13 @@ pub(crate) fn admit_deploy(
     this: &MultiParentCasperImpl,
     deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
+    let max_phlo_limit = this.casper_shard_conf.max_phlo_limit;
+    if deploy.data.phlo_limit > max_phlo_limit {
+        return Ok(Either::Left(DeployError::PhloLimitAboveCap {
+            phlo_limit: deploy.data.phlo_limit,
+            max_phlo_limit,
+        }));
+    }
     let deploy_id = deploy.sig.to_vec();
     // This fast path avoids parsing known deploys; reserve_deploy performs the authoritative check.
     if deploy_is_known(this, &deploy_id)? {
