@@ -1346,11 +1346,6 @@ jobs:
           if [ "${INPUT_CANARY:-false}" = "true" ] || [ "${INPUT_PREFLIGHT_ONLY:-false}" = "true" ]; then
             checkpoints=()
           fi
-          # A gate run publishes no checkpoint: its numbers belong to a pull
-          # request or a ca-release commit, not to the dev or master series.
-          if [ -n "${INPUT_GATE:-}" ]; then
-            checkpoints=()
-          fi
           cp1=""; cp2=""; cp3=""; cp4=""; cp5=""
           [ "${#checkpoints[@]}" -ge 1 ] && cp1="${checkpoints[0]}"
           [ "${#checkpoints[@]}" -ge 2 ] && cp2="${checkpoints[1]}"
@@ -2672,6 +2667,8 @@ jobs:
         with:
           label: segment-1
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_1 }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
           duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
@@ -2697,6 +2694,8 @@ jobs:
         with:
           label: segment-2
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_2 }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
           duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
@@ -2722,6 +2721,8 @@ jobs:
         with:
           label: segment-3
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_3 }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
           duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
@@ -2747,6 +2748,8 @@ jobs:
         with:
           label: segment-4
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_4 }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
           duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
@@ -2772,6 +2775,8 @@ jobs:
         with:
           label: segment-5
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_5 }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
           duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
