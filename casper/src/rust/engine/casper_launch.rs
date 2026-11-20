@@ -15,18 +15,21 @@ use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::ApprovedBlock;
+use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
-use crate::rust::casper::CasperShardConf;
+use crate::rust::casper::{hash_set_casper, CasperShardConf, MultiParentCasper};
 use crate::rust::casper_conf::CasperConf;
 use crate::rust::engine::approve_block_protocol::ApproveBlockProtocolFactory;
 use crate::rust::engine::block_approver_protocol::BlockApproverProtocol;
-use crate::rust::engine::engine::transition_to_initializing;
+use crate::rust::engine::engine::{
+    record_direct_to_running_init_metrics, transition_to_initializing, transition_to_running,
+};
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::genesis_ceremony_master::GenesisCeremonyMaster;
 use crate::rust::engine::genesis_validator::GenesisValidator;
+use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
@@ -99,6 +102,129 @@ pub(crate) fn ensure_compatible_approved_block(
 }
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
+    /// Build the MultiParentCasper from an approved block anchor.
+    async fn create_casper(
+        &self,
+        validator_id: Option<ValidatorIdentity>,
+        ab: BlockMessage,
+    ) -> Result<MultiParentCasperImpl, CasperError> {
+        hash_set_casper(
+            self.ingest.clone(),
+            self.event_publisher.clone(),
+            self.runtime_manager.clone(),
+            self.estimator.clone(),
+            self.block_store.clone(),
+            self.block_dag_storage.clone(),
+            self.deploy_storage.clone(),
+            self.rejected_deploy_buffer.clone(),
+            validator_id,
+            self.casper_shard_conf.clone(),
+            ab,
+            self.heartbeat_signal_ref.clone(),
+        )
+        .await
+    }
+
+    /// Resume straight to Running without probing peers. Used when
+    /// `self.rp_conf_ask.bootstrap.is_none()` (standalone / no-peer
+    /// deployments): the horizon probe inside `Initializing` would send
+    /// an `ApprovedBlockRequest` to the bootstrap, which does not exist,
+    /// so the probe cannot apply here. The networked resume path still
+    /// goes through `connect_and_query_approved_block` and benefits from
+    /// the probe (#1059).
+    async fn connect_direct_to_running(
+        &self,
+        approved_block: ApprovedBlock,
+        disable_state_exporter: bool,
+    ) -> Result<(), CasperError> {
+        let validator_id = ValidatorIdentity::from_private_key_with_logging(
+            self.conf.validator_private_key.as_deref(),
+        );
+
+        let ab = approved_block.candidate.block.clone();
+        let casper = self.create_casper(validator_id.clone(), ab).await?;
+        let casper_arc = Arc::new(casper);
+
+        // Standalone nodes have no peers to ask for tips; the init closure
+        // is a no-op so the engine fires its periodic cadence immediately.
+        let the_init = Arc::new(|| {
+            Box::pin(async { Ok(()) })
+                as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+        });
+
+        record_direct_to_running_init_metrics();
+
+        let snapshot_chunk_ctx = {
+            let ctx = crate::rust::engine::snapshot_chunk_sync::build_snapshot_chunk_context(
+                &self.runtime_manager,
+            )
+            .await;
+            if let Some(ref ctx) = ctx {
+                let _tick_handle = crate::rust::engine::snapshot_chunk_sync::spawn_periodic_tick(
+                    Arc::clone(&ctx.sync_driver),
+                    self.transport_layer.clone(),
+                    self.rp_conf_ask.clone(),
+                    self.connections_cell.clone(),
+                );
+            }
+            ctx
+        };
+
+        let wal_payload_ctx = {
+            let mut ctx = crate::rust::engine::running::WalPayloadContext::from_runtime_manager(
+                &self.runtime_manager,
+            )
+            .await;
+            let tick = crate::rust::engine::wal_payload_sync::spawn_periodic_tick(
+                Arc::clone(&ctx.sync_driver),
+                self.transport_layer.clone(),
+                self.rp_conf_ask.clone(),
+                self.connections_cell.clone(),
+            );
+            ctx.tick_stop = Some(tick.stop);
+            drop(tick.join_handle);
+            Some(ctx)
+        };
+
+        if let (Some(snap_ctx), Some(wal_ctx)) =
+            (snapshot_chunk_ctx.as_ref(), wal_payload_ctx.as_ref())
+        {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+                crate::rust::engine::snapshot_chunk_sync::SnapshotCompletion,
+            >();
+            snap_ctx.sync_driver.install_completion_sink(tx);
+            let registry = self.runtime_manager.root_registry.clone();
+            let allowed_roots = self.runtime_manager.consensus_static_roots().await;
+            let _subscriber_handle =
+                crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
+                    rx,
+                    Arc::clone(&wal_ctx.sync_driver),
+                    snap_ctx.snapshot_dir.clone(),
+                    registry,
+                    allowed_roots,
+                    Some(Arc::clone(&wal_ctx.payload_lookup)),
+                );
+        }
+
+        transition_to_running(
+            self.ingest.clone(),
+            casper_arc as Arc<dyn MultiParentCasper + Send + Sync>,
+            approved_block,
+            the_init,
+            disable_state_exporter,
+            self.transport_layer.clone(),
+            self.rp_conf_ask.clone(),
+            snapshot_chunk_ctx,
+            wal_payload_ctx,
+            &self.engine_cell,
+            &self.event_publisher,
+            self.state_items_tx.clone(),
+        )
+        .await?;
+
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         // Infrastructure dependencies (Scala implicit parameters)
@@ -532,23 +658,38 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunch for CasperL
 
         let (msg, action_result) = match approved_block_opt {
             Some(approved_block) => {
-                // #1059: has-data resume no longer commits to Running up
-                // front. The stored block is handed to Initializing, which
-                // sends `ApprovedBlockRequest(trim_state=true)`, learns the
-                // peer-reported `floor_seed.floor_number`, and either
-                // short-circuits to Running (within window) or runs LFS
-                // (below horizon). TLA+ contract:
-                // `formal/tlaplus/below_horizon_recovery`.
                 ensure_compatible_approved_block(&approved_block)?;
-                let msg = "Approved block found, probing peer horizon before resuming";
-                let action_result = self
-                    .connect_and_query_approved_block(
-                        true,
-                        self.disable_state_exporter,
-                        Some(approved_block),
-                    )
-                    .await;
-                (msg, action_result)
+                if self.rp_conf_ask.bootstrap.is_none() {
+                    // Standalone / no-bootstrap: the horizon probe inside
+                    // Initializing broadcasts an ApprovedBlockRequest to the
+                    // bootstrap. With no bootstrap configured the broadcast
+                    // fails deterministically (StandaloneNodeSendToBootstrap
+                    // error), so skip the probe and go straight to Running
+                    // from the stored anchor. Networked nodes still route
+                    // through Initializing (#1059).
+                    let msg =
+                        "Approved block found, no bootstrap configured — resuming as standalone";
+                    let action_result = self
+                        .connect_direct_to_running(approved_block, self.disable_state_exporter)
+                        .await;
+                    (msg, action_result)
+                } else {
+                    // #1059: has-data resume hands the stored block to
+                    // Initializing, which sends `ApprovedBlockRequest(trim_
+                    // state=true)`, learns the peer-reported `floor_seed.
+                    // floor_number`, and either short-circuits to Running
+                    // (within window) or runs LFS (below horizon). TLA+
+                    // contract: `formal/tlaplus/below_horizon_recovery`.
+                    let msg = "Approved block found, probing peer horizon before resuming";
+                    let action_result = self
+                        .connect_and_query_approved_block(
+                            true,
+                            self.disable_state_exporter,
+                            Some(approved_block),
+                        )
+                        .await;
+                    (msg, action_result)
+                }
             }
 
             None if self.conf.genesis_ceremony.genesis_validator_mode => {
