@@ -34,7 +34,7 @@ pub struct NoOpsCasperEffect {
     shared_approved_block_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
     block_dag_storage: KeyValueDagRepresentation,
     self_created_should_fail: bool,
-    shard_conf: CasperShardConf,
+    pub shard_conf: CasperShardConf,
 }
 
 unsafe impl Send for NoOpsCasperEffect {}

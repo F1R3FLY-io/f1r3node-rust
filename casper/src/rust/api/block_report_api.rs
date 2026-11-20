@@ -12,6 +12,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, SystemDeployData};
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::reporting_transformer::ReportingTransformer;
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
@@ -25,6 +26,7 @@ use crate::rust::reporting_casper::ReportingCasper;
 use crate::rust::reporting_proto_transformer::{to_proto_phase, ReportingProtoTransformer};
 use crate::rust::safety_oracle::CliqueOracleImpl;
 use crate::rust::util::proto_util;
+use crate::rust::validate::Validate;
 
 struct ReportQueueMetricGuard;
 
@@ -85,6 +87,8 @@ pub enum BlockReportError {
     BlockNotFound(BlockHash),
     #[error("Block report pre-state is unavailable for block {0:?}")]
     StateUnavailable(BlockHash),
+    #[error("Block {block:?} carries a deploy whose phlo limit exceeds the shard cap of {cap}")]
+    ExcessivePhloLimit { block: BlockHash, cap: i64 },
     #[error("Block reporter is busy; retry later")]
     Busy,
     #[error("Failed to trace block: {0}")]
@@ -413,6 +417,19 @@ impl BlockReportAPI {
             .map_err(|e| BlockReportError::StoreError(e.to_string()))?;
 
         let block = block_opt.ok_or_else(|| BlockReportError::BlockNotFound(hash))?;
+
+        // A block can be stored before validation judges it, so the cap is
+        // checked here before anything replays it. Genesis is exempt: its
+        // blessed deploys run without cost accounting.
+        if !block.header.parents_hash_list.is_empty() {
+            let cap = casper.casper_shard_conf().max_phlo_limit;
+            if let Either::Left(_) = Validate::phlo_limit(&block, cap) {
+                return Err(BlockReportError::ExcessivePhloLimit {
+                    block: block.block_hash.clone(),
+                    cap,
+                });
+            }
+        }
 
         // Answered before the permit is involved: serving a report that already
         // exists costs a store read, so a cached block stays readable while a

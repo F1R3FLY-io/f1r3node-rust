@@ -730,6 +730,7 @@ curl "http://localhost:40453/reporting/trace?blockHash=3bfdf56f...&forceReplay=f
 | `200` | Trace report returned |
 | `400` | `blockHash` query parameter is missing, empty, or contains non-hex characters; or node is not read-only (`invalid_query_parameter`, `invalid_hash`, `readonly_node_required`) |
 | `404` | Specified block not found (`block_not_found`) |
+| `422` | The block carries a deploy whose phlo limit is above `maxPhloLimit`, so it is not replayed. Genesis is exempt |
 | `500` | Node-side failure (`replay_failure`, `kv_store_error`, `lock_error`, `unknown_error`) |
 
 ---

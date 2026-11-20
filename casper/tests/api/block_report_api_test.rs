@@ -11,11 +11,14 @@ use casper::rust::errors::CasperError;
 use casper::rust::report_store::CompressedBlockEventInfoStore;
 use casper::rust::reporting_casper::{NoopReportingCasper, ReplayResult, ReportingCasper};
 use casper::rust::safety_oracle::CliqueOracleImpl;
+use casper::rust::util::construct_deploy;
 use comm::rust::peer_node::PeerNode;
 use models::casper::BlockEventInfo;
 use models::rust::block_implicits::{get_random_block, get_random_block_default};
 use models::rust::block_metadata::BlockMetadata;
-use models::rust::casper::protocol::casper_message::{BlockMessage, CasperMessage};
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, CasperMessage, ProcessedDeploy,
+};
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
@@ -236,6 +239,127 @@ async fn api_over_a_finalized_chain(
     )
     .with_report_cache_retention(retention);
     (api, chain, replays)
+}
+
+/// A report API over genesis and one child carrying a deploy that declares
+/// `deploy_phlo_limit`, on a shard whose cap is `max_phlo_limit`. Returns the
+/// API, genesis, the child, and the replay count.
+async fn api_over_a_capped_chain(
+    max_phlo_limit: i64,
+    deploy_phlo_limit: i64,
+) -> (BlockReportAPI, BlockMessage, BlockMessage, Arc<AtomicUsize>) {
+    let fixture = TestFixture::new().await;
+    let mut dag = fixture.block_dag_storage.get_representation().unwrap();
+    let genesis = fixture.genesis.clone();
+    let state = genesis.body.state.post_state_hash.clone();
+    let mut child = get_random_block(
+        Some(1),
+        Some(1),
+        Some(state.clone()),
+        Some(state),
+        None,
+        Some(1),
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        Some(vec![]),
+        Some(vec![]),
+        Some(vec![]),
+        Some(vec![]),
+        Some("root".to_string()),
+        None,
+    );
+    child.body.deploys = vec![ProcessedDeploy::empty(
+        construct_deploy::source_deploy_now_full(
+            "Nil".to_string(),
+            Some(deploy_phlo_limit),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap(),
+    )];
+    let dag_fixture = dag.fixture_mut();
+    dag_fixture.dag_set.insert(child.block_hash.clone());
+    dag_fixture
+        .block_number_map
+        .insert(child.block_hash.clone(), 1);
+    dag.block_metadata_index
+        .write()
+        .add(BlockMetadata::from_block(&child, None, None, None))
+        .unwrap();
+
+    let mut casper = NoOpsCasperEffect::new(
+        None,
+        None,
+        fixture.runtime_manager.clone(),
+        fixture.block_store.clone(),
+        dag,
+    );
+    casper.shard_conf.max_phlo_limit = max_phlo_limit;
+    casper.add_block_to_store(genesis.clone());
+    casper.add_block_to_store(child.clone());
+    let engine_cell = EngineCell::init();
+    engine_cell
+        .set(Arc::new(CasperEngine {
+            casper: Arc::new(casper),
+        }))
+        .await;
+
+    let replays = Arc::new(AtomicUsize::new(0));
+    let api = BlockReportAPI::new(
+        Arc::new(CountingReportingCasper {
+            replays: replays.clone(),
+        }),
+        report_store(),
+        engine_cell,
+        fixture.block_store,
+        CliqueOracleImpl,
+        false,
+    );
+    (api, genesis, child, replays)
+}
+
+#[tokio::test]
+async fn a_block_above_the_phlo_cap_is_refused_without_replay() {
+    let (api, _, child, replays) = api_over_a_capped_chain(1_000, 1_001).await;
+
+    let report = api.block_report(child.block_hash.clone(), false).await;
+    assert!(matches!(
+        report,
+        Err(BlockReportError::ExcessivePhloLimit { cap: 1_000, .. })
+    ));
+    let prewarm = api.prewarm_block_report(child.block_hash.clone()).await;
+    assert!(matches!(
+        prewarm,
+        Err(BlockReportError::ExcessivePhloLimit { .. })
+    ));
+    assert_eq!(replays.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_block_at_the_phlo_cap_is_replayed() {
+    let (api, _, child, replays) = api_over_a_capped_chain(1_000, 1_000).await;
+
+    api.block_report(child.block_hash.clone(), false)
+        .await
+        .expect("a block within the cap is reported");
+    assert_eq!(replays.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn genesis_is_reported_although_its_deploys_exceed_the_phlo_cap() {
+    let (api, genesis, _, replays) = api_over_a_capped_chain(1_000, 1_000).await;
+    assert!(genesis
+        .body
+        .deploys
+        .iter()
+        .any(|deploy| deploy.deploy.data.phlo_limit > 1_000));
+
+    api.block_report(genesis.block_hash.clone(), false)
+        .await
+        .expect("genesis is reported");
+    assert_eq!(replays.load(Ordering::SeqCst), 1);
 }
 
 fn cache(store: &CompressedBlockEventInfoStore, blocks: &[BlockMessage]) {
