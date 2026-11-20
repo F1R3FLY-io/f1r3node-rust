@@ -5,7 +5,7 @@ use casper::rust::genesis::contracts::vault::Vault;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::construct_deploy;
 use casper::rust::v6::inclusion::{screen_offers, GateScreen};
-use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
+use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V7};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
@@ -40,7 +40,7 @@ async fn a_refused_offer_reports_rejected_and_leaves_the_pool() {
     )
     .await;
     let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
-    genesis.version = PROTOCOL_V6;
+    genesis.version = PROTOCOL_V7;
     genesis.vaults = vec![Vault {
         vault_address: VaultAddress::from_public_key(&rich_pk).unwrap(),
         initial_balance: 100_000.into(),

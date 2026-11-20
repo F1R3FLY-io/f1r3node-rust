@@ -1281,6 +1281,8 @@ mod router_tests {
                 deploy_lifespan: Some(50),
                 max_user_deploys_per_block: Some(4),
                 max_parent_depth: Some(25),
+                casper_protocol_version: Some(7),
+                accounting_authority_version: 8,
             })
         }
 

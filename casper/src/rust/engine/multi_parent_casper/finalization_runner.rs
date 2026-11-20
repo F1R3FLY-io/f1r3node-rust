@@ -982,7 +982,7 @@ pub enum ALinPolicy {
 
 impl ALinPolicy {
     pub fn for_protocol(casper_version: i64) -> Self {
-        if casper_version == crate::rust::v6::resource_policy::PROTOCOL_V6 {
+        if casper_version == crate::rust::v6::resource_policy::PROTOCOL_V7 {
             ALinPolicy::Halt
         } else {
             ALinPolicy::Alarm

@@ -5,7 +5,7 @@ use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::v6::executor::{EnvelopeExecutor, ExecutedBlock};
-use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
+use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V7};
 use casper::rust::v6::settle::{EnvelopeCharge, SurfaceCharge};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
@@ -36,7 +36,7 @@ fn party() -> Party {
 async fn shard(funded: &[&Party]) -> (Arc<RuntimeManager>, StateHash) {
     let rm = mk_runtime_manager("v6-forms", Some(Genesis::default_mergeable_tags_arc())).await;
     let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
-    genesis.version = PROTOCOL_V6;
+    genesis.version = PROTOCOL_V7;
     genesis.vaults = funded
         .iter()
         .map(|p| Vault {

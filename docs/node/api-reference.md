@@ -148,7 +148,9 @@ curl http://localhost:40403/api/status
   "latestBlockNumber": 31,
   "deployLifespan": 300,
   "maxUserDeploysPerBlock": 128,
-  "maxParentDepth": 25
+  "maxParentDepth": 25,
+  "casperProtocolVersion": 7,
+  "accountingAuthorityVersion": 8
 }
 ```
 
@@ -175,8 +177,10 @@ curl http://localhost:40403/api/status
 | `deployLifespan` | int/null | Blocks a deploy stays includable after its `validAfterBlockNumber`. `null` until casper is up |
 | `maxUserDeploysPerBlock` | int/null | Most user deploys one block carries. `null` until casper is up |
 | `maxParentDepth` | int/null | How far below the tip a block may cite, in blocks. `null` until casper is up |
+| `casperProtocolVersion` | int/null | Casper protocol version of the shard, from its approved block. 7 is the cost-accounted protocol. `null` until casper is up |
+| `accountingAuthorityVersion` | int | Version of the node accounting module (8). It is independent of the protocol version |
 
-The last four values let a deploy client, such as a [deploy queue](deploy-queue.md), choose `validAfterBlockNumber`
+The four values from `latestBlockNumber` to `maxParentDepth` let a deploy client, such as a [deploy queue](deploy-queue.md), choose `validAfterBlockNumber`
 and pace its deploys.
 
 ---

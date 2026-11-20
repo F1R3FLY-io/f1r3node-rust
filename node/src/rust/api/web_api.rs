@@ -595,13 +595,15 @@ impl WebApi for WebApiImpl {
 
         // Advertise the floor admission and validity actually enforce — the
         // chain-adopted value; local conf only until casper is up.
-        let (min_phlo_price, epoch_length) = match self.engine_cell.get().await.with_casper() {
-            Some(casper) => (
-                casper.casper_shard_conf().min_phlo_price.clone(),
-                casper.casper_shard_conf().epoch_length,
-            ),
-            None => (self.min_phlo_price.clone(), self.epoch_length),
-        };
+        let (min_phlo_price, epoch_length, casper_protocol_version) =
+            match self.engine_cell.get().await.with_casper() {
+                Some(casper) => (
+                    casper.casper_shard_conf().min_phlo_price.clone(),
+                    casper.casper_shard_conf().epoch_length,
+                    Some(casper.casper_shard_conf().casper_version),
+                ),
+                None => (self.min_phlo_price.clone(), self.epoch_length, None),
+            };
         let current_epoch = if epoch_length > 0 && lfb_number >= 0 {
             lfb_number / epoch_length as i64
         } else {
@@ -634,6 +636,8 @@ impl WebApi for WebApiImpl {
             deploy_lifespan: pacing.map(|p| p.deploy_lifespan),
             max_user_deploys_per_block: pacing.map(|p| p.max_user_deploys_per_block),
             max_parent_depth: pacing.map(|p| p.max_parent_depth),
+            casper_protocol_version,
+            accounting_authority_version: casper::rust::v6::ACCOUNTING_AUTHORITY_VERSION,
         })
     }
 
@@ -1657,6 +1661,14 @@ pub struct ApiStatus {
     /// How far below the tip a block may cite. `null` until casper is up.
     #[serde(rename = "maxParentDepth")]
     pub max_parent_depth: Option<i32>,
+    /// Casper protocol version of the shard, from its approved block. `null`
+    /// until casper is up.
+    #[serde(rename = "casperProtocolVersion")]
+    pub casper_protocol_version: Option<i64>,
+    /// Version of the node accounting module, independent of the protocol
+    /// version.
+    #[serde(rename = "accountingAuthorityVersion")]
+    pub accounting_authority_version: u32,
 }
 
 /// The chain values a deploy client needs to pace and window its deploys,

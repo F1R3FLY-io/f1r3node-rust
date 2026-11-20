@@ -30,3 +30,5 @@ pub mod validators;
 pub mod validity;
 
 pub use engine::V6Engine;
+
+pub const ACCOUNTING_AUTHORITY_VERSION: u32 = 8;

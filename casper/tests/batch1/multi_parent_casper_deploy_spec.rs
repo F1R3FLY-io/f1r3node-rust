@@ -731,7 +731,6 @@ async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn large_stakes_survive_proposal_peer_replay_and_metadata() {
-    use casper::rust::casper::CASPER_PROTOCOL_VERSION;
     use casper::rust::util::proto_util;
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
     for validator in &mut parameters.2.proof_of_stake.validators {
@@ -743,10 +742,7 @@ async fn large_stakes_survive_proposal_peer_replay_and_metadata() {
         .build_genesis_with_parameters(Some(parameters))
         .await
         .unwrap();
-    assert_eq!(
-        genesis.genesis_block.header.version,
-        CASPER_PROTOCOL_VERSION
-    );
+    assert_eq!(genesis.genesis_block.header.version, 1);
     assert!(genesis
         .genesis_block
         .body
@@ -763,7 +759,7 @@ async fn large_stakes_survive_proposal_peer_replay_and_metadata() {
     let block = TestNode::propagate_block_at_index(&mut nodes, 0, &[deploy])
         .await
         .unwrap();
-    assert_eq!(block.header.version, CASPER_PROTOCOL_VERSION);
+    assert_eq!(block.header.version, genesis.genesis_block.header.version);
     assert_eq!(proto_util::hash_block(&block), block.block_hash);
     assert_eq!(
         block.body.state.bonds,

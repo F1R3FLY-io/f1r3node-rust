@@ -12,7 +12,7 @@ use casper::rust::v6::block_record::{BlockRecord, EnvelopeOutcome};
 use casper::rust::v6::executor::BlockExecutor;
 use casper::rust::v6::genesis_wallets::{read_bond_balance, read_wallet_balance};
 use casper::rust::v6::record::ExecutionRecord;
-use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
+use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V7};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
@@ -53,7 +53,7 @@ async fn shard(
 ) -> (Arc<RuntimeManager>, StateHash, Vec<PublicKey>) {
     let rm = mk_runtime_manager("v6-bond-admin", Some(Genesis::default_mergeable_tags_arc())).await;
     let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
-    genesis.version = PROTOCOL_V6;
+    genesis.version = PROTOCOL_V7;
     genesis.proof_of_stake.epoch_length = epoch_length;
     genesis.proof_of_stake.quarantine_length = quarantine_length;
     genesis.vaults = funded
@@ -659,7 +659,7 @@ async fn a_genesis_validator_takes_its_handle_at_its_own_seal() {
     let rm = mk_runtime_manager("v6-bond-admin", Some(Genesis::default_mergeable_tags_arc())).await;
     let (validator_keys, _, mut genesis) =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
-    genesis.version = PROTOCOL_V6;
+    genesis.version = PROTOCOL_V7;
     let (sk, pk) = validator_keys[0].clone();
     let validator = Party {
         owner: WalletOwner::from_public_key(&pk).unwrap(),

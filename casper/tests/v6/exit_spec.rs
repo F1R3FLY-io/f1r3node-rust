@@ -11,7 +11,7 @@ use casper::rust::v6::block_record::{BlockRecord, EnvelopeOutcome};
 use casper::rust::v6::body::{Attestation, StateHash, V6Body, V6Records};
 use casper::rust::v6::executor::{BlockExecutor, BlockTimings};
 use casper::rust::v6::record::ExecutionRecord;
-use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
+use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V7};
 use casper::rust::v6::validity::check_structure;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
@@ -50,7 +50,7 @@ async fn launch(payers: usize) -> Host { launch_with(payers, 2).await }
 async fn launch_with(payers: usize, workers: usize) -> Host {
     let rm = mk_runtime_manager("v6-exit", Some(Genesis::default_mergeable_tags_arc())).await;
     let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
-    genesis.version = PROTOCOL_V6;
+    genesis.version = PROTOCOL_V7;
     genesis.vaults = (0..payers)
         .map(|index| Vault {
             vault_address: VaultAddress::from_public_key(&Secp256k1.to_public(&payer(index)))

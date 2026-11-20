@@ -1,7 +1,7 @@
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::v6::genesis_wallets::cells_at;
 use casper::rust::v6::hooks::{after_settlement, genesis_authority, read_hook_authority, HookCall};
-use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
+use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V7};
 use rholang::rust::interpreter::accounting::rev_stack::compute::compute_balance;
 use rholang::rust::interpreter::accounting::rev_stack::CellStore;
 
@@ -12,7 +12,7 @@ use crate::util::rholang::resources::mk_runtime_manager;
 async fn a_v6_genesis_installs_the_hook_authority_and_a_noop_rev_hook() {
     let rm = mk_runtime_manager("v6-hooks", Some(Genesis::default_mergeable_tags_arc())).await;
     let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
-    genesis.version = PROTOCOL_V6;
+    genesis.version = PROTOCOL_V7;
     let block = Genesis::create_genesis_block_with_policy(
         &rm,
         &genesis,

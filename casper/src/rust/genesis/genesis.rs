@@ -22,7 +22,7 @@ use crate::rust::util::proto_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::v6::genesis_wallets::{genesis_lines, genesis_supply_of};
 use crate::rust::v6::hooks::{authority_addresses, genesis_authority};
-use crate::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
+use crate::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V7};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Genesis {
@@ -322,9 +322,9 @@ impl Genesis {
         resource_policy: Option<&ShardResourcePolicy>,
     ) -> Result<BlockMessage, CasperError> {
         if let Some(policy) = resource_policy {
-            if genesis.version != PROTOCOL_V6 {
+            if genesis.version != PROTOCOL_V7 {
                 return Err(CasperError::RuntimeError(format!(
-                    "a shard resource policy needs a protocol {PROTOCOL_V6} genesis, not version {}",
+                    "a shard resource policy needs a protocol {PROTOCOL_V7} genesis, not version {}",
                     genesis.version
                 )));
             }
@@ -332,9 +332,9 @@ impl Genesis {
             genesis_lines(&genesis.vaults)?;
             genesis_authority(&genesis.proof_of_stake)?;
             genesis_supply_of(&genesis.vaults, &genesis.proof_of_stake)?;
-        } else if genesis.version == PROTOCOL_V6 {
+        } else if genesis.version == PROTOCOL_V7 {
             return Err(CasperError::RuntimeError(format!(
-                "a protocol {PROTOCOL_V6} genesis needs a shard resource policy"
+                "a protocol {PROTOCOL_V7} genesis needs a shard resource policy"
             )));
         }
         Self::validate_total_allocation(&genesis.vaults, &genesis.proof_of_stake.validators)?;
