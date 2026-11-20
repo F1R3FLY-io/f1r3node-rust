@@ -435,18 +435,13 @@ env:
   #   (which requires skipped=0) passes again. Verified: descends from
   #   907f8a5 (4 commits ahead, 0 behind); differs from it only in
   #   conftest.py, WRITING_TESTS.md, two custom tests and one unit test.
-  # 2026-11-19: 646efd0 -> 8e4c7cd (system-integration PR #197 branch, not yet
-  #   merged). Test deploys declare phlo limits within the node's 20,000,000
-  #   max-phlo-limit, and pyf1r3fly is pinned to pyf1r3fly PR #15, which lowers
-  #   the PosAPI default limit. Verified: one commit ahead of 646efd0; differs
-  #   from it only in integration-tests/test, pyproject.toml and poetry.lock;
-  #   unit tests pass. Repin to the merge commit once #197 lands.
-  # 2026-11-19: 8e4c7cd -> ac8e0e4 (system-integration PR #197 branch, not yet
-  #   merged). test_validator_lifecycle bonds its deposit-failure case with
-  #   the phlo limit its wallet is funded for. Verified: one commit ahead of
-  #   8e4c7cd; differs from it only in test_validator_lifecycle.py. Repin to
-  #   the merge commit once #197 lands.
-  SYSTEM_INTEGRATION_REF: ac8e0e472000431ba52ff47dd1fcaa21a4eb92b3
+  # 2026-11-19: 646efd0 -> fba951b (system-integration main, PR #198 merged
+  #   through promotion #199). test_observer_missing_block_retry accepts the
+  #   tuple-space and forward-horizon requesters' retry logs as evidence and
+  #   waits 40 s for them, covering the horizon's 30 s resend (node #1088).
+  #   Verified: descends from 646efd0 (3 commits ahead, 0 behind); differs
+  #   from it only in log_events.py and that test; 586 unit tests pass.
+  SYSTEM_INTEGRATION_REF: fba951b3e527cc82d8e3addb8ded118b52b5baff
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
