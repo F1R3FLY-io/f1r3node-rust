@@ -8,7 +8,7 @@
 //! (the effective-anchor at the moment of the walk). See issue #1087
 //! and PR #1052's single-hash precedent for the `block_pruned` split.
 
-use casper::rust::api::block_api::{BlocksByHeightsResponse, PrunedBlockEntry};
+use casper::rust::api::block_api::{BlocksByHeightsResponse, MissingBlockEntry};
 use models::casper::{BlockInfo, LightBlockInfo};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -24,8 +24,8 @@ pub struct MissingBlockInfoSerde {
     pub block_height: i64,
 }
 
-impl From<PrunedBlockEntry> for MissingBlockInfoSerde {
-    fn from(entry: PrunedBlockEntry) -> Self {
+impl From<MissingBlockEntry> for MissingBlockInfoSerde {
+    fn from(entry: MissingBlockEntry) -> Self {
         Self {
             hash: hex::encode(entry.hash),
             block_height: entry.block_height,

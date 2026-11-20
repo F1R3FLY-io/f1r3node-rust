@@ -120,10 +120,14 @@ pub trait WebApi {
     ) -> Result<RhoDataResponse>;
 
     /// Get blocks by height range. The envelope carries `pruned`
-    /// entries for hashes `topo_sort` named at a height but whose
-    /// bodies the node no longer holds, plus the `prune_floor` at the
-    /// moment of the walk, so a client can distinguish permanent gaps
-    /// from not-yet-admitted siblings (#1087).
+    /// entries (`block_height <= prune_floor`, permanent on this node)
+    /// and `unavailable` entries (`block_height > prune_floor`, body
+    /// missing but the retention sweep has not reached the height —
+    /// retry may succeed), plus the `prune_floor` captured at the
+    /// moment of the walk. The route turns this into either the
+    /// pre-#1087 bare array (default) or the full envelope
+    /// (`include_missing=true`); the trait always returns the envelope
+    /// so the handler can decide the wire shape.
     async fn get_blocks_by_heights(
         &self,
         start_block_number: i64,

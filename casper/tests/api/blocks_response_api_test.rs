@@ -695,6 +695,30 @@ async fn get_block_single_hash_splits_pruned_and_unavailable_by_floor() {
 }
 
 #[tokio::test]
+async fn get_blocks_by_heights_classifies_floor_boundary_as_pruned() {
+    // block_height == prune_floor must go into `pruned`. GC advances the
+    // effective anchor with fetch_max to the target height *before* the
+    // Delete phase (mergeable_channels_gc/job.rs), so a body visible as
+    // missing at exactly the floor was swept.
+    let (engine_cell, boundary_hash, boundary_height, _anchor) =
+        setup_dag_with_discarded_body("gbh-boundary-", 2, 2).await;
+    assert_eq!(boundary_height, 2);
+
+    let response = BlockAPI::get_blocks_by_heights(&engine_cell, 0, 10, MAX_BLOCK_LIMIT)
+        .await
+        .unwrap();
+
+    assert_eq!(response.prune_floor, 2);
+    assert_eq!(response.pruned.len(), 1);
+    assert_eq!(response.pruned[0].hash, boundary_hash);
+    assert_eq!(response.pruned[0].block_height, boundary_height);
+    assert!(
+        response.unavailable.is_empty(),
+        "boundary height equals the floor; nothing should be unavailable"
+    );
+}
+
+#[tokio::test]
 async fn every_api_entry_point_reports_a_missing_casper_instance() {
     use models::rhoapi::Par;
 

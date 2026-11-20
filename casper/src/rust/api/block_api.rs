@@ -253,7 +253,7 @@ impl std::error::Error for BlockUnavailableError {}
 /// body was no longer available in the block store when
 /// [`BlockAPI::get_blocks_by_heights`] walked the range. See #1087.
 #[derive(Debug, Clone)]
-pub struct PrunedBlockEntry {
+pub struct MissingBlockEntry {
     pub hash: BlockHash,
     pub block_height: i64,
 }
@@ -279,8 +279,8 @@ pub struct PrunedBlockEntry {
 #[derive(Debug, Clone)]
 pub struct BlocksByHeightsResponse<T> {
     pub served: Vec<T>,
-    pub pruned: Vec<PrunedBlockEntry>,
-    pub unavailable: Vec<PrunedBlockEntry>,
+    pub pruned: Vec<MissingBlockEntry>,
+    pub unavailable: Vec<MissingBlockEntry>,
     pub prune_floor: i64,
 }
 
@@ -1359,7 +1359,7 @@ impl BlockAPI {
 
             let mut held: Vec<BlockMessage> = Vec::new();
             let mut held_metadata: Vec<Option<BlockMetadata>> = Vec::new();
-            let mut missing: Vec<PrunedBlockEntry> = Vec::new();
+            let mut missing: Vec<MissingBlockEntry> = Vec::new();
             for (hash, meta) in hashes.iter().zip(metadata.iter()) {
                 match casper.block_store().get(hash)? {
                     Some(block) => {
@@ -1367,7 +1367,7 @@ impl BlockAPI {
                         held_metadata.push(meta.clone());
                     }
                     None => match meta {
-                        Some(m) => missing.push(PrunedBlockEntry {
+                        Some(m) => missing.push(MissingBlockEntry {
                             hash: hash.clone(),
                             block_height: m.block_number,
                         }),

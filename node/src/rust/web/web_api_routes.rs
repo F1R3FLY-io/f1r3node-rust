@@ -21,6 +21,16 @@ pub struct ViewQuery {
     pub view: Option<String>,
 }
 
+// Query for `/blocks/{start}/{end}`. `view` behaves as elsewhere;
+// `include_missing` opts into the #1087 `pruned` / `unavailable` /
+// `pruneFloor` envelope. Absent or false keeps the pre-#1087 bare
+// array response so existing clients are unaffected.
+#[derive(Debug, Deserialize)]
+pub struct BlocksByHeightsQuery {
+    pub view: Option<String>,
+    pub include_missing: Option<bool>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct BlockHashQuery {
     pub block_hash: Option<String>,
@@ -200,9 +210,10 @@ pub async fn last_finalized_block_handler(
         ("start" = i64, Path, description = "Start block height (inclusive)"),
         ("end" = i64, Path, description = "End block height (inclusive); clamped to the configured maximum range"),
         ("view" = Option<String>, Query, description = "Response view: `summary` (default) returns block headers only; `full` includes deploy list"),
+        ("include_missing" = Option<bool>, Query, description = "Opt into the #1087 envelope: when true, the body is `{ blocks, pruned, unavailable, pruneFloor }` where `pruned` (block_height <= pruneFloor, permanent on this node) and `unavailable` (block_height > pruneFloor, retry eligible) carry hashes topo_sort named at a walked height whose bodies this node no longer holds. Absent or false returns the pre-#1087 bare array of served blocks for backward compatibility."),
     ),
     responses(
-        (status = 200, description = "Envelope of blocks, pruned-sibling hashes, and the current prune floor for the walked range; may be empty if no blocks exist yet. 200 holds even when `pruned` is non-empty — partial success is the normal case under retention sweeps.", body = BlocksByHeightsResponseSerde),
+        (status = 200, description = "Bare array of blocks (default) or the #1087 envelope with `blocks`, `pruned`, `unavailable`, and `pruneFloor` when `include_missing=true`. 200 holds for the envelope even when `pruned` or `unavailable` are non-empty — partial success is the normal case under retention sweeps.", body = BlocksByHeightsResponseSerde),
         (status = 400, description = "Non-integer path segment (`invalid_path_parameter`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`, `history_error`)", body = ApiErrorResponse),
     ),
@@ -211,7 +222,7 @@ pub async fn last_finalized_block_handler(
 pub async fn get_blocks_by_heights_handler(
     State(app_state): State<AppState>,
     AppPath((start, end)): AppPath<(i64, i64)>,
-    AppQuery(query): AppQuery<ViewQuery>,
+    AppQuery(query): AppQuery<BlocksByHeightsQuery>,
 ) -> Response {
     use crate::rust::api::web_api::ViewMode;
 
@@ -219,11 +230,16 @@ pub async fn get_blocks_by_heights_handler(
         Some("full") => ViewMode::Full,
         _ => ViewMode::Summary,
     };
+    let include_missing = query.include_missing.unwrap_or(false);
     let web_api = app_state.web_api.clone();
     match offload(move || async move { web_api.get_blocks_by_heights(start, end, view).await })
         .await
     {
-        Ok(response) => Json(response).into_response(),
+        // Default to the pre-#1087 bare array so existing consumers are
+        // unaffected. Only opted-in callers receive the envelope with the
+        // pruned / unavailable / prune_floor metadata.
+        Ok(response) if include_missing => Json(response).into_response(),
+        Ok(response) => Json(response.blocks).into_response(),
         Err(e) => AppError(e).into_response(),
     }
 }
@@ -1670,7 +1686,13 @@ mod router_tests {
 
         let (status, json) = get_response("/blocks/1/5").await;
         assert_eq!(status, StatusCode::OK);
-        // #1087: the by-heights route returns an envelope, not a bare array.
+        // #1087: default response remains the pre-#1087 bare array so
+        // existing HTTP consumers keep working; the envelope is opt-in.
+        assert_eq!(json.as_array().unwrap().len(), 1);
+
+        let (status, json) = get_response("/blocks/1/5?include_missing=true").await;
+        assert_eq!(status, StatusCode::OK);
+        // #1087: envelope shape when opted in.
         assert_eq!(json["blocks"].as_array().unwrap().len(), 1);
         assert!(json["pruned"].as_array().unwrap().is_empty());
         assert!(json["unavailable"].as_array().unwrap().is_empty());
