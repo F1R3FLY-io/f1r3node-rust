@@ -521,6 +521,38 @@ fn block_pruned_response_keeps_the_highest_reported_floor() {
 }
 
 #[test]
+fn block_pruned_response_cascades_to_evict_held_dependents() {
+    let (mut s, view) = state();
+    let dag = dag_with(&[0]);
+    // Observer admits block hash(10), which waits on hash(1) (not in DAG).
+    // That makes hash(1) a need and hash(10) a held waiter.
+    s.handle(received(meta(10, 2, &[1])), 0, &dag);
+    assert!(s.is_held(&hash(10)), "block 10 held pending dep on 1");
+    assert!(s.is_needed(&hash(1)));
+
+    // Peer reports hash(1) is below its prune horizon.
+    s.handle(
+        IngestInput::BlockPruned {
+            hash: hash(1),
+            block_height: 1,
+            prune_floor: 300,
+            peer: peer("peer1"),
+        },
+        0,
+        &dag,
+    );
+
+    // The need goes; block 10 is dropped because its dependency is
+    // permanently unavailable; the below-horizon flag is recorded.
+    assert!(!s.is_needed(&hash(1)), "need dropped");
+    assert!(
+        !s.is_held(&hash(10)),
+        "cascade dropped block 10, which cited the pruned hash"
+    );
+    assert_eq!(view.below_horizon_floor(), Some(300));
+}
+
+#[test]
 fn block_pruned_response_for_an_unknown_need_records_the_floor_and_touches_no_need() {
     let (mut s, view) = state();
     let dag = dag_with(&[0]);

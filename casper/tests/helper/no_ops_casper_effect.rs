@@ -34,7 +34,8 @@ pub struct NoOpsCasperEffect {
     shared_approved_block_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
     block_dag_storage: KeyValueDagRepresentation,
     self_created_should_fail: bool,
-    shard_conf: CasperShardConf,
+    pub shard_conf: CasperShardConf,
+    pub genesis_hash: Option<BlockHash>,
 }
 
 unsafe impl Send for NoOpsCasperEffect {}
@@ -66,6 +67,7 @@ impl Clone for NoOpsCasperEffect {
             block_dag_storage: self.block_dag_storage.clone(),
             self_created_should_fail: self.self_created_should_fail,
             shard_conf: self.shard_conf.clone(),
+            genesis_hash: self.genesis_hash.clone(),
         }
     }
 }
@@ -103,6 +105,7 @@ impl NoOpsCasperEffect {
             block_dag_storage,
             self_created_should_fail: false,
             shard_conf: CasperShardConf::new(),
+            genesis_hash: None,
         }
     }
 
@@ -131,6 +134,7 @@ impl NoOpsCasperEffect {
             block_dag_storage,
             self_created_should_fail: false,
             shard_conf: CasperShardConf::new(),
+            genesis_hash: None,
         }
     }
 
@@ -172,7 +176,9 @@ impl MultiParentCasper for NoOpsCasperEffect {
 
     fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
-    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> { Ok(None) }
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> {
+        Ok(self.genesis_hash.clone())
+    }
 
     fn casper_shard_conf(&self) -> &CasperShardConf { &self.shard_conf }
 

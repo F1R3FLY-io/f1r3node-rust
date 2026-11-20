@@ -504,6 +504,12 @@ impl Engine {
                 deploy.data.phlo_price, shard.min_phlo_price
             ))));
         }
+        if deploy.data.phlo_limit > shard.max_phlo_limit {
+            return Ok(Err(IntakeError::IllegalArgument(format!(
+                "Phlo limit {} is greater than maximum limit {}.",
+                deploy.data.phlo_limit, shard.max_phlo_limit
+            ))));
+        }
         let now_ms = now_millis();
         if deploy.data.is_expired_at(now_ms) {
             return Ok(Err(IntakeError::DeployExpired(format!(

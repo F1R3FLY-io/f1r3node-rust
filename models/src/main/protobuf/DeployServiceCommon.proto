@@ -334,6 +334,7 @@ message Status {
   optional int64  deployLifespan         = 20;
   optional uint32 maxUserDeploysPerBlock = 21;
   optional int32  maxParentDepth         = 22;
+  optional int64  maxPhloLimit           = 23;
 }
 
 message VersionInfo {

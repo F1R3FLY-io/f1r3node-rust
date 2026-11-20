@@ -1,6 +1,6 @@
 # Cost Model
 
-Every Rholang operation consumes phlogiston (gas). Deploys specify a `phlo_limit` and `phlo_price`. The runtime charges costs as it executes. If the limit is exhausted, execution halts with `OutOfPhlogistonsError`.
+Every Rholang operation consumes phlogiston (gas). Deploys specify a `phlo_limit` and `phlo_price`. The runtime charges costs as it executes. If the limit is exhausted, execution halts with `OutOfPhlogistonsError`. The shard caps `phlo_limit` at `max-phlo-limit`, a genesis parameter: admission refuses a deploy above it, and a block carrying one is invalid.
 
 ## Charging Mechanism
 

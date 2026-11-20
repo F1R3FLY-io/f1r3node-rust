@@ -811,6 +811,122 @@ async fn multi_parent_casper_should_reject_block_carrying_underpriced_deploy() {
     );
 }
 
+/// A block carrying a deploy whose phlo limit exceeds the chain's
+/// max-phlo-limit is invalid: the cap bounds how long every validator spends
+/// replaying one deploy, so a proposer cannot buy more than it.
+#[tokio::test]
+async fn multi_parent_casper_should_reject_block_carrying_deploy_above_phlo_cap() {
+    let ctx = TestContext::new().await;
+
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+        .await
+        .unwrap();
+    let cap = nodes[0].casper.casper_shard_conf().max_phlo_limit;
+
+    // One above the chain's cap; the deploy enters the pool directly, modeling
+    // a proposer that skipped admission.
+    let above_cap = construct_deploy::source_deploy_now_full(
+        "Nil".to_string(),
+        Some(cap + 1),
+        None,
+        None,
+        None,
+        Some(ctx.shard_id.clone()),
+    )
+    .unwrap();
+    nodes[0].deploy_storage.add(vec![above_cap]).unwrap();
+
+    let result = nodes[0]
+        .add_block_status(&[], |s| {
+            matches!(
+                s,
+                Either::Left(BlockError::Invalid(InvalidBlock::ExcessivePhloLimit))
+            )
+        })
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "a block carrying a deploy above the phlo cap must validate as ExcessivePhloLimit, \
+         got: {:?}",
+        result.err()
+    );
+}
+
+/// A receiving node judges the phlo cap before it replays a block: a peer's
+/// block that carries a deploy above the cap and also claims a wrong
+/// post-state is refused as ExcessivePhloLimit. The control block, within the
+/// cap and with the same wrong post-state, shows replay would reject it as
+/// InvalidTransaction.
+#[tokio::test]
+async fn a_receiving_node_refuses_a_block_above_the_phlo_cap_before_replaying_it() {
+    let ctx = TestContext::new().await;
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let cap = nodes[0].casper.casper_shard_conf().max_phlo_limit;
+    let key = nodes[0]
+        .validator_id_opt
+        .as_ref()
+        .unwrap()
+        .private_key
+        .clone();
+
+    let block_with_wrong_post_state = |block: &BlockMessage| {
+        let mut forged = block.clone();
+        forged.body.state.post_state_hash = Bytes::from(vec![7u8; 32]);
+        resign_block(&forged, &key)
+    };
+    let deploy_with_limit = |phlo_limit: i64| {
+        construct_deploy::source_deploy_now_full(
+            "Nil".to_string(),
+            Some(phlo_limit),
+            None,
+            None,
+            None,
+            Some(ctx.shard_id.clone()),
+        )
+        .unwrap()
+    };
+
+    let within_cap = nodes[0]
+        .create_block_unsafe(&[deploy_with_limit(cap)])
+        .await
+        .unwrap();
+    let status = nodes[1]
+        .process_block(block_with_wrong_post_state(&within_cap))
+        .await
+        .unwrap();
+    assert_eq!(
+        status,
+        Either::Left(BlockError::Invalid(InvalidBlock::InvalidTransaction)),
+        "replay rejects the wrong post-state of a block within the cap"
+    );
+
+    nodes[0]
+        .deploy_storage
+        .add(vec![deploy_with_limit(cap + 1)])
+        .unwrap();
+    let above_cap = nodes[0].create_block_unsafe(&[]).await.unwrap();
+    assert!(
+        above_cap
+            .body
+            .deploys
+            .iter()
+            .any(|deploy| deploy.deploy.data.phlo_limit > cap),
+        "the forged block must carry the deploy above the cap"
+    );
+    let status = nodes[2]
+        .process_block(block_with_wrong_post_state(&above_cap))
+        .await
+        .unwrap();
+    assert_eq!(
+        status,
+        Either::Left(BlockError::Invalid(InvalidBlock::ExcessivePhloLimit)),
+        "the cap is judged before replay"
+    );
+}
+
 #[tokio::test]
 async fn multi_parent_casper_should_add_a_valid_block_from_peer() {
     let ctx = TestContext::new().await;

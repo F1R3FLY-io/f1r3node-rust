@@ -1136,6 +1136,7 @@ mod router_tests {
                 deploy_lifespan: Some(50),
                 max_user_deploys_per_block: Some(4),
                 max_parent_depth: Some(25),
+                max_phlo_limit: Some(20_000_000),
             })
         }
 
