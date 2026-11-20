@@ -1315,7 +1315,10 @@ impl DebruijnInterpreter {
             let pattern =
                 self.substitute
                     .substitute_and_charge(unwrap_option_safe(case.pattern)?, 1, env)?;
-            let Some(free_map) = SpatialMatcherContext::new().match_result(&target, pattern) else {
+            let input_bytes = target.encoded_len() + pattern.encoded_len();
+            let Some(free_map) =
+                SpatialMatcherContext::new(input_bytes).match_result(&target, pattern)
+            else {
                 continue;
             };
             let case_env = add_to_env(env, free_map, case.free_count);
@@ -2536,7 +2539,8 @@ impl DebruijnInterpreter {
                         self.substitute
                             .substitute_and_charge(pattern.clone().unwrap(), 1, env)?;
 
-                    let matched = SpatialMatcherContext::new()
+                    let input_bytes = subst_target.encoded_len() + subst_pattern.encoded_len();
+                    let matched = SpatialMatcherContext::new(input_bytes)
                         .into_match_result(subst_target, subst_pattern)
                         .is_some();
 
