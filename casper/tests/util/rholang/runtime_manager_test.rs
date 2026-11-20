@@ -25,9 +25,11 @@ use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{
     DeployData, ProcessedDeploy, ProcessedSystemDeploy,
 };
+use models::rust::utils::{new_elist_par, new_gint_par, new_gstring_par};
 use rholang::rust::interpreter::accounting::costs::{self, Cost};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
+use rholang::rust::interpreter::nesting::MAX_NESTING_DEPTH;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rholang::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
@@ -338,6 +340,105 @@ async fn a_deploy_that_clears_bitmask_or_bits_fails_in_play_and_replay() {
                 failed,
                 "draining a BitmaskOr value through a waiting join must fail"
             );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_value_at_the_nesting_limit_is_stored_read_back_and_replayed() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let store = construct_deploy::source_deploy_now_full(
+                format!(
+                    r#"new loop in {{
+                         contract loop(@x, @n) = {{
+                           if (n > 0) {{ loop!([x], n - 1) }} else {{ @"deep-value"!(x) }}
+                         }} |
+                         loop!(0, {})
+                       }}"#,
+                    MAX_NESTING_DEPTH - 8
+                ),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let read = construct_deploy::source_deploy_now_full(
+                r#"for (@x <- @"deep-value") { @"deep-value-read"!(x) }"#.to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+            let mut state = genesis_block.body.state.post_state_hash;
+            for deploy in [store, read] {
+                let (next, processed) =
+                    compute_state(&mut runtime_manager, &genesis_context, deploy, &state).await;
+                assert!(!processed.is_failed, "{:?}", processed.system_deploy_error);
+                let replayed =
+                    replay_compute_state(&mut runtime_manager, &genesis_context, processed, &state)
+                        .await
+                        .unwrap();
+                assert_eq!(replayed, next);
+                state = next;
+            }
+
+            let mut expected = new_gint_par(0, Vec::new(), false);
+            for _ in 0..MAX_NESTING_DEPTH - 8 {
+                expected =
+                    new_elist_par(vec![expected], Vec::new(), false, None, Vec::new(), false);
+            }
+            let read_back = runtime_manager
+                .get_data(
+                    state,
+                    &new_gstring_par("deep-value-read".to_string(), Vec::new(), false),
+                )
+                .await
+                .unwrap();
+            assert_eq!(read_back, vec![expected]);
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploys_failing_on_the_nesting_limit_replay_identically() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let state = genesis_block.body.state.post_state_hash;
+            let too_deep_at_runtime = "new loop in { contract loop(@x, @n) = { if (n > 0) { loop!([x], n - 1) } else { @0!(x) } } | loop!(0, 1000) }".to_string();
+            let too_deep_to_compile = format!(
+                "@0!({}0{})",
+                "[".repeat(MAX_NESTING_DEPTH + 1),
+                "]".repeat(MAX_NESTING_DEPTH + 1)
+            );
+            for source in [too_deep_at_runtime, too_deep_to_compile] {
+                let deploy = construct_deploy::source_deploy_now_full(
+                    source, None, None, None, None, None,
+                )
+                .unwrap();
+                let (next, processed) =
+                    compute_state(&mut runtime_manager, &genesis_context, deploy, &state).await;
+                assert!(processed.is_failed);
+                let cost = processed.cost.clone();
+                let replayed = replay_compute_state(
+                    &mut runtime_manager,
+                    &genesis_context,
+                    processed,
+                    &state,
+                )
+                .await
+                .unwrap();
+                assert_eq!(replayed, next, "replay of a deploy costing {cost:?}");
+            }
         },
     )
     .await
