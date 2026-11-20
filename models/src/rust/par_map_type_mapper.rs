@@ -1,58 +1,28 @@
 // See models/src/main/scala/coop/rchain/models/ParMapTypeMapper.scala
 
-use std::collections::HashMap;
-
-use prost::Message;
-
 use super::par_map::ParMap;
 use super::rholang::sorter::par_sort_matcher::ParSortMatcher;
-use super::rholang::sorter::score_tree::compare_score_trees;
 use super::rholang::sorter::sortable::Sortable;
 use crate::rhoapi::{EMap, KeyValuePair, Par};
 
 pub struct ParMapTypeMapper;
 
 impl ParMapTypeMapper {
-    /// The sorted value that `emap_to_par_map(emap)` holds for the sorted form
-    /// of `key`. Raw keys that are equal keep the first key and the last value;
-    /// among keys with the same sorted form, the map keeps the one that sorts
-    /// last by score and then by encoded raw key.
+    /// The value `emap` holds for the sorted form of `key`. Every map is built
+    /// canonical, so its keys are already in sorted form; when two of them
+    /// share it, the map answers with the later one.
     pub fn lookup(emap: &EMap, key: &Par) -> Option<Par> {
         let query = ParSortMatcher::sort_match(key).term;
-
-        let mut positions: HashMap<&Par, usize> = HashMap::with_capacity(emap.kvs.len());
-        let mut entries: Vec<(&Par, &Par)> = Vec::with_capacity(emap.kvs.len());
-        for kv in &emap.kvs {
-            let k = kv.key.as_ref().expect("EMap entry has a key");
-            let v = kv.value.as_ref().expect("EMap entry has a value");
-            match positions.get(k) {
-                Some(&position) => entries[position].1 = v,
-                None => {
-                    positions.insert(k, entries.len());
-                    entries.push((k, v));
-                }
-            }
-        }
-
-        entries
-            .into_iter()
-            .filter_map(|(k, v)| {
-                let sorted_key = ParSortMatcher::sort_match(k);
-                (sorted_key.term == query).then_some((sorted_key.score, k, v))
-            })
-            .max_by(|(a_score, a_key, _), (b_score, b_key, _)| {
-                compare_score_trees(a_score, b_score)
-                    .then_with(|| a_key.encode_to_vec().cmp(&b_key.encode_to_vec()))
-            })
-            .map(|(_, _, v)| ParSortMatcher::sort_match(v).term)
+        emap.kvs
+            .iter()
+            .rfind(|kv| kv.key.as_ref() == Some(&query))
+            .map(|kv| kv.value.clone().expect("EMap entry has a value"))
     }
 
-    /// Whether a key of `emap` has the same sorted form as `key`.
+    /// Whether `emap` has a key with the same sorted form as `key`.
     pub fn contains_key(emap: &EMap, key: &Par) -> bool {
         let query = ParSortMatcher::sort_match(key).term;
-        emap.kvs.iter().any(|kv| {
-            ParSortMatcher::sort_match(kv.key.as_ref().expect("EMap entry has a key")).term == query
-        })
+        emap.kvs.iter().any(|kv| kv.key.as_ref() == Some(&query))
     }
 
     pub fn emap_to_par_map(emap: EMap) -> ParMap {

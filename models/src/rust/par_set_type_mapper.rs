@@ -8,12 +8,10 @@ use crate::rhoapi::{ESet, Par};
 pub struct ParSetTypeMapper;
 
 impl ParSetTypeMapper {
-    /// Whether an element of `eset` has the same sorted form as `elem`.
+    /// Whether `eset` has an element with the same sorted form as `elem`.
+    /// Every set is built canonical, so its elements are already sorted.
     pub fn contains(eset: &ESet, elem: &Par) -> bool {
-        let query = ParSortMatcher::sort_match(elem).term;
-        eset.ps
-            .iter()
-            .any(|p| ParSortMatcher::sort_match(p).term == query)
+        eset.ps.contains(&ParSortMatcher::sort_match(elem).term)
     }
 
     pub fn eset_to_par_set(eset: ESet) -> ParSet {
