@@ -9,6 +9,7 @@ pub mod roots_store;
 pub mod root_repository;
 pub mod cold_store;
 pub mod history_repository_impl;
+pub mod prune_guard;
 
 // PartialEq needed here for testing purposes
 #[derive(Debug, PartialEq, Clone)]

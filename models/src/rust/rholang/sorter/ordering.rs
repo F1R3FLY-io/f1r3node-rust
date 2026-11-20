@@ -12,9 +12,9 @@ use crate::rhoapi::Par;
 pub struct Ordering;
 
 impl Ordering {
-    pub fn sort_pars(ps: &Vec<Par>) -> Vec<Par> {
+    pub fn sort_pars<'a>(ps: impl IntoIterator<Item = &'a Par>) -> Vec<Par> {
         let mut ps_sorted: Vec<ScoredTerm<Par>> =
-            ps.iter().map(ParSortMatcher::sort_match).collect();
+            ps.into_iter().map(ParSortMatcher::sort_match).collect();
         ScoredTerm::sort_vec(&mut ps_sorted);
         ps_sorted.into_iter().map(|st| st.term).collect()
     }
@@ -34,13 +34,14 @@ impl Ordering {
     // Break ties by the protobuf-encoded raw-key bytes so the output is a pure
     // function of the input. See the SortedParMap determinism test.
     pub fn sort_map(ps: &HashMap<Par, Par>) -> Vec<(Par, Par)> {
-        let mut rows: Vec<(Vec<u8>, ScoredTerm<(Par, Par)>)> = ps
+        let mut rows: Vec<(&Par, ScoredTerm<(Par, Par)>)> = ps
             .iter()
-            .map(|(k, v)| (k.encode_to_vec(), Ordering::sort_key_value_pair(k, v)))
+            .map(|(k, v)| (k, Ordering::sort_key_value_pair(k, v)))
             .collect();
 
         rows.sort_by(|(a_raw, a), (b_raw, b)| {
-            compare_score_trees(&a.score, &b.score).then_with(|| a_raw.cmp(b_raw))
+            compare_score_trees(&a.score, &b.score)
+                .then_with(|| a_raw.encode_to_vec().cmp(&b_raw.encode_to_vec()))
         });
 
         rows.into_iter().map(|(_, st)| st.term).collect()

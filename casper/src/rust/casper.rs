@@ -715,12 +715,14 @@ pub struct CasperShardConf {
     /// horizon and predicate; requires `enable_mergeable_channel_gc = true`.
     pub enable_block_store_gc: bool,
     /// Mark-and-sweep the `rspace/history` radix-trie LMDB env, deleting
-    /// nodes no retained state root can reach. Issue #923, Option D.
-    /// Default off: enabling mutates the trie-node store, and the sweep's
-    /// correctness envelope assumes a stable `compute_forward_horizon_roots`
-    /// enumeration — a soak run should confirm no `UnknownRootError`
-    /// regressions before flipping on by default. File does not shrink
-    /// after sweeping (LMDB holds freed pages for reuse).
+    /// nodes no retained state root can reach. Issue #923, Option D; #1061
+    /// fixed the LFB-bound walk and the writer-vs-sweep race. Default off:
+    /// enabling mutates the trie-node store, and the sweep's correctness
+    /// envelope assumes a stable `compute_gc_retention_roots` enumeration
+    /// combined with the rspace `PruneGuard`'s pinned-roots LRU — a soak
+    /// run should confirm no `MissingNode` regressions before flipping on
+    /// by default. File does not shrink after sweeping (LMDB holds freed
+    /// pages for reuse).
     pub enable_history_pruning: bool,
     pub synchrony_recovery_stall_window: Duration,
     pub synchrony_recovery_cooldown: Duration,

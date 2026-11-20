@@ -19,9 +19,9 @@ pub struct SortedParHashSet {
 
 impl SortedParHashSet {
     pub fn create_from_vec(vec: Vec<Par>) -> Self {
-        let set: HashSet<Par> = vec.clone().into_iter().collect();
-        let sorted_pars = Ordering::sort_pars(&set.clone().into_iter().collect());
-        let sorted_ps: HashSet<Par> = sorted_pars.clone().into_iter().collect();
+        let set: HashSet<Par> = vec.into_iter().collect();
+        let sorted_pars = Ordering::sort_pars(&set);
+        let sorted_ps: HashSet<Par> = sorted_pars.iter().cloned().collect();
 
         SortedParHashSet {
             ps: set,
@@ -53,8 +53,6 @@ impl SortedParHashSet {
         self.ps.remove(&Self::sort(&elem));
         Self::create_from_set(self.ps.clone())
     }
-
-    pub fn contains(&self, elem: Par) -> bool { self.sorted_ps.contains(&Self::sort(&elem)) }
 
     pub fn union(&self, that: HashSet<Par>) -> SortedParHashSet {
         SortedParHashSet::create_from_set(

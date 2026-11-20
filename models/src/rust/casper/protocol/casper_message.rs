@@ -27,6 +27,7 @@ pub enum CasperMessage {
     ApprovedBlockRequest(ApprovedBlockRequest),
     BlockApproval(BlockApproval),
     BlockRequest(BlockRequest),
+    BlockPrunedResponse(BlockPrunedResponse),
     ForkChoiceTipRequest(ForkChoiceTipRequest),
     HasBlock(HasBlock),
     HasBlockRequest(HasBlockRequest),
@@ -88,6 +89,10 @@ impl CasperMessage {
 
     pub fn from_block_request(proto: BlockRequestProto) -> Self {
         CasperMessage::BlockRequest(BlockRequest::from_proto(proto))
+    }
+
+    pub fn from_block_pruned_response(proto: BlockPrunedResponseProto) -> Self {
+        CasperMessage::BlockPrunedResponse(BlockPrunedResponse::from_proto(proto))
     }
 
     pub fn from_fork_choice_tip_request(_proto: ForkChoiceTipRequestProto) -> Self {
@@ -199,6 +204,35 @@ impl BlockRequest {
     pub fn from_proto(proto: BlockRequestProto) -> Self { Self { hash: proto.hash } }
 
     pub fn to_proto(self) -> BlockRequestProto { BlockRequestProto { hash: self.hash } }
+}
+
+/// Peer's "this block has been retention-swept past my horizon" answer to a
+/// `BlockRequest`. Mirrors the client-API [`BlockPrunedError`] onto the
+/// peer-to-peer wire so a requester can tell deleted history from a late
+/// delivery. See `BlockPrunedResponseProto` for the field semantics.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlockPrunedResponse {
+    pub hash: ByteString,
+    pub block_height: i64,
+    pub prune_floor: i64,
+}
+
+impl BlockPrunedResponse {
+    pub fn from_proto(proto: BlockPrunedResponseProto) -> Self {
+        Self {
+            hash: proto.hash,
+            block_height: proto.block_height,
+            prune_floor: proto.prune_floor,
+        }
+    }
+
+    pub fn to_proto(self) -> BlockPrunedResponseProto {
+        BlockPrunedResponseProto {
+            hash: self.hash,
+            block_height: self.block_height,
+            prune_floor: self.prune_floor,
+        }
+    }
 }
 
 // --- Snapshot chunk-fetch (Wave 3, Phase 7b-1) ---------------
@@ -2329,6 +2363,36 @@ mod tests {
             BlockRequest::from_proto(block_request.clone().to_proto()),
             block_request
         );
+    }
+
+    #[test]
+    fn block_pruned_response_round_trip() {
+        let resp = BlockPrunedResponse {
+            hash: Bytes::from_static(b"pruned-hash"),
+            block_height: 12_345,
+            prune_floor: 12_000,
+        };
+        assert_eq!(
+            BlockPrunedResponse::from_proto(resp.clone().to_proto()),
+            resp
+        );
+    }
+
+    #[test]
+    fn block_pruned_response_from_casper_message_dispatch() {
+        let proto = BlockPrunedResponseProto {
+            hash: Bytes::from_static(b"abc"),
+            block_height: 7,
+            prune_floor: 3,
+        };
+        match CasperMessage::from_block_pruned_response(proto.clone()) {
+            CasperMessage::BlockPrunedResponse(resp) => {
+                assert_eq!(resp.hash, proto.hash);
+                assert_eq!(resp.block_height, proto.block_height);
+                assert_eq!(resp.prune_floor, proto.prune_floor);
+            }
+            other => panic!("expected BlockPrunedResponse variant, got {:?}", other),
+        }
     }
 
     #[test]

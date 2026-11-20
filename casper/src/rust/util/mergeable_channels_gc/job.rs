@@ -81,6 +81,48 @@ fn cached_floor(dag: &KeyValueDagRepresentation) -> Result<Option<Floor>, KvStor
     Ok(Some(Floor { hash, block_number }))
 }
 
+/// Floor anchor for a body-GC pass: the lower of the local LFB floor and the
+/// floors of every signed active validator's latest message.
+///
+/// `compute_parents_post_state` validates a block from that block's frozen
+/// view, so the settled-sig and prior-rejection walks it runs read bodies
+/// down to `block_floor - deploy_lifespan`. For a block proposed from a stale
+/// view, `block_floor` is well below the local LFB. Anchoring body-GC on the
+/// local LFB — the tip of the running chain's finality — misses that: a
+/// restarted validator whose view snapshot is old proposes a block whose
+/// validation reads bodies below the local LFB's deploy-lifespan window, and
+/// every peer that pruned to the local LFB panics. Taking the minimum across
+/// each active validator's cached floor pulls the anchor down to the most
+/// stale view the chain still accepts, so the depth clause in
+/// `reaches_ancestor_check` admits exactly the body range every active
+/// validator's next block can still walk.
+///
+/// Placeholder slots (a bonded validator that has never proposed) fail
+/// `own_testimony` and are skipped; their slot is the genesis hash, which
+/// would otherwise anchor the pass at genesis and freeze body-GC forever.
+pub(super) fn stale_view_floor(
+    dag: &KeyValueDagRepresentation,
+    local_floor: Floor,
+    active_latest: &HashMap<Validator, BlockHash>,
+) -> Result<Floor, KvStoreError> {
+    let mut lowest = local_floor;
+    for (validator, hash) in active_latest {
+        if dag.own_testimony(validator, hash)?.is_some() {
+            let Some(floor_hash) = dag.get_cached_floor(hash)? else {
+                continue;
+            };
+            let floor_number = dag.block_number_unsafe(&floor_hash)?;
+            if floor_number < lowest.block_number {
+                lowest = Floor {
+                    hash: floor_hash,
+                    block_number: floor_number,
+                };
+            }
+        }
+    }
+    Ok(lowest)
+}
+
 /// A pre-pass peek at the floor to drive the async active-validator filter
 /// before `run_turn` enters its state machine. Deliberately loose: a different
 /// floor computed by `start_pass` later in the same tick is harmless, because
@@ -126,11 +168,26 @@ fn start_pass(
     } else {
         citation_depth
     };
+    // Body-GC anchors on the lowest view floor any active validator still
+    // carries, not on the local LFB. See `stale_view_floor` for the
+    // derivation. Mergeable-only passes keep the local LFB — merges run
+    // against the local view and do not reach into stale validators'
+    // deploy-lifespan windows.
+    let floor = if conf.enable_block_store_gc {
+        stale_view_floor(&preliminary, floor, &active_latest)?
+    } else {
+        floor
+    };
     let state = store.reserve_discovery(floor.block_number.saturating_sub(depth))?;
     drop(preliminary);
     let dag = storage.get_representation()?;
-    let Some(floor) = cached_floor(&dag)? else {
+    let Some(fresh_local_floor) = cached_floor(&dag)? else {
         return Ok(None);
+    };
+    let floor = if conf.enable_block_store_gc {
+        stale_view_floor(&dag, fresh_local_floor, &active_latest)?
+    } else {
+        fresh_local_floor
     };
     // `active_latest` was computed by the caller — bonded in PoS at the floor
     // state, not slashed, not unbonded. A validator the chain has retired
@@ -469,6 +526,7 @@ pub async fn collect_garbage(
 mod tests {
     use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
     use models::rust::block_implicits::get_random_block;
+    use models::rust::casper::protocol::casper_message::Justification;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
@@ -1114,5 +1172,490 @@ mod tests {
         }
         assert_eq!(effective_anchor.load(Ordering::Acquire), 0);
         assert_eq!(storage.gc_store().effective_anchor().unwrap(), None);
+    }
+
+    /// Issue #1057 regression. A stopped validator D sits at a block whose
+    /// main parent belongs to another validator. On restart, D's next block
+    /// (built from the stale view) cites that main parent as a parent of its
+    /// own, so GC must retain it; anchoring the moved-past walk at the main
+    /// parent alone drops that block from every other node and D is never
+    /// accepted back into the network.
+    #[tokio::test]
+    async fn a_block_a_stopped_validator_still_cites_is_kept() {
+        let (storage, blocks) = open().await;
+        let id = |height: u8, v: u8| -> BlockHash {
+            let mut bytes = vec![7u8; 32];
+            bytes[0] = height;
+            bytes[1] = v;
+            bytes.into()
+        };
+        let mut block = template();
+        let mut put = |hash: BlockHash, height: u8, sender: u8, parents: Vec<BlockHash>| {
+            block.block_hash = hash;
+            block.body.state.block_number = i64::from(height);
+            block.seq_num = i32::from(height);
+            block.sender = vec![sender; 65].into();
+            block.header.parents_hash_list = parents;
+            blocks.put(block.block_hash.clone(), &block).unwrap();
+            let mode = if height == 0 {
+                InsertMode::Approved
+            } else {
+                InsertMode::Normal
+            };
+            drop(storage.insert(&block, mode).unwrap());
+        };
+        put(hash(0), 0, 10, vec![]);
+        for height in 1..=5u8 {
+            let parents: Vec<BlockHash> = if height == 1 {
+                vec![hash(0)]
+            } else {
+                (0..4).map(|v| id(height - 1, v)).collect()
+            };
+            for v in 0..4u8 {
+                put(id(height, v), height, 10 + v, parents.clone());
+            }
+        }
+        let a5 = id(5, 0);
+        let d6 = id(6, 3);
+        put(d6.clone(), 6, 13, vec![
+            a5.clone(),
+            id(5, 1),
+            id(5, 2),
+            id(5, 3),
+        ]);
+        for height in 6..=30u8 {
+            let parents: Vec<BlockHash> = (0..3).map(|v| id(height - 1, v)).collect();
+            for v in 0..3u8 {
+                put(id(height, v), height, 10 + v, parents.clone());
+            }
+        }
+        storage
+            .record_directly_finalized(id(30, 0), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        storage
+            .get_representation()
+            .unwrap()
+            .put_cached_floor(id(30, 0), id(30, 0))
+            .unwrap();
+        let conf = super::super::tests::conf();
+        let active: HashMap<Validator, BlockHash> = [
+            (vec![10u8; 65].into(), id(30, 0)),
+            (vec![11u8; 65].into(), id(30, 1)),
+            (vec![12u8; 65].into(), id(30, 2)),
+            (vec![13u8; 65].into(), d6.clone()),
+        ]
+        .into_iter()
+        .collect();
+        let effective_anchor = AtomicI64::new(0);
+        let mut sweep = GcSweep::new();
+        let mut deleted = HashSet::new();
+        for _ in 0..1_000 {
+            let progress = run_turn(
+                &mut sweep,
+                &storage,
+                &blocks,
+                &conf,
+                &effective_anchor,
+                &active,
+                &mut |block| {
+                    deleted.insert(block.block_hash.clone());
+                    Ok(true)
+                },
+                3,
+            )
+            .unwrap();
+            if matches!(progress, GcProgress::Complete { .. }) {
+                break;
+            }
+        }
+        assert!(
+            !deleted.contains(&a5),
+            "a5 is A's latest block in D's view; D's next block cites it"
+        );
+    }
+
+    /// Issue #1057 variant. A validator's justifications record its view of
+    /// each other validator's latest, which its next block carries forward
+    /// unchanged while its view is stale. A block cited only through such a
+    /// justification — never as a direct parent — must still be retained,
+    /// because the next block will name it in exactly the same way.
+    ///
+    /// This isolates the justifications path: D's self-chain hits A's main
+    /// chain at a5 (via D@6's merge), so the parent walk alone would still
+    /// anchor at a5. Only pulling a5 in through D@30's justifications moves
+    /// the anchor below it.
+    #[tokio::test]
+    async fn a_block_cited_only_through_a_justification_is_kept() {
+        let (storage, blocks) = open().await;
+        let a = vec![10u8; 65];
+        let d = vec![13u8; 65];
+        let d_block = |height: u8| -> BlockHash {
+            let mut bytes = vec![3u8; 32];
+            bytes[0] = height;
+            bytes.into()
+        };
+        let a_block = |height: u8| -> BlockHash {
+            let mut bytes = vec![7u8; 32];
+            bytes[0] = height;
+            bytes.into()
+        };
+        let mut block = template();
+        let mut put = |hash: BlockHash,
+                       height: u8,
+                       sender: Vec<u8>,
+                       parents: Vec<BlockHash>,
+                       justifications: Vec<Justification>| {
+            block.block_hash = hash;
+            block.body.state.block_number = i64::from(height);
+            block.seq_num = i32::from(height);
+            block.sender = sender.into();
+            block.header.parents_hash_list = parents;
+            block.justifications = justifications;
+            blocks.put(block.block_hash.clone(), &block).unwrap();
+            let mode = if height == 0 {
+                InsertMode::Approved
+            } else {
+                InsertMode::Normal
+            };
+            drop(storage.insert(&block, mode).unwrap());
+        };
+        put(hash(0), 0, vec![0u8; 65], vec![], vec![]);
+        // A: height 1..=5 on A's own self-chain.
+        for height in 1..=5u8 {
+            let parents = if height == 1 {
+                vec![hash(0)]
+            } else {
+                vec![a_block(height - 1)]
+            };
+            put(a_block(height), height, a.clone(), parents, vec![]);
+        }
+        let a5 = a_block(5);
+        // D's chain merges with A at height 6 (D@6.parents = [a5]) then runs
+        // on self-chain through height 30. D@30 carries a stale view of A:
+        // its justification for A still points at a5. The parent walk alone
+        // cannot refuse a5 — D's main chain from D@30 hits a5 via D@6's
+        // merge, so the deepest common strict main-chain ancestor is a5.
+        // Only the justifications branch can admit a5 to the frontier and
+        // push the anchor below it.
+        put(d_block(6), 6, d.clone(), vec![a5.clone()], vec![]);
+        for height in 7..=29u8 {
+            put(
+                d_block(height),
+                height,
+                d.clone(),
+                vec![d_block(height - 1)],
+                vec![],
+            );
+        }
+        put(d_block(30), 30, d.clone(), vec![d_block(29)], vec![
+            Justification {
+                validator: a.clone().into(),
+                latest_block_hash: a5.clone(),
+            },
+            Justification {
+                validator: d.clone().into(),
+                latest_block_hash: d_block(29),
+            },
+        ]);
+        // A continues to height 30 on its own self-chain.
+        for height in 6..=30u8 {
+            put(
+                a_block(height),
+                height,
+                a.clone(),
+                vec![a_block(height - 1)],
+                vec![],
+            );
+        }
+
+        storage
+            .record_directly_finalized(a_block(30), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        storage
+            .get_representation()
+            .unwrap()
+            .put_cached_floor(a_block(30), a_block(30))
+            .unwrap();
+        let conf = super::super::tests::conf();
+        let active: HashMap<Validator, BlockHash> = [
+            (a.clone().into(), a_block(30)),
+            (d.clone().into(), d_block(30)),
+        ]
+        .into_iter()
+        .collect();
+        let effective_anchor = AtomicI64::new(0);
+        let mut sweep = GcSweep::new();
+        let mut deleted = HashSet::new();
+        for _ in 0..1_000 {
+            let progress = run_turn(
+                &mut sweep,
+                &storage,
+                &blocks,
+                &conf,
+                &effective_anchor,
+                &active,
+                &mut |block| {
+                    deleted.insert(block.block_hash.clone());
+                    Ok(true)
+                },
+                3,
+            )
+            .unwrap();
+            if matches!(progress, GcProgress::Complete { .. }) {
+                break;
+            }
+        }
+        assert!(
+            !deleted.contains(&a5),
+            "a5 is A's latest in D's view (D's justification for A still \
+             names it); the next block D proposes will cite a5 as its \
+             justification for A, so a5 must survive this pass"
+        );
+    }
+
+    /// A newly-bonded validator that has not yet proposed sits in every
+    /// other validator's justifications as a genesis placeholder. Reading
+    /// that slot into the citation frontier would feed `main_parent` a
+    /// height-0 block, collapse the anchor search, and freeze GC until the
+    /// slot fills. Filtering through `own_testimony` drops placeholders so
+    /// the pass completes.
+    #[tokio::test]
+    async fn a_silent_bonded_validator_does_not_freeze_gc() {
+        let (storage, blocks) = open().await;
+        let a = vec![10u8; 65];
+        // W is bonded but has never proposed. Nobody signed any slot in
+        // its name, so every justification that names W can only point at
+        // the genesis placeholder.
+        let w = vec![99u8; 65];
+        let mut block = template();
+        let mut put = |hash: BlockHash,
+                       height: u8,
+                       sender: Vec<u8>,
+                       parents: Vec<BlockHash>,
+                       justifications: Vec<Justification>| {
+            block.block_hash = hash;
+            block.body.state.block_number = i64::from(height);
+            block.seq_num = i32::from(height);
+            block.sender = sender.into();
+            block.header.parents_hash_list = parents;
+            block.justifications = justifications;
+            blocks.put(block.block_hash.clone(), &block).unwrap();
+            let mode = if height == 0 {
+                InsertMode::Approved
+            } else {
+                InsertMode::Normal
+            };
+            drop(storage.insert(&block, mode).unwrap());
+        };
+        put(hash(0), 0, vec![0u8; 65], vec![], vec![]);
+        for height in 1..=19u8 {
+            let parents = if height == 1 {
+                vec![hash(0)]
+            } else {
+                vec![hash(height - 1)]
+            };
+            put(hash(height), height, a.clone(), parents, vec![]);
+        }
+        // A's latest block carries a justification for W whose
+        // `latest_block_hash` is genesis — exactly the placeholder shape.
+        let a_latest = hash(20);
+        let a20_justifications = vec![
+            Justification {
+                validator: a.clone().into(),
+                latest_block_hash: hash(19),
+            },
+            Justification {
+                validator: w.clone().into(),
+                latest_block_hash: hash(0),
+            },
+        ];
+        put(
+            a_latest.clone(),
+            20,
+            a.clone(),
+            vec![hash(19)],
+            a20_justifications,
+        );
+        storage
+            .record_directly_finalized(a_latest.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        storage
+            .get_representation()
+            .unwrap()
+            .put_cached_floor(a_latest.clone(), a_latest.clone())
+            .unwrap();
+        let conf = super::super::tests::conf();
+        // Active set carries both the live validator and the silent one.
+        // W's slot resolves to genesis — the placeholder — which the
+        // filter in `active_latest` will eject by the same `own_testimony`
+        // rule the new fix applies to justifications.
+        let active: HashMap<Validator, BlockHash> = [
+            (a.clone().into(), a_latest.clone()),
+            (w.clone().into(), hash(0)),
+        ]
+        .into_iter()
+        .collect();
+        let effective_anchor = AtomicI64::new(0);
+        let mut sweep = GcSweep::new();
+        let mut deleted = HashSet::new();
+        let mut completed = false;
+        for _ in 0..1_000 {
+            let progress = run_turn(
+                &mut sweep,
+                &storage,
+                &blocks,
+                &conf,
+                &effective_anchor,
+                &active,
+                &mut |block| {
+                    deleted.insert(block.block_hash.clone());
+                    Ok(true)
+                },
+                3,
+            )
+            .unwrap();
+            if matches!(progress, GcProgress::Complete { .. }) {
+                completed = true;
+                break;
+            }
+        }
+        assert!(completed, "GC must complete even when a silent bonded validator leaves a genesis placeholder in justifications");
+        assert!(
+            deleted.contains(&hash(5)),
+            "a block well below the floor should be collected once the \
+             placeholder is filtered out; otherwise the pass stayed frozen"
+        );
+    }
+
+    /// Soak follow-up to #1057: a restarted-but-stale validator carries its
+    /// old view floor into the block it proposes next, and validation of
+    /// that block walks state-lineage bodies down to `block_floor -
+    /// deploy_lifespan`. Body-GC must anchor on that stale floor — not on
+    /// the local LFB — otherwise peers prune blocks the restart's first
+    /// block still reads during validation and loop in quarantine.
+    ///
+    /// Fixture: A has advanced to height 30 with a near-tip cached floor,
+    /// D proposed exactly one block at height 10 and has sat there with
+    /// its cached floor far below. A block inside D's walk window (its
+    /// floor minus `deploy_lifespan` and up) must be retained.
+    #[tokio::test]
+    async fn body_gc_respects_a_stale_validators_view_floor() {
+        let (storage, blocks) = open().await;
+        let a = vec![10u8; 65];
+        let d = vec![13u8; 65];
+        let a_block = |height: u8| -> BlockHash {
+            let mut bytes = vec![7u8; 32];
+            bytes[0] = height;
+            bytes.into()
+        };
+        let d_block = |height: u8| -> BlockHash {
+            let mut bytes = vec![3u8; 32];
+            bytes[0] = height;
+            bytes.into()
+        };
+        let mut block = template();
+        let mut put = |hash: BlockHash, height: u8, sender: Vec<u8>, parents: Vec<BlockHash>| {
+            block.block_hash = hash;
+            block.body.state.block_number = i64::from(height);
+            block.seq_num = i32::from(height);
+            block.sender = sender.into();
+            block.header.parents_hash_list = parents;
+            block.justifications = vec![];
+            blocks.put(block.block_hash.clone(), &block).unwrap();
+            let mode = if height == 0 {
+                InsertMode::Approved
+            } else {
+                InsertMode::Normal
+            };
+            drop(storage.insert(&block, mode).unwrap());
+        };
+        put(hash(0), 0, vec![0u8; 65], vec![]);
+        for height in 1..=30u8 {
+            let parents = if height == 1 {
+                vec![hash(0)]
+            } else {
+                vec![a_block(height - 1)]
+            };
+            put(a_block(height), height, a.clone(), parents);
+        }
+        // D proposed once at height 10 then went silent.
+        put(d_block(10), 10, d.clone(), vec![a_block(9)]);
+        let a30 = a_block(30);
+        storage
+            .record_directly_finalized(a30.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        // The local LFB's cached floor sits near the tip — the healthy case.
+        storage
+            .get_representation()
+            .unwrap()
+            .put_cached_floor(a30.clone(), a_block(25))
+            .unwrap();
+        // A's own latest records its near-tip view floor.
+        storage
+            .get_representation()
+            .unwrap()
+            .put_cached_floor(a30.clone(), a_block(25))
+            .unwrap();
+        // D's single block carries a stale view floor far below its own
+        // height. This is what a validation walk from D's next proposal
+        // (if D restarts without catching up) will anchor on.
+        storage
+            .get_representation()
+            .unwrap()
+            .put_cached_floor(d_block(10), a_block(5))
+            .unwrap();
+        let mut conf = super::super::tests::conf();
+        conf.enable_block_store_gc = true;
+        conf.deploy_lifespan = 4;
+        let active: HashMap<Validator, BlockHash> = [
+            (a.clone().into(), a30.clone()),
+            (d.clone().into(), d_block(10)),
+        ]
+        .into_iter()
+        .collect();
+        let effective_anchor = AtomicI64::new(0);
+        let mut sweep = GcSweep::new();
+        let mut deleted = HashSet::new();
+        for _ in 0..1_000 {
+            let progress = run_turn(
+                &mut sweep,
+                &storage,
+                &blocks,
+                &conf,
+                &effective_anchor,
+                &active,
+                &mut |block| {
+                    deleted.insert(block.block_hash.clone());
+                    Ok(true)
+                },
+                3,
+            )
+            .unwrap();
+            if matches!(progress, GcProgress::Complete { .. }) {
+                break;
+            }
+        }
+        // D's view floor is at a_block(5); validation of D's next block
+        // walks state-lineage down to a_block(5) - deploy_lifespan = 1,
+        // and the lowest body D's walk could still read is a_block(1).
+        // Anchoring body-GC on the local LFB at height 30 would admit
+        // a_block(8) (depth 22, well past the narrow max_allowed_depth of
+        // 4), and that is exactly the block the walk needs.
+        assert!(
+            !deleted.contains(&a_block(8)),
+            "a_block(8) sits inside D's view walk window (D's cached floor \
+             = a_block(5), deploy_lifespan = 4); validation of D's return \
+             block reads its body"
+        );
+        // Also guard the edge of the walk's lowest reach.
+        assert!(
+            !deleted.contains(&a_block(1)),
+            "a_block(1) is at the lower edge of D's walk window and must \
+             also be retained"
+        );
     }
 }
