@@ -21,6 +21,7 @@ use crate::rust::interpreter::accounting::costs::{
     comm_event_storage_cost, event_storage_cost, storage_cost_consume, storage_cost_produce, Cost,
 };
 use crate::rust::interpreter::errors::InterpreterError;
+use crate::rust::interpreter::nesting::check_nesting;
 
 pub struct ChargingRSpace;
 
@@ -75,6 +76,9 @@ impl ChargingRSpace {
                 MaybeConsumeResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
                 RSpaceError,
             > {
+                check_nesting(&channels)?;
+                check_nesting(&patterns)?;
+                check_nesting(&continuation)?;
                 self.cost
                     .charge(storage_cost_consume(&channels, &patterns, &continuation))?;
 
@@ -108,6 +112,8 @@ impl ChargingRSpace {
                 MaybeProduceResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
                 RSpaceError,
             > {
+                check_nesting(&channel)?;
+                check_nesting(&data)?;
                 self.cost.charge(storage_cost_produce(&channel, &data))?;
 
                 let id = data.random_state.clone();
