@@ -244,7 +244,7 @@ new return, rl(`rho:registry:lookup`), systemVaultCh, vaultCh in {{
         node.runtime_manager.replay_lock(),
         ExternalServices::noop(),
     );
-    let replay = reporter.trace(&block).await.unwrap();
+    let replay = reporter.trace(&block, false).await.unwrap();
     assert_eq!(replay.deploy_report_result.len(), 1);
     assert!(!replay.deploy_report_result[0].processed_deploy.is_failed);
     let channel = transfer_unforgeable_channel();
@@ -324,7 +324,7 @@ async fn cost_accounted_user_deploy_report_starts_with_precharge_batch() {
     );
 
     let replay = reporter
-        .trace(&signed_block)
+        .trace(&signed_block, false)
         .await
         .expect("reporting replay of the user block failed");
 
@@ -436,8 +436,8 @@ async fn genesis_deploys_carry_zero_phlo_price_so_no_precharge() {
     }
 }
 
-/// Genesis replays run with `with_cost_accounting == false` (no parents),
-/// so `process_deploy_without_cost_accounting` runs and the only phase
+/// Genesis replays run without cost accounting (the reporter is told the
+/// block is genesis), so `process_deploy_without_cost_accounting` runs and the only phase
 /// marker set is `USER`. Every deploy's report must therefore contain no
 /// `PRECHARGE` or `REFUND` segment. Segments may be `USER` or
 /// `UNSPECIFIED`.
@@ -465,7 +465,7 @@ async fn genesis_report_carries_only_user_markers() {
     );
 
     let replay = reporter
-        .trace(&genesis.genesis_block)
+        .trace(&genesis.genesis_block, true)
         .await
         .expect("reporting replay of the genesis block failed");
 

@@ -125,15 +125,20 @@ async fn a_cached_report_is_served_without_replay() {
     assert_eq!(report, cached);
 }
 
-/// Replays every block successfully, counting the replays.
+/// Replays every block successfully, counting the replays and the replays
+/// told the block is genesis.
 struct CountingReportingCasper {
     replays: Arc<AtomicUsize>,
+    genesis_replays: Arc<AtomicUsize>,
 }
 
 #[async_trait]
 impl ReportingCasper for CountingReportingCasper {
-    async fn trace(&self, block: &BlockMessage) -> Result<ReplayResult, String> {
+    async fn trace(&self, block: &BlockMessage, is_genesis: bool) -> Result<ReplayResult, String> {
         self.replays.fetch_add(1, Ordering::SeqCst);
+        if is_genesis {
+            self.genesis_replays.fetch_add(1, Ordering::SeqCst);
+        }
         Ok(ReplayResult {
             deploy_report_result: vec![],
             system_deploy_report_result: vec![],
@@ -216,6 +221,7 @@ async fn api_over_a_finalized_chain(
         fixture.block_store.clone(),
         dag,
     );
+    casper.genesis_hash = Some(chain[0].block_hash.clone());
     for block in &chain {
         casper.add_block_to_store(block.clone());
     }
@@ -230,6 +236,7 @@ async fn api_over_a_finalized_chain(
     let api = BlockReportAPI::new(
         Arc::new(CountingReportingCasper {
             replays: replays.clone(),
+            genesis_replays: Arc::new(AtomicUsize::new(0)),
         }),
         store,
         engine_cell,
@@ -241,17 +248,31 @@ async fn api_over_a_finalized_chain(
     (api, chain, replays)
 }
 
+struct CappedChain {
+    api: BlockReportAPI,
+    genesis: BlockMessage,
+    child: BlockMessage,
+    replays: Arc<AtomicUsize>,
+    genesis_replays: Arc<AtomicUsize>,
+}
+
 /// A report API over genesis and one child carrying a deploy that declares
-/// `deploy_phlo_limit`, on a shard whose cap is `max_phlo_limit`. Returns the
-/// API, genesis, the child, and the replay count.
+/// `deploy_phlo_limit`, on a shard whose cap is `max_phlo_limit`. A
+/// `parentless` child names no parents, as any block can.
 async fn api_over_a_capped_chain(
     max_phlo_limit: i64,
     deploy_phlo_limit: i64,
-) -> (BlockReportAPI, BlockMessage, BlockMessage, Arc<AtomicUsize>) {
+    parentless: bool,
+) -> CappedChain {
     let fixture = TestFixture::new().await;
     let mut dag = fixture.block_dag_storage.get_representation().unwrap();
     let genesis = fixture.genesis.clone();
     let state = genesis.body.state.post_state_hash.clone();
+    let parents = if parentless {
+        vec![]
+    } else {
+        vec![genesis.block_hash.clone()]
+    };
     let mut child = get_random_block(
         Some(1),
         Some(1),
@@ -260,7 +281,7 @@ async fn api_over_a_capped_chain(
         None,
         Some(1),
         None,
-        Some(vec![genesis.block_hash.clone()]),
+        Some(parents),
         Some(vec![]),
         Some(vec![]),
         Some(vec![]),
@@ -297,6 +318,7 @@ async fn api_over_a_capped_chain(
         dag,
     );
     casper.shard_conf.max_phlo_limit = max_phlo_limit;
+    casper.genesis_hash = Some(genesis.block_hash.clone());
     casper.add_block_to_store(genesis.clone());
     casper.add_block_to_store(child.clone());
     let engine_cell = EngineCell::init();
@@ -307,9 +329,11 @@ async fn api_over_a_capped_chain(
         .await;
 
     let replays = Arc::new(AtomicUsize::new(0));
+    let genesis_replays = Arc::new(AtomicUsize::new(0));
     let api = BlockReportAPI::new(
         Arc::new(CountingReportingCasper {
             replays: replays.clone(),
+            genesis_replays: genesis_replays.clone(),
         }),
         report_store(),
         engine_cell,
@@ -317,49 +341,107 @@ async fn api_over_a_capped_chain(
         CliqueOracleImpl,
         false,
     );
-    (api, genesis, child, replays)
+    CappedChain {
+        api,
+        genesis,
+        child,
+        replays,
+        genesis_replays,
+    }
 }
 
 #[tokio::test]
 async fn a_block_above_the_phlo_cap_is_refused_without_replay() {
-    let (api, _, child, replays) = api_over_a_capped_chain(1_000, 1_001).await;
+    let chain = api_over_a_capped_chain(1_000, 1_001, false).await;
 
-    let report = api.block_report(child.block_hash.clone(), false).await;
+    let report = chain
+        .api
+        .block_report(chain.child.block_hash.clone(), false)
+        .await;
     assert!(matches!(
         report,
         Err(BlockReportError::ExcessivePhloLimit { cap: 1_000, .. })
     ));
-    let prewarm = api.prewarm_block_report(child.block_hash.clone()).await;
+    let prewarm = chain
+        .api
+        .prewarm_block_report(chain.child.block_hash.clone())
+        .await;
     assert!(matches!(
         prewarm,
         Err(BlockReportError::ExcessivePhloLimit { .. })
     ));
-    assert_eq!(replays.load(Ordering::SeqCst), 0);
+    assert_eq!(chain.replays.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
 async fn a_block_at_the_phlo_cap_is_replayed() {
-    let (api, _, child, replays) = api_over_a_capped_chain(1_000, 1_000).await;
+    let chain = api_over_a_capped_chain(1_000, 1_000, false).await;
 
-    api.block_report(child.block_hash.clone(), false)
+    chain
+        .api
+        .block_report(chain.child.block_hash.clone(), false)
         .await
         .expect("a block within the cap is reported");
-    assert_eq!(replays.load(Ordering::SeqCst), 1);
+    assert_eq!(chain.replays.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
 async fn genesis_is_reported_although_its_deploys_exceed_the_phlo_cap() {
-    let (api, genesis, _, replays) = api_over_a_capped_chain(1_000, 1_000).await;
-    assert!(genesis
+    let chain = api_over_a_capped_chain(1_000, 1_000, false).await;
+    assert!(chain
+        .genesis
         .body
         .deploys
         .iter()
         .any(|deploy| deploy.deploy.data.phlo_limit > 1_000));
 
-    api.block_report(genesis.block_hash.clone(), false)
+    chain
+        .api
+        .block_report(chain.genesis.block_hash.clone(), false)
         .await
         .expect("genesis is reported");
-    assert_eq!(replays.load(Ordering::SeqCst), 1);
+    assert_eq!(chain.replays.load(Ordering::SeqCst), 1);
+    assert_eq!(chain.genesis_replays.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_parentless_block_that_is_not_genesis_is_held_to_the_phlo_cap() {
+    let chain = api_over_a_capped_chain(1_000, 1_001, true).await;
+    assert!(chain.child.header.parents_hash_list.is_empty());
+
+    let report = chain
+        .api
+        .block_report(chain.child.block_hash.clone(), false)
+        .await;
+    assert!(matches!(
+        report,
+        Err(BlockReportError::ExcessivePhloLimit { cap: 1_000, .. })
+    ));
+    assert_eq!(chain.replays.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn only_genesis_is_replayed_as_genesis() {
+    let chain = api_over_a_capped_chain(1_000, 1_000, true).await;
+
+    chain
+        .api
+        .block_report(chain.child.block_hash.clone(), false)
+        .await
+        .expect("a parentless block within the cap is reported");
+    assert_eq!(chain.replays.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        chain.genesis_replays.load(Ordering::SeqCst),
+        0,
+        "a parentless block is replayed with cost accounting and the FS filter"
+    );
+
+    chain
+        .api
+        .block_report(chain.genesis.block_hash.clone(), false)
+        .await
+        .expect("genesis is reported");
+    assert_eq!(chain.genesis_replays.load(Ordering::SeqCst), 1);
 }
 
 fn cache(store: &CompressedBlockEventInfoStore, blocks: &[BlockMessage]) {
@@ -483,7 +565,11 @@ struct GatedReportingCasper {
 
 #[async_trait]
 impl ReportingCasper for GatedReportingCasper {
-    async fn trace(&self, _block: &BlockMessage) -> Result<ReplayResult, String> {
+    async fn trace(
+        &self,
+        _block: &BlockMessage,
+        _is_genesis: bool,
+    ) -> Result<ReplayResult, String> {
         self.started.notify_one();
         self.release.notified().await;
         Err("replay released by the test".to_string())

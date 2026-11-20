@@ -45,6 +45,18 @@ impl Drop for ReportQueueMetricGuard {
 
 fn report_cache_key(block_hash: &BlockHash) -> ByteString { block_hash.to_vec() }
 
+/// Whether `block` is the shard's genesis, by its hash. A node that has not
+/// learned the genesis hash treats no block as genesis.
+fn is_genesis(
+    casper: &Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
+    block: &BlockMessage,
+) -> ApiErr<bool> {
+    let genesis = casper
+        .genesis_block_hash()
+        .map_err(|e| BlockReportError::StoreError(e.to_string()))?;
+    Ok(genesis.as_ref() == Some(&block.block_hash))
+}
+
 /// Upper bound on the heights holding reports that one prune step deletes,
 /// so a step holds only a few reports in memory.
 const REPORT_PRUNE_STEP_HEIGHTS: usize = 8;
@@ -174,7 +186,7 @@ impl BlockReportAPI {
     ) -> ApiErr<BlockEventInfo> {
         let report_result = self
             .reporting_casper
-            .trace(block)
+            .trace(block, is_genesis(casper, block)?)
             .await
             .map_err(|e| BlockReportError::ReplayFailed(e))?;
 
@@ -421,7 +433,7 @@ impl BlockReportAPI {
         // A block can be stored before validation judges it, so the cap is
         // checked here before anything replays it. Genesis is exempt: its
         // blessed deploys run without cost accounting.
-        if !block.header.parents_hash_list.is_empty() {
+        if !is_genesis(&casper, &block)? {
             let cap = casper.casper_shard_conf().max_phlo_limit;
             if let Either::Left(_) = Validate::phlo_limit(&block, cap) {
                 return Err(BlockReportError::ExcessivePhloLimit {

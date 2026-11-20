@@ -66,7 +66,7 @@ async fn reporting_casper_should_behave_the_same_way_as_multi_parent_casper() {
     );
 
     let replay = reporter
-        .trace(&signed_block)
+        .trace(&signed_block, false)
         .await
         .expect("ReportingCasper::trace failed");
 
@@ -148,7 +148,7 @@ async fn reporting_a_block_with_a_failed_deploy_still_produces_a_report() {
         ExternalServices::noop(),
     );
 
-    let replay = reporter.trace(&signed_block).await;
+    let replay = reporter.trace(&signed_block, false).await;
 
     assert!(
         replay.is_ok(),
@@ -237,7 +237,7 @@ async fn reporting_a_slashing_block_replays_its_own_evidence() {
     );
 
     let replay = reporter
-        .trace(&slash_block)
+        .trace(&slash_block, false)
         .await
         .expect("a slashing block must report");
     assert_eq!(
@@ -279,10 +279,13 @@ async fn reporting_replay_runs_while_a_consensus_replay_runs() {
         .expect("Replay semaphore closed");
     let reporter =
         reporting_casper::rho_reporter(&rspace_store, replay_lock, ExternalServices::noop());
-    let replay = tokio::time::timeout(Duration::from_secs(30), reporter.trace(&signed_block))
-        .await
-        .expect("Reporting replay waited for the running consensus replay")
-        .expect("Reporting replay failed");
+    let replay = tokio::time::timeout(
+        Duration::from_secs(30),
+        reporter.trace(&signed_block, false),
+    )
+    .await
+    .expect("Reporting replay waited for the running consensus replay")
+    .expect("Reporting replay failed");
     assert_eq!(
         replay.post_state_hash,
         signed_block.body.state.post_state_hash.to_vec()
