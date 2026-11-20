@@ -106,6 +106,23 @@ pub struct HistoryPruneResult {
     pub marked: usize,
     /// Trie nodes deleted (keys present in the env, not in the mark set).
     pub swept: usize,
+    /// Issue #1098 observability. Pinned roots in the initial snapshot,
+    /// after age-based eviction at `begin_pass`.
+    pub pins_initial: usize,
+    /// Pinned roots evicted by age at the start of this pass.
+    pub pins_evicted: usize,
+    /// Pinned roots that appeared between delete batches during the pass
+    /// (writer committed a checkpoint mid-sweep). Each such root triggers
+    /// an under-exclusive DFS into the mark set.
+    pub pins_mid_pass_added: usize,
+    /// Trie nodes reached by walking from the initial-snapshot pins alone.
+    /// Compare with `marked` to see how much of the mark set the pins
+    /// contribute vs. the caller's DAG walk.
+    pub marked_from_pins: usize,
+    /// Number of delete batches (brief exclusive-lock windows) the pass
+    /// executed. A high count with low per-batch stalls is the shape the
+    /// #1098 fix aims for; the pre-fix code held one long batch instead.
+    pub batches: usize,
 }
 
 pub struct HistoryRepositoryInstances<C, P, A, K> {
