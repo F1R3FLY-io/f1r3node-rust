@@ -428,7 +428,7 @@ async fn deploys_failing_on_the_nesting_limit_replay_identically() {
                 let (next, processed) =
                     compute_state(&mut runtime_manager, &genesis_context, deploy, &state).await;
                 assert!(processed.is_failed);
-                let cost = processed.cost.clone();
+                let cost = processed.cost;
                 let replayed = replay_compute_state(
                     &mut runtime_manager,
                     &genesis_context,
