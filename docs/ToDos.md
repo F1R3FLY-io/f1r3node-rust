@@ -295,14 +295,14 @@ priority: p1
 user_story: US-011
 blocked_by: []
 created_at: 2026-10-05
-updated_at: 2026-10-12
+updated_at: 2026-11-20
 claimed_by: claude-session-aa467dea
 claimed_at: 2026-10-05T14:00:00Z
-branch: feature/consensus-neutral-boundary
+branch: docs/shard-parameter-governance
 pr_base_branch: dev
 consolidated: "2026-10-12. This epic is the single epic for the design (PR #627) and the implementation track: issue #624 with PR #651 (TASK-025-2), and issue #625 (TASK-025-7). Nama21yo writes #624, #625, and PR #651."
 related_prs:
-  - "#627: design documents, draft, branch feature/consensus-neutral-boundary"
+  - "#627: design documents, draft, branch feature/consensus-neutral-boundary. Merged into docs/shard-parameter-governance on 2026-11-20, which supersedes it."
   - "#651: lifecycle runtime and CBC Casper adapter, branch feature/consensus-runtime-cordial"
 related_issues: ["#624", "#625"]
 origin: "Four replication mechanisms are planned for F1R3FLY shards: CBC Casper (implemented), Cordial Miners, Casanova, and the RGB peer-clique sidecar with Bitcoin single-use-seal anchoring. Today node services reach CBC Casper directly. RGB SoW2 workstream WS5 requires a shard consensus selection framework."
@@ -438,6 +438,24 @@ tasks:
     acceptance:
       - "A test-only second mechanism runs the node wiring tests without CBC code. PR #651 already runs the host tests with --no-default-features."
       - "The full test suite passes and a soak on the merged change gives the same consensus results as before the change."
+  - id: TASK-025-9
+    title: "Design shard parameter governance and complete the consensus-neutral boundary specification"
+    status: in_progress
+    claimed_by: claude-session-d376e13c
+    claimed_at: 2026-11-20T21:22:44Z
+    branch: docs/shard-parameter-governance
+    pr_base_branch: dev
+    blocked_by: []
+    origin: "Maintainer standup of 2026-11-20 (metaweta, spreston8, jeffrey-l-turner). A running shard cannot change a validation-critical parameter without a new genesis. This does not block the test net. It blocks the production launch."
+    acceptance:
+      - "docs/designs/shard-parameter-governance.md classifies every validation-critical parameter and setting as bound, governed, aligned, or node-local, with its source and its side of the boundary."
+      - "The design compares off-chain governance, on-chain governance with node checks, and on-chain governance with Rholang checks, and the two activation approaches. It selects none."
+      - "The design states the visibility rule for slash and neglect verdicts."
+      - "docs/designs/replication-boundary.md section 17 places shard parameters at the boundary."
+      - "docs/Glossary.md and docs/casper/GLOSSARY.md define the governance terms."
+      - "The architecture documents (f1r3fly_architecture.md, CONSENSUS_PROTOCOL.md, CONSENSUS_PHILOSOPHY.md, and docs/casper/README.md) point to the design and state the current facts."
+      - "The design records the D-01 protocol-version conflict for the versioning follow-up on ca-canary and ca-release, and does not resolve it."
+      - "metaweta and spreston8 review the pull request. The maintainers select options in a later review."
 ---
 ```
 

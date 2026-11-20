@@ -1,8 +1,8 @@
 # Replication Boundary Design
 
-- **Status:** draft for maintainer review (TASK-025-1, EPIC-025). Updated on 2026-10-12 for decision D7.
+- **Status:** draft for maintainer review (TASK-025-1, EPIC-025). Updated on 2026-10-12 for decision D7. Updated on 2026-11-20 with section 17, shard parameters (TASK-025-9).
 - **Story:** [US-011](../UserStories.md) Pluggable state machine replication per shard
-- **Branch:** `feature/consensus-neutral-boundary`
+- **Branch:** `docs/shard-parameter-governance`. The draft started on `feature/consensus-neutral-boundary` (PR #627), which this branch supersedes.
 - **Implementation track:** issue #624 with PR #651 (lifecycle runtime and CBC Casper adapter), and issue #625 (Cordial Miners adapter)
 - **Extends:** [F1r3fly: Parallel State Machines and Consensus-Neutral Execution](../artifacts/f1r3fly-consensus-neutral-sm.md)
 - **Vocabulary:** [docs/Glossary.md](../Glossary.md) for the boundary terms, and one glossary for each mechanism: [CBC Casper](../casper/GLOSSARY.md), [RGB peer clique](../peer-clique/GLOSSARY.md), [Casanova](../casanova/GLOSSARY.md), and [Cordial Miners](../cordial-miners/GLOSSARY.md). The coalition vocabulary is in the [semitopology glossary](../semitopology/GLOSSARY.md).
@@ -38,6 +38,8 @@ The user made decisions D1 to D6 on 2026-10-05 and decision D7 on 2026-10-12. Ma
 | D7 | The boundary has two layers (2026-10-12). The lifecycle layer of PR #651 (`ConsensusRuntime`, `ConsensusAdapter`, and `consensus.protocol`) is the lower layer. `ReplicationMedium` is the semantic contract that an adapter supplies. Where the names differ, this document uses the PR #651 names. |
 
 D2 removes a class of problems. The boundary needs no migration between mechanisms, no dual operation, and no handover of membership. Each node process serves one shard with one mechanism.
+
+D2 fixes the mechanism, not every parameter of the shard. Section 17 proposes how a running shard changes a governed parameter without a change of mechanism. Its proposals are not decisions.
 
 ---
 
@@ -113,7 +115,7 @@ flowchart LR
 
 The host does not inspect a protocol enum and does not receive native consensus state. The adapter owns ordering, conflict decisions, finality, membership, native workers, and native storage checks. The adapter calls the execution port. The execution port never calls the adapter.
 
-The deploy pool is still a node service in decision D3. In PR #651, `ConsensusCommand::Submit` goes to the adapter, and the CBC Casper adapter stores the deploy in its own deploy storage. Question 8 in section 17 records this difference.
+The deploy pool is still a node service in decision D3. In PR #651, `ConsensusCommand::Submit` goes to the adapter, and the CBC Casper adapter stores the deploy in its own deploy storage. Question 8 in section 18 records this difference.
 
 ---
 
@@ -369,6 +371,7 @@ Step 5 also starts the move of the three Rholang runtime files out of the casper
 - A change to the CBC wire format or to CBC behavior.
 - RGB client-side validation or consignment handling inside the node.
 - Runtime switching between mechanisms.
+- A change of a bound shard value, for example the shard identity or the token metadata. Section 17 states the classes.
 
 ---
 
@@ -383,7 +386,7 @@ The members of a shard are the points. An [actionable coalition](../Glossary.md#
 | Medium | Members | Actionable coalition | Intertwined | Source |
 | --- | --- | --- | --- | --- |
 | CBC Casper | Bonded validators with stake `S` in total | A clique of agreeing validators with stake `w > S(1 + t) / 2`, where `t` is the fault tolerance threshold | Yes. Two such cliques share more than `tS` stake | `clique_oracle.rs`, fault tolerance `(2w - S) / S` |
-| RGB peer clique | Epoch committee | The signer set of a quorum certificate inside the engaged subset of one transaction | Not yet shown. See question 5 in section 17 | Rholang-RGB WS5 |
+| RGB peer clique | Epoch committee | The signer set of a quorum certificate inside the engaged subset of one transaction | Not yet shown. See question 5 in section 18 | Rholang-RGB WS5 |
 | Casanova | Validators, `N >= 3f + 1` | A validator set with weight of at least `FTM = ceil((N + f + 1) / 2)` | Yes. Two such sets share at least `f + 1` validators | arXiv:1812.02232, section 2.6 |
 | Cordial Miners | Miners, `f < n/3` | A supermajority, more than `(n + f) / 2` miners | Yes. Two supermajorities share more than `f` miners | arXiv:2205.09174, Definition 21 |
 
@@ -415,7 +418,56 @@ impl CoalitionStructure {
 
 ---
 
-## 17. Open questions
+## 17. Shard parameters at the boundary
+
+This section is a proposal for review. The [shard parameter governance design](shard-parameter-governance.md) gives the full register, the options, and the evidence.
+
+### 17.1 Classes
+
+Each [validation-critical setting](../Glossary.md#validation-critical-setting) is in one [parameter class](../Glossary.md#parameter-class):
+
+| Class | Meaning | Example |
+| --- | --- | --- |
+| Bound | Part of the identity of the shard. It never changes | Mechanism identifier, shard name, chain identifier, token metadata |
+| Governed | On-chain value that every node adopts | Minimum phlo price, deploy lifespan, CBC fault-tolerance threshold |
+| Aligned | Node-local value that a validity rule reads | CBC maximum number of parents |
+| Node-local | Local policy that no validity rule reads | Proposer packaging limits, garbage collection |
+
+The aligned class is a defect class. A production shard must start with no aligned setting.
+
+### 17.2 Ownership
+
+- Neutral services own the bound values and the neutral governed values: the shard identity, the token metadata, the deploy lifespan, and the minimum phlo price.
+- The medium owns its mechanism namespace: for CBC Casper, the fault-tolerance threshold, the parent bounds, the epoch and quarantine lengths, and the bond limits.
+- One register stores both, so that one change process serves every medium.
+
+### 17.3 Contract additions
+
+A parameter change uses three parts of the boundary:
+
+1. **Authorization.** The signers of a change must form an [actionable coalition](../Glossary.md#actionable-coalition). The node asks `CoalitionStructure::is_actionable` (section 16), so the rule comes from the medium.
+2. **Activation.** The medium states the [activation point](../Glossary.md#activation-point) as a commit position in its own order.
+3. **Read.** `ReplicationMedium` gets a read method for the values that apply at a commit:
+
+```rust
+pub trait ReplicationMedium {
+    // methods of section 7
+    fn parameters(&self, at: &CommitId) -> ShardParameterView;
+}
+```
+
+`ShardParameterView` holds the neutral values, the mechanism namespace, and the authorized changes that wait for their activation point.
+
+### 17.4 Rules
+
+- No change can alter a bound value. This keeps decision D2.
+- A message is judged with the values that apply in its own causal past. This is the [visibility rule](../Glossary.md#visibility-rule).
+- A medium that has no governed parameter returns an empty mechanism namespace.
+- The authorization option (off-chain, checked by the node, or checked in Rholang) is open. Section 7 of the governance design compares them.
+
+---
+
+## 18. Open questions
 
 1. **State identifiers for the peer clique.** The commit product uses the RSpace post-state hash. The peer clique also names `rgb_state_root`. The design must state how the two identifiers relate.
 2. **Anchoring cadence for CBC Casper.** The design allows anchoring. It does not yet define which finalized commits to anchor or how often.
@@ -426,3 +478,5 @@ impl CoalitionStructure {
 7. **Finality evidence in consignments.** An RGB consignment must carry the mechanism evidence of its `FinalityEvent`, so that a receiver can check finality without a trusted node. Today the SATCHEL consignment proof has only a block hash, a state hash, and a deploy identifier. The receiver asks its own node whether the block is finalized.
 8. **Deploy pool ownership.** Decision D3 makes the deploy pool a node service, and a medium only reads it. In PR #651, `ConsensusCommand::Submit` goes to the adapter, and the CBC Casper adapter keeps its own deploy storage. A maintainer must decide one of two options. Either the shared pool moves to the host and `Submit` writes to it, or D3 changes so that each adapter owns admission.
 9. **Agreement with the Notion architecture document.** Issues #624 and #625 refer to the f1r3node Consensus Architecture document in Notion. This design does not yet compare its terms with that document, because the reviewers could not open it.
+10. **Parameter-change authorization.** A maintainer must select the authorization option and the activation approach of section 17. The [governance design](shard-parameter-governance.md) lists them in sections 7 and 8.
+11. **Aligned settings.** A maintainer must decide whether the CBC maximum number of parents becomes governed, or whether its validity rule stops reading the local value.

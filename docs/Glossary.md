@@ -752,6 +752,162 @@ inside one shard.
 safety, but a medium must also show that intersections contain a correct
 member. Semitopology does not model Byzantine faults.
 
+### Consensus neutrality
+
+Consensus neutrality is the property that node services, the APIs, the
+transport, and Rholang execution work with any
+[replication medium](#replication-medium). Only the medium decides order,
+conflicts, finality, and membership. The
+[replication boundary design](designs/replication-boundary.md) states the
+boundary, and the
+[consensus-neutral note](artifacts/f1r3fly-consensus-neutral-sm.md) states
+the claim behind it.
+
+**Preferred usage.** Use "consensus-neutral" for a node service or a
+document that names no medium.
+*Distinguish from* runtime switching. A neutral node binds one medium for
+the life of a shard.
+*Avoid*: "consensus-agnostic" for the same property.
+
+### Shard parameter
+
+A shard parameter is a value that all validators of one shard must apply in
+the same way. Examples are the deploy lifespan, the minimum phlo price, and
+the CBC fault-tolerance threshold.
+
+**Preferred usage.** Use for the value. Name the
+[parameter class](#parameter-class) when the change rules matter.
+*Distinguish from* a node-local setting, which each operator can set.
+*Avoid*: "config value" for a value that the chain holds.
+
+### Validation-critical setting
+
+A validation-critical setting is a shard parameter or a configuration
+setting that a validity rule, the finality decision, or a system contract
+reads. Two validators with different values can reach different verdicts
+for one message. The
+[governance design](designs/shard-parameter-governance.md) section 5 holds
+the register.
+
+**Preferred usage.** Use for every row of the register, whatever its
+source.
+*Distinguish from* a proposer setting, which changes what a validator
+proposes but not how it judges a message.
+
+### Parameter class
+
+A parameter class tells where a validation-critical setting comes from and
+how it can change. The four classes are:
+
+- **Bound.** Part of the identity of the shard. It never changes.
+- **Governed.** An on-chain value that every node adopts. A
+  [parameter change](#parameter-change) replaces it.
+- **Aligned.** A node-local value that a validity rule reads. Every operator
+  must set the same value.
+- **Node-local.** Local policy that no validity rule reads.
+
+**Preferred usage.** Use the class names in lowercase in prose: "a governed
+parameter".
+*Avoid*: "genesis-locked" for the governed class, because the goal is a
+change without a new genesis.
+
+### Parameter alignment
+
+Parameter alignment is the property that all validators of a shard apply
+the same value of each validation-critical setting at each point. An
+aligned-class setting depends on operators for this property. A governed
+setting gets it from the chain.
+
+**Preferred usage.** Use for the property, and "alignment gap" for a
+validity rule that reads a node-local value.
+
+### Parameter change
+
+A parameter change is an authorized replacement of the value of a governed
+parameter on a running shard. It has a
+[governance authorization](#governance-authorization) and an
+[activation point](#activation-point).
+
+**Preferred usage.** Use for one change of one or more governed values.
+*Distinguish from* a protocol version change, which changes rules, and from
+a new genesis, which makes a new shard.
+*Avoid*: "upgrade" for a value change.
+
+### Governance authorization
+
+A governance authorization is the evidence that an
+[actionable coalition](#actionable-coalition) of the shard approved one
+parameter change. The evidence can be a set of signatures or one threshold
+signature.
+
+**Preferred usage.** Use for the evidence. Use
+[multi-signature authorization](#multi-signature-authorization) for the
+form with one signature for each signer.
+*Distinguish from* a deploy signature, which identifies one deployer.
+
+### Multi-signature authorization
+
+A multi-signature authorization carries one signature for each approving
+signer. A checker adds the weight of the valid signers and compares the sum
+with the coalition rule. `MultiSigSystemVault.rho` uses the same pattern
+with a fixed quorum of keys.
+
+**Preferred usage.** Use "multi-signature" in prose and "multisig" only in
+code names.
+*Distinguish from* a threshold signature, which is one aggregated signature
+for a quorum of signers.
+
+### Off-chain governance
+
+Off-chain governance is a change process in which validators agree outside
+the shard and apply the change through a
+[coordinated restart](#coordinated-restart). The chain holds no record of
+the authorization.
+
+**Preferred usage.** Use for agreement through meetings, message boards, or
+operator procedure.
+*Distinguish from* [on-chain governance](#on-chain-governance).
+
+### On-chain governance
+
+On-chain governance is a change process in which the shard checks the
+governance authorization and applies the change. The node can check the
+signatures before Rholang runs, or a contract can check them in Rholang.
+
+**Preferred usage.** Name the checker: "on-chain governance with node
+checks" or "on-chain governance with Rholang checks".
+*Distinguish from* [off-chain governance](#off-chain-governance).
+
+### Coordinated restart
+
+In a coordinated restart, all validators stop at an agreed point. They
+change their values or software, and then they start again from that point.
+
+**Preferred usage.** Use for the off-chain procedure.
+*Avoid*: "soft fork". A soft fork is a backward-compatible rule change that
+old nodes still accept. A coordinated restart changes values that old nodes
+reject.
+
+### Activation point
+
+An activation point is the position in the order of a shard at which a
+parameter change starts to apply. A medium states it as a commit position,
+for example a block height or a finalized commit plus a fixed delay.
+
+**Preferred usage.** Use for the position, not for the time of the vote.
+*Distinguish from* the authorizing commit, which can come earlier.
+
+### Visibility rule
+
+Under the visibility rule, a validator is accountable for a parameter change
+only after the authorization is in the causal past of its message. A message is judged with the values that apply in its causal past.
+A validator that has not seen the change is not slashed for the old value.
+
+**Preferred usage.** Use when a slash, neglect, or validity verdict depends
+on a governed value.
+*Distinguish from* finality of the change. A validator can see a change
+before it is final.
+
 ## Architecture Stack Mapping
 
 - **Formal-verification stack** = Rocq mechanization (`formal/rocq/`), TLA+
@@ -766,6 +922,12 @@ member. Semitopology does not model Byzantine faults.
   TLS 1.3.
 - **Node surface** = the `node` crate: gRPC external/internal APIs, HTTP
   REST, CLI, REPL.
+- **Replication boundary** = the line between the neutral node services and
+  the [replication medium](#replication-medium) of a shard. CBC Casper is the
+  only medium today. The
+  [replication boundary design](designs/replication-boundary.md) states the
+  contract, and its section 17 places each
+  [shard parameter](#shard-parameter) on one side.
 
 Two orthogonal tier taxonomies overlay this stack and must never be
 conflated: [implementation tiers](#implementation-tier)

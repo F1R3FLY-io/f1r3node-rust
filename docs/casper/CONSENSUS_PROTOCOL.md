@@ -77,10 +77,12 @@ GenesisValidator ───────┘
 Genesis creates the first block containing:
 - Initial validator bonds (from `bonds.txt`)
 - Initial wallet balances (from `wallets.txt`)
-- Shard configuration (fault tolerance threshold, synchrony constraint threshold — **locked in forever**)
+- Shard parameters in the proof-of-stake contract (section 10 lists them)
 - System contracts (PoS, vault, registry)
 
-**Why this matters**: The synchrony constraint threshold and fault tolerance threshold are on-chain parameters written into the genesis block's state. Changing them requires a new genesis (new network).
+**Why this matters**: These shard parameters are on-chain values. Every node adopts them at startup, whatever its local configuration says. No method changes them on a running shard, so a change requires a new genesis (new network).
+
+The synchrony constraint threshold is not one of them. It is a node-local proposer setting. The [shard parameter governance design](../designs/shard-parameter-governance.md) proposes a change path without a new genesis.
 
 ### Key Design Point
 
@@ -570,11 +572,19 @@ All consensus parameters are defined in HOCON configuration files:
 Operator config files are minimal overrides — HOCON's fallback semantics merge them on top of the built-in defaults automatically.
 
 **Genesis-locked parameters** (cannot change after network creation):
-- `fault-tolerance-threshold` and `synchrony-constraint-threshold` — written into the genesis block's on-chain state
-- `max-parent-depth`, `deploy-lifespan`, `min-phlo-price` — baked into the PoS contract and exposed via its `getConsensusParameters` getter. Validity rules (parent spread, expiry, repeat-deploy, phlo floor) fork on these, so every node reads them back at casper construction and adopts the on-chain values unconditionally over local configuration; a chain whose values are absent or out of range fails startup rather than falling back. Immutable until an on-chain parameter-upgrade mechanism exists.
+- `fault-tolerance-threshold` — written into the proof-of-stake contract as an integer in parts per million and exposed via its `getFaultToleranceThresholdPpm` getter. Every node adopts the on-chain value at casper construction.
+- `max-parent-depth`, `deploy-lifespan`, `min-phlo-price`, `epoch-length` — baked into the PoS contract and exposed via its `getConsensusParameters` getter. Validity rules fork on these: parent spread, expiry, repeat-deploy, phlo floor, and the slash authorization and neglect epochs. Every node reads them back at casper construction and always adopts the on-chain values. If a value is absent or out of range, startup fails. No method changes them on a running shard.
 - `native-token-name`, `native-token-symbol`, `native-token-decimals` — baked into the `TokenMetadata` Rholang contract at `rho:system:tokenMetadata` with nonce `i64::MAX`, making them immutable via the registry's `insertSigned` protocol
 
+- `quarantine-length`, `bond-minimum`, `bond-maximum`, `number-of-active-validators` — macro parameters of the PoS contract. The contract enforces them in state.
+
 Changing any of these requires a new genesis (new network).
+
+**Node-local settings that validity reads.** Two settings are local but change block validity, so every validator must set the same value:
+- `max-number-of-parents` — `Validate::parents` returns `InvalidParents` for a block with more parents.
+- The standalone run mode — it sets `disable_validator_progress_check`, which skips the progress check.
+
+The `synchrony-constraint-threshold`, the synchrony recovery settings, and the `height-constraint-threshold` are proposer gates. They are node-local, and validators can use different values. The [shard parameter governance design](../designs/shard-parameter-governance.md) section 5 classifies every validation-critical setting and proposes how a running shard changes a governed value.
 
 **Native token metadata** is exposed via `/api/status` (`nativeTokenName`, `nativeTokenSymbol`, `nativeTokenDecimals`) and queryable on-chain by any Rholang contract. Joiners verify their config matches the on-chain values at startup; a mismatch causes the node to exit with a structured error event (`native_token_metadata_mismatch`).
 

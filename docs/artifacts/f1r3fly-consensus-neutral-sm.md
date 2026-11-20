@@ -298,6 +298,7 @@ Promotion rules for an adapter:
 - Cordial: when the parallel repository exists, map the blocklace τ onto content ordering and merge, not onto RSpace reduce.
 - Resolved on 2026-10-05: the thin core trait is `ReplicationMedium`, and DAG parents are an optional `DagMedium` capability. See the [replication boundary design](../designs/replication-boundary.md).
 - Close the two verification gaps in section 9: the neutral interface crate and the Rocq CI rebuild of the merge algebra.
+- Select a change path for shard parameters. The [shard parameter governance design](../designs/shard-parameter-governance.md) classifies the validation-critical settings and compares the options (proposed 2026-11-20).
 
 ---
 
