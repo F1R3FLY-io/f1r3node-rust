@@ -17,6 +17,8 @@ references:
   - docs/ci.md
   - .mergify.yml
   - .github/scripts/tag-ca-release.sh
+  - .github/workflows/soak-checkpoint-publish.yml
+  - .github/actions/soak-segment/action.yml
   - docs/cbc-evidence/github-scripts-report-soak-gate-sh.md
   - docs/cbc-evidence/github-scripts-ca-soak-dispatch-sh.md
   - docs/cbc-evidence/github-workflows-ca-soak-dispatch-yml.md
@@ -42,13 +44,15 @@ A cancelled soak posts error, and every other result posts failure. A run never 
 
 **Soak identity.** A gate run soaks an exact commit SHA. It is a full soak of its span: 22 hours for `ca-item` and 60 hours for `ca-release`. It cannot be a canary, a preflight-only run, a run without the preflight, a window restart, a candidate soak, or a scheduled run. Its one restart after an infrastructure failure soaks a full new span.
 
-**Isolation.** A gate run has the concurrency group of its pull request or of `ca-release`. A gate run and a `daily` or `weekend` run therefore never cancel each other. Its soak runner registers under a label of its own run, so its soak job runs only on the VM that the run launched. A gate run publishes no checkpoint and no dashboard series.
+**Isolation.** A gate run has the concurrency group of its pull request or of `ca-release`. A gate run and a `daily` or `weekend` run therefore never cancel each other. Its soak runner registers under a label of its own run, so its soak job runs only on the VM that the run launched. A gate run publishes no dashboard series.
+
+**Checkpoint progress.** A gate run checkpoint updates only the pending status of its own `Soak Gate` context on the soaked commit. The description gives the hours soaked, the iterations, and the failures. A checkpoint never posts a final state, and it never replaces the status of a newer run.
 
 ## Implementation surface
 
 | Behavior | Location |
 | --- | --- |
-| Gate result and label | `.github/scripts/report-soak-gate.sh` (`pending` and `final` modes, the newer-run check, the pull request head checks before and after the label add, the label removal after a failed result) |
+| Gate result and label | `.github/scripts/report-soak-gate.sh` (`pending`, `checkpoint`, and `final` modes, the newer-run check, the pull request head checks before and after the label add, the label removal after a failed result) |
 | Label and cancellation events | `.github/scripts/ca-soak-dispatch.sh` (`labeled`, `synchronize`, `push`) |
 | Event routing | `.github/workflows/ca-soak-dispatch.yml` |
 | Gate input validation | `merge-recovery-soak.yml`, job `schedule_gate`, step `resolve` |
@@ -56,12 +60,13 @@ A cancelled soak posts error, and every other result posts failure. A run never 
 | Restart | `merge-recovery-soak.yml`, job `retry_within_window`, and the deadline of the final segment |
 | Verdict | `merge-recovery-soak.yml`, step `verdict` and the `soak` output `verdict` |
 | Status jobs | `merge-recovery-soak.yml`, jobs `soak_gate_pending` and `soak_gate_finalize` |
+| Checkpoint progress | `merge-recovery-soak.yml` (the `gate` inputs of the checkpoint segments), `.github/actions/soak-segment/action.yml` (step `Publish checkpoint`), and `soak-checkpoint-publish.yml` (the `publish` condition and job `gate_status`) |
 
 ## Checks
 
 | Check | Command | Status |
 | --- | --- | --- |
-| Gate validation, isolation wiring, gate result, label add and removal, head change during the label add, and newer-run rule | `bash .github/scripts/test-soak-gate.sh` | Green locally |
+| Gate validation, isolation wiring, checkpoint progress and its wiring, gate result, label add and removal, head change during the label add, and newer-run rule | `bash .github/scripts/test-soak-gate.sh` | Green locally |
 | Label and cancellation events, cancellation on every page and status, fork and base refusal, trigger and permission wiring | `bash .github/scripts/test-ca-soak-dispatch.sh` | Green locally |
 | Daily and weekend routing unchanged | `bash .github/scripts/test-soak-schedule-routing.sh` | Green locally |
 | Workflow security invariants | `bash .github/scripts/check-workflow-invariants.sh` | Green locally |
@@ -75,6 +80,7 @@ The maintainer accepted the previous claim scope. On 2026-11-10, the maintainer 
 | Review package with the hosted run of the script tests | Done. `docs/casper/cbc-evidence/runs/soak-release-gates-20261020-02/report.json` at `7d627df83` records the tested commit `d1d691d58` and CI run 39518782040. |
 | Previous claim acceptance | Done. jltatbeach accepted the previous package on 2026-10-21 (PR #793, comment 6305076788). `docs/casper/cbc-evidence/runs/soak-release-gates-acceptance-20261021-01/report.json` records that acceptance. |
 | Revised claim review | Pending. The revision removes the pre-merge canary soak requirement. |
+| Checkpoint progress review | Pending. Gate runs now keep their checkpoints and report them on the pending `Soak Gate` status. |
 | First live `ca-item` gate soak after this change reaches `master` | Pending. The dispatcher runs the soak from `master`, so no gate run can start before then. |
 | First live `ca-release` gate soak | Pending. It needs the `ca-canary` and `ca-release` branches. |
 
