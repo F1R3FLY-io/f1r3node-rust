@@ -2,10 +2,13 @@
 // `ParSpatialMatcherUtils.subPars`. The oracle below transcribes the Scala
 // recursion directly.
 
-use models::rhoapi::{Expr, GUnforgeable, Par, Send};
+use models::rhoapi::{Bundle, Expr, GUnforgeable, Match, New, Par, Receive, Send};
 use models::rust::utils::{new_gint_expr, new_gint_par};
 use rholang::rust::interpreter::matcher::par_count::ParCount;
-use rholang::rust::interpreter::matcher::sub_pars::sub_pars;
+use rholang::rust::interpreter::matcher::spatial_matcher::StepBudget;
+use rholang::rust::interpreter::matcher::sub_pars::{sub_pars, SubPars};
+
+fn unlimited() -> StepBudget { StepBudget::new(usize::MAX) }
 
 type Split<A> = (Vec<A>, Vec<A>);
 
@@ -98,28 +101,71 @@ impl Bounds<'_> {
     }
 }
 
-fn scala_sub_pars(par: &Par, bounds: &Bounds) -> Vec<(Par, Par)> {
-    let (s_min, s_max) = bounds.range(par.sends.len(), |c| c.sends);
-    let (e_min, e_max) = bounds.range(par.exprs.len(), |c| c.exprs);
-    let (u_min, u_max) = bounds.range(par.unforgeables.len(), |c| c.unforgeables);
+/// Extends every split in `acc` by every split of one kind, earlier kinds
+/// varying slowest, as Scala's nested for-comprehension does.
+fn nest<A: Clone>(
+    acc: Vec<(Par, Par)>,
+    items: &[A],
+    (min, max): (isize, isize),
+    set: fn(&mut Par, Vec<A>),
+) -> Vec<(Par, Par)> {
+    let splits = min_max_subsets(items, min, max);
     let mut out = Vec::new();
-    for (sends, rest_sends) in min_max_subsets(&par.sends, s_min, s_max) {
-        for (exprs, rest_exprs) in min_max_subsets(&par.exprs, e_min, e_max) {
-            for (unfs, rest_unfs) in min_max_subsets(&par.unforgeables, u_min, u_max) {
-                out.push((
-                    Par::default()
-                        .with_sends(sends.clone())
-                        .with_exprs(exprs.clone())
-                        .with_unforgeables(unfs.clone()),
-                    Par::default()
-                        .with_sends(rest_sends.clone())
-                        .with_exprs(rest_exprs.clone())
-                        .with_unforgeables(rest_unfs.clone()),
-                ));
-            }
+    for (sub, rest) in acc {
+        for (chosen, left) in &splits {
+            let (mut sub, mut rest) = (sub.clone(), rest.clone());
+            set(&mut sub, chosen.clone());
+            set(&mut rest, left.clone());
+            out.push((sub, rest));
         }
     }
     out
+}
+
+fn scala_sub_pars(par: &Par, bounds: &Bounds) -> Vec<(Par, Par)> {
+    let acc = vec![(Par::default(), Par::default())];
+    let acc = nest(
+        acc,
+        &par.sends,
+        bounds.range(par.sends.len(), |c| c.sends),
+        |p, v| p.sends = v,
+    );
+    let acc = nest(
+        acc,
+        &par.receives,
+        bounds.range(par.receives.len(), |c| c.receives),
+        |p, v| p.receives = v,
+    );
+    let acc = nest(
+        acc,
+        &par.news,
+        bounds.range(par.news.len(), |c| c.news),
+        |p, v| p.news = v,
+    );
+    let acc = nest(
+        acc,
+        &par.exprs,
+        bounds.range(par.exprs.len(), |c| c.exprs),
+        |p, v| p.exprs = v,
+    );
+    let acc = nest(
+        acc,
+        &par.matches,
+        bounds.range(par.matches.len(), |c| c.matches),
+        |p, v| p.matches = v,
+    );
+    let acc = nest(
+        acc,
+        &par.unforgeables,
+        bounds.range(par.unforgeables.len(), |c| c.unforgeables),
+        |p, v| p.unforgeables = v,
+    );
+    nest(
+        acc,
+        &par.bundles,
+        bounds.range(par.bundles.len(), |c| c.bundles),
+        |p, v| p.bundles = v,
+    )
 }
 
 fn send(tag: i64) -> Send {
@@ -155,6 +201,15 @@ fn count(sends: usize, exprs: usize, unforgeables: usize) -> ParCount {
     c
 }
 
+/// Every sub-par with the complement built for it.
+fn with_complements(mut splits: SubPars) -> Vec<(Par, Par)> {
+    let mut out = Vec::new();
+    while let Some(sub) = splits.next() {
+        out.push((sub, splits.complement().expect("an unlimited budget")));
+    }
+    out
+}
+
 fn check(target: Par, min: ParCount, max: ParCount, min_prune: ParCount, max_prune: ParCount) {
     let bounds = Bounds {
         min: &min,
@@ -162,7 +217,14 @@ fn check(target: Par, min: ParCount, max: ParCount, min_prune: ParCount, max_pru
         min_prune: &min_prune,
         max_prune: &max_prune,
     };
-    let actual: Vec<(Par, Par)> = sub_pars(&target, &min, &max, &min_prune, &max_prune).collect();
+    let actual = with_complements(sub_pars(
+        &target,
+        &min,
+        &max,
+        &min_prune,
+        &max_prune,
+        &unlimited(),
+    ));
     let expected = scala_sub_pars(&target, &bounds);
     assert_eq!(
         actual, expected,
@@ -200,7 +262,14 @@ fn splits_match_scala_in_content_and_order() {
 fn every_split_is_a_partition() {
     let target = par(5, 3, 2);
     let none = count(0, 0, 0);
-    for (subset, complement) in sub_pars(&target, &none, &none._max(), &none, &none._max()) {
+    for (subset, complement) in with_complements(sub_pars(
+        &target,
+        &none,
+        &none._max(),
+        &none,
+        &none._max(),
+        &unlimited(),
+    )) {
         let mut sends = subset.sends.clone();
         sends.extend(complement.sends.clone());
         assert_eq!(sends.len(), target.sends.len());
@@ -216,10 +285,113 @@ fn every_split_is_a_partition() {
 fn the_first_split_of_a_large_par_comes_without_the_others() {
     let target = par(40, 0, 0);
     let none = count(0, 0, 0);
-    let mut splits = sub_pars(&target, &none, &none._max(), &none, &none._max());
-    let (first, rest) = splits.next().expect("a first split");
+    let mut splits = sub_pars(
+        &target,
+        &none,
+        &none._max(),
+        &none,
+        &none._max(),
+        &unlimited(),
+    );
+    let first = splits.next().expect("a first split");
     assert!(first.sends.is_empty());
-    assert_eq!(rest.sends.len(), 40);
-    let (second, _) = splits.next().expect("a second split");
+    assert_eq!(splits.complement().expect("a complement").sends.len(), 40);
+    let second = splits.next().expect("a second split");
     assert_eq!(second.sends, vec![send(0)]);
+}
+
+/// `n` of every kind a par holds.
+fn every_kind(n: usize) -> Par {
+    let tags = || 0..n as i64;
+    par(n, n, n)
+        .with_receives(
+            tags()
+                .map(|i| Receive {
+                    bind_count: i as i32,
+                    ..Default::default()
+                })
+                .collect(),
+        )
+        .with_news(
+            tags()
+                .map(|i| New {
+                    bind_count: i as i32,
+                    ..Default::default()
+                })
+                .collect(),
+        )
+        .with_matches(
+            tags()
+                .map(|i| Match {
+                    target: Some(new_gint_par(i, Vec::new(), false)),
+                    ..Default::default()
+                })
+                .collect(),
+        )
+        .with_bundles(
+            tags()
+                .map(|i| Bundle {
+                    body: Some(new_gint_par(i, Vec::new(), false)),
+                    ..Default::default()
+                })
+                .collect(),
+        )
+}
+
+fn every_kind_count(n: usize) -> ParCount {
+    let mut c = count(n, n, n);
+    c.receives = n;
+    c.news = n;
+    c.matches = n;
+    c.bundles = n;
+    c
+}
+
+#[test]
+fn splits_match_scala_across_every_kind() {
+    let none = || every_kind_count(0);
+    check(every_kind(2), none(), none()._max(), none(), none()._max());
+    check(
+        every_kind(2),
+        every_kind_count(1),
+        every_kind_count(1),
+        none(),
+        none()._max(),
+    );
+}
+
+#[test]
+fn every_element_a_split_copies_is_charged_to_the_budget() {
+    let target = par(0, 1000, 0);
+    let none = count(0, 0, 0);
+    let budget = 50_000;
+    let copied: usize = sub_pars(
+        &target,
+        &none,
+        &none._max(),
+        &none,
+        &none._max(),
+        &StepBudget::new(budget),
+    )
+    .map(|sub| sub.exprs.len())
+    .sum();
+    assert!(copied > 0);
+    assert!(copied <= budget, "{copied} elements copied");
+}
+
+#[test]
+fn single_element_sub_pars_cost_a_constant_each() {
+    let target = par(0, 1000, 0);
+    let one = count(0, 1, 0);
+    let none = count(0, 0, 0);
+    let yielded = sub_pars(
+        &target,
+        &one,
+        &one,
+        &none,
+        &none._max(),
+        &StepBudget::new(20 * target.exprs.len()),
+    )
+    .count();
+    assert_eq!(yielded, target.exprs.len());
 }

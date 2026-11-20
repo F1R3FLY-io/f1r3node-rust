@@ -409,6 +409,63 @@ async fn a_value_at_the_nesting_limit_is_stored_read_back_and_replayed() {
     .unwrap()
 }
 
+/// `match { 0 | … | ints-1 | "s0" | … | "s9" } { { String | … | rest } => … }`
+/// with ten `String` connectives: each scans past every int, so the match
+/// needs work that grows with `ints` and the cost ten times over.
+fn ten_string_connectives_match(ints: usize) -> String {
+    let target = (0..ints)
+        .map(|i| i.to_string())
+        .chain((0..10).map(|i| format!("\"s{i}\"")))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let pattern = ["String"; 10].join(" | ");
+    format!(
+        r#"match {{ {target} }} {{ {{ {pattern} | rest }} => {{ @"matched"!(1) }} _ => {{ @"unmatched"!(1) }} }}"#
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_match_that_runs_out_of_steps_takes_the_same_branch_on_replay() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            for (ints, branch) in [(20, "matched"), (1000, "unmatched")] {
+                let state = genesis_block.body.state.post_state_hash.clone();
+                let deploy = construct_deploy::source_deploy_now_full(
+                    ten_string_connectives_match(ints),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+                let (next, processed) =
+                    compute_state(&mut runtime_manager, &genesis_context, deploy, &state).await;
+                assert!(!processed.is_failed, "{:?}", processed.system_deploy_error);
+                let replayed =
+                    replay_compute_state(&mut runtime_manager, &genesis_context, processed, &state)
+                        .await
+                        .unwrap();
+                assert_eq!(replayed, next);
+                let taken = runtime_manager
+                    .get_data(
+                        next,
+                        &new_gstring_par(branch.to_string(), Vec::new(), false),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    taken,
+                    vec![new_gint_par(1, Vec::new(), false)],
+                    "{ints} ints"
+                );
+            }
+        },
+    )
+    .await
+    .unwrap()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deploys_failing_on_the_nesting_limit_replay_identically() {
     with_runtime_manager(
