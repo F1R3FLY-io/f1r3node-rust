@@ -33,6 +33,21 @@ on:
         options:
           - daily
           - weekend
+      gate:
+        description: Release train gate of the soak run (ca-item or ca-release), or empty for a series run
+        required: false
+        default: ""
+        type: string
+      gate_pr:
+        description: Pull request of a ca-item gate run
+        required: false
+        default: ""
+        type: string
+      target_sha:
+        description: Commit that the gate run soaks
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -40,6 +55,7 @@ permissions:
 jobs:
   publish:
     name: Publish Soak Checkpoint
+    if: inputs.gate == ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -315,3 +331,91 @@ jobs:
         if: steps.assemble.outputs.publish == 'true'
         id: deploy
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+
+  gate_status:
+    name: Report Soak Gate Checkpoint
+    if: inputs.gate != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      statuses: write
+    concurrency:
+      group: soak-gate-checkpoint-${{ inputs.target_sha }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout CI control files
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-control
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Download checkpoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+          RUN_ATTEMPT: ${{ inputs.run_attempt }}
+          ARTIFACT: ${{ inputs.artifact }}
+          KIND: ${{ inputs.kind }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if [ "$GITHUB_ACTOR" != "github-actions[bot]" ]; then
+            echo "::error::only a repository workflow can report a gate checkpoint"
+            exit 1
+          fi
+          if [[ ! "$RUN_ID" =~ ^[1-9][0-9]*$ ]] || [[ ! "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::run_id and run_attempt must be positive integers"
+            exit 1
+          fi
+          if [[ ! "$ARTIFACT" =~ ^soak-checkpoint-${RUN_ID}-${RUN_ATTEMPT}-[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::artifact must belong to the requested run and attempt"
+            exit 1
+          fi
+          if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::target_sha must be a full commit SHA"
+            exit 1
+          fi
+          mkdir -p checkpoint
+          for attempt in 1 2 3 4 5; do
+            if download_err="$(gh run download "$RUN_ID" \
+                 --repo "$GITHUB_REPOSITORY" \
+                 --name "$ARTIFACT" --dir checkpoint 2>&1)"; then
+              break
+            fi
+            printf 'attempt %s failed: %s\n' "$attempt" "$download_err"
+            if [ "$attempt" = "5" ]; then
+              echo "::error::artifact ${ARTIFACT} not readable on run ${RUN_ID} after 5 attempts"
+              exit 1
+            fi
+            sleep 15
+          done
+          jq -e \
+            --arg run_id "$RUN_ID" \
+            --argjson run_attempt "$RUN_ATTEMPT" \
+            --arg kind "$KIND" \
+            --arg target_sha "$TARGET_SHA" \
+            '.run.status == "in_progress"
+             and (.run.run_id | tostring) == $run_id
+             and .run.run_attempt == $run_attempt
+             and .run.kind == $kind
+             and .run.target_sha == $target_sha' \
+            checkpoint/weekly-summary.json >/dev/null || {
+              echo "::error::checkpoint metadata does not match the requested run, attempt, series, and commit"
+              exit 1
+            }
+
+      - name: Report checkpoint status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GATE: ${{ inputs.gate }}
+          GATE_PR: ${{ inputs.gate_pr }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.run_id }}/attempts/${{ inputs.run_attempt }}
+          CHECKPOINT_SUMMARY: checkpoint/weekly-summary.json
+        shell: bash -euo pipefail {0}
+        run: bash ci-control/.github/scripts/report-soak-gate.sh checkpoint

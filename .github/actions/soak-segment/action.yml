@@ -50,6 +50,16 @@ inputs:
   kind:
     required: true
     description: weekend | daily — selects the published series.
+  gate:
+    description: >-
+      Release train gate of the run (ca-item or ca-release), or empty. A gate
+      checkpoint updates the Soak Gate status and publishes no series.
+    required: false
+    default: ""
+  gate_pr:
+    description: Pull request of a ca-item gate run, or empty.
+    required: false
+    default: ""
   retry_attempt:
     required: true
     description: Restart counter from the gate; >0 marks a restarted run.
@@ -269,6 +279,9 @@ runs:
         # containing shell metacharacters would execute rather than be quoted.
         ARTIFACT: soak-checkpoint-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.label }}
         KIND: ${{ inputs.kind }}
+        GATE: ${{ inputs.gate }}
+        GATE_PR: ${{ inputs.gate_pr }}
+        TARGET_SHA: ${{ inputs.target_sha }}
         REPO: ${{ github.repository }}
         REF: ${{ github.event.repository.default_branch }}
       shell: bash -euo pipefail {0}
@@ -286,7 +299,11 @@ runs:
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg artifact "$ARTIFACT" \
             --arg kind "$KIND" \
-            '{ref:$ref,inputs:{run_id:$run_id,run_attempt:$run_attempt,artifact:$artifact,kind:$kind}}')" || return 1
+            --arg gate "${GATE:-}" \
+            --arg gate_pr "${GATE_PR:-}" \
+            --arg target_sha "${TARGET_SHA:-}" \
+            '{ref:$ref,inputs:({run_id:$run_id,run_attempt:$run_attempt,artifact:$artifact,kind:$kind}
+              + (if $gate == "" then {} else {gate:$gate,gate_pr:$gate_pr,target_sha:$target_sha} end))}')" || return 1
           response="$(mktemp)" || return 1
           http_status=000
           if ! http_status="$(curl --silent --show-error \
