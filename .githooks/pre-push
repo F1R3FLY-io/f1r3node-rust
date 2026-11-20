@@ -111,74 +111,18 @@ unset GIT_DIR GIT_WORK_TREE 2>/dev/null || true
 # ---------------------------------------------------------------------------
 # Host-wide test lock.
 #
-# Two sibling checkouts of this repo running their pre-push gates at the same
-# wall-clock instant compete for CPU on the timing sentinels (see
-# .config/nextest.toml), for file descriptors under kern.maxfilesperproc, for
-# VM address space across LMDB mmaps, and for the per-user SysV semaphore
-# pool that the destructive ipcrm reap below walks. Serialize the gates on
-# this lock so the second push blocks instead of corrupting the first.
-#
-# mkdir is atomic on all POSIX filesystems. The pid file records who owns
-# the lock; a dead pid in it means the previous holder was SIGKILL'd (traps
-# don't fire), so the next acquirer treats it as stale and takes over.
+# Shared with any direct-test entry point (scripts/ci/run-tests.sh, `just
+# test`) so sibling checkouts of this repo cannot run tests at the same
+# wall-clock instant and compete for shared resources (CPU on the timing
+# sentinels in .config/nextest.toml, file descriptors under
+# kern.maxfilesperproc, VM address space across LMDB mmaps, and the per-user
+# SysV semaphore pool that the destructive ipcrm reap below walks). See
+# F1R3FLY-io/f1r3node-rust#1014 and #1102.
 #
 # Opt out with SKIP_TEST_LOCK=1 when you know you're the only run on the
 # host and need the lock out of the way.
-TEST_LOCK_DIR="${TEST_LOCK_DIR:-${TMPDIR:-/tmp}/f1r3node-pre-push.lock.d}"
-SKIP_TEST_LOCK="${SKIP_TEST_LOCK:-0}"
-TEST_LOCK_HELD=0
-
-acquire_test_lock() {
-    if [[ "$SKIP_TEST_LOCK" == "1" ]]; then
-        echo -e "${YELLOW}[test-lock] skipped (SKIP_TEST_LOCK=1)${NC}"
-        return 0
-    fi
-
-    echo -e "${CYAN}[test-lock] attempting to acquire $TEST_LOCK_DIR${NC}"
-
-    local waited=0 holder_pid holder_info sleep_s=5
-    while true; do
-        if mkdir "$TEST_LOCK_DIR" 2>/dev/null; then
-            echo "$$" > "$TEST_LOCK_DIR/pid"
-            {
-                echo "pid=$$"
-                echo "host=$(hostname -s 2>/dev/null || echo unknown)"
-                echo "repo=$REPO_ROOT"
-                echo "acquired=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            } > "$TEST_LOCK_DIR/info" 2>/dev/null || true
-            TEST_LOCK_HELD=1
-            if (( waited > 0 )); then
-                echo -e "${CYAN}[test-lock] acquired after ${waited}s${NC}"
-            else
-                echo -e "${CYAN}[test-lock] acquired${NC}"
-            fi
-            return 0
-        fi
-
-        holder_pid="$(cat "$TEST_LOCK_DIR/pid" 2>/dev/null || true)"
-        if [[ -n "$holder_pid" ]] && ! kill -0 "$holder_pid" 2>/dev/null; then
-            echo -e "${YELLOW}[test-lock] stale lock from dead pid $holder_pid; clearing${NC}"
-            rm -rf "$TEST_LOCK_DIR"
-            continue
-        fi
-
-        if (( waited == 0 )); then
-            holder_info="$(cat "$TEST_LOCK_DIR/info" 2>/dev/null | tr '\n' ' ' || true)"
-            echo -e "${CYAN}[test-lock] waiting for holder pid ${holder_pid:-?} (${holder_info:-no info})${NC}"
-        elif (( waited % 60 == 0 )); then
-            echo -e "${CYAN}[test-lock] still waiting... (${waited}s elapsed, holder pid ${holder_pid:-?})${NC}"
-        fi
-        sleep "$sleep_s"
-        waited=$((waited + sleep_s))
-    done
-}
-
-release_test_lock() {
-    if [[ "$TEST_LOCK_HELD" == "1" ]]; then
-        rm -rf "$TEST_LOCK_DIR"
-        TEST_LOCK_HELD=0
-    fi
-}
+# shellcheck source=../scripts/lib/test-lock.sh
+source "$REPO_ROOT/scripts/lib/test-lock.sh"
 
 acquire_test_lock
 
