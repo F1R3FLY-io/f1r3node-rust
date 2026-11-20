@@ -64,7 +64,7 @@ if [ "$mode" = pending ]; then
 	description="The soak is running."
 elif [ "$mode" = checkpoint ]; then
 	state=pending
-	description="$(jq -r 'select((.run.elapsed_seconds | type) == "number" and (.run.duration_seconds | type) == "number" and (.passive.iterations | type) == "number" and (.passive.failures | type) == "number") | "Checkpoint: \((.run.elapsed_seconds / 3600) | floor)h of \((.run.duration_seconds / 3600) | floor)h soaked, \(.passive.iterations) iterations, \(.passive.failures) failed."' "${CHECKPOINT_SUMMARY:-/nonexistent}" 2>/dev/null)" || description=""
+	description="$(jq -r 'select((.run.elapsed_seconds | type) == "number" and (.run.duration_seconds | type) == "number" and (.passive.iterations | type) == "number" and (.passive.failures | type) == "number" and .run.elapsed_seconds >= 0 and .run.duration_seconds > 0 and .passive.iterations >= 0 and .passive.failures >= 0) | "Checkpoint: \((.run.elapsed_seconds / 3600) | floor)h of \((.run.duration_seconds / 3600) | floor)h soaked, \(.passive.iterations) iterations, \(.passive.failures) failed."' "${CHECKPOINT_SUMMARY:-/nonexistent}" 2>/dev/null)" || description=""
 	[ -n "$description" ] || description="The soak is running."
 else
 	if [ "${SOAK_RESULT:-}" = cancelled ] || [ "${LAUNCH_RESULT:-}" = cancelled ]; then

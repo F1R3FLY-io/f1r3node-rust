@@ -360,6 +360,7 @@ jobs:
           RUN_ATTEMPT: ${{ inputs.run_attempt }}
           ARTIFACT: ${{ inputs.artifact }}
           KIND: ${{ inputs.kind }}
+          GATE: ${{ inputs.gate }}
           TARGET_SHA: ${{ inputs.target_sha }}
         shell: bash -euo pipefail {0}
         run: |
@@ -367,6 +368,13 @@ jobs:
             echo "::error::only a repository workflow can report a gate checkpoint"
             exit 1
           fi
+          case "$GATE:$KIND" in
+            ca-item:daily | ca-release:weekend) ;;
+            *)
+              echo "::error::gate ${GATE} does not match the ${KIND} series"
+              exit 1
+              ;;
+          esac
           if [[ ! "$RUN_ID" =~ ^[1-9][0-9]*$ ]] || [[ ! "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::run_id and run_attempt must be positive integers"
             exit 1

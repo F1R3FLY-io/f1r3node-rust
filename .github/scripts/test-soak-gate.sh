@@ -359,6 +359,17 @@ report checkpoint CHECKPOINT_SUMMARY="$TMP/missing.json"
 grep -Fq -- "-f state=pending -f context=Soak Gate (22h) -f description=The soak is running. " "$TMP/gh.log" ||
 	fail "a checkpoint without a summary did not fall back to the pending text: $(cat "$TMP/gh.log")"
 if labelled || unlabelled || grep -q '/pulls/' "$TMP/gh.log"; then fail "a ca-item checkpoint report changed the labels: $(cat "$TMP/gh.log")"; fi
+for bad in '"elapsed_seconds":-3600,"duration_seconds":79200' '"elapsed_seconds":3600,"duration_seconds":0'; do
+	printf '{"run":{%s},"passive":{"iterations":1,"failures":0}}\n' "$bad" >"$TMP/bad-checkpoint.json"
+	report checkpoint CHECKPOINT_SUMMARY="$TMP/bad-checkpoint.json"
+	[ "$status" -eq 0 ] || fail "the checkpoint report with $bad failed: $out"
+	grep -Fq -- "-f description=The soak is running. " "$TMP/gh.log" ||
+		fail "a checkpoint with $bad did not fall back to the pending text: $(cat "$TMP/gh.log")"
+done
+printf '%s\n' '{"run":{"elapsed_seconds":3600,"duration_seconds":79200},"passive":{"iterations":-1,"failures":-2}}' >"$TMP/bad-checkpoint.json"
+report checkpoint CHECKPOINT_SUMMARY="$TMP/bad-checkpoint.json"
+grep -Fq -- "-f description=The soak is running. " "$TMP/gh.log" ||
+	fail "a checkpoint with negative counts did not fall back to the pending text: $(cat "$TMP/gh.log")"
 report checkpoint CHECKPOINT_SUMMARY="$TMP/checkpoint.json" FAKE_CURRENT_URL=https://github.com/example/repo/actions/runs/501/attempts/1
 if grep -q "repos/example/repo/statuses/" "$TMP/gh.log"; then fail "a checkpoint replaced the status of a newer run: $(cat "$TMP/gh.log")"; fi
 
@@ -375,6 +386,18 @@ ruby -ryaml -e '
   abort "the gate checkpoint job cannot post statuses" unless jobs.dig("gate_status", "permissions", "statuses") == "write"
   abort "the gate checkpoint job may deploy Pages" if jobs.dig("gate_status", "permissions", "pages")
 ' "$WORKFLOW" "$ROOT/.github/workflows/soak-checkpoint-publish.yml" || fail "the gate checkpoint wiring is wrong"
+gate_kind_check="$(ruby -ryaml -e '
+  step = YAML.load_file(ARGV[0])["jobs"]["gate_status"]["steps"].find { |s| s["name"] == "Download checkpoint" } or abort "no Download checkpoint step"
+  abort "the step has no GATE" unless step.dig("env", "GATE") == "${{ inputs.gate }}"
+  check = step["run"][/^ *case "\$GATE:\$KIND" in\n.*?^ *esac\n/m] or abort "the step does not check the gate against the series"
+  print check
+' "$ROOT/.github/workflows/soak-checkpoint-publish.yml")" || fail "the gate checkpoint does not check the gate against the series"
+for pair in ca-item:daily:0 ca-release:weekend:0 ca-item:weekend:1 ca-release:daily:1 ca-other:daily:1 :daily:1; do
+	IFS=: read -r g k want <<<"$pair"
+	got=0
+	GATE="$g" KIND="$k" bash -euo pipefail -c "$gate_kind_check" >/dev/null 2>&1 || got=1
+	[ "$got" = "$want" ] || fail "the gate checkpoint series check gave $got for gate '$g' and series $k"
+done
 grep -Fq '(if $gate == "" then {} else {gate:$gate,gate_pr:$gate_pr,target_sha:$target_sha} end)' "$ROOT/.github/actions/soak-segment/action.yml" ||
 	fail "the segment checkpoint dispatch does not send the gate inputs only for a gate run"
 

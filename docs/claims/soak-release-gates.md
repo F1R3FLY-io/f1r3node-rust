@@ -46,7 +46,7 @@ A cancelled soak posts error, and every other result posts failure. A run never 
 
 **Isolation.** A gate run has the concurrency group of its pull request or of `ca-release`. A gate run and a `daily` or `weekend` run therefore never cancel each other. Its soak runner registers under a label of its own run, so its soak job runs only on the VM that the run launched. A gate run publishes no dashboard series.
 
-**Checkpoint progress.** A gate run checkpoint updates only the pending status of its own `Soak Gate` context on the soaked commit. The description gives the hours soaked, the iterations, and the failures. A checkpoint never posts a final state, and it never replaces the status of a newer run.
+**Checkpoint progress.** A gate run checkpoint updates only the pending status of its own `Soak Gate` context on the soaked commit. The description gives the hours soaked, the iterations, and the failures. The status job refuses a gate that does not match the series: `ca-item` must be `daily`, and `ca-release` must be `weekend`. A checkpoint never posts a final state, and it never replaces the status of a newer run.
 
 ## Implementation surface
 
