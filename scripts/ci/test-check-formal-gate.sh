@@ -141,11 +141,13 @@ printf 'download\n' >> "$HOME/downloads"
 printf '%s' "${TEST_TLC_BYTES:-fixture}" > "$HOME/.tla/tla2tools.jar"
 SH
 chmod +x "$WORK/bin/java" "$WORK/bin/curl"
-export HOME="$WORK/home"
+export HOME="$WORK/home" JAVA_HOME_21_X64="$WORK" GITHUB_PATH="$WORK/github-path"
 mkdir "$HOME"
 export TLA_TOOLS_URL=https://example.invalid/tla2tools.jar
 export TLA_TOOLS_SHA256
 TLA_TOOLS_SHA256=$(printf fixture | sha256sum | awk '{print $1}')
+reject env -u JAVA_HOME_21_X64 bash -euo pipefail "$WORK/setup-tlc.sh"
+[[ ! -e "$HOME/downloads" && ! -e "$HOME/.tla/tla2tools.jar" && ! -e "$GITHUB_PATH" ]]
 reject env TEST_JAVA_FAILURE=1 bash -euo pipefail "$WORK/setup-tlc.sh"
 [[ ! -e "$HOME/downloads" && ! -e "$HOME/.tla/tla2tools.jar" ]]
 reject env TEST_DOWNLOAD_FAILURE=1 bash -euo pipefail "$WORK/setup-tlc.sh"
@@ -153,5 +155,6 @@ reject env TEST_DOWNLOAD_FAILURE=1 bash -euo pipefail "$WORK/setup-tlc.sh"
 reject env TEST_TLC_BYTES=altered bash -euo pipefail "$WORK/setup-tlc.sh"
 bash -euo pipefail "$WORK/setup-tlc.sh"
 [[ "$(< "$HOME/.tla/tla2tools.jar")" == fixture ]]
+grep -Fxq "$JAVA_HOME_21_X64/bin" "$GITHUB_PATH"
 printf 'TLC setup: bounded download, checksum verification, and setup failure controls passed.\n'
 printf 'Formal gate: positive round trips, workflow wiring, and %s exact-exit refusal controls passed.\n' "$count"
