@@ -142,6 +142,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         );
 
         let ab = approved_block.candidate.block.clone();
+        let genesis_post_state_hash = ab.body.state.post_state_hash.clone();
         let casper = self.create_casper(validator_id.clone(), ab).await?;
         let casper_arc = Arc::new(casper);
 
@@ -219,6 +220,20 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             &self.engine_cell,
             &self.event_publisher,
             self.state_items_tx.clone(),
+        )
+        .await?;
+
+        // Guard against config drift. The node's local native-token-*
+        // values must match what the stored genesis baked into the
+        // TokenMetadata contract. Mismatch at startup aborts here, same
+        // as the networked path's check inside
+        // `Initializing::create_casper_and_transition_to_running`.
+        crate::rust::util::token_metadata_check::verify_token_metadata_matches_config(
+            &self.runtime_manager,
+            &genesis_post_state_hash,
+            &self.casper_shard_conf.native_token_name,
+            &self.casper_shard_conf.native_token_symbol,
+            self.casper_shard_conf.native_token_decimals,
         )
         .await?;
 
