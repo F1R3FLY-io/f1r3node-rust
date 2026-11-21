@@ -402,6 +402,7 @@ queue_rules:
       - check-success=cargo-deny
       - check-success=Commit Policy
       - check-success=Promotion Source
+      - check-success=CI Parity
       - check-success=Test (block-storage)
       - check-success=Test (comm)
       - check-success=Test (crypto)
@@ -430,6 +431,7 @@ queue_rules:
       - check-success=cargo-deny
       - check-success=Commit Policy
       - check-success=Promotion Source
+      - check-success=CI Parity
       - check-success=Test (block-storage)
       - check-success=Test (comm)
       - check-success=Test (crypto)
