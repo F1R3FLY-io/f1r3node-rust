@@ -441,13 +441,23 @@ env:
   #   waits 40 s for them, covering the horizon's 30 s resend (node #1088).
   #   Verified: descends from 646efd0 (3 commits ahead, 0 behind); differs
   #   from it only in log_events.py and that test; 586 unit tests pass.
-  # 2026-11-20: fba951b -> dcd4d93 (system-integration dev plus a branch not
-  #   yet merged). test_storage declares a phlo limit that covers
-  #   store-data.rho's registry insert, and test_asymmetric_bonds re-reads the
-  #   fault-tolerance chain until one response holds (system-integration
-  #   #200). Verified: same content as fba951b except those two test files.
-  #   Repin to the merge commit once the branch lands.
-  SYSTEM_INTEGRATION_REF: dcd4d935203794d60d3f50a293ff951b117733d1
+  # 2026-11-20: fba951b -> a0d8686 (system-integration main, PR #200 merged
+  #   through promotion #201). test_fault_tolerance_asymmetric_bonds re-reads
+  #   each validator's blocks until one get_blocks response holds the
+  #   main-parent FT check (30 s), since a response that straddles a
+  #   finalization can briefly show an ancestor's old FT under a
+  #   descendant's new one (node #1070). Verified: descends from fba951b (1
+  #   commit ahead, 0 behind); differs from it only in that test; the test
+  #   passes on a local subprocess shard; 586 unit tests pass.
+  # 2026-11-20: a0d8686 -> 9243d3b (system-integration main, PRs #197 and
+  #   #202 merged through promotion #203). Test deploys declare phlo limits
+  #   within the node's 20,000,000 max-phlo-limit, pyf1r3fly is pinned to the
+  #   merge of pyf1r3fly #15, which lowers the PosAPI default limit, and
+  #   test_storage declares a limit that covers store-data.rho's registry
+  #   insert. Verified: descends from a0d8686 (7 commits ahead, 0 behind);
+  #   differs from it only in node.py, 14 tests, pyproject.toml and
+  #   poetry.lock; 586 unit tests pass.
+  SYSTEM_INTEGRATION_REF: 9243d3b219c63597c5670dfc1da79265c37d1091
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"

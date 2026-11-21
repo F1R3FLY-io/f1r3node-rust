@@ -4,8 +4,8 @@ The 25 `CLAIM-SOAK-CLEANUP-001` approvals of this package carry the principal `s
 All 25 signatures use one ED25519 key, `SHA256:6lMzOhO6Jo1ivgsrtYX3swB1oURddk9THUzi/XzsilY`.
 
 This key is one of the two `spreston8` keys in the `CBC_ACCEPTANCE_ALLOWED_SIGNERS` repository variable.
-The signatures were made on 2026-11-20, with the review reference https://github.com/F1R3FLY-io/f1r3node-rust/pull/1094.
-The maintainer approved the signing step.
+The signatures were made on 2026-11-20, with the review reference https://github.com/F1R3FLY-io/f1r3node-rust/pull/1110.
+The maintainer approved running the signing step on their behalf for this package.
 
 Before signing, each completed approval was compared with the unsigned kit, and only the three maintainer fields differed.
 Each approval was also checked against the SHA-256 of its artifact in the worktree.
