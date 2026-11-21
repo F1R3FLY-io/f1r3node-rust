@@ -46,9 +46,9 @@ use super::accounting::costs::{
     bigrat_division_cost, bigrat_multiplication_cost, bigrat_negation_cost,
     bigrat_subtraction_cost, bigrat_sum_cost, boolean_and_cost, boolean_or_cost,
     byte_array_append_cost, collection_eval_cost, comparison_cost, division_cost,
-    equality_check_cost, list_append_cost, method_call_cost, modulo_cost, multiplication_cost,
-    new_bindings_cost, op_call_cost, receive_eval_cost, send_eval_cost, string_append_cost,
-    string_comparison_cost, subtraction_cost, sum_cost, var_eval_cost,
+    equality_check_cost, list_append_cost, match_steps_cost, method_call_cost, modulo_cost,
+    multiplication_cost, new_bindings_cost, op_call_cost, receive_eval_cost, send_eval_cost,
+    string_append_cost, string_comparison_cost, subtraction_cost, sum_cost, var_eval_cost,
 };
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
@@ -72,7 +72,7 @@ use crate::rust::interpreter::accounting::costs::{
     nth_method_call_cost, remove_cost, size_method_cost, slice_cost, take_cost, to_byte_array_cost,
     to_list_cost, union_cost, valid_utf8_prefix_len_cost,
 };
-use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
+use crate::rust::interpreter::matcher::spatial_matcher::{SpatialMatcherContext, StepBudget};
 use crate::rust::interpreter::rho_type::RhoTuple2;
 
 /// Minimum remaining stack space (in bytes) before growing.
@@ -1291,6 +1291,26 @@ impl DebruijnInterpreter {
         }
     }
 
+    /// Matches `target` against `pattern` within the phlo the deploy has left,
+    /// charging a phlo per match step. A match that runs out fails the deploy
+    /// with out-of-phlo rather than reading as no match.
+    fn charged_match(
+        &self,
+        target: &Par,
+        pattern: Par,
+    ) -> Result<Option<models::rust::utils::FreeMap>, InterpreterError> {
+        let available = self.cost.get().value.max(0) as usize;
+        let budget = StepBudget::new(available);
+        let matched =
+            SpatialMatcherContext::with_budget(budget.clone()).match_result(target, pattern);
+        self.cost
+            .charge(match_steps_cost(available - budget.left()))?;
+        if matched.is_none() && budget.exhausted() {
+            return Err(InterpreterError::OutOfPhlogistonsError);
+        }
+        Ok(matched)
+    }
+
     // TODO: review 'loop' matches 'tailRecM'
     async fn eval_match(
         &self,
@@ -1317,10 +1337,7 @@ impl DebruijnInterpreter {
             let pattern =
                 self.substitute
                     .substitute_and_charge(unwrap_option_safe(case.pattern)?, 1, env)?;
-            let input_bytes = target.encoded_len() + pattern.encoded_len();
-            let Some(free_map) =
-                SpatialMatcherContext::new(input_bytes).match_result(&target, pattern)
-            else {
+            let Some(free_map) = self.charged_match(&target, pattern)? else {
                 continue;
             };
             let case_env = add_to_env(env, free_map, case.free_count);
@@ -2542,10 +2559,7 @@ impl DebruijnInterpreter {
                         self.substitute
                             .substitute_and_charge(pattern.clone().unwrap(), 1, env)?;
 
-                    let input_bytes = subst_target.encoded_len() + subst_pattern.encoded_len();
-                    let matched = SpatialMatcherContext::new(input_bytes)
-                        .into_match_result(subst_target, subst_pattern)
-                        .is_some();
+                    let matched = self.charged_match(&subst_target, subst_pattern)?.is_some();
 
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::GBool(matched)),

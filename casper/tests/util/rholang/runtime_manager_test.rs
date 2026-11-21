@@ -424,15 +424,17 @@ fn ten_string_connectives_match(ints: usize) -> String {
     )
 }
 
+/// A `match` is charged per step: with the phlo for its steps it matches, and
+/// without it the deploy fails out of phlo; both replay identically.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_match_that_runs_out_of_steps_takes_the_same_branch_on_replay() {
+async fn a_match_is_charged_per_step_and_replays_identically() {
     with_runtime_manager(
         |mut runtime_manager, genesis_context, genesis_block| async move {
-            for (ints, branch) in [(20, "matched"), (1000, "unmatched")] {
+            for (phlo_limit, fails) in [(1_000_000, false), (100_000, true)] {
                 let state = genesis_block.body.state.post_state_hash.clone();
                 let deploy = construct_deploy::source_deploy_now_full(
-                    ten_string_connectives_match(ints),
-                    None,
+                    ten_string_connectives_match(1000),
+                    Some(phlo_limit),
                     None,
                     None,
                     None,
@@ -441,24 +443,19 @@ async fn a_match_that_runs_out_of_steps_takes_the_same_branch_on_replay() {
                 .unwrap();
                 let (next, processed) =
                     compute_state(&mut runtime_manager, &genesis_context, deploy, &state).await;
-                assert!(!processed.is_failed, "{:?}", processed.system_deploy_error);
+                assert_eq!(processed.is_failed, fails, "phlo limit {phlo_limit}");
                 let replayed =
                     replay_compute_state(&mut runtime_manager, &genesis_context, processed, &state)
                         .await
                         .unwrap();
                 assert_eq!(replayed, next);
-                let taken = runtime_manager
-                    .get_data(
-                        next,
-                        &new_gstring_par(branch.to_string(), Vec::new(), false),
-                    )
-                    .await
-                    .unwrap();
-                assert_eq!(
-                    taken,
-                    vec![new_gint_par(1, Vec::new(), false)],
-                    "{ints} ints"
-                );
+                if !fails {
+                    let taken = runtime_manager
+                        .get_data(next, &new_gstring_par("matched".to_string(), Vec::new(), false))
+                        .await
+                        .unwrap();
+                    assert_eq!(taken, vec![new_gint_par(1, Vec::new(), false)]);
+                }
             }
         },
     )

@@ -106,6 +106,9 @@ pub fn boolean_or_cost() -> Cost { Cost::create(2, "boolean or") }
 
 pub fn comparison_cost() -> Cost { Cost::create(3, "comparison") }
 
+// A match step is a pattern level or an element a split reads or copies.
+pub fn match_steps_cost(steps: usize) -> Cost { Cost::create(steps as i64, "match steps") }
+
 // Strings compare byte by byte up to the shorter one's length.
 pub fn string_comparison_cost(left_len: usize, right_len: usize) -> Cost {
     Cost::create(
