@@ -83,6 +83,8 @@ impl TestContext {
             genesis_params.native_token_name.clone(),
             genesis_params.native_token_symbol.clone(),
             genesis_params.native_token_decimals,
+            genesis_params.identity_registry_admin_public_keys.clone(),
+            genesis_params.identity_registry_admin_quorum,
             // Empty bundle + None cadence matches
             // GenesisBuilder::build_genesis_with_parameters, which
             // uses the default-no-provisioning genesis parameters.
@@ -222,6 +224,8 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
+        &ctx.protocol.identity_registry_admin_public_keys,
+        ctx.protocol.identity_registry_admin_quorum,
         &ctx.protocol.fs_bundle,
         ctx.protocol.consensus_fs_snapshot_cadence,
     )
@@ -263,6 +267,8 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
+        &ctx.protocol.identity_registry_admin_public_keys,
+        ctx.protocol.identity_registry_admin_quorum,
         &ctx.protocol.fs_bundle,
         ctx.protocol.consensus_fs_snapshot_cadence,
     )
@@ -304,6 +310,8 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
+        &ctx.protocol.identity_registry_admin_public_keys,
+        ctx.protocol.identity_registry_admin_quorum,
         &ctx.protocol.fs_bundle,
         ctx.protocol.consensus_fs_snapshot_cadence,
     )
@@ -349,6 +357,8 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
+        &ctx.protocol.identity_registry_admin_public_keys,
+        ctx.protocol.identity_registry_admin_quorum,
         &ctx.protocol.fs_bundle,
         ctx.protocol.consensus_fs_snapshot_cadence,
     )
@@ -466,6 +476,8 @@ async fn block_approver_protocol_rejects_candidate_when_local_fs_bundle_mismatch
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
+        &ctx.protocol.identity_registry_admin_public_keys,
+        ctx.protocol.identity_registry_admin_quorum,
         &local_bundle,
         None,
     )

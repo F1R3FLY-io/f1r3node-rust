@@ -436,6 +436,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
+            self.conf
+                .genesis_block_data
+                .identity_registry_admin_public_keys
+                .clone(),
+            self.conf.genesis_block_data.identity_registry_admin_quorum,
             // Threaded from `CasperLaunchImpl::fs_bundle` (populated
             // by `node::rust::runtime::setup::setup_node_program`
             // via `provisioning_merge::project_bundle(&merged)`),
@@ -550,6 +555,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
+            self.conf
+                .genesis_block_data
+                .identity_registry_admin_public_keys
+                .clone(),
+            self.conf.genesis_block_data.identity_registry_admin_quorum,
             self.fs_bundle.clone(),
             &self.runtime_manager,
             self.last_approved_block.clone(),

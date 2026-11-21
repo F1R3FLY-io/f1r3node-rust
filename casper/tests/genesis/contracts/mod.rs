@@ -18,6 +18,7 @@ pub mod fileio_stream_argvalidation_spec;
 pub mod fileio_stream_genesis_spec;
 pub mod fs_generator_spec;
 pub mod fs_genesis_spec;
+pub mod identity_registry_spec;
 pub mod list_ops_spec;
 pub mod make_mint_spec;
 pub mod multi_sig_system_vault_spec;

@@ -116,6 +116,47 @@ async fn system_vault_should_be_accessible_at_genesis() {
     tracing::info!("SystemVault balance result: {:?}", result);
 }
 
+/// Identity registry should be reachable at `rho:system:identityRegistry`
+/// at genesis post-state, with an empty store.
+#[tokio::test]
+async fn identity_registry_should_be_accessible_at_genesis() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+
+    let query = format!(
+        r#"
+        new return, rl(`rho:registry:lookup`), registryCh in {{
+          rl!(`rho:system:identityRegistry`, *registryCh) |
+          for (@(_, registry) <- registryCh) {{
+            @[registry, "resolve_current"]!("{}".hexToBytes(), *return)
+          }}
+        }}
+    "#,
+        "00".repeat(32)
+    );
+
+    let node = TestNode::standalone(genesis.clone())
+        .await
+        .expect("Failed to create standalone node");
+
+    let post_state_hash = genesis.genesis_block.body.state.post_state_hash.clone();
+
+    let (result, _cost) = node
+        .runtime_manager
+        .play_exploratory_deploy(query, &post_state_hash, None, Vec::new())
+        .await
+        .expect("Failed to execute exploratory deploy");
+
+    let result_str = format!("{:?}", result);
+    assert!(
+        result_str.contains("unknown_name"),
+        "resolve_current on an unregistered name should return unknown_name: {:?}",
+        result
+    );
+}
+
 /// Validator vaults should have zero balance at genesis
 #[tokio::test]
 async fn validator_vaults_should_have_zero_balance_at_genesis() {

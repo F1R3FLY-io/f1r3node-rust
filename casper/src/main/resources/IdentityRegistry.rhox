@@ -1,0 +1,362 @@
+/*
+ The table below describes the required computations and their dependencies
+
+ No. | Dependency | Computation method | Result
+ ----+------------+--------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------
+ 1.  |            | given              | sk = b461b0c47b597a5eb9c9e38856533e802954a8e6ed1b6dd3f34e891b4912c8b1
+ 2.  |            | given              | timestamp = 1794328772185
+ 3.  |            | lastNonce          | nonce = 9223372036854775807
+ 4.  | 1,         | secp256k1          | pk = 04b5e7d2c17c8a08b1c5983cd6def4124faa345698eada20c91f0a47406f8827c9cdb80f2e514b4b03b2d3a73501c500f675c756867dcbf9fcad57fa7412acb22e
+ 5.  | 2, 4, 3,   | registry           | value = (1794328772185, 04b5e7d2c17c8a08b1c5983cd6def4124faa345698eada20c91f0a47406f8827c9cdb80f2e514b4b03b2d3a73501c500f675c756867dcbf9fcad57fa7412acb22e, 9223372036854775807)
+ 6.  | 5,         | protobuf           | toSign = 2a65aa01620a092a0710b2f9a1e5b8680a462a44ca014104b5e7d2c17c8a08b1c5983cd6def4124faa345698eada20c91f0a47406f8827c9cdb80f2e514b4b03b2d3a73501c500f675c756867dcbf9fcad57fa7412acb22e0a0d2a0b10feffffffffffffffff01
+ 7.  | 6, 1,      | secp256k1          | sig = 3045022100cb64110905f0634967f9f6e3e20eb998b86dffd21121dd94848bc2f2355ca29202206fce173639fdf67d1fbcb0d6c06154193d9d4bf1b3c8ca857f18f2be05c27863
+ 8.  | 4,         | registry           | uri = rho:id:csx8wjodypw4iet7sejtojrys9ampbn81sz3tqj9z6z3rymu6udhhb
+ ----+------------+--------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------
+ */
+
+// Identity Registry, deployed at genesis and registered at
+// `rho:system:identityRegistry`.
+
+// Per-operation payloads. The client and the contract build the same bytes
+// from the call args. The client signs the digest, and the contract rebuilds
+// the payload and verifies the signature.
+//
+//   register:     0x01 || pk(65)   || nonce(32)                     == 98 bytes
+//   rotate:       0x02 || name(32) || new_pk(65) || seq.toByteArray()
+//   admin_relink: 0x03 || name(32) || new_pk(65) || seq.toByteArray() || admin_evidence
+//
+// name = blake2b256(payload_register)
+// Every operation's `sig` is a secp256k1 signature over blake2b256(payload).
+
+new
+  identityRegistry,
+  insertSigned(`rho:registry:insertSigned:secp256k1`),
+  uriOut,
+  secpVerify(`rho:crypto:secp256k1Verify`),
+  blake2b256(`rho:crypto:blake2b256Hash`),
+  lookup(`rho:registry:lookup`),
+  blockData(`rho:block:data`),
+  listOpsCh
+in {
+  lookup!(`rho:lang:listOps`, *listOpsCh) |
+  // The raw name is published, not a bundle: callers address the contracts
+  // as @[*registry, "<op>"], which only matches the unbundled name.
+  insertSigned!(
+    "04b5e7d2c17c8a08b1c5983cd6def4124faa345698eada20c91f0a47406f8827c9cdb80f2e514b4b03b2d3a73501c500f675c756867dcbf9fcad57fa7412acb22e".hexToBytes(),
+    (9223372036854775807, *identityRegistry),
+    "3045022100cb64110905f0634967f9f6e3e20eb998b86dffd21121dd94848bc2f2355ca29202206fce173639fdf67d1fbcb0d6c06154193d9d4bf1b3c8ca857f18f2be05c27863".hexToBytes(),
+    *uriOut
+  )
+  |
+
+  for (@(_, ListOps) <- listOpsCh) {
+    new identities, admins, registerLock in {
+      // REG-D3: (Set of admin pks, quorum), fixed at genesis by
+      // `identity-registry-admin-public-keys` and `identity-registry-admin-quorum`.
+      admins!(($$identityRegistryAdminPublicKeys$$.toSet(), $$identityRegistryAdminQuorum$$)) |
+
+      // Register lock token. See the fresh-leaf race FIXME below.
+      registerLock!(Nil) |
+
+      // The identity store. Keyed by name (32-byte ByteArray, == blake2b256(payload_register)).
+      // Record shape:
+      //   { "current": ByteArray(65),
+      //     "history": [{ "pk": ByteArray(65), "op": String, "seq": Int, "blockHeight": Int, "admin_evidence"?: ByteArray, "admin_signers"?: [ByteArray(65)] }, ...],
+      //     "seq":     Int
+      //   }
+      //
+      // Backed by the system TreeHashMap at depth 3 (IR-D4), so writes to
+      // different names do not serialize. identities holds
+      // (TreeHashMap, map handle), and every contract peeks it.
+      //
+      // FIXME: Fresh-leaf race. The TreeHashMap merger catches concurrent writes
+      // to an existing leaf through the standard RSpace consume rule on the
+      // leaf map, but two blocks that both create the same leaf for the first
+      // time can leave two Maps on the leaf channel. registerLock serializes
+      // register as a workaround (IR-D6). Remove it when the merger catches
+      // this case.
+      new treeHashMapCh in {
+        lookup!(`rho:lang:treeHashMap`, *treeHashMapCh) |
+        for (treeHashMap <- treeHashMapCh) {
+          new identitiesHandleCh in {
+            treeHashMap!("init", 3, *identitiesHandleCh) |
+            for (@identitiesHandle <- identitiesHandleCh) {
+              identities!!((*treeHashMap, identitiesHandle))
+            }
+          }
+        }
+      } |
+
+      // register(pk, nonce, sig, ret)
+      //
+      // payload = 0x01 || pk(65) || nonce(32) - built by the contract from the args.
+      // sig     = secp256k1 signature over blake2b256(payload), under pk.
+      //
+      // The nonce lets one key back more than one identity (IR-D2). A replayed
+      // (pk, nonce, sig) gives the same name, so it is a no-op (REG-AC6).
+      //
+      // Responses:
+      //   ("err", "bad_signature") when the signature does not verify under pk.
+      //   ("ok", name) on fresh mint, or as an idempotent no-op when the name
+      //   already exists (REG-AC6).
+      contract @[*identityRegistry, "register"](@pk, @nonce, @sig, ret) = {
+        new hashCh, verifyCh in {
+          blake2b256!(
+            "01".hexToBytes() ++ pk ++ nonce,
+            *hashCh
+          ) |
+          for (@hash <- hashCh) {
+            secpVerify!(hash, sig, pk, *verifyCh) |
+            for (@valid <- verifyCh) {
+              if (valid) {
+                for (_ <- registerLock) {
+                  for (@(treeHashMap, identitiesHandle) <<- identities) {
+                    new existsCh in {
+                      @treeHashMap!("contains", identitiesHandle, hash, *existsCh) |
+                      for (@exists <- existsCh) {
+                        if (exists) {
+                          registerLock!(Nil) |
+                          ret!(("ok", hash))
+                        } else {
+                          new ackCh, blockDataCh in {
+                            blockData!(*blockDataCh) |
+                            for (@blockNumber, @_, @_ <- blockDataCh) {
+                              @treeHashMap!("set", identitiesHandle, hash, {
+                                "current": pk,
+                                "history": [{"pk": pk, "op": "register", "seq": 0, "blockHeight": blockNumber}],
+                                "seq": 0
+                              }, *ackCh) |
+                              for (_ <- ackCh) {
+                                registerLock!(Nil) |
+                                ret!(("ok", hash))
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              } else {
+                ret!(("err", "bad_signature"))
+              }
+            }
+          }
+        }
+      }
+      |
+
+      // rotate(name, newPk, seq, sig, newSig, ret)
+      //
+      // payload = 0x02 || name(32) || new_pk(65) || seq.toByteArray()
+      // sig     = secp256k1 signature over blake2b256(payload), by the
+      //           identity's current key.
+      // newSig  = secp256k1 signature over the same hash, by the new key.
+      //           Proves that the submitter holds newPk (IR-D5).
+      //
+      // Responses:
+      //   ("err", "unknown_name") when `name` is not registered.
+      //   ("err", "seq_mismatch") when `seq` does not match the record's current
+      //   seq.
+      //   ("err", "bad_signature") when either signature does not verify.
+      //   ("ok", newSeq) on success, where newSeq = seq + 1. The record's
+      //   current key becomes newPk, the previous key stays in history, and
+      //   seq is bumped (REG-AC4, REG-AC5).
+      contract @[*identityRegistry, "rotate"](@name, @newPk, @seq, @sig, @newSig, ret) = {
+        for (@(treeHashMap, identitiesHandle) <<- identities) {
+          new existingCh in {
+            @treeHashMap!("get", identitiesHandle, name, *existingCh) |
+            for (@existing <- existingCh) {
+              match existing {
+                Nil => ret!(("err", "unknown_name"))
+                rec => {
+                  if (seq != rec.get("seq")) {
+                    ret!(("err", "seq_mismatch"))
+                  } else {
+                    new hashCh, verifyCh, verifyNewCh in {
+                      blake2b256!(
+                        "02".hexToBytes() ++ name ++ newPk ++ seq.toByteArray(),
+                        *hashCh
+                      ) |
+                      for (@hash <- hashCh) {
+                        secpVerify!(hash, sig, rec.get("current"), *verifyCh) |
+                        secpVerify!(hash, newSig, newPk, *verifyNewCh) |
+                        for (@valid <- verifyCh & @validNew <- verifyNewCh) {
+                          match (valid, validNew) {
+                            (true, true) => {
+                              new ackCh, blockDataCh in {
+                                blockData!(*blockDataCh) |
+                                for (@blockNumber, @_, @_ <- blockDataCh) {
+                                  @treeHashMap!("set", identitiesHandle, name, {
+                                    "current": newPk,
+                                    "history": rec.get("history") ++
+                                      [{"pk": newPk, "op": "rotate", "seq": seq + 1, "blockHeight": blockNumber}],
+                                    "seq": seq + 1
+                                  }, *ackCh) |
+                                  for (_ <- ackCh) {
+                                    ret!(("ok", seq + 1))
+                                  }
+                                }
+                              }
+                            }
+                            _ => ret!(("err", "bad_signature"))
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      |
+
+      // admin_relink(name, newPk, seq, adminEvidence, adminSigs, newSig, ret)
+      //
+      // The compromised-key path (REG-D3, REG-AC9). Needs a quorum of admin
+      // signatures and a signature by the new key (IR-D5, IR-D7). adminEvidence
+      // is stored verbatim and never validated.
+      //
+      // payload   = 0x03 || name(32) || new_pk(65) || seq.toByteArray() || adminEvidence
+      // adminSigs = [(adminPk, sig), ...], where each sig is a secp256k1
+      //             signature over blake2b256(payload) by its adminPk.
+      // newSig    = secp256k1 signature over the same hash, by the new key.
+      //
+      // signers = the set of adminPks in the admin set whose sig verifies. A
+      // repeated pk counts once.
+      //
+      // Responses:
+      //   ("err", "unknown_name") when `name` is not registered.
+      //   ("err", "seq_mismatch") when `seq` does not match the record's current
+      //   seq.
+      //   ("err", "bad_signature") when fewer than quorum distinct admins
+      //   signed, or newSig does not verify.
+      //   ("ok", newSeq) on success, where newSeq = seq + 1. The record's
+      //   current key becomes newPk, the history grows by one entry carrying
+      //   the adminEvidence and the admin signers, and seq is bumped.
+      contract @[*identityRegistry, "admin_relink"]
+        (@name, @newPk, @seq, @adminEvidence, @adminSigs, @newSig, ret) = {
+        for (@(adminSet, quorum) <<- admins) {
+          for (@(treeHashMap, identitiesHandle) <<- identities) {
+            new existingCh in {
+              @treeHashMap!("get", identitiesHandle, name, *existingCh) |
+              for (@existing <- existingCh) {
+                match existing {
+                  Nil => ret!(("err", "unknown_name"))
+                  rec => {
+                    if (seq != rec.get("seq")) {
+                      ret!(("err", "seq_mismatch"))
+                    } else {
+                      new hashCh, countSigner, signersCh, verifyNewCh in {
+                        blake2b256!(
+                          "03".hexToBytes() ++
+                            name ++
+                            newPk ++
+                            seq.toByteArray() ++
+                            adminEvidence,
+                          *hashCh
+                        ) |
+                        for (@hash <- hashCh) {
+                          contract countSigner(@(pk, sig), @acc, retAcc) = {
+                            if (adminSet.contains(pk)) {
+                              new validCh in {
+                                secpVerify!(hash, sig, pk, *validCh) |
+                                for (@valid <- validCh) {
+                                  if (valid) { retAcc!(acc.add(pk)) } else { retAcc!(acc) }
+                                }
+                              }
+                            } else {
+                              retAcc!(acc)
+                            }
+                          } |
+                          @ListOps!("fold", adminSigs, Set(), *countSigner, *signersCh) |
+                          secpVerify!(hash, newSig, newPk, *verifyNewCh) |
+                          for (@signers <- signersCh & @validNew <- verifyNewCh) {
+                            if (signers.size() >= quorum and validNew) {
+                              new ackCh, blockDataCh in {
+                                blockData!(*blockDataCh) |
+                                for (@blockNumber, @_, @_ <- blockDataCh) {
+                                  @treeHashMap!("set", identitiesHandle, name, {
+                                    "current": newPk,
+                                    "history": rec.get("history") ++
+                                      [{"pk": newPk, "op": "admin_relink", "seq": seq + 1,
+                                        "blockHeight": blockNumber,
+                                        "admin_evidence": adminEvidence,
+                                        "admin_signers": signers.toList()}],
+                                    "seq": seq + 1
+                                  }, *ackCh) |
+                                  for (_ <- ackCh) {
+                                    ret!(("ok", seq + 1))
+                                  }
+                                }
+                              }
+                            } else {
+                              ret!(("err", "bad_signature"))
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      |
+
+      // resolve_current(name, ret)
+      //
+      // Returns the current key and seq, which a rotate payload needs, and
+      // the height of the block that minted the name (REG-AC1). That height
+      // is on the oldest history entry, not on the latest rotation.
+      //
+      // Responses:
+      //   ("err", "unknown_name")
+      //   ("ok", {"pk": ByteArray(65), "seq": Int, "blockHeight": Int})
+      contract @[*identityRegistry, "resolve_current"](@name, ret) = {
+        for (@(treeHashMap, identitiesHandle) <<- identities) {
+          new existingCh in {
+            @treeHashMap!("get", identitiesHandle, name, *existingCh) |
+            for (@existing <- existingCh) {
+              match existing {
+                Nil => ret!(("err", "unknown_name"))
+                rec => ret!(("ok", {
+                  "pk": rec.get("current"),
+                  "seq": rec.get("seq"),
+                  "blockHeight": rec.get("history").nth(0).get("blockHeight")
+                }))
+              }
+            }
+          }
+        }
+      }
+      |
+
+      // resolve_history(name, ret)
+      //
+      // Returns the full append-only history for this identity. Needed for
+      // attributing claims signed under previously-current keys (REG-AC8).
+      //
+      // Responses:
+      //   ("err", "unknown_name")
+      //   ("ok", [{"pk", "op", "seq", "blockHeight", "admin_evidence"?, "admin_signers"?}, ...])
+      contract @[*identityRegistry, "resolve_history"](@name, ret) = {
+        for (@(treeHashMap, identitiesHandle) <<- identities) {
+          new existingCh in {
+            @treeHashMap!("get", identitiesHandle, name, *existingCh) |
+            for (@existing <- existingCh) {
+              match existing {
+                Nil => ret!(("err", "unknown_name"))
+                rec => ret!(("ok", rec.get("history")))
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

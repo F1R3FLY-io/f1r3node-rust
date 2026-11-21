@@ -21,6 +21,7 @@ pub const MULTI_SIG_SYSTEM_VAULT: &str =
     include_str!("../../../main/resources/MultiSigSystemVault.rho");
 pub const STACK: &str = include_str!("../../../main/resources/Stack.rho");
 pub const TOKEN_METADATA: &str = include_str!("../../../main/resources/TokenMetadata.rhox");
+pub const IDENTITY_REGISTRY: &str = include_str!("../../../main/resources/IdentityRegistry.rhox");
 pub const POS: &str = include_str!("../../../main/resources/PoS.rhox");
 
 // File I/O FIP library agents (slice 19 genesis wiring — File I/O FIP
