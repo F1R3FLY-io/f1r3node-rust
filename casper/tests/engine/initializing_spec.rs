@@ -1239,7 +1239,7 @@ async fn init_keeps_requesting_while_the_bootstrap_cannot_be_reached() {
 
     assert!(
         outcome.is_err(),
-        "init returned although the bootstrap never accepted a send: {outcome:?}; launch must not probe an unreachable bootstrap (#1120)"
+        "init returned although the bootstrap never accepted a send: {outcome:?}. The bootstrap request is now bounded; update this test with option (c) of issue #1120"
     );
     assert!(
         fixture.transport_layer.request_count() >= 6,
