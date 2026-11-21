@@ -432,6 +432,23 @@ async fn running_out_of_phlogistons_should_stop_evaluation_upon_cost_depletion_i
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn running_out_of_phlo_at_a_storage_or_comm_charge_reports_out_of_phlogistons() {
+    for contract in [r#"@"a"!(1)"#, r#"for (_ <- @"a") { Nil } | @"a"!(1)"#] {
+        for initial_phlo in 1..=400 {
+            let (result, _) = evaluate_with_cost_log(initial_phlo, contract.to_string()).await;
+            assert!(
+                result
+                    .errors
+                    .iter()
+                    .all(|e| matches!(e, InterpreterError::OutOfPhlogistonsError)),
+                "{contract} at {initial_phlo} phlo: {:?}",
+                result.errors
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn should_not_attempt_reduction_when_there_was_not_enough_phlo_for_parsing() {
     let parsing_cost = 6;
 

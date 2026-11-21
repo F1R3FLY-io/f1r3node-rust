@@ -58,6 +58,12 @@ enum DropReason {
     Invalid,
     TooLarge,
     StateUnavailable,
+    /// A peer answered `BlockRequest` for a cited dependency with
+    /// `BlockPrunedResponse`; the held blocks whose dependency walk
+    /// reaches that pruned hash can never advance and are evicted so
+    /// the pending area does not accumulate them while the observer
+    /// waits for its restart-into-LFS to catch up (#1059).
+    BelowPruneHorizon,
 }
 
 impl DropReason {
@@ -66,6 +72,7 @@ impl DropReason {
             DropReason::Invalid => "invalid",
             DropReason::TooLarge => "too-large",
             DropReason::StateUnavailable => "state-unavailable",
+            DropReason::BelowPruneHorizon => "below-prune-horizon",
         }
     }
 }
@@ -342,7 +349,7 @@ impl IngestState {
                 block_height,
                 prune_floor,
                 peer,
-            } => self.block_pruned(hash, block_height, prune_floor, peer),
+            } => self.block_pruned(hash, block_height, prune_floor, peer, &mut effects),
             IngestInput::Need { hash } => {
                 if self.tracker.contains(&hash) {
                     self.vouch_for_held(&hash);
@@ -902,6 +909,13 @@ impl IngestState {
                 dropped,
                 "Block dropped with the held blocks that wait on it"
             ),
+            DropReason::BelowPruneHorizon => tracing::info!(
+                target: LOG_TARGET,
+                block = %short(hash),
+                reason = reason.label(),
+                dropped,
+                "Below-horizon cascade: held blocks waiting on pruned ancestor evicted (#1059)"
+            ),
         }
         self.departed(departure, effects);
     }
@@ -1152,14 +1166,19 @@ impl IngestState {
     /// the body has been retention-swept past the peer's horizon. The need
     /// is dropped so the retry ladder (see `fetch_scheduler`) stops burning
     /// network on a block no peer retains. The peer's prune floor is
-    /// recorded on the shared view so operators / future launches can take
-    /// the last-finalized-state path (#1059).
+    /// recorded on the shared view so a launch probe or operator restart
+    /// can take the last-finalized-state path (#1059). Held blocks whose
+    /// dependency walk reaches the pruned hash are dropped together with
+    /// their dependents: they can never advance while the observer waits
+    /// for its restart-into-LFS, and keeping them in the pending area
+    /// produces the AreaFull drops observed in the soak evidence.
     fn block_pruned(
         &mut self,
         hash: BlockHash,
         block_height: i64,
         prune_floor: i64,
         peer: PeerNode,
+        effects: &mut Vec<Effect>,
     ) {
         metrics::counter!(
             BLOCK_INGEST_PRUNED_RESPONSES_METRIC,
@@ -1183,8 +1202,8 @@ impl IngestState {
                 "Peer reports needed block is below its prune horizon. \
                  This node has fallen past peers' block-store GC horizon and cannot \
                  catch up by re-requesting blocks (every peer has deleted the bodies). \
-                 Stop this node, remove its data directory, and restart to re-join via \
-                 the last-finalized-state path (#1059)."
+                 Restart this node; the launch-time horizon probe will route to the \
+                 last-finalized-state path (#1059)."
             );
         } else {
             tracing::debug!(
@@ -1196,14 +1215,13 @@ impl IngestState {
                 "additional BlockPrunedResponse received while below-horizon flag already set"
             );
         }
-        // Drop the need so the retry ladder stops. Held blocks that cited
-        // this pruned hash remain in the tracker: they cannot advance now,
-        // but eviction (pending-area pressure, give-up on validation failure
-        // counts) will settle them through the existing paths. The explicit
-        // drop_with_dependents path is reserved for Invalid / TooLarge /
-        // StateUnavailable, where the holder itself is condemned; here the
-        // holder is honest, the state is irretrievable instead.
+        // Drop the need so the retry ladder stops.
         self.scheduler.remove_block(&hash);
+        // Cascade: evict held blocks whose dependency walk reaches this
+        // pruned hash. They cannot advance; without this the pending area
+        // fills and refuses incoming tips (1825/10min AreaFull drops in
+        // the soak #1059 evidence).
+        self.drop_with_dependents(&hash, DropReason::BelowPruneHorizon, effects);
     }
 }
 

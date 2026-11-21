@@ -664,95 +664,138 @@ where
         &self,
         retained_roots: &[Blake2b256Hash],
     ) -> Result<HistoryPruneResult, HistoryError> {
-        // Hold the sweep lock for the entire pass so no `do_checkpoint`
-        // can run its content-addressed `contains` + `put` window while
-        // we are deleting. Pin snapshot is unioned with the caller's
-        // retained roots so recently-committed roots (and anything a
-        // `reset` locked in) survive even if the caller's DAG walk did
-        // not reach them.
-        let _sweep_lock = self.prune_guard.enter_sweep();
-        let pinned = self.prune_guard.pinned_snapshot();
-        let merged: Vec<Blake2b256Hash> = if pinned.is_empty() {
-            retained_roots.to_vec()
-        } else {
-            let mut m: Vec<Blake2b256Hash> =
-                Vec::with_capacity(retained_roots.len() + pinned.len());
-            m.extend_from_slice(retained_roots);
-            m.extend(pinned);
-            m
+        // Issue #1098 age-based pin eviction + observability. `begin_pass`
+        // bumps the generation and drops pins older than the retention
+        // window; `pins_evicted` feeds the structured log on the casper
+        // side so operators can see the mark set contracting with pin age.
+        let pass = self.prune_guard.begin_pass(PIN_RETENTION_PASSES);
+
+        // Take the sweep's exclusive side briefly to force any in-flight
+        // writers to finish their stage+pin+write window BEFORE we
+        // snapshot pins. Without this a writer that has pinned its new
+        // root but not yet committed its atomic `batched_put` write would
+        // be in our pin snapshot without its subtree bytes being readable
+        // yet. The lock-free mark walk below would then skip that
+        // subtree, and the per-batch re-snapshot would also skip the pin
+        // (already seen), so writer-committed nodes could still get
+        // swept. Holding exclusive here is bounded by a single writer's
+        // worst txn duration (sub-second under load), not the full pass.
+        let initial_pins = {
+            let _quiesce = self.prune_guard.enter_sweep();
+            self.prune_guard.pinned_snapshot()
         };
-        atomic_prune_via_store(self.history_kv_store.as_ref(), &merged)
+
+        atomic_prune_via_store_batched(
+            self.history_kv_store.as_ref(),
+            self.prune_guard.as_ref(),
+            retained_roots,
+            initial_pins,
+            pass,
+        )
     }
 }
 
-/// Mark-and-sweep against a generic `KeyValueStore`. The caller — the
-/// trait method [`HistoryRepository::prune_history_atomic`] — holds the
-/// `PruneGuard` exclusive side across this helper, so no runtime writer
-/// can commit a content-addressed `pending_writes` + `write` sequence
-/// while we are between `contains` and `delete`. Pre-#1061 this helper
-/// leaned on (1) LMDB read-snapshot isolation and (2) the claim that a
-/// newly-written node colliding with a dead node would be re-inserted by
-/// the writer's `put_one_if_absent`. (2) was wrong: `RadixTreeImpl::
-/// pending_writes` SKIPS keys already in the store (content-addressed
-/// writes are idempotent — the already-present bytes equal the pending
-/// bytes), so a sweep that deleted that key between the writer's
-/// `contains` check and its `put` of the other nodes left the new state
-/// with a dangling pointer. `PruneGuard` closes the race by serialising
-/// the full write window with the full sweep window.
+/// How many passes a pin survives before age-based eviction drops it
+/// (issue #1098). A pin's job is to protect the window between
+/// `do_checkpoint`'s write and the block's appearance in the DAG
+/// retention walk. That window is bounded by block-processing latency
+/// (sub-second at steady state); two pass intervals (~10 min at the
+/// testbed's cadence) is a generous safety margin. The LRU cap in
+/// `prune_guard` is the harder bound against burst pressure.
+const PIN_RETENTION_PASSES: u64 = 2;
+
+/// Mark-and-sweep against a generic `KeyValueStore`.
 ///
-/// Reads via `KeyValueStore::get_one` during the mark walk still open a
-/// fresh LMDB read transaction per call, so a racing writer that has not
-/// yet taken the PruneGuard shared side (e.g., a reader on an unrelated
-/// path) can only add nodes, not remove ones we are about to mark.
-fn atomic_prune_via_store(
+/// # Lock contract (issues #1061, #1098)
+///
+/// The pre-#1098 helper held the `PruneGuard` exclusive side for the full
+/// pass. A single ~41 s pass therefore stopped block processing for the
+/// same ~41 s because every `do_checkpoint` waited for `enter_write` to
+/// pair with the shared side of that lock. #1098 split that single
+/// window into many short ones:
+///
+/// * The **initial mark walk** runs with no lock held. Writers can add nodes
+///   concurrently; they cannot delete, so no node we read gets removed out from
+///   under us. `initial_pins` is the snapshot our caller took under exclusive —
+///   every pin in it has a committed write, so `get_one` returns full bytes for
+///   every reachable child.
+/// * Each **delete batch** takes the exclusive side briefly: scan a page
+///   lock-free, acquire exclusive, re-snapshot pins, DFS-mark new pins that
+///   appeared since the last batch, then delete unmarked keys from the page.
+///   Typical per-batch hold time is a delete txn plus any new-pin DFS — orders
+///   of magnitude shorter than a full-pass hold.
+///
+/// # Content-addressed race (issue #1061)
+///
+/// `RadixTreeImpl::pending_writes` SKIPS keys already in the store
+/// (content-addressed writes are idempotent — the already-present bytes
+/// equal the pending bytes). A sweep that deleted such a key between the
+/// writer's `contains` check and its `put` of the other nodes would leave
+/// the new state with a dangling pointer. Mutual exclusion between
+/// writer-shared and sweep-exclusive closes that race: when the sweep
+/// holds exclusive for a delete batch, no writer is in its stage+write
+/// window; writers that completed earlier have pinned their new root,
+/// and the batch's re-snapshot picks up every such pin before computing
+/// the delete list.
+fn atomic_prune_via_store_batched(
     store: &dyn KeyValueStore,
-    retained_roots: &[Blake2b256Hash],
+    guard: &crate::rspace::history::prune_guard::PruneGuard,
+    caller_roots: &[Blake2b256Hash],
+    initial_pins: Vec<Blake2b256Hash>,
+    pass: crate::rspace::history::prune_guard::PassStart,
 ) -> Result<HistoryPruneResult, HistoryError> {
     use std::collections::HashSet;
 
-    // Phase 1: mark. DFS from each retained root; stop at a missing node
-    // (joiner / LFS-bootstrap case where the subtree has not been imported
-    // yet). Shared subtrees across roots are marked once because the
-    // `HashSet::insert` short-circuits.
+    // Phase 1: initial mark walk. DFS from each caller root AND each
+    // pinned root in the initial snapshot. No lock held. A pin from the
+    // initial snapshot is guaranteed-landed because the caller took
+    // exclusive to force writer quiescence before snapshotting.
     let mut mark: HashSet<Blake2b256Hash> = HashSet::new();
-    for root in retained_roots {
-        let mut frontier: Vec<Blake2b256Hash> = vec![root.clone()];
-        while let Some(hash) = frontier.pop() {
-            if !mark.insert(hash.clone()) {
-                continue;
-            }
-            let bytes = store.get_one(&hash.bytes()).map_err(HistoryError::from)?;
-            let Some(serialized) = bytes else {
-                // A subtree not yet imported (or already swept by a
-                // previous pass). Correct behaviour is to stop the walk
-                // here — we cannot mark nodes we cannot read. Future
-                // passes will see the full subtree once it is imported.
-                continue;
-            };
-            let node = decode(serialized);
-            for item in node {
-                if let Item::NodePtr { ptr, .. } = item {
-                    frontier.push(Blake2b256Hash::from_bytes(ptr));
-                }
-                // `Item::Leaf` values point into the cold store, not into
-                // history. Never follow them from here.
-            }
-        }
+    let mut pins_seen: HashSet<Blake2b256Hash> = HashSet::new();
+    for p in &initial_pins {
+        pins_seen.insert(p.clone());
     }
-    let marked = mark.len();
 
-    // Phase 2: sweep. Paginate the env so we never materialise more than
-    // one page worth of keys at once (~32 KiB for 32-byte hashes at the
-    // default 1024 limit). Runtime writers are already blocked by the
-    // caller's `PruneGuard` exclusive guard for the full pass; pagination
-    // is purely a memory-footprint bound, not a stall bound.
+    let mut seed: Vec<Blake2b256Hash> = Vec::with_capacity(caller_roots.len() + initial_pins.len());
+    seed.extend_from_slice(caller_roots);
+    seed.extend(initial_pins.iter().cloned());
+    walk_and_mark(store, &seed, &mut mark)?;
+    let marked_from_pins = marked_reachable_from(&mark, store, &initial_pins)?;
+
+    // Phase 2: batched sweep. Scan a page without any lock, then acquire
+    // exclusive for the batch: re-snapshot pins (any writer that pinned
+    // between the last batch and now is now visible AND has committed its
+    // write, because we just waited for all shared holders to drain), DFS
+    // the new pins into the mark set, compute the delete list, delete.
     const SWEEP_PAGE: usize = 1024;
     let mut cursor: Option<Vec<u8>> = None;
     let mut swept = 0usize;
+    let mut pins_mid_pass_added = 0usize;
+    let mut batches = 0usize;
     loop {
         let page = store
             .scan_page(cursor.as_deref(), SWEEP_PAGE)
             .map_err(|e| HistoryError::RadixTreeError(RadixTreeError::KvStoreError(e)))?;
+        if page.rows.is_empty() {
+            break;
+        }
+
+        let _sweep_lock = guard.enter_sweep();
+        batches += 1;
+
+        let fresh_pins = guard.pinned_snapshot();
+        let mut new_pins: Vec<Blake2b256Hash> = Vec::new();
+        for p in fresh_pins {
+            if pins_seen.insert(p.clone()) {
+                new_pins.push(p);
+            }
+        }
+        if !new_pins.is_empty() {
+            pins_mid_pass_added += new_pins.len();
+            // Under exclusive — every writer-committed node is readable.
+            walk_and_mark(store, &new_pins, &mut mark)?;
+        }
+
         let to_delete: Vec<Vec<u8>> = page
             .rows
             .iter()
@@ -766,13 +809,92 @@ fn atomic_prune_via_store(
                 .delete(to_delete)
                 .map_err(|e| HistoryError::RadixTreeError(RadixTreeError::KvStoreError(e)))?;
         }
+        drop(_sweep_lock);
+
         match page.next {
             Some(next) => cursor = Some(next),
             None => break,
         }
     }
 
-    Ok(HistoryPruneResult { marked, swept })
+    Ok(HistoryPruneResult {
+        marked: mark.len(),
+        swept,
+        pins_initial: initial_pins.len(),
+        pins_evicted: pass.pins_evicted,
+        pins_mid_pass_added,
+        marked_from_pins,
+        batches,
+    })
+}
+
+/// DFS from each root, adding every reachable node to `mark`. Stops at a
+/// missing node (joiner / LFS-bootstrap case) — a hash we cannot read is
+/// still marked (we will not sweep it) but its descendants are left
+/// unexplored. Shared subtrees across roots are marked once because the
+/// `HashSet::insert` short-circuits.
+fn walk_and_mark(
+    store: &dyn KeyValueStore,
+    roots: &[Blake2b256Hash],
+    mark: &mut std::collections::HashSet<Blake2b256Hash>,
+) -> Result<(), HistoryError> {
+    let mut frontier: Vec<Blake2b256Hash> = roots.to_vec();
+    while let Some(hash) = frontier.pop() {
+        if !mark.insert(hash.clone()) {
+            continue;
+        }
+        let bytes = store.get_one(&hash.bytes()).map_err(HistoryError::from)?;
+        let Some(serialized) = bytes else {
+            continue;
+        };
+        let node = decode(serialized);
+        for item in node {
+            if let Item::NodePtr { ptr, .. } = item {
+                frontier.push(Blake2b256Hash::from_bytes(ptr));
+            }
+            // `Item::Leaf` values point into the cold store, not into
+            // history. Never follow them from here.
+        }
+    }
+    Ok(())
+}
+
+/// Count how many of the already-marked nodes were reached from the given
+/// roots. Used only for observability — tells operators whether the pins
+/// are the dominant contributor to the mark set (the diagnosis from issue
+/// #1098). A separate walk here is simpler than threading a per-origin
+/// counter through `walk_and_mark`'s short-circuit; it runs in O(subtree)
+/// against bytes that are already warm from the first walk.
+fn marked_reachable_from(
+    mark: &std::collections::HashSet<Blake2b256Hash>,
+    store: &dyn KeyValueStore,
+    roots: &[Blake2b256Hash],
+) -> Result<usize, HistoryError> {
+    use std::collections::HashSet;
+    if roots.is_empty() {
+        return Ok(0);
+    }
+    let mut reached: HashSet<Blake2b256Hash> = HashSet::new();
+    let mut frontier: Vec<Blake2b256Hash> = roots.to_vec();
+    while let Some(hash) = frontier.pop() {
+        if !mark.contains(&hash) {
+            continue;
+        }
+        if !reached.insert(hash.clone()) {
+            continue;
+        }
+        let bytes = store.get_one(&hash.bytes()).map_err(HistoryError::from)?;
+        let Some(serialized) = bytes else {
+            continue;
+        };
+        let node = decode(serialized);
+        for item in node {
+            if let Item::NodePtr { ptr, .. } = item {
+                frontier.push(Blake2b256Hash::from_bytes(ptr));
+            }
+        }
+    }
+    Ok(reached.len())
 }
 
 pub fn prepend_bytes(element: u8, bytes: &[u8]) -> Vec<u8> {

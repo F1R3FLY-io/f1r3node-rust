@@ -1,9 +1,13 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - trait SpatialMatcher
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::{single_expr, vector_par};
 use models::rust::utils::*;
+use shared::rust::stack::with_stack_headroom;
 
 use super::exports::*;
 use super::fold_match::FoldMatch;
@@ -31,17 +35,56 @@ pub trait SpatialMatcher<T, P> {
     fn spatial_match(&mut self, target: T, pattern: P) -> Option<()>;
 }
 
+/// Steps every match attempt may take regardless of the size of its inputs.
+/// The test suites and the genesis contracts all match within 256 plus one per
+/// byte; these allow sixteen times that.
+const BASE_MATCH_STEPS: usize = 4096;
+
+/// Steps a match attempt may take per encoded byte of its target and pattern.
+const MATCH_STEPS_PER_BYTE: usize = 16;
+
+/// The steps left to a match attempt, shared by every copy of its context. A
+/// step is a bounded unit of work: a pattern level, a bit or element a split
+/// touches.
+#[derive(Clone)]
+pub struct StepBudget(Rc<Cell<usize>>);
+
+impl StepBudget {
+    pub fn new(steps: usize) -> Self { StepBudget(Rc::new(Cell::new(steps))) }
+
+    /// Spends `steps`; `None`, spending nothing, when fewer are left.
+    pub fn spend(&self, steps: usize) -> Option<()> {
+        let left = self.0.get().checked_sub(steps)?;
+        self.0.set(left);
+        Some(())
+    }
+}
+
+/// Running out of steps ends the attempt as a failed match, which replay
+/// reproduces because the budget and the work both depend only on the inputs.
 #[derive(Clone)]
 pub struct SpatialMatcherContext {
     pub free_map: FreeMap,
+    budget: StepBudget,
 }
 
 impl SpatialMatcherContext {
-    pub fn new() -> Self {
+    /// A context for matching inputs whose encodings total `input_bytes`.
+    pub fn new(input_bytes: usize) -> Self {
+        Self::with_budget(StepBudget::new(
+            BASE_MATCH_STEPS + MATCH_STEPS_PER_BYTE * input_bytes,
+        ))
+    }
+
+    pub fn with_budget(budget: StepBudget) -> Self {
         SpatialMatcherContext {
             free_map: new_free_map(),
+            budget,
         }
     }
+
+    /// Spends one step of the attempt's budget; `None` once it is spent.
+    pub fn step(&self) -> Option<()> { self.budget.spend(1) }
 
     /// Matches `target` against `pattern` and hands back the bindings found.
     pub fn into_match_result(mut self, target: Par, pattern: Par) -> Option<FreeMap> {
@@ -262,6 +305,13 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - parSpatialMatcher
 impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Par, pattern: Par) -> Option<()> {
+        self.step()?;
+        with_stack_headroom(|| self.spatial_match_par_level(target, pattern))
+    }
+}
+
+impl SpatialMatcherContext {
+    fn spatial_match_par_level(&mut self, target: Par, pattern: Par) -> Option<()> {
         if !pattern.connective_used {
             // guard(pattern == target)
             guard(match_pars(&target, &pattern))
@@ -340,9 +390,19 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             ) -> Option<Par> {
                 let (con, bounds, remainders) = labeled_connective;
 
-                for sp in sub_pars(&target, &bounds.0, &bounds.1, &remainders.0, &remainders.1) {
-                    if s.spatial_match(sp.0, con.clone()).is_some() {
-                        return Some(sp.1);
+                let budget = s.budget.clone();
+                let mut splits = sub_pars(
+                    &target,
+                    &bounds.0,
+                    &bounds.1,
+                    &remainders.0,
+                    &remainders.1,
+                    &budget,
+                );
+                while let Some(sub) = splits.next() {
+                    s.step()?;
+                    if s.spatial_match(sub, con.clone()).is_some() {
+                        return splits.complement();
                     }
                 }
                 None

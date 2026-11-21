@@ -1,5 +1,7 @@
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/ParSortMatcher.scala
 
+use shared::rust::stack::with_stack_headroom;
+
 use super::score_tree::ScoredTerm;
 use super::send_sort_matcher::SendSortMatcher;
 use super::sortable::Sortable;
@@ -18,6 +20,12 @@ pub struct ParSortMatcher;
 
 impl Sortable<Par> for ParSortMatcher {
     fn sort_match(par: &Par) -> ScoredTerm<Par> {
+        with_stack_headroom(|| Self::sort_par_level(par))
+    }
+}
+
+impl ParSortMatcher {
+    fn sort_par_level(par: &Par) -> ScoredTerm<Par> {
         let sends: Vec<ScoredTerm<Send>> = {
             let mut _sends: Vec<ScoredTerm<Send>> = par
                 .sends
