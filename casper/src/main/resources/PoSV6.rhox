@@ -127,7 +127,7 @@ in {
           returnCh!($$faultToleranceThresholdPpm$$)
         } |
         contract PoS(@"getConsensusParameters", returnCh) = {
-          returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$n, $$epochLength$$))
+          returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$n, $$epochLength$$, $$maxPhloLimit$$))
         } |
         contract PoS(@"bond", @receipt, @amount, returnCh, handleCh) = {
           new keyCh in {
