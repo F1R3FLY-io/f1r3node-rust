@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use prost::Message;
 
 use super::par_sort_matcher::ParSortMatcher;
-use super::score_tree::{compare_score_trees, ScoredTerm};
+use super::score_tree::{compare_score_trees, ScoreAtom, ScoredTerm, Tree};
 use super::sortable::Sortable;
 use crate::rhoapi::Par;
 
@@ -45,5 +45,56 @@ impl Ordering {
         });
 
         rows.into_iter().map(|(_, st)| st.term).collect()
+    }
+
+    /// Merges two sequences sorted by `score` into one. Where both hold an
+    /// item of the same score, the item from `right` is kept.
+    pub fn union_sorted<T>(
+        left: Vec<T>,
+        right: Vec<T>,
+        score: impl Fn(&T) -> Tree<ScoreAtom>,
+    ) -> Vec<T> {
+        let mut merged = Vec::with_capacity(left.len() + right.len());
+        let mut left = left.into_iter().map(|t| (score(&t), t)).peekable();
+        let mut right = right.into_iter().map(|t| (score(&t), t)).peekable();
+        loop {
+            let order = match (left.peek(), right.peek()) {
+                (Some((l, _)), Some((r, _))) => compare_score_trees(l, r),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => return merged,
+            };
+            let (_, item) = match order {
+                std::cmp::Ordering::Less => left.next(),
+                std::cmp::Ordering::Greater => right.next(),
+                std::cmp::Ordering::Equal => {
+                    left.next();
+                    right.next()
+                }
+            }
+            .expect("the peeked side has an item");
+            merged.push(item);
+        }
+    }
+
+    /// The items of `left` whose score no item of `right` has. Both are
+    /// sorted by score.
+    pub fn diff_sorted<T, U>(
+        left: Vec<T>,
+        right: &[U],
+        score_left: impl Fn(&T) -> Tree<ScoreAtom>,
+        score_right: impl Fn(&U) -> Tree<ScoreAtom>,
+    ) -> Vec<T> {
+        let mut right = right.iter().map(score_right).peekable();
+        left.into_iter()
+            .filter(|item| {
+                let score = score_left(item);
+                while right
+                    .next_if(|r| compare_score_trees(r, &score) == std::cmp::Ordering::Less)
+                    .is_some()
+                {}
+                right.peek().is_none_or(|r| compare_score_trees(r, &score) != std::cmp::Ordering::Equal)
+            })
+            .collect()
     }
 }

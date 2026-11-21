@@ -603,3 +603,26 @@ async fn a_comm_is_charged_for_the_body_and_data_it_copies() {
     }
     assert!(copies[1] - copies[0] >= 2 * (4_096 - 16) / 32);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn collection_evaluation_is_charged_per_element() {
+    for n in [3usize, 50] {
+        let elements = (0..n).map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+        let entries = (0..n)
+            .map(|i| format!("{i}: {i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        for (contract, expected) in [
+            (format!("@0!([{elements}])"), 10 * n),
+            (format!("@0!(({elements}))"), 10 * n),
+            (format!("@0!(Set({elements}))"), 10 * n),
+            (format!("@0!({{{entries}}})"), 20 * n),
+        ] {
+            assert_eq!(
+                charges(contract.clone(), "collection eval").await,
+                vec![expected as i64],
+                "{contract}"
+            );
+        }
+    }
+}
