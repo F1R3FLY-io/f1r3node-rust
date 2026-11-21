@@ -5,6 +5,7 @@ use std::error::Error;
 use std::sync::Arc;
 
 use casper::rust::engine::block_approver_protocol::BlockApproverProtocol;
+use casper::rust::v6::resource_policy::PROTOCOL_V7;
 use crypto::rust::public_key::PublicKey;
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message::{
@@ -38,7 +39,14 @@ impl TestContext {
     }
 
     async fn create_protocol() -> Result<Self, Box<dyn Error>> {
-        let params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+        Self::create_protocol_at(None).await
+    }
+
+    async fn create_protocol_at(version: Option<i64>) -> Result<Self, Box<dyn Error>> {
+        let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+        if let Some(version) = version {
+            params.2.version = version;
+        }
         let genesis_params = params.2.clone();
 
         let mut genesis_builder = GenesisBuilder::new();
@@ -89,6 +97,7 @@ impl TestContext {
             // protocol with matching values on both sides.
             Vec::new(),
             None,
+            genesis_params.version,
             node.tle.clone(),
             Arc::new(node.rp_conf.clone()),
         )?;
@@ -222,6 +231,7 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
         ctx.protocol.native_token_decimals,
         &ctx.protocol.fs_bundle,
         ctx.protocol.consensus_fs_snapshot_cadence,
+        ctx.protocol.protocol_version,
     )
     .await;
 
@@ -262,6 +272,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
         ctx.protocol.native_token_decimals,
         &ctx.protocol.fs_bundle,
         ctx.protocol.consensus_fs_snapshot_cadence,
+        ctx.protocol.protocol_version,
     )
     .await;
 
@@ -302,6 +313,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
         ctx.protocol.native_token_decimals,
         &ctx.protocol.fs_bundle,
         ctx.protocol.consensus_fs_snapshot_cadence,
+        ctx.protocol.protocol_version,
     )
     .await;
 
@@ -346,6 +358,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_
         ctx.protocol.native_token_decimals,
         &ctx.protocol.fs_bundle,
         ctx.protocol.consensus_fs_snapshot_cadence,
+        ctx.protocol.protocol_version,
     )
     .await;
 
@@ -419,6 +432,7 @@ async fn block_approver_protocol_rejects_candidate_when_local_fs_bundle_mismatch
         ctx.protocol.native_token_decimals,
         &local_bundle,
         None,
+        ctx.protocol.protocol_version,
     )
     .await;
 
@@ -443,4 +457,54 @@ async fn block_approver_protocol_rejects_candidate_when_local_fs_bundle_mismatch
              `&[]` posture"
         ),
     }
+}
+
+async fn validate_at(ctx: &TestContext, protocol_version: i64) -> Result<(), String> {
+    let unapproved = TestContext::create_unapproved(ctx.required_sigs, &ctx.node.genesis);
+    BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate(
+        &ctx.node.runtime_manager,
+        &unapproved.candidate,
+        ctx.protocol.required_sigs,
+        ctx.protocol.deploy_timestamp,
+        &ctx.protocol.vaults,
+        &ctx.protocol.bonds_bytes,
+        ctx.protocol.minimum_bond.clone(),
+        ctx.protocol.maximum_bond.clone(),
+        ctx.protocol.epoch_length,
+        ctx.protocol.quarantine_length,
+        ctx.protocol.number_of_active_validators,
+        ctx.protocol.fault_tolerance_threshold_ppm,
+        ctx.protocol.max_parent_depth,
+        ctx.protocol.deploy_lifespan,
+        ctx.protocol.min_phlo_price.clone(),
+        SHARD_ID,
+        &ctx.protocol.pos_multi_sig_public_keys,
+        ctx.protocol.pos_multi_sig_quorum,
+        &ctx.protocol.native_token_name,
+        &ctx.protocol.native_token_symbol,
+        ctx.protocol.native_token_decimals,
+        &ctx.protocol.fs_bundle,
+        ctx.protocol.consensus_fs_snapshot_cadence,
+        protocol_version,
+    )
+    .await
+}
+
+#[tokio::test]
+#[serial]
+async fn a_protocol_7_validator_approves_a_protocol_7_genesis_candidate() {
+    let ctx = TestContext::create_protocol_at(Some(PROTOCOL_V7))
+        .await
+        .unwrap();
+    assert_eq!(ctx.protocol.protocol_version, PROTOCOL_V7);
+    assert_eq!(validate_at(&ctx, PROTOCOL_V7).await, Ok(()));
+}
+
+#[tokio::test]
+#[serial]
+async fn a_protocol_1_validator_rejects_a_protocol_7_genesis_candidate() {
+    let ctx = TestContext::create_protocol_at(Some(PROTOCOL_V7))
+        .await
+        .unwrap();
+    assert!(validate_at(&ctx, 1).await.is_err());
 }

@@ -403,6 +403,7 @@ impl TestFixture {
             // their own genesis block with an empty bundle.
             Vec::new(),
             None,
+            genesis_params.version,
             transport_layer.clone(),
             Arc::new(rp_conf.clone()),
         )
