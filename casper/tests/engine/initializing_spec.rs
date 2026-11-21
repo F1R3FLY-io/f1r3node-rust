@@ -1204,3 +1204,47 @@ async fn store_items_from_a_peer_that_was_not_asked_are_ignored() {
 
     InitializingSpec::after_each(&fixture);
 }
+
+#[tokio::test]
+async fn init_keeps_requesting_while_the_bootstrap_cannot_be_reached() {
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    assert_eq!(
+        fixture.rp_conf_ask.bootstrap.as_ref(),
+        Some(&fixture.rp_conf_ask.local),
+        "the fixture node is its own bootstrap"
+    );
+
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let engine_cell = Arc::new(EngineCell::init());
+    let engine = create_initializing_engine(&fixture, the_init, engine_cell)
+        .await
+        .expect("Failed to create Initializing engine");
+
+    fixture.transport_layer.reset();
+    fixture.transport_layer.set_responses(|_peer, _protocol| {
+        Err(comm::rust::errors::CommError::PeerUnavailable(
+            "TCP connection failed".to_string(),
+        ))
+    });
+
+    tokio::time::pause();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(60), {
+        use casper::rust::engine::engine::Engine;
+        engine.init()
+    })
+    .await;
+
+    assert!(
+        outcome.is_err(),
+        "init returned although the bootstrap never accepted a send: {outcome:?}. The bootstrap request is now bounded; update this test with option (c) of issue #1120"
+    );
+    assert!(
+        fixture.transport_layer.request_count() >= 6,
+        "init retried {} times in 60 s",
+        fixture.transport_layer.request_count()
+    );
+    InitializingSpec::after_each(&fixture);
+}

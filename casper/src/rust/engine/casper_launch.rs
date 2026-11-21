@@ -101,6 +101,13 @@ pub(crate) fn ensure_compatible_approved_block(
     Ok(())
 }
 
+pub(crate) fn horizon_probe_peer(rp_conf: &RPConf) -> Option<&comm::rust::peer_node::PeerNode> {
+    rp_conf
+        .bootstrap
+        .as_ref()
+        .filter(|bootstrap| bootstrap.id != rp_conf.local.id)
+}
+
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     /// Build the MultiParentCasper from an approved block anchor.
     async fn create_casper(
@@ -677,16 +684,21 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunch for CasperL
         let (msg, action_result) = match approved_block_opt {
             Some(approved_block) => {
                 ensure_compatible_approved_block(&approved_block)?;
-                if self.rp_conf_ask.bootstrap.is_none() {
+                if horizon_probe_peer(&self.rp_conf_ask).is_none() {
                     // Standalone / no-bootstrap: the horizon probe inside
                     // Initializing broadcasts an ApprovedBlockRequest to the
                     // bootstrap. With no bootstrap configured the broadcast
                     // fails deterministically (StandaloneNodeSendToBootstrap
                     // error), so skip the probe and go straight to Running
-                    // from the stored anchor. Networked nodes still route
+                    // from the stored anchor. A bootstrap that is this node
+                    // cannot answer before this node's servers start, so it
+                    // takes the same path (#1120). Networked nodes still route
                     // through Initializing (#1059).
-                    let msg =
-                        "Approved block found, no bootstrap configured — resuming as standalone";
+                    let msg = if self.rp_conf_ask.bootstrap.is_some() {
+                        "Approved block found, the bootstrap is this node — resuming from the stored anchor"
+                    } else {
+                        "Approved block found, no bootstrap configured — resuming as standalone"
+                    };
                     let action_result = self
                         .connect_direct_to_running(approved_block, self.disable_state_exporter)
                         .await;
@@ -738,5 +750,53 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunch for CasperL
         // Scala equivalent: case (msg, action) => Log[F].info(msg) >> action
         tracing::info!("{}", msg);
         action_result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
+    use comm::rust::test_instances::create_rp_conf_ask;
+    use prost::bytes::Bytes;
+
+    use super::horizon_probe_peer;
+
+    fn peer(key: &str, host: &str) -> PeerNode {
+        PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::from(key.as_bytes().to_vec()),
+            },
+            endpoint: Endpoint::new(host.to_string(), 40400, 40404),
+        }
+    }
+
+    #[test]
+    fn a_node_without_a_bootstrap_has_no_probe_peer() {
+        let mut conf = create_rp_conf_ask(peer("local", "local-host"), None, None);
+        conf.bootstrap = None;
+        assert_eq!(horizon_probe_peer(&conf), None);
+    }
+
+    #[test]
+    fn a_node_that_is_its_own_bootstrap_has_no_probe_peer() {
+        let mut conf = create_rp_conf_ask(peer("local", "0.0.0.0"), None, None);
+        conf.bootstrap = Some(peer("local", "rnode.bootstrap"));
+        assert_eq!(horizon_probe_peer(&conf), None);
+    }
+
+    #[test]
+    fn a_node_with_another_bootstrap_probes_it() {
+        let mut conf = create_rp_conf_ask(peer("local", "local-host"), None, None);
+        let bootstrap = peer("bootstrap", "rnode.bootstrap");
+        conf.bootstrap = Some(bootstrap.clone());
+        assert_eq!(horizon_probe_peer(&conf), Some(&bootstrap));
+    }
+
+    #[test]
+    fn a_bootstrap_with_another_id_on_the_same_host_is_probed() {
+        let mut conf = create_rp_conf_ask(peer("local", "shared-host"), None, None);
+        let bootstrap = peer("bootstrap", "shared-host");
+        conf.bootstrap = Some(bootstrap.clone());
+        assert_eq!(horizon_probe_peer(&conf), Some(&bootstrap));
     }
 }

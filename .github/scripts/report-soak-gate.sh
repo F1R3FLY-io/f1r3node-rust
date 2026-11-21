@@ -5,8 +5,9 @@
 #   gate ca-item     context "Soak Gate (22h)" on the head of a ca/ pull request
 #   gate ca-release  context "Soak Gate (60h)" on the ca-release commit
 #
-#   report-soak-gate.sh pending  posts pending when the run starts
-#   report-soak-gate.sh final    posts the result when the run ends
+#   report-soak-gate.sh pending     posts pending when the run starts
+#   report-soak-gate.sh checkpoint  posts pending with the progress in CHECKPOINT_SUMMARY
+#   report-soak-gate.sh final       posts the result when the run ends
 #
 # The result is success only when the soak job succeeded, reached its
 # completion marker, passed its integration preflight, and the soak verdict is
@@ -32,8 +33,8 @@ set -euo pipefail
 
 mode="${1:-}"
 case "$mode" in
-	pending | final) ;;
-	*) echo "ERROR: give the mode pending or final." >&2; exit 2 ;;
+	pending | checkpoint | final) ;;
+	*) echo "ERROR: give the mode pending, checkpoint, or final." >&2; exit 2 ;;
 esac
 
 case "${GATE:-}" in
@@ -61,6 +62,10 @@ own_run="$(run_id "$RUN_URL")"
 if [ "$mode" = pending ]; then
 	state=pending
 	description="The soak is running."
+elif [ "$mode" = checkpoint ]; then
+	state=pending
+	description="$(jq -r 'select((.run.elapsed_seconds | type) == "number" and (.run.duration_seconds | type) == "number" and (.passive.iterations | type) == "number" and (.passive.failures | type) == "number" and .run.elapsed_seconds >= 0 and .run.duration_seconds > 0 and .passive.iterations >= 0 and .passive.failures >= 0) | "Checkpoint: \((.run.elapsed_seconds / 3600) | floor)h of \((.run.duration_seconds / 3600) | floor)h soaked, \(.passive.iterations) iterations, \(.passive.failures) failed."' "${CHECKPOINT_SUMMARY:-/nonexistent}" 2>/dev/null)" || description=""
+	[ -n "$description" ] || description="The soak is running."
 else
 	if [ "${SOAK_RESULT:-}" = cancelled ] || [ "${LAUNCH_RESULT:-}" = cancelled ]; then
 		state=error
