@@ -65,7 +65,11 @@ fn error_response(status: StatusCode, kind: &str, message: String) -> Response {
 }
 
 fn intake_error_response(error: IntakeError) -> Response {
-    let mut response = error_response(error.status(), error.kind(), error.to_string());
+    let mut body = json!({ "error": error.kind(), "message": error.to_string() });
+    if let Some(cause) = error.cause() {
+        body["cause"] = json!(cause);
+    }
+    let mut response = (error.status(), Json(body)).into_response();
     if let Some(secs) = error.retry_after_secs() {
         response
             .headers_mut()
