@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::api::block_api::{BlockAPI, ExploratoryDeployRejection};
+use casper::rust::api::block_api::{BlockAPI, BlocksByHeightsResponse, ExploratoryDeployRejection};
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::api::graph_generator::{GraphConfig, GraphzGenerator};
 use casper::rust::casper::DeployError;
@@ -19,17 +19,17 @@ use crypto::rust::public_key::PublicKey;
 use graphz::{GraphSerializer, ListSerializer};
 use models::casper::v1::deploy_service_server::DeployService;
 use models::casper::v1::{
-    BlockInfoResponse, BlockResponse, BondStatusResponse, ContinuationAtNameResponse,
-    DeployFinalizationStatusResponse, DeployResponse, EventInfoResponse, ExploratoryDeployResponse,
-    FindDeployResponse, IsFinalizedResponse, LastFinalizedBlockResponse, MachineVerifyResponse,
-    PendingDeploysResponse, PrivateNamePreviewResponse, RhoDataResponse, StatusResponse,
-    VisualizeBlocksResponse,
+    BlockInfoResponse, BlockPrunedInfo, BlockResponse, BlockUnavailableInfo, BondStatusResponse,
+    ContinuationAtNameResponse, DeployFinalizationStatusResponse, DeployResponse,
+    EventInfoResponse, ExploratoryDeployResponse, FindDeployResponse, IsFinalizedResponse,
+    LastFinalizedBlockResponse, MachineVerifyResponse, PendingDeploysResponse,
+    PrivateNamePreviewResponse, RhoDataResponse, StatusResponse, VisualizeBlocksResponse,
 };
 use models::casper::{
     BlockQuery, BlocksQuery, BlocksQueryByHeight, BondStatusQuery, ContinuationAtNameQuery,
     DataAtNameByBlockQuery, DeployDataProto, DeployFinalizationStateProto,
     DeployFinalizationStatusInfo, DeployFinalizationStatusQuery, ExploratoryDeployQuery,
-    FindDeployQuery, IsFinalizedQuery, LastFinalizedBlockQuery, MachineVerifyQuery,
+    FindDeployQuery, IsFinalizedQuery, LastFinalizedBlockQuery, LightBlockInfo, MachineVerifyQuery,
     PendingDeployInfo, PendingDeploysQuery, PendingDeploysResponsePayload, PrivateNamePreviewQuery,
     ReportQuery, Status, VersionInfo, VisualizeDagQuery,
 };
@@ -62,6 +62,56 @@ impl IntoServiceError for casper::rust::api::block_report_api::BlockReportError 
 
 const FIND_DEPLOY_RETRY_INTERVAL_MS: u64 = 100;
 const FIND_DEPLOY_MAX_ATTEMPTS: u8 = 80;
+
+/// Flatten a [`BlocksByHeightsResponse`] into the ordered sequence of
+/// `BlockInfoResponse` items the `getBlocksByHeights` stream emits:
+/// `served` blocks first, then (only if `include_missing` is set) all
+/// `pruned` entries, then all `unavailable` entries. `prune_floor` is
+/// copied onto each missing-entry message so a consumer reacting
+/// item-by-item has the retention context without waiting for a
+/// terminal summary. Split out from the handler so the ordering is
+/// unit-testable without a live engine; see the stream-order tests.
+fn build_blocks_by_heights_stream(
+    response: BlocksByHeightsResponse<LightBlockInfo>,
+    include_missing: bool,
+) -> Vec<BlockInfoResponse> {
+    use models::casper::v1::block_info_response::Message;
+    let prune_floor = response.prune_floor;
+    let mut out: Vec<BlockInfoResponse> = Vec::with_capacity(
+        response.served.len()
+            + if include_missing {
+                response.pruned.len() + response.unavailable.len()
+            } else {
+                0
+            },
+    );
+    for block_info in response.served {
+        out.push(BlockInfoResponse {
+            message: Some(Message::BlockInfo(block_info)),
+        });
+    }
+    if include_missing {
+        for entry in response.pruned {
+            out.push(BlockInfoResponse {
+                message: Some(Message::Pruned(BlockPrunedInfo {
+                    hash: entry.hash,
+                    block_height: entry.block_height,
+                    prune_floor,
+                })),
+            });
+        }
+        for entry in response.unavailable {
+            out.push(BlockInfoResponse {
+                message: Some(Message::Unavailable(BlockUnavailableInfo {
+                    hash: entry.hash,
+                    block_height: entry.block_height,
+                    prune_floor,
+                })),
+            });
+        }
+    }
+    out
+}
 
 fn find_deploy_retry_interval_ms() -> u64 { FIND_DEPLOY_RETRY_INTERVAL_MS }
 
@@ -179,6 +229,7 @@ impl DeployGrpcServiceV1Impl {
                                 | DeployError::PoolBusy { .. }
                                 | DeployError::AdmissionBusy
                                 | DeployError::InvalidFreshness
+                                | DeployError::PhloLimitAboveCap { .. }
                                 | DeployError::RecordTooLarge { .. }
                         )
                     ) || cause
@@ -1035,6 +1086,12 @@ impl DeployService for DeployGrpcServiceV1Impl {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         let engine_cell = self.engine_cell.clone();
         let api_max_blocks_limit = self.api_max_blocks_limit;
+        // Default is false (proto3), so an existing client that has not
+        // regenerated its stubs sees only `blockInfo` items — same shape
+        // as before #1087. Clients that opt in receive `pruned` and
+        // `unavailable` trailing items for topo_sort hashes whose bodies
+        // this node no longer holds.
+        let include_missing = request.include_missing;
 
         tokio::spawn(async move {
             match BlockAPI::get_blocks_by_heights(
@@ -1045,17 +1102,10 @@ impl DeployService for DeployGrpcServiceV1Impl {
             )
             .await
             {
-                Ok(blocks) => {
-                    for block_info in blocks {
-                        let response = BlockInfoResponse {
-                            message: Some(
-                                models::casper::v1::block_info_response::Message::BlockInfo(
-                                    block_info,
-                                ),
-                            ),
-                        };
-                        if tx.send(Ok(response)).await.is_err() {
-                            break;
+                Ok(response) => {
+                    for msg in build_blocks_by_heights_stream(response, include_missing) {
+                        if tx.send(Ok(msg)).await.is_err() {
+                            return;
                         }
                     }
                 }
@@ -1176,6 +1226,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             deploy_lifespan: pacing.map(|p| p.deploy_lifespan),
             max_user_deploys_per_block: pacing.map(|p| p.max_user_deploys_per_block),
             max_parent_depth: pacing.map(|p| p.max_parent_depth),
+            max_phlo_limit: pacing.map(|p| p.max_phlo_limit),
         };
 
         Ok(tonic::Response::new(StatusResponse {
@@ -1980,6 +2031,7 @@ mod tests {
             .get_blocks_by_heights(tonic::Request::new(BlocksQueryByHeight {
                 start_block_number: 0,
                 end_block_number: 2,
+                include_missing: false,
             }))
             .await
             .unwrap()
@@ -2024,5 +2076,81 @@ mod tests {
             deploy_state_to_proto(S::Expired),
             DeployFinalizationStateProto::DeployStateExpired
         );
+    }
+
+    fn envelope_fixture() -> BlocksByHeightsResponse<LightBlockInfo> {
+        let served_a = LightBlockInfo {
+            block_hash: "aa".to_string(),
+            block_number: 1,
+            ..LightBlockInfo::default()
+        };
+        let served_b = LightBlockInfo {
+            block_hash: "bb".to_string(),
+            block_number: 3,
+            ..LightBlockInfo::default()
+        };
+        BlocksByHeightsResponse {
+            served: vec![served_a, served_b],
+            pruned: vec![casper::rust::api::block_api::MissingBlockEntry {
+                hash: prost::bytes::Bytes::from_static(b"\x01\x02"),
+                block_height: 2,
+            }],
+            unavailable: vec![casper::rust::api::block_api::MissingBlockEntry {
+                hash: prost::bytes::Bytes::from_static(b"\x03\x04"),
+                block_height: 4,
+            }],
+            prune_floor: 2,
+        }
+    }
+
+    #[test]
+    fn blocks_by_heights_stream_omits_missing_when_opt_in_is_off() {
+        // Opt-out path: existing clients see only `blockInfo` items, same
+        // shape as before #1087. Locks in the contract that `include_missing
+        // = false` filters out `pruned` and `unavailable` entries entirely,
+        // so wire-additive variants cannot leak into an un-regenerated
+        // consumer's stream.
+        let out = build_blocks_by_heights_stream(envelope_fixture(), false);
+        assert_eq!(out.len(), 2);
+        for item in &out {
+            match item.message.as_ref().expect("message set") {
+                models::casper::v1::block_info_response::Message::BlockInfo(_) => {}
+                other => panic!("expected BlockInfo variant only, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn blocks_by_heights_stream_orders_served_then_pruned_then_unavailable() {
+        // Opt-in path: served → pruned → unavailable, with `prune_floor`
+        // on each missing-entry message. This is the ordering the PR
+        // description promises, and the layout opt-in clients will walk.
+        use models::casper::v1::block_info_response::Message;
+        let out = build_blocks_by_heights_stream(envelope_fixture(), true);
+        assert_eq!(out.len(), 4);
+        match out[0].message.as_ref().unwrap() {
+            Message::BlockInfo(b) => assert_eq!(b.block_hash, "aa"),
+            other => panic!("expected BlockInfo, got {other:?}"),
+        }
+        match out[1].message.as_ref().unwrap() {
+            Message::BlockInfo(b) => assert_eq!(b.block_hash, "bb"),
+            other => panic!("expected BlockInfo, got {other:?}"),
+        }
+        match out[2].message.as_ref().unwrap() {
+            Message::Pruned(p) => {
+                assert_eq!(p.hash.as_ref(), b"\x01\x02");
+                assert_eq!(p.block_height, 2);
+                assert_eq!(p.prune_floor, 2);
+            }
+            other => panic!("expected Pruned, got {other:?}"),
+        }
+        match out[3].message.as_ref().unwrap() {
+            Message::Unavailable(u) => {
+                assert_eq!(u.hash.as_ref(), b"\x03\x04");
+                assert_eq!(u.block_height, 4);
+                assert_eq!(u.prune_floor, 2);
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
     }
 }

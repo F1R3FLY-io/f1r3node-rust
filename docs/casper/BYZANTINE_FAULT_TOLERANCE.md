@@ -820,6 +820,16 @@ casper {
 
 The configured value only seeds genesis: it is baked into the PoS contract, and every node adopts the on-chain value at startup regardless of local configuration. A block carrying a deploy priced below the floor is rejected as invalid (`LowDeployCost`). The verdict is deliberately not slashable — the floor is an admission rule, so an underpriced block is dropped without penalizing its sender's stake. This prevents spam and ensures network sustainability.
 
+### Maximum Phlo Limit
+
+```hocon
+casper {
+  max-phlo-limit = 20000000
+}
+```
+
+The largest phlo limit a user deploy may declare. It bounds how long one deploy can hold a validator during play and replay. Like the price floor, the configured value only seeds genesis, and every node adopts the on-chain value at startup. Admission refuses a deploy above the cap. A block that carries one is invalid (`ExcessivePhloLimit`), and validation judges this before it replays any deploy of the block. The verdict is not slashable, for the same reason as `LowDeployCost`.
+
 ---
 
 ## 9. Attack Scenarios and Defenses

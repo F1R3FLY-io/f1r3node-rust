@@ -8,7 +8,7 @@
   },
   "claim_id": "CLAIM-SOAK-CLEANUP-001",
   "claim_set_sha256": "196fba5e47ab7501200da49260586c5bb39dc1513d1eeeb1262fc89a673a1131",
-  "evidence_sha256": "7a110ced46b2e429f0d8c9984cf7ea1f063b8d151d1eafde1fc3333c3e1d49eb",
+  "evidence_sha256": "6fd5dd50f2484c1c33b7148e3079b2f35103256057269fb232746b5badcbf7bf",
   "accepted_by": "",
   "approved_at": "",
   "approval_ref": ""

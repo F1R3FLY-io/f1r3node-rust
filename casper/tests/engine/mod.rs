@@ -1,5 +1,6 @@
 pub mod approve_block_protocol_test;
 pub mod block_approver_protocol_test;
+pub mod casper_launch_spec;
 pub mod engine_cell_test;
 pub mod genesis_ceremony_master_spec;
 pub mod genesis_validator_spec;

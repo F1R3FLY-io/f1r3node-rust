@@ -449,7 +449,15 @@ env:
   #   descendant's new one (node #1070). Verified: descends from fba951b (1
   #   commit ahead, 0 behind); differs from it only in that test; the test
   #   passes on a local subprocess shard; 586 unit tests pass.
-  SYSTEM_INTEGRATION_REF: a0d868645166feca4c3ea9db7a06fc796a118459
+  # 2026-11-20: a0d8686 -> 9243d3b (system-integration main, PRs #197 and
+  #   #202 merged through promotion #203). Test deploys declare phlo limits
+  #   within the node's 20,000,000 max-phlo-limit, pyf1r3fly is pinned to the
+  #   merge of pyf1r3fly #15, which lowers the PosAPI default limit, and
+  #   test_storage declares a limit that covers store-data.rho's registry
+  #   insert. Verified: descends from a0d8686 (7 commits ahead, 0 behind);
+  #   differs from it only in node.py, 14 tests, pyproject.toml and
+  #   poetry.lock; 586 unit tests pass.
+  SYSTEM_INTEGRATION_REF: 9243d3b219c63597c5670dfc1da79265c37d1091
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
