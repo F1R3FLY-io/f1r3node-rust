@@ -27,6 +27,7 @@ use tracing::warn;
 use utoipa::ToSchema;
 
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
+use crate::rust::api::serde_types::blocks_by_heights_response::BlocksByHeightsResponseSerde;
 use crate::rust::api::serde_types::deploy_info::TransferInfoSerde;
 use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
 use crate::rust::web::block_info_enricher::extract_transfers_from_report;
@@ -118,13 +119,21 @@ pub trait WebApi {
         use_pre_state_hash: bool,
     ) -> Result<RhoDataResponse>;
 
-    /// Get blocks by height range
+    /// Get blocks by height range. The envelope carries `pruned`
+    /// entries (`block_height <= prune_floor`, permanent on this node)
+    /// and `unavailable` entries (`block_height > prune_floor`, body
+    /// missing but the retention sweep has not reached the height —
+    /// retry may succeed), plus the `prune_floor` captured at the
+    /// moment of the walk. The route turns this into either the
+    /// pre-#1087 bare array (default) or the full envelope
+    /// (`include_missing=true`); the trait always returns the envelope
+    /// so the handler can decide the wire shape.
     async fn get_blocks_by_heights(
         &self,
         start_block_number: i64,
         end_block_number: i64,
         view: ViewMode,
-    ) -> Result<Vec<BlockInfoSerde>>;
+    ) -> Result<BlocksByHeightsResponseSerde>;
 
     /// Check if a block is finalized
     async fn is_finalized(&self, hash: String) -> Result<bool>;
@@ -764,31 +773,25 @@ impl WebApi for WebApiImpl {
         start_block_number: i64,
         end_block_number: i64,
         view: ViewMode,
-    ) -> Result<Vec<BlockInfoSerde>> {
+    ) -> Result<BlocksByHeightsResponseSerde> {
         if view == ViewMode::Full {
-            let blocks = BlockAPI::get_blocks_by_heights_full(
+            let response = BlockAPI::get_blocks_by_heights_full(
                 &self.engine_cell,
                 start_block_number,
                 end_block_number,
                 self.api_max_blocks_limit,
             )
             .await?;
-            Ok(blocks
-                .into_iter()
-                .map(BlockInfoSerde::try_from)
-                .collect::<Result<Vec<_>, _>>()?)
+            BlocksByHeightsResponseSerde::from_full(response)
         } else {
-            let blocks = BlockAPI::get_blocks_by_heights(
+            let response = BlockAPI::get_blocks_by_heights(
                 &self.engine_cell,
                 start_block_number,
                 end_block_number,
                 self.api_max_blocks_limit,
             )
             .await?;
-            Ok(blocks
-                .into_iter()
-                .map(|block| BlockInfoSerde::from_light(LightBlockInfoSerde::from(block)))
-                .collect())
+            Ok(BlocksByHeightsResponseSerde::from_light(response))
         }
     }
 
