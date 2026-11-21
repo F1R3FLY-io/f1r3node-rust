@@ -1747,6 +1747,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             self.heartbeat_signal_ref.clone(),
         )
         .await?;
+        casper.hold_proposals_until_own_history_known();
 
         tracing::info!(
             "create_casper_and_transition_to_running: MultiParentCasper instance created"

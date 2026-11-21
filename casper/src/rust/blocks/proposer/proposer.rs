@@ -457,6 +457,17 @@ where
         };
         let snapshot_ms = snapshot_start.elapsed().as_millis();
 
+        if casper.awaiting_own_history(&casper_snapshot)? {
+            let result = ProposeResult::failure(ProposeFailure::CheckConstraintsFailure(
+                CheckProposeConstraintsFailure::HistoryIncomplete,
+            ));
+            return Ok(ProposeReturnType {
+                propose_result_to_send: ProposerResult::failure(result.propose_status.clone(), 0),
+                propose_result: result,
+                block_message_opt: None,
+            });
+        }
+
         let elapsed = start_time.elapsed();
         tracing::info!("getCasperSnapshot [{}ms]", elapsed.as_millis());
 

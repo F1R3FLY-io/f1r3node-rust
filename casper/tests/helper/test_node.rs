@@ -1157,6 +1157,7 @@ impl TestNode {
                     MultiParentCasperImpl::MAX_JUDGED_TWINS,
                 ),
             ),
+            own_history_gate: std::sync::Arc::default(),
         };
 
         let casper = Arc::new(casper_impl);
