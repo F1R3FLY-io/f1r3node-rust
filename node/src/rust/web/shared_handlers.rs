@@ -324,6 +324,13 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
             Some(DeployError::SeedReuse(_)) => {
                 return (StatusCode::CONFLICT, "seed_reuse", cause.to_string());
             }
+            Some(DeployError::PhloLimitAboveCap { .. }) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "illegal_argument",
+                    cause.to_string(),
+                );
+            }
             _ => {}
         }
         if cause.downcast_ref::<DeployExpiredError>().is_some() {
@@ -540,6 +547,11 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         OutOfPhlogistonsError => (
             S::UNPROCESSABLE_ENTITY,
             "out_of_phlogistons",
+            ie.to_string(),
+        ),
+        NestingLimitExceeded { .. } => (
+            S::UNPROCESSABLE_ENTITY,
+            "nesting_limit_exceeded",
             ie.to_string(),
         ),
         HostWorkRejected => (
@@ -1021,6 +1033,17 @@ mod tests {
             assert_eq!(
                 classify(err),
                 (StatusCode::CONFLICT, "seed_reuse".to_string())
+            );
+        }
+
+        #[test]
+        fn a_phlo_limit_above_the_cap_is_an_illegal_argument() {
+            assert_eq!(
+                classify(DeployError::PhloLimitAboveCap {
+                    phlo_limit: 20_000_001,
+                    max_phlo_limit: 20_000_000,
+                }),
+                (StatusCode::BAD_REQUEST, "illegal_argument".to_string())
             );
         }
 

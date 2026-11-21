@@ -337,6 +337,7 @@ impl TestFixture {
         casper_shard_conf.epoch_length = genesis_params.proof_of_stake.epoch_length;
         casper_shard_conf.quarantine_length = genesis_params.proof_of_stake.quarantine_length;
         casper_shard_conf.min_phlo_price = (1).into();
+        casper_shard_conf.max_phlo_limit = genesis_params.proof_of_stake.max_phlo_limit;
 
         // **Scala equivalent**: exporter params with skip and take
         let exporter_params = ExporterParams {
@@ -389,6 +390,7 @@ impl TestFixture {
             genesis_params.proof_of_stake.max_parent_depth,
             genesis_params.proof_of_stake.deploy_lifespan,
             genesis_params.proof_of_stake.min_phlo_price,
+            genesis_params.proof_of_stake.max_phlo_limit,
             required_sigs,
             genesis_params
                 .proof_of_stake

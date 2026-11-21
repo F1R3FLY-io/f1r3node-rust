@@ -77,6 +77,12 @@ pub struct CasperConf {
     #[serde(rename = "min-phlo-price")]
     pub min_phlo_price: TokenAmount,
 
+    /// Largest phlo limit a user deploy may declare. Consensus-bearing (a
+    /// block carrying a deploy above it is invalid), so the genesis value is
+    /// baked into the PoS contract and adopted from chain at startup.
+    #[serde(rename = "max-phlo-limit")]
+    pub max_phlo_limit: i64,
+
     #[serde(rename = "heartbeat")]
     pub heartbeat_conf: HeartbeatConf,
 

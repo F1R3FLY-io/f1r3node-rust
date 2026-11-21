@@ -269,9 +269,9 @@ async fn run_validation_steps(
     .await
 }
 
-/// Judges everything about `block` but whether it equivocates: the
-/// equivocations it builds on or cites, its summary, its replay, its bonds,
-/// the equivocations it neglects and its phlo price. `equivocation_time` is
+/// Judges everything about `block` but whether it equivocates: its deploys'
+/// phlo limits, the equivocations it builds on or cites, its summary, its
+/// replay, its bonds, the equivocations it neglects and its phlo price. `equivocation_time` is
 /// the timing of the equivocation step, for the breakdown log.
 async fn validate_contents(
     this: &MultiParentCasperImpl,
@@ -281,6 +281,19 @@ async fn validate_contents(
     local_validator: Option<&models::rust::validator::Validator>,
     equivocation_time: &str,
 ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+    // The cap bounds how long replay can run, so it is judged before every
+    // step that replays this block or a twin it depends on.
+    if let Either::Left(block_error) =
+        Validate::phlo_limit(block, this.casper_shard_conf.max_phlo_limit)
+    {
+        tracing::warn!(
+            "Block {} carries a deploy with a phlo limit above {}",
+            PrettyPrinter::build_string_bytes(&block.block_hash),
+            this.casper_shard_conf.max_phlo_limit
+        );
+        return Ok(Either::Left(block_error));
+    }
+
     if let Some(block_error) =
         equivocating_dependencies_verdict(this, block, snapshot, local_validator).await?
     {

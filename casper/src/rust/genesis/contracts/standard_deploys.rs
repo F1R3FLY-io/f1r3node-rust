@@ -355,6 +355,7 @@ pub fn pos_v6_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData
             ("maxParentDepth", &pos.max_parent_depth.to_string()),
             ("deployLifespan", &pos.deploy_lifespan.to_string()),
             ("minPhloPrice", &pos.min_phlo_price.to_string()),
+            ("maxPhloLimit", &pos.max_phlo_limit.to_string()),
         ]),
         POS_GENERATOR_PK,
         POS_GENERATOR_TIMESTAMP,
@@ -387,6 +388,7 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
             ("maxParentDepth", &pos.max_parent_depth.to_string()),
             ("deployLifespan", &pos.deploy_lifespan.to_string()),
             ("minPhloPrice", &pos.min_phlo_price.to_string()),
+            ("maxPhloLimit", &pos.max_phlo_limit.to_string()),
             (
                 "posMultiSigPublicKeys",
                 &ProofOfStake::public_keys(&pos.pos_multi_sig_public_keys),

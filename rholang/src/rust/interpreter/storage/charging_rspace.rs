@@ -25,6 +25,7 @@ use crate::rust::interpreter::accounting::costs::{
 use crate::rust::interpreter::accounting::rev_stack::seal;
 use crate::rust::interpreter::accounting::{_cost, membrane};
 use crate::rust::interpreter::errors::InterpreterError;
+use crate::rust::interpreter::nesting::check_nesting;
 
 pub struct ChargingRSpace;
 
@@ -79,6 +80,9 @@ impl ChargingRSpace {
                 MaybeConsumeResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
                 RSpaceError,
             > {
+                check_nesting(&channels)?;
+                check_nesting(&patterns)?;
+                check_nesting(&continuation)?;
                 let precharged = membrane::take_precharged();
                 let (consume_storage, reserve) =
                     consume_issue(&channels, &patterns, &continuation, persist);
@@ -139,6 +143,8 @@ impl ChargingRSpace {
                 MaybeProduceResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
                 RSpaceError,
             > {
+                check_nesting(&channel)?;
+                check_nesting(&data)?;
                 let precharged = membrane::take_precharged();
                 if self.cost.storage_left_in_space().is_some() {
                     let id = data.random_state.clone();

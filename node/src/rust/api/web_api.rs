@@ -634,6 +634,7 @@ impl WebApi for WebApiImpl {
             deploy_lifespan: pacing.map(|p| p.deploy_lifespan),
             max_user_deploys_per_block: pacing.map(|p| p.max_user_deploys_per_block),
             max_parent_depth: pacing.map(|p| p.max_parent_depth),
+            max_phlo_limit: pacing.map(|p| p.max_phlo_limit),
         })
     }
 
@@ -1657,6 +1658,9 @@ pub struct ApiStatus {
     /// How far below the tip a block may cite. `null` until casper is up.
     #[serde(rename = "maxParentDepth")]
     pub max_parent_depth: Option<i32>,
+    /// Largest phlo limit a deploy may declare. `null` until casper is up.
+    #[serde(rename = "maxPhloLimit")]
+    pub max_phlo_limit: Option<i64>,
 }
 
 /// The chain values a deploy client needs to pace and window its deploys,
@@ -1667,6 +1671,7 @@ pub struct DeployPacing {
     pub deploy_lifespan: i64,
     pub max_user_deploys_per_block: u32,
     pub max_parent_depth: i32,
+    pub max_phlo_limit: i64,
 }
 
 impl DeployPacing {
@@ -1680,6 +1685,7 @@ impl DeployPacing {
             deploy_lifespan: shard_conf.deploy_lifespan,
             max_user_deploys_per_block: shard_conf.max_user_deploys_per_block,
             max_parent_depth: shard_conf.max_parent_depth,
+            max_phlo_limit: shard_conf.max_phlo_limit,
         }))
     }
 }

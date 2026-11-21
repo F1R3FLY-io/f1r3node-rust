@@ -21,6 +21,7 @@ pub mod io;
 pub mod matcher;
 pub mod merging;
 pub mod metrics_constants;
+pub mod nesting;
 pub mod ollama_service;
 pub mod openai_service;
 pub mod pretty_printer;

@@ -4,6 +4,7 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::{single_expr, vector_par};
 use models::rust::utils::*;
+use shared::rust::stack::with_stack_headroom;
 
 use super::exports::*;
 use super::fold_match::FoldMatch;
@@ -264,6 +265,12 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - parSpatialMatcher
 impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Par, pattern: Par) -> Option<()> {
+        with_stack_headroom(|| self.spatial_match_par_level(target, pattern))
+    }
+}
+
+impl SpatialMatcherContext {
+    fn spatial_match_par_level(&mut self, target: Par, pattern: Par) -> Option<()> {
         if !pattern.connective_used {
             // guard(pattern == target)
             guard(match_pars(&target, &pattern))
