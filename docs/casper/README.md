@@ -19,6 +19,7 @@ replication.
 | Theory dossiers | [theory/](./theory/README.md) — fork choice, finalized floor, merge algebra, slashing |
 | Validation | [validation/](./validation/) — FV campaign gap analysis, merge-recovery validation plan, PR-280 FV review |
 | Design analyses | [Casper CbC repair plan](./design/cbc-repair-plan.md) · [LFS Block Requester analysis](./design/lfs-block-requester-analysis.md) · [Cost-accounting CbC and FV reconciliation](./design/cost-accounting-cbc-fv-reconciliation.md) · [Decision ledger](./design/decision-ledger/README.md) (decided 2026-09-16) |
+| Shard parameters | [Shard parameter governance](../designs/shard-parameter-governance.md) (proposed 2026-11-20) · [Replication boundary](../designs/replication-boundary.md) section 17 · [Consensus Protocol](./CONSENSUS_PROTOCOL.md) section 10 |
 | CbC claims | [Soak harness claim index](../claims/casper-soak-harness.md) · [Repeat-deploy carrier-index equivalence](../claims/repeat-deploy-carrier-index-equivalence.md) · [Replay liveness bound](../claims/replay-liveness-bound.md) |
 | CbC evidence | [Casper evidence records](./cbc-evidence/) |
 | Economic layer | `casper/src/main/resources/PoS.rhox` — the Rholang bond/slash/reward contract (see [Rholang macro docs](../rholang/16-rhox-macros.md)) |

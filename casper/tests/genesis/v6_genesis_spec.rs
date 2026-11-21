@@ -1,7 +1,7 @@
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::v6::genesis_policy::read_genesis_policy;
-use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
+use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V7};
 
 use crate::util::genesis_builder::GenesisBuilder;
 use crate::util::rholang::resources::mk_runtime_manager;
@@ -27,13 +27,13 @@ fn policy() -> ShardResourcePolicy {
 }
 
 #[tokio::test]
-async fn a_protocol_6_genesis_holds_its_resource_policy() {
+async fn a_protocol_7_genesis_holds_its_resource_policy() {
     let rm = runtime_manager().await;
-    let genesis = parameters(PROTOCOL_V6);
+    let genesis = parameters(PROTOCOL_V7);
     let block = Genesis::create_genesis_block_with_policy(&rm, &genesis, Some(&policy()))
         .await
-        .expect("a protocol 6 genesis builds");
-    assert_eq!(block.header.version, PROTOCOL_V6);
+        .expect("a protocol 7 genesis builds");
+    assert_eq!(block.header.version, PROTOCOL_V7);
     assert!(block.body.deploys.iter().all(|d| !d.is_failed));
     let read = read_genesis_policy(&rm, &block.body.state.post_state_hash)
         .await
@@ -63,7 +63,7 @@ async fn the_policy_and_the_protocol_version_must_agree() {
             .is_err()
     );
     assert!(
-        Genesis::create_genesis_block_with_policy(&rm, &parameters(PROTOCOL_V6), None)
+        Genesis::create_genesis_block_with_policy(&rm, &parameters(PROTOCOL_V7), None)
             .await
             .is_err()
     );
@@ -72,7 +72,7 @@ async fn the_policy_and_the_protocol_version_must_agree() {
         ..policy()
     };
     assert!(
-        Genesis::create_genesis_block_with_policy(&rm, &parameters(PROTOCOL_V6), Some(&zero))
+        Genesis::create_genesis_block_with_policy(&rm, &parameters(PROTOCOL_V7), Some(&zero))
             .await
             .is_err()
     );
@@ -86,9 +86,9 @@ async fn the_attested_root_validator_source_reads_the_floor_committee() {
 
     let rm = std::sync::Arc::new(runtime_manager().await);
     let block =
-        Genesis::create_genesis_block_with_policy(&rm, &parameters(PROTOCOL_V6), Some(&policy()))
+        Genesis::create_genesis_block_with_policy(&rm, &parameters(PROTOCOL_V7), Some(&policy()))
             .await
-            .expect("a protocol 6 genesis builds");
+            .expect("a protocol 7 genesis builds");
     let root = block.body.state.post_state_hash.clone();
     let expected = floor_committee(&rm, &root).await.unwrap();
     assert!(!expected.is_empty());

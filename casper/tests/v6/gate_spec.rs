@@ -4,7 +4,7 @@ use casper::rust::util::construct_deploy;
 use casper::rust::v6::gate::{
     check_recorded, gate_block, GateInput, PhloLimitDemand, Refusal, StoreReader, Verdict,
 };
-use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
+use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V7};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
@@ -35,7 +35,7 @@ async fn the_gate_reads_wallets_natively_at_the_pre_state() {
     let (alice_sk, alice_pk): (PrivateKey, PublicKey) = Secp256k1.new_key_pair();
     let (bob_sk, _) = Secp256k1.new_key_pair();
     let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
-    genesis.version = PROTOCOL_V6;
+    genesis.version = PROTOCOL_V7;
     genesis.vaults = vec![Vault {
         vault_address: VaultAddress::from_public_key(&alice_pk).unwrap(),
         initial_balance: 10_000.into(),

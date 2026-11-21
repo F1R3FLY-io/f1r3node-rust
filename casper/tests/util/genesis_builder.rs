@@ -330,7 +330,7 @@ impl GenesisBuilder {
             );
 
             let policy = (genesis_parameters.version
-                == casper::rust::v6::resource_policy::PROTOCOL_V6)
+                == casper::rust::v6::resource_policy::PROTOCOL_V7)
                 .then(casper::rust::v6::resource_policy::ShardResourcePolicy::default);
             let genesis = Genesis::create_genesis_block_with_policy(
                 &runtime_manager,

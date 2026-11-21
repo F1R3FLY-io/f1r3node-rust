@@ -178,7 +178,7 @@ impl ApproveBlockProtocolFactory {
             consensus_fs_snapshot_cadence: None,
         };
 
-        let policy = (protocol_version == crate::rust::v6::resource_policy::PROTOCOL_V6)
+        let policy = (protocol_version == crate::rust::v6::resource_policy::PROTOCOL_V7)
             .then(crate::rust::v6::resource_policy::ShardResourcePolicy::default);
         let genesis_block =
             Genesis::create_genesis_block_with_policy(runtime_manager, &genesis, policy.as_ref())

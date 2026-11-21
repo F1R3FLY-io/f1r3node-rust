@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CLI end-to-end run against a protocol-6 standalone shard seeded from wallets.txt.
+# CLI end-to-end run against a protocol-7 standalone shard seeded from wallets.txt.
 # Usage: scripts/v6/cli-end-to-end.sh [work-dir]
 # Needs target/release/node (cargo build --release -p node).
 set -euo pipefail
@@ -21,7 +21,7 @@ mkdir -p "$data/genesis"
 echo "$validator_pk 1000" > "$data/genesis/bonds.txt"
 echo "$payer_address,$supply" > "$data/genesis/wallets.txt"
 sed -e "s#run-local/data/standalone#$data#g" "$root/run-local/conf/standalone.conf" |
-    awk '{ print } /pos-multi-sig-quorum = 1/ { print "    protocol-version = 6" }' > "$work/standalone-v6.conf"
+    awk '{ print } /pos-multi-sig-quorum = 1/ { print "    protocol-version = 7" }' > "$work/standalone-v6.conf"
 
 "$node" run -s --config-file="$work/standalone-v6.conf" \
     --validator-private-key="$validator_sk" --host=localhost --no-upnp > "$work/node.log" 2>&1 &
