@@ -8,6 +8,7 @@ pub mod free_map;
 pub mod id_context;
 pub mod normalize;
 pub mod normalizer;
+pub mod process_depth;
 pub mod receive_binds_sort_matcher;
 pub mod span_utils;
 pub mod utils;

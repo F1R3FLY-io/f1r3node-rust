@@ -31,6 +31,14 @@ build-debug:
     cargo build -p node
 
 # =================================================================
+# TESTS
+# =================================================================
+
+# Run workspace tests under the host-wide test lock (defaults to `cargo nextest run`; passes args through)
+test *args:
+    scripts/ci/run-tests.sh {{args}}
+
+# =================================================================
 # TEST COVERAGE
 # =================================================================
 

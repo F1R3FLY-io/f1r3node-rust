@@ -435,7 +435,29 @@ env:
   #   (which requires skipped=0) passes again. Verified: descends from
   #   907f8a5 (4 commits ahead, 0 behind); differs from it only in
   #   conftest.py, WRITING_TESTS.md, two custom tests and one unit test.
-  SYSTEM_INTEGRATION_REF: 646efd00a11df7e17610d2c6399aaf32abbb4eda
+  # 2026-11-19: 646efd0 -> fba951b (system-integration main, PR #198 merged
+  #   through promotion #199). test_observer_missing_block_retry accepts the
+  #   tuple-space and forward-horizon requesters' retry logs as evidence and
+  #   waits 40 s for them, covering the horizon's 30 s resend (node #1088).
+  #   Verified: descends from 646efd0 (3 commits ahead, 0 behind); differs
+  #   from it only in log_events.py and that test; 586 unit tests pass.
+  # 2026-11-20: fba951b -> a0d8686 (system-integration main, PR #200 merged
+  #   through promotion #201). test_fault_tolerance_asymmetric_bonds re-reads
+  #   each validator's blocks until one get_blocks response holds the
+  #   main-parent FT check (30 s), since a response that straddles a
+  #   finalization can briefly show an ancestor's old FT under a
+  #   descendant's new one (node #1070). Verified: descends from fba951b (1
+  #   commit ahead, 0 behind); differs from it only in that test; the test
+  #   passes on a local subprocess shard; 586 unit tests pass.
+  # 2026-11-20: a0d8686 -> 9243d3b (system-integration main, PRs #197 and
+  #   #202 merged through promotion #203). Test deploys declare phlo limits
+  #   within the node's 20,000,000 max-phlo-limit, pyf1r3fly is pinned to the
+  #   merge of pyf1r3fly #15, which lowers the PosAPI default limit, and
+  #   test_storage declares a limit that covers store-data.rho's registry
+  #   insert. Verified: descends from a0d8686 (7 commits ahead, 0 behind);
+  #   differs from it only in node.py, 14 tests, pyproject.toml and
+  #   poetry.lock; 586 unit tests pass.
+  SYSTEM_INTEGRATION_REF: 9243d3b219c63597c5670dfc1da79265c37d1091
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -1338,11 +1360,6 @@ jobs:
             done
           done
           if [ "${INPUT_CANARY:-false}" = "true" ] || [ "${INPUT_PREFLIGHT_ONLY:-false}" = "true" ]; then
-            checkpoints=()
-          fi
-          # A gate run publishes no checkpoint: its numbers belong to a pull
-          # request or a ca-release commit, not to the dev or master series.
-          if [ -n "${INPUT_GATE:-}" ]; then
             checkpoints=()
           fi
           cp1=""; cp2=""; cp3=""; cp4=""; cp5=""
@@ -2666,6 +2683,8 @@ jobs:
         with:
           label: segment-1
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_1 }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
           duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
@@ -2691,6 +2710,8 @@ jobs:
         with:
           label: segment-2
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_2 }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
           duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
@@ -2716,6 +2737,8 @@ jobs:
         with:
           label: segment-3
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_3 }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
           duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
@@ -2741,6 +2764,8 @@ jobs:
         with:
           label: segment-4
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_4 }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
           duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
@@ -2766,6 +2791,8 @@ jobs:
         with:
           label: segment-5
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_5 }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
           duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}

@@ -46,7 +46,10 @@ type RhoReportingRspace = ReportingRspace<Par, BindPattern, ListParWithRandom, T
 /// Trait for reporting casper functionality
 #[async_trait]
 pub trait ReportingCasper: Send + Sync {
-    async fn trace(&self, block: &BlockMessage) -> Result<ReplayResult, String>;
+    /// Replay `block` for a report. `is_genesis` must come from the block's
+    /// identity: genesis replays without cost accounting and with the FS native
+    /// URNs bound, and any other block can also omit its parents.
+    async fn trace(&self, block: &BlockMessage, is_genesis: bool) -> Result<ReplayResult, String>;
 }
 
 /// No-op implementation that returns empty results
@@ -54,7 +57,11 @@ pub struct NoopReportingCasper;
 
 #[async_trait]
 impl ReportingCasper for NoopReportingCasper {
-    async fn trace(&self, _block: &BlockMessage) -> Result<ReplayResult, String> {
+    async fn trace(
+        &self,
+        _block: &BlockMessage,
+        _is_genesis: bool,
+    ) -> Result<ReplayResult, String> {
         Ok(ReplayResult {
             deploy_report_result: Vec::new(),
             system_deploy_report_result: Vec::new(),
@@ -72,7 +79,7 @@ pub struct RhoReporterCasper {
 
 #[async_trait]
 impl ReportingCasper for RhoReporterCasper {
-    async fn trace(&self, block: &BlockMessage) -> Result<ReplayResult, String> {
+    async fn trace(&self, block: &BlockMessage, is_genesis: bool) -> Result<ReplayResult, String> {
         use crate::rust::genesis::genesis::Genesis;
         use crate::rust::util::proto_util;
 
@@ -105,7 +112,7 @@ impl ReportingCasper for RhoReporterCasper {
             &pre_state_hash,
             &block.body.deploys,
             &block.body.system_deploys,
-            with_cost_accounting(&block.header.parents_hash_list),
+            !is_genesis,
             &block_data,
             proto_util::slash_evidence_senders(proto_util::slash_evidence(block)),
         )
@@ -262,10 +269,6 @@ pub fn rho_reporter(
     })
 }
 
-/// Genesis is the only block without parents, and it replays without cost
-/// accounting because no precharge or refund system deploy is wrapped around it.
-fn with_cost_accounting(parent_hashes: &[prost::bytes::Bytes]) -> bool { !parent_hashes.is_empty() }
-
 /// ReportingRuntime wraps RhoRuntimeImpl with ReportingRspace to enable event collection
 pub struct ReportingRuntime {
     runtime: rholang::rust::interpreter::rho_runtime::RhoRuntimeImpl,
@@ -395,18 +398,5 @@ impl ReportingRuntime {
             runtime,
             space: reporting_space,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn genesis_deploys_are_not_cost_accounted() {
-        assert!(!with_cost_accounting(&[]));
-        assert!(with_cost_accounting(&[prost::bytes::Bytes::from_static(
-            b"parent",
-        )]));
     }
 }
