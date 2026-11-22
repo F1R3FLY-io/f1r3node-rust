@@ -37,7 +37,13 @@ fn matches(n: usize, pattern: Par) -> bool {
 #[test]
 fn a_remainder_takes_any_number_of_elements_of_a_kind() {
     for n in [1_001, 1_002, 5_000] {
-        assert!(matches(n, int_bool_and(new_freevar_expr(0))), "rest with {n} ints");
-        assert!(matches(n, int_bool_and(new_wildcard_expr())), "wildcard with {n} ints");
+        assert!(
+            matches(n, int_bool_and(new_freevar_expr(0))),
+            "rest with {n} ints"
+        );
+        assert!(
+            matches(n, int_bool_and(new_wildcard_expr())),
+            "wildcard with {n} ints"
+        );
     }
 }
