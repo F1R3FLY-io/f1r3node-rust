@@ -451,7 +451,10 @@ async fn a_match_is_charged_per_step_and_replays_identically() {
                 assert_eq!(replayed, next);
                 if !fails {
                     let taken = runtime_manager
-                        .get_data(next, &new_gstring_par("matched".to_string(), Vec::new(), false))
+                        .get_data(
+                            next,
+                            &new_gstring_par("matched".to_string(), Vec::new(), false),
+                        )
                         .await
                         .unwrap();
                     assert_eq!(taken, vec![new_gint_par(1, Vec::new(), false)]);

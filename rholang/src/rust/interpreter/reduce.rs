@@ -13,10 +13,10 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod, EMinus,
-    EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple,
-    EVar, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, New,
-    Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod,
+    EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet,
+    ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom,
+    Match, New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
 };
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;

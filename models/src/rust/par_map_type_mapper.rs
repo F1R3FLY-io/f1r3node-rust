@@ -61,7 +61,10 @@ impl ParMapTypeMapper {
 
     /// A map of the canonical entries `kvs`, with the flags they imply.
     pub fn canonical_emap(kvs: Vec<KeyValuePair>) -> EMap {
-        let pars = || kvs.iter().flat_map(|kv| kv.key.iter().chain(kv.value.iter()));
+        let pars = || {
+            kvs.iter()
+                .flat_map(|kv| kv.key.iter().chain(kv.value.iter()))
+        };
         let locally_free = pars().fold(Vec::new(), |acc, p| union(acc, p.locally_free.clone()));
         let connective_used = pars().any(|p| p.connective_used);
         EMap {

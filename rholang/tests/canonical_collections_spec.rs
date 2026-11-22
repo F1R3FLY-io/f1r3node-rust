@@ -17,9 +17,7 @@ async fn assert_all_true(cases: &[(&str, &str)]) {
         .map(|(name, expr)| format!(r#"@"{name}"!({expr})"#))
         .collect::<Vec<_>>()
         .join(" | ");
-    let term = format!(
-        r#"@"p"!(1 | 2) | for (@p <- @"p") {{ {sends} }}"#
-    );
+    let term = format!(r#"@"p"!(1 | 2) | for (@p <- @"p") {{ {sends} }}"#);
 
     let mut manager = InMemoryStoreManager::new();
     let store = manager.r_space_stores().await.unwrap();
@@ -91,18 +89,48 @@ async fn lookups_find_keys_whatever_their_written_order() {
     assert_all_true(&[
         ("mapGet", r#"{p: "a"}.get(1 | 2) == "a""#),
         ("mapGetReordered", r#"{p: "a"}.get(2 | 1) == "a""#),
-        ("mapContains", r#"{p: "a"}.contains(1 | 2) and {p: "a"}.contains(2 | 1)"#),
+        (
+            "mapContains",
+            r#"{p: "a"}.contains(1 | 2) and {p: "a"}.contains(2 | 1)"#,
+        ),
         ("mapGetOrElse", r#"{p: "a"}.getOrElse(2 | 1, "z") == "a""#),
-        ("mapKeyIsMap", r#"{{"b": 1, "a": 2}: "x"}.get({"a": 2, "b": 1}) == "x""#),
-        ("mapOneEntry", r#"{"b": 0}.set(1 | 2, "a").set(2 | 1, "c").set(p, "d").size() == 2"#),
-        ("mapLastValue", r#"{"b": 0}.set(1 | 2, "a").set(2 | 1, "c").get(p) == "c""#),
-        ("mixedMapOneEntry", r#"[(p, 1), (1 | 2, 2)].toMap().size() == 1"#),
-        ("mixedMapOneKey", r#"[(p, 1), (1 | 2, 2)].toMap().keys().size() == 1"#),
-        ("setContains", r#"Set(p).contains(1 | 2) and Set(p).contains(2 | 1)"#),
-        ("setOneElement", r#"Set(1 | 2, 2 | 1, p).toList().length() == 1"#),
+        (
+            "mapKeyIsMap",
+            r#"{{"b": 1, "a": 2}: "x"}.get({"a": 2, "b": 1}) == "x""#,
+        ),
+        (
+            "mapOneEntry",
+            r#"{"b": 0}.set(1 | 2, "a").set(2 | 1, "c").set(p, "d").size() == 2"#,
+        ),
+        (
+            "mapLastValue",
+            r#"{"b": 0}.set(1 | 2, "a").set(2 | 1, "c").get(p) == "c""#,
+        ),
+        (
+            "mixedMapOneEntry",
+            r#"[(p, 1), (1 | 2, 2)].toMap().size() == 1"#,
+        ),
+        (
+            "mixedMapOneKey",
+            r#"[(p, 1), (1 | 2, 2)].toMap().keys().size() == 1"#,
+        ),
+        (
+            "setContains",
+            r#"Set(p).contains(1 | 2) and Set(p).contains(2 | 1)"#,
+        ),
+        (
+            "setOneElement",
+            r#"Set(1 | 2, 2 | 1, p).toList().length() == 1"#,
+        ),
         ("setOneSize", r#"Set(1 | 2, 2 | 1, p).size() == 1"#),
-        ("setDeleteReordered", r#"Set(p, "a").delete(2 | 1) == Set("a")"#),
-        ("mapDeleteReordered", r#"{p: 1, "a": 2}.delete(2 | 1) == {"a": 2}"#),
+        (
+            "setDeleteReordered",
+            r#"Set(p, "a").delete(2 | 1) == Set("a")"#,
+        ),
+        (
+            "mapDeleteReordered",
+            r#"{p: 1, "a": 2}.delete(2 | 1) == {"a": 2}"#,
+        ),
     ])
     .await;
 }

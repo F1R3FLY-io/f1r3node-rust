@@ -93,7 +93,9 @@ impl Ordering {
                     .next_if(|r| compare_score_trees(r, &score) == std::cmp::Ordering::Less)
                     .is_some()
                 {}
-                right.peek().is_none_or(|r| compare_score_trees(r, &score) != std::cmp::Ordering::Equal)
+                right
+                    .peek()
+                    .is_none_or(|r| compare_score_trees(r, &score) != std::cmp::Ordering::Equal)
             })
             .collect()
     }

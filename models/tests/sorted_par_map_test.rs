@@ -294,7 +294,12 @@ fn sorted_par_map_should_preserve_sortedness_for_all_operations() {
 
 #[test]
 fn canonical_map_operations_match_a_rebuilt_map() {
-    let entry = |k: i64, v: &str| (new_gint_par(k, vec![], false), new_gstring_par(v.to_string(), vec![], false));
+    let entry = |k: i64, v: &str| {
+        (
+            new_gint_par(k, vec![], false),
+            new_gstring_par(v.to_string(), vec![], false),
+        )
+    };
     let canonical = |entries: Vec<(Par, Par)>| SortedParMap::create_from_vec(entries).sorted_list;
     let map = SortedParMap::create_from_vec(vec![entry(1, "a"), entry(3, "c")]);
 
@@ -306,7 +311,10 @@ fn canonical_map_operations_match_a_rebuilt_map() {
         inserted(&map, &entry(3, "z").0, &entry(3, "z").1),
         canonical(vec![entry(1, "a"), entry(3, "z")])
     );
-    assert_eq!(removed(&map, &entry(1, "a").0), canonical(vec![entry(3, "c")]));
+    assert_eq!(
+        removed(&map, &entry(1, "a").0),
+        canonical(vec![entry(3, "c")])
+    );
     assert_eq!(removed(&map, &entry(2, "b").0), map.sorted_list);
 
     let kvs = |entries: Vec<(Par, Par)>| emap_of(&canonical(entries)).kvs;
@@ -347,7 +355,11 @@ fn check_sorted_entries(entries: &[(Par, Par)]) {
         assert!(is_sorted(key), "Key is not sorted: {:?}", key);
         assert!(is_sorted(value), "Value is not sorted: {:?}", value);
         let fetched = ParMapTypeMapper::lookup(&emap, key).expect("every key is found");
-        assert!(is_sorted(&fetched), "Fetched value is not sorted: {:?}", fetched);
+        assert!(
+            is_sorted(&fetched),
+            "Fetched value is not sorted: {:?}",
+            fetched
+        );
     }
 }
 
