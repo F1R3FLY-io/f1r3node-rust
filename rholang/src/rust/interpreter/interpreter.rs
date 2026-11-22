@@ -227,8 +227,10 @@ impl InterpreterImpl {
                 mergeable: HashMap::new(),
             }),
 
-            // Non-bool `if` condition - report actual consumed cost
-            InterpreterError::IfConditionTypeError { actual_type: _ } => Ok(EvaluateResult {
+            // Non-bool `if` condition or a URN the node does not provide: the
+            // deploy's own error, so it pays for the work done
+            InterpreterError::IfConditionTypeError { actual_type: _ }
+            | InterpreterError::UnknownUrnError { urn: _ } => Ok(EvaluateResult {
                 cost: initial_cost.clone() - self.c.get(),
                 errors: vec![error],
                 mergeable: HashMap::new(),
