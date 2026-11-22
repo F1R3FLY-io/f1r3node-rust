@@ -27,6 +27,7 @@ pub struct ShardValues {
     pub deploy_lifespan: i64,
     pub max_user_deploys_per_block: u32,
     pub max_parent_depth: i32,
+    pub max_phlo_limit: i64,
 }
 
 /// The node's chain position and shard values at one moment.
@@ -55,6 +56,8 @@ pub struct NodeStatus {
     pub max_user_deploys_per_block: Option<u32>,
     #[serde(rename = "maxParentDepth")]
     pub max_parent_depth: Option<i32>,
+    #[serde(rename = "maxPhloLimit")]
+    pub max_phlo_limit: Option<i64>,
     #[serde(rename = "isValidator")]
     pub is_validator: bool,
     #[serde(rename = "isReadOnly")]
@@ -82,11 +85,13 @@ impl NodeStatus {
             Some(deploy_lifespan),
             Some(max_user_deploys_per_block),
             Some(max_parent_depth),
+            Some(max_phlo_limit),
         ) = (
             self.latest_block_number,
             self.deploy_lifespan,
             self.max_user_deploys_per_block,
             self.max_parent_depth,
+            self.max_phlo_limit,
         )
         else {
             return Ok(None);
@@ -119,6 +124,12 @@ impl NodeStatus {
                     .to_string(),
             );
         }
+        if max_phlo_limit < 1 {
+            return Err(format!(
+                "node reports a non-positive max phlo limit: {}",
+                max_phlo_limit
+            ));
+        }
         Ok(Some(ChainSnapshot {
             shard: ShardValues {
                 shard_id: self.shard_id.clone(),
@@ -126,6 +137,7 @@ impl NodeStatus {
                 deploy_lifespan,
                 max_user_deploys_per_block,
                 max_parent_depth,
+                max_phlo_limit,
             },
             tip: next_block - 1,
             lfb: self.last_finalized_block_number,
@@ -398,7 +410,7 @@ mod tests {
         let status: NodeStatus = serde_json::from_str(
             r#"{"shardId":"root","minPhloPrice":"1","lastFinalizedBlockNumber":-1,
                 "latestBlockNumber":null,"deployLifespan":null,
-                "maxUserDeploysPerBlock":null,"maxParentDepth":null,
+                "maxUserDeploysPerBlock":null,"maxParentDepth":null,"maxPhloLimit":null,
                 "isValidator":true,"isReadOnly":false}"#,
         )
         .unwrap();
@@ -407,7 +419,7 @@ mod tests {
         let status: NodeStatus = serde_json::from_str(
             r#"{"shardId":"root","minPhloPrice":"1","lastFinalizedBlockNumber":40,
                 "latestBlockNumber":43,"deployLifespan":300,
-                "maxUserDeploysPerBlock":4,"maxParentDepth":25,
+                "maxUserDeploysPerBlock":4,"maxParentDepth":25,"maxPhloLimit":20000000,
                 "isValidator":true,"isReadOnly":false}"#,
         )
         .unwrap();
@@ -418,6 +430,7 @@ mod tests {
             "the status names the next block; the tip is the highest one"
         );
         assert_eq!(chain.shard.max_parent_depth, 25);
+        assert_eq!(chain.shard.max_phlo_limit, 20_000_000);
     }
 
     #[test]
@@ -425,10 +438,22 @@ mod tests {
         let status: NodeStatus = serde_json::from_str(&format!(
             r#"{{"shardId":"root","minPhloPrice":"1","lastFinalizedBlockNumber":40,
                 "latestBlockNumber":43,"deployLifespan":300,
-                "maxUserDeploysPerBlock":4,"maxParentDepth":{},
+                "maxUserDeploysPerBlock":4,"maxParentDepth":{},"maxPhloLimit":20000000,
                 "isValidator":true,"isReadOnly":false}}"#,
             i32::MAX
         ))
+        .unwrap();
+        assert!(status.chain().is_err());
+    }
+
+    #[test]
+    fn a_non_positive_max_phlo_limit_is_refused() {
+        let status: NodeStatus = serde_json::from_str(
+            r#"{"shardId":"root","minPhloPrice":"1","lastFinalizedBlockNumber":40,
+                "latestBlockNumber":43,"deployLifespan":300,
+                "maxUserDeploysPerBlock":4,"maxParentDepth":25,"maxPhloLimit":0,
+                "isValidator":true,"isReadOnly":false}"#,
+        )
         .unwrap();
         assert!(status.chain().is_err());
     }
@@ -439,7 +464,7 @@ mod tests {
             serde_json::from_str(&format!(
                 r#"{{"shardId":"root","minPhloPrice":"1","lastFinalizedBlockNumber":40,
                     "latestBlockNumber":43,"deployLifespan":300,
-                    "maxUserDeploysPerBlock":4,"maxParentDepth":25,
+                    "maxUserDeploysPerBlock":4,"maxParentDepth":25,"maxPhloLimit":20000000,
                     "isValidator":{},"isReadOnly":{}}}"#,
                 is_validator, is_read_only
             ))

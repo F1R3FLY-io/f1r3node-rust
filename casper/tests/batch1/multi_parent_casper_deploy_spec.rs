@@ -729,6 +729,64 @@ async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min
     );
 }
 
+#[tokio::test]
+async fn multi_parent_casper_should_refuse_deploy_with_phlo_limit_above_the_cap() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let cap = node.casper.casper_shard_conf().max_phlo_limit;
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    let deploy_with_limit = |phlo_limit: i64| {
+        construct_deploy::source_deploy_now_full(
+            "Nil".to_string(),
+            Some(phlo_limit),
+            None,
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap()
+    };
+
+    let refused = BlockAPI::deploy(
+        &node.engine_cell,
+        deploy_with_limit(cap + 1),
+        &None,
+        false,
+        &shard_id,
+    )
+    .await;
+    let error_message = format!(
+        "{:?}",
+        refused.expect_err("a deploy above the cap is refused")
+    );
+    let expected_message = format!(
+        "Phlo limit {} is greater than maximum limit {}",
+        cap + 1,
+        cap
+    );
+    assert!(
+        error_message.contains(&expected_message),
+        "Error message should contain: '{}'\nGot: {}",
+        expected_message,
+        error_message
+    );
+
+    BlockAPI::deploy(
+        &node.engine_cell,
+        deploy_with_limit(cap),
+        &None,
+        false,
+        &shard_id,
+    )
+    .await
+    .expect("a deploy at the cap is admitted");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn large_stakes_survive_proposal_peer_replay_and_metadata() {
     use casper::rust::casper::CASPER_PROTOCOL_VERSION;

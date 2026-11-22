@@ -44,10 +44,25 @@ fn reaches_ancestor_check(
     //    deletable set while merges still needed it. Anchoring on the floor is
     //    strictly more conservative: the floor never leads the tip, so this can
     //    only delete less than before, never more.
+    //
+    // When body-store GC is enabled the allowance widens by `deploy_lifespan`.
+    // Validation of a block proposed from a stale view (`compute_parents_post_state`)
+    // reads block bodies down to `block_floor - deploy_lifespan`
+    // (`settled_sigs_of_lineage` and the `scope_prior_rejection_counts` walk
+    // in `interpreter_util.rs`), where `block_floor` comes from the block's
+    // frozen justification snapshot. The caller folds the stale-view floor
+    // into `pass.floor` already; we just need the window to reach past the
+    // walk edge, otherwise `reaches_ancestor_check` lets through blocks a
+    // restarted-but-stale validator's return block still needs the bodies for.
     let block_meta = dag.lookup_unsafe(block_hash)?;
     let depth_from_floor = floor.block_number - block_meta.block_number;
     let max_allowed_depth = (casper_shard_conf.max_parent_depth as i64)
-        + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64);
+        + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64)
+        + if casper_shard_conf.enable_block_store_gc {
+            casper_shard_conf.deploy_lifespan
+        } else {
+            0
+        };
 
     if depth_from_floor <= max_allowed_depth {
         return Ok(false);
@@ -122,10 +137,36 @@ fn moved_past_by_every_validator(
     // A slot holding a block its validator never signed is the genesis
     // placeholder, which has no main parent: counting it collapses the anchor
     // search and the pass keeps everything.
-    let mut latest_messages: HashSet<BlockHash> = HashSet::new();
+    //
+    // For each signed latest message, the frontier also carries the blocks
+    // that message already cited — its parents and the justifications it
+    // records for other validators. A stopped validator's next block, built
+    // from the view encoded in its latest message, cites those same blocks
+    // again; starting the walk at the latest message alone treats its main
+    // parent as moved past even though the next block names that parent
+    // directly (see issue #1057). Adding the cited set to the frontier walks
+    // the anchor one step below every block the validator can still name.
+    //
+    // Justification slots are filtered through `own_testimony` for the same
+    // reason `active_latest` entries are: a newly-bonded validator that has
+    // not proposed sits in every other validator's justifications as a
+    // genesis placeholder, and genesis has no main parent — admitting it
+    // would collapse the anchor search and freeze every pass until the slot
+    // fills.
+    let mut citations: HashSet<BlockHash> = HashSet::new();
     for (validator, hash) in active_latest {
         if dag.own_testimony(validator, hash)?.is_some() {
-            latest_messages.insert(hash.clone());
+            citations.insert(hash.clone());
+            let meta = dag.lookup_unsafe(hash)?;
+            citations.extend(meta.parents.iter().cloned());
+            for just in &meta.justifications {
+                if dag
+                    .own_testimony(&just.validator, &just.latest_block_hash)?
+                    .is_some()
+                {
+                    citations.insert(just.latest_block_hash.clone());
+                }
+            }
         }
     }
 
@@ -139,7 +180,7 @@ fn moved_past_by_every_validator(
     // `common_strict_ancestors` below is that intersection, kept as the
     // differential oracle for the anchor.
     let anchor = deepest_common_strict_ancestor(
-        latest_messages,
+        citations,
         |block_hash| recorded(&read_error, dag.main_parent(block_hash)),
         |block_hash| recorded(&read_error, dag.block_number(block_hash)),
     );
@@ -172,24 +213,24 @@ fn recorded<T>(
     })
 }
 
-/// The deepest block that is a strict main-chain ancestor of every latest
-/// message, or `None` when there is no such block.
+/// The deepest block that is a strict main-chain ancestor of every input
+/// block, or `None` when there is no such block.
 ///
-/// Each walk starts at a latest message's main parent rather than at the message
-/// itself, which is what makes the result strict: a validator sitting on a block
-/// has not moved past it, so that block must not qualify.
+/// Each walk starts at an input's main parent rather than at the input itself,
+/// which is what makes the result strict: a validator still citing a block has
+/// not moved past it, so that block must not qualify.
 ///
 /// Convergence advances only the highest frontier entries, so the work is
-/// proportional to how far the validators have diverged — a few blocks when
+/// proportional to how far the inputs have diverged — a few blocks when
 /// healthy, and bounded by the stall when not — rather than to the chain length.
 fn deepest_common_strict_ancestor(
-    latest_messages: impl IntoIterator<Item = BlockHash>,
+    citations: impl IntoIterator<Item = BlockHash>,
     main_parent: impl Fn(&BlockHash) -> Option<BlockHash>,
     height_of: impl Fn(&BlockHash) -> Option<i64>,
 ) -> Option<BlockHash> {
-    let mut frontier: Vec<BlockHash> = latest_messages
+    let mut frontier: Vec<BlockHash> = citations
         .into_iter()
-        .map(|latest_message| main_parent(&latest_message))
+        .map(|citation| main_parent(&citation))
         .collect::<Option<Vec<_>>>()?;
 
     if frontier.is_empty() {
@@ -592,6 +633,42 @@ mod tests {
                     );
                 }
             }
+        }
+
+        /// `stale_view_floor` must return the lowest floor the pass could
+        /// anchor on. Every signed active validator pulls the anchor down to
+        /// its cached view floor, and the local LFB is the ceiling. A
+        /// placeholder slot (no own testimony) cannot pull the anchor
+        /// anywhere — it is filtered out by the same `own_testimony` rule
+        /// `active_latest` entries use.
+        #[test]
+        fn stale_view_floor_minimizes_across_every_signed_latest(
+            local in 0u8..=TOP,
+            a_floor in 0u8..=TOP,
+            b_floor in 0u8..=TOP,
+        ) {
+            let dag = forked_chain_dag();
+            let validator_a = Bytes::from(vec![0xEEu8; 65]);
+            let validator_b = Bytes::from(vec![0xDDu8; 65]);
+            let side6 = Bytes::from(b"side6".to_vec());
+            dag.put_cached_floor(hash(TOP), hash(a_floor)).unwrap();
+            dag.put_cached_floor(side6.clone(), hash(b_floor)).unwrap();
+            let local_floor = Floor {
+                hash: hash(local),
+                block_number: local as i64,
+            };
+            let active: HashMap<Validator, BlockHash> = [
+                (validator_a, hash(TOP)),
+                (validator_b, side6),
+            ]
+            .into_iter()
+            .collect();
+            let result = super::job::stale_view_floor(&dag, local_floor, &active)
+                .expect("stale_view_floor");
+            let expected = (local as i64)
+                .min(a_floor as i64)
+                .min(b_floor as i64);
+            prop_assert_eq!(result.block_number, expected);
         }
     }
 
