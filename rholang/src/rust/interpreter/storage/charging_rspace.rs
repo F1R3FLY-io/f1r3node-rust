@@ -20,8 +20,8 @@ use rspace_plus_plus::rspace::util::unpack_option;
 
 use crate::rust::interpreter::accounting::comm_ledger::comm_cells;
 use crate::rust::interpreter::accounting::costs::{
-    comm_body_copy_cost, comm_data_copy_cost, comm_event_storage_cost, event_storage_cost,
-    storage_cost_consume, storage_cost_produce, Cost,
+    comm_body_copy_bytes, comm_copy_cost, comm_data_copy_bytes, comm_event_storage_cost,
+    event_storage_cost, storage_cost_consume, storage_cost_produce, Cost,
 };
 use crate::rust::interpreter::accounting::rev_stack::seal;
 use crate::rust::interpreter::accounting::{_cost, membrane};
@@ -440,9 +440,8 @@ fn handle_result(
             } else {
                 seal::of_continuation(&cont.continuation).ok().flatten()
             };
-            seal::within_now(body_payer, || {
-                cost.charge(comm_body_copy_cost(&cont.continuation))
-            })?;
+            let mut copies: Vec<(Option<seal::SealRecord>, usize)> =
+                vec![(body_payer, comm_body_copy_bytes(&cont.continuation))];
             for data in data_list.iter() {
                 let payer = if data.removed_datum.random_state == triggered_by_id_bytes {
                     seal::current()
@@ -452,9 +451,14 @@ fn handle_result(
                         .as_ref()
                         .and_then(|p| seal::SealRecord::from_proto(p).ok())
                 };
-                seal::within_now(payer, || {
-                    cost.charge(comm_data_copy_cost(&data.matched_datum))
-                })?;
+                let bytes = comm_data_copy_bytes(&data.matched_datum);
+                match copies.iter_mut().find(|(owner, _)| *owner == payer) {
+                    Some((_, total)) => *total += bytes,
+                    None => copies.push((payer, bytes)),
+                }
+            }
+            for (payer, bytes) in copies {
+                seal::within_now(payer, || cost.charge(comm_copy_cost(bytes)))?;
             }
 
             let last_iteration = !triggered_by_persistent;
