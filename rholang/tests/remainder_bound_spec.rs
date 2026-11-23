@@ -1,4 +1,5 @@
-use models::rhoapi::connective::ConnectiveInstance::{ConnBool, ConnInt};
+use models::rhoapi::connective::ConnectiveInstance;
+use models::rhoapi::connective::ConnectiveInstance::{ConnBool, ConnInt, ConnNotBody, ConnString};
 use models::rhoapi::expr::ExprInstance::GBool;
 use models::rhoapi::{Connective, Expr, Par};
 use models::rust::rholang::implicits::vector_par;
@@ -28,6 +29,28 @@ fn int_bool_and(remainder: Expr) -> Par {
         ])
 }
 
+fn connective(instance: ConnectiveInstance) -> Connective {
+    Connective {
+        connective_instance: Some(instance),
+    }
+}
+
+/// `{ Int | ~Bool | ~String | rest }`
+fn int_not_bool_not_string_rest() -> Par {
+    let not = |instance| {
+        connective(ConnNotBody(
+            Par::default().with_connectives(vec![connective(instance)]),
+        ))
+    };
+    vector_par(Vec::new(), true)
+        .with_exprs(vec![new_freevar_expr(0)])
+        .with_connectives(vec![
+            connective(ConnInt(true)),
+            not(ConnBool(true)),
+            not(ConnString(true)),
+        ])
+}
+
 fn matches(n: usize, pattern: Par) -> bool {
     SpatialMatcherContext::with_budget(StepBudget::new(usize::MAX))
         .into_match_result(ints_then_true(n), pattern)
@@ -44,6 +67,16 @@ fn a_remainder_takes_any_number_of_elements_of_a_kind() {
         assert!(
             matches(n, int_bool_and(new_wildcard_expr())),
             "wildcard with {n} ints"
+        );
+    }
+}
+
+#[test]
+fn unbounded_terms_beside_a_remainder_do_not_overflow_its_bound() {
+    for n in [5, 1_500] {
+        assert!(
+            matches(n, int_not_bool_not_string_rest()),
+            "Int | ~Bool | ~String | rest with {n} ints"
         );
     }
 }
