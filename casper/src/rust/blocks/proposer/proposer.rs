@@ -222,7 +222,15 @@ where
     ) -> Result<(ProposeResult, Option<BlockMessage>), CasperError> {
         // check if node is allowed to propose a block
         let step_start = std::time::Instant::now();
-        let constraint_check = self.check_propose_constraints(casper_snapshot).await?;
+        let constraint_check = match self.check_propose_constraints(casper_snapshot).await? {
+            CheckProposeConstraintsResult::Failure(CheckProposeConstraintsFailure::NotBonded) => {
+                CheckProposeConstraintsResult::not_bonded()
+            }
+            _ if casper.awaiting_own_history(casper_snapshot)? => {
+                CheckProposeConstraintsResult::history_incomplete()
+            }
+            checked => checked,
+        };
         let constraints_ms = step_start.elapsed().as_millis();
 
         // The height constraint must not gate the recovery lane it exists to
@@ -456,17 +464,6 @@ where
             Err(err) => return Err(err),
         };
         let snapshot_ms = snapshot_start.elapsed().as_millis();
-
-        if casper.awaiting_own_history(&casper_snapshot)? {
-            let result = ProposeResult::failure(ProposeFailure::CheckConstraintsFailure(
-                CheckProposeConstraintsFailure::HistoryIncomplete,
-            ));
-            return Ok(ProposeReturnType {
-                propose_result_to_send: ProposerResult::failure(result.propose_status.clone(), 0),
-                propose_result: result,
-                block_message_opt: None,
-            });
-        }
 
         let elapsed = start_time.elapsed();
         tracing::info!("getCasperSnapshot [{}ms]", elapsed.as_millis());

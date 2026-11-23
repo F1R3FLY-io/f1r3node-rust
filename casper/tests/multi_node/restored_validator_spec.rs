@@ -3,7 +3,10 @@ use casper::rust::blocks::proposer::propose_result::{
     CheckProposeConstraintsFailure, ProposeFailure, ProposeStatus,
 };
 use casper::rust::blocks::proposer::proposer::{new_proposer, ProductionProposer};
+use casper::rust::validator_identity::ValidatorIdentity;
 use comm::rust::transport::transport_layer::TransportLayer;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
@@ -34,10 +37,11 @@ async fn propose_everywhere(nodes: &mut [TestNode], proposer: usize) -> BlockMes
 
 fn proposer_for<T: TransportLayer + Send + Sync + 'static>(
     node: &TestNode,
+    identity: ValidatorIdentity,
     transport: std::sync::Arc<T>,
 ) -> ProductionProposer<T> {
     new_proposer(
-        node.validator_id_opt.clone().expect("validator"),
+        identity,
         None,
         node.runtime_manager.clone(),
         node.block_store.clone(),
@@ -90,7 +94,8 @@ async fn a_restored_validator_does_not_reuse_the_sequence_number_of_its_lost_blo
     }
     assert!(restored.casper.hold_proposals_until_own_history_known());
 
-    let mut proposer = proposer_for(&restored, restored.tle.clone());
+    let identity = restored.validator_id_opt.clone().expect("validator");
+    let mut proposer = proposer_for(&restored, identity, restored.tle.clone());
 
     let early = proposer
         .propose(restored.casper.clone(), true)
@@ -132,4 +137,44 @@ async fn a_restored_validator_does_not_reuse_the_sequence_number_of_its_lost_blo
     assert_eq!(block.seq_num, lost.seq_num + 1);
     assert!(!restored.casper.own_history_gate.is_closed());
     admit(&mut nodes[1], &block).await;
+}
+
+#[tokio::test]
+async fn a_held_node_that_is_not_bonded_reports_that_it_is_not_bonded() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("genesis");
+    let mut nodes = TestNode::create_network(genesis, 2, Some(0.0), None, None, None)
+        .await
+        .expect("network");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+    propose_everywhere(&mut nodes, 1).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+    let joiner = &nodes[0];
+    assert!(joiner.casper.hold_proposals_until_own_history_known());
+
+    let (unbonded_key, _) = Secp256k1.new_key_pair();
+    let mut proposer = proposer_for(
+        joiner,
+        ValidatorIdentity::new(&unbonded_key),
+        joiner.tle.clone(),
+    );
+    let refused = proposer
+        .propose(joiner.casper.clone(), true)
+        .await
+        .expect("propose");
+    assert!(
+        matches!(
+            refused.propose_result.propose_status,
+            ProposeStatus::Failure(ProposeFailure::CheckConstraintsFailure(
+                CheckProposeConstraintsFailure::NotBonded
+            ))
+        ),
+        "an unbonded node must report that it is not bonded, got {:?}",
+        refused.propose_result.propose_status
+    );
+    assert!(joiner.casper.own_history_gate.is_closed());
 }
