@@ -472,28 +472,48 @@ async fn a_deploy_binding_an_unknown_urn_fails_for_the_work_done_and_replays_ide
         |mut runtime_manager, genesis_context, genesis_block| async move {
             let state = genesis_block.body.state.post_state_hash;
             let phlo_limit = 1_000_000;
-            let deploy = construct_deploy::source_deploy_now_full(
-                "new x(`rho:does:not:exist`) in { Nil }".to_string(),
-                Some(phlo_limit),
-                None,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-            let (next, processed) =
-                compute_state(&mut runtime_manager, &genesis_context, deploy, &state).await;
-            assert!(processed.is_failed);
-            assert!(
-                processed.cost.cost < 10_000,
-                "charged {} of a {phlo_limit} limit",
-                processed.cost.cost
-            );
-            let replayed =
-                replay_compute_state(&mut runtime_manager, &genesis_context, processed, &state)
-                    .await
-                    .unwrap();
-            assert_eq!(replayed, next);
+            for (term, full_limit) in [
+                ("new x(`rho:does:not:exist`) in { Nil }", false),
+                (
+                    "new x(`rho:does:not:exist`) in { Nil } | new y(`rho:also:missing`) in { Nil }",
+                    false,
+                ),
+                (
+                    "new x(`rho:does:not:exist`) in { Nil } | if (1) { Nil }",
+                    false,
+                ),
+                (
+                    "new x(`rho:does:not:exist`) in { Nil } | @0!(1 + \"a\")",
+                    true,
+                ),
+            ] {
+                let deploy = construct_deploy::source_deploy_now_full(
+                    term.to_string(),
+                    Some(phlo_limit),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+                let (next, processed) =
+                    compute_state(&mut runtime_manager, &genesis_context, deploy, &state).await;
+                assert!(processed.is_failed, "{term}");
+                if full_limit {
+                    assert_eq!(processed.cost.cost, phlo_limit as u64, "{term}");
+                } else {
+                    assert!(
+                        processed.cost.cost < 10_000,
+                        "{term}: charged {} of a {phlo_limit} limit",
+                        processed.cost.cost
+                    );
+                }
+                let replayed =
+                    replay_compute_state(&mut runtime_manager, &genesis_context, processed, &state)
+                        .await
+                        .unwrap();
+                assert_eq!(replayed, next, "{term}");
+            }
         },
     )
     .await

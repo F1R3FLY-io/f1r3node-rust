@@ -227,12 +227,13 @@ impl InterpreterImpl {
                 mergeable: HashMap::new(),
             }),
 
-            // Non-bool `if` condition or a URN the node does not provide: the
-            // deploy's own error, so it pays for the work done
-            InterpreterError::IfConditionTypeError { actual_type: _ }
-            | InterpreterError::UnknownUrnError { urn: _ } => Ok(EvaluateResult {
+            // The deploy's own errors, alone or together: it pays for the work done
+            error if charged_for_work_done(&error) => Ok(EvaluateResult {
                 cost: initial_cost.clone() - self.c.get(),
-                errors: vec![error],
+                errors: match error {
+                    InterpreterError::AggregateError { interpreter_errors } => interpreter_errors,
+                    error => vec![error],
+                },
                 mergeable: HashMap::new(),
             }),
 
@@ -273,5 +274,19 @@ impl InterpreterImpl {
                 mergeable: HashMap::new(),
             }),
         }
+    }
+}
+
+/// Whether `error` is charged for the work done rather than the full limit:
+/// a non-bool `if` condition or a URN the node does not provide, or parallel
+/// errors that are all of these.
+fn charged_for_work_done(error: &InterpreterError) -> bool {
+    match error {
+        InterpreterError::IfConditionTypeError { .. }
+        | InterpreterError::UnknownUrnError { .. } => true,
+        InterpreterError::AggregateError { interpreter_errors } => {
+            !interpreter_errors.is_empty() && interpreter_errors.iter().all(charged_for_work_done)
+        }
+        _ => false,
     }
 }
