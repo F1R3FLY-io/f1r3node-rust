@@ -13,10 +13,10 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
-    EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar,
-    EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, New, Par,
-    ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod,
+    EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet,
+    ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom,
+    Match, New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
 };
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -45,10 +45,10 @@ use super::accounting::costs::{
     bigint_negation_cost, bigint_subtraction_cost, bigint_sum_cost, bigrat_comparison_cost,
     bigrat_division_cost, bigrat_multiplication_cost, bigrat_negation_cost,
     bigrat_subtraction_cost, bigrat_sum_cost, boolean_and_cost, boolean_or_cost,
-    byte_array_append_cost, comparison_cost, division_cost, equality_check_cost, list_append_cost,
-    method_call_cost, modulo_cost, multiplication_cost, new_bindings_cost, op_call_cost,
-    receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
-    var_eval_cost,
+    byte_array_append_cost, collection_eval_cost, comparison_cost, division_cost,
+    equality_check_cost, list_append_cost, match_steps_cost, method_call_cost, modulo_cost,
+    multiplication_cost, new_bindings_cost, op_call_cost, receive_eval_cost, send_eval_cost,
+    string_append_cost, string_comparison_cost, subtraction_cost, sum_cost, var_eval_cost,
 };
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
@@ -72,7 +72,7 @@ use crate::rust::interpreter::accounting::costs::{
     nth_method_call_cost, remove_cost, size_method_cost, slice_cost, take_cost, to_byte_array_cost,
     to_list_cost, union_cost, valid_utf8_prefix_len_cost,
 };
-use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
+use crate::rust::interpreter::matcher::spatial_matcher::{SpatialMatcherContext, StepBudget};
 use crate::rust::interpreter::rho_type::RhoTuple2;
 
 /// Minimum remaining stack space (in bytes) before growing.
@@ -1268,10 +1268,12 @@ impl DebruijnInterpreter {
      *                  an exception.
      */
     fn eval_var(&self, valproc: &Var, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        self.cost.charge(var_eval_cost())?;
         match valproc.var_instance {
             Some(VarInstance::BoundVar(level)) => match env.get(&level) {
-                Some(p) => Ok(p),
+                Some(p) => {
+                    self.cost.charge(var_eval_cost(&p))?;
+                    Ok(p)
+                }
                 None => Err(InterpreterError::ReduceError(format!(
                     "Unbound variable: {} in {:?}",
                     level, env
@@ -1287,6 +1289,26 @@ impl DebruijnInterpreter {
                 "Impossible var instance EMPTY".to_string(),
             )),
         }
+    }
+
+    /// Matches `target` against `pattern` within the phlo the deploy has left,
+    /// charging a phlo per match step. A match that runs out fails the deploy
+    /// with out-of-phlo rather than reading as no match.
+    fn charged_match(
+        &self,
+        target: &Par,
+        pattern: Par,
+    ) -> Result<Option<models::rust::utils::FreeMap>, InterpreterError> {
+        let available = self.cost.get().value.max(0) as usize;
+        let budget = StepBudget::new(available);
+        let matched =
+            SpatialMatcherContext::with_budget(budget.clone()).match_result(target, pattern);
+        self.cost
+            .charge(match_steps_cost(available - budget.left()))?;
+        if matched.is_none() && budget.exhausted() {
+            return Err(InterpreterError::OutOfPhlogistonsError);
+        }
+        Ok(matched)
     }
 
     // TODO: review 'loop' matches 'tailRecM'
@@ -1315,10 +1337,7 @@ impl DebruijnInterpreter {
             let pattern =
                 self.substitute
                     .substitute_and_charge(unwrap_option_safe(case.pattern)?, 1, env)?;
-            let input_bytes = target.encoded_len() + pattern.encoded_len();
-            let Some(free_map) =
-                SpatialMatcherContext::new(input_bytes).match_result(&target, pattern)
-            else {
+            let Some(free_map) = self.charged_match(&target, pattern)? else {
                 continue;
             };
             let case_env = add_to_env(env, free_map, case.free_count);
@@ -1677,7 +1696,8 @@ impl DebruijnInterpreter {
                 }
 
                 (ExprInstance::GString(s1), ExprInstance::GString(s2)) => {
-                    self.cost.charge(comparison_cost())?;
+                    self.cost
+                        .charge(string_comparison_cost(s1.len(), s2.len()))?;
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::GBool(relops(s1, s2))),
                     })
@@ -2539,10 +2559,7 @@ impl DebruijnInterpreter {
                         self.substitute
                             .substitute_and_charge(pattern.clone().unwrap(), 1, env)?;
 
-                    let input_bytes = subst_target.encoded_len() + subst_pattern.encoded_len();
-                    let matched = SpatialMatcherContext::new(input_bytes)
-                        .into_match_result(subst_target, subst_pattern)
-                        .is_some();
+                    let matched = self.charged_match(&subst_target, subst_pattern)?.is_some();
 
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::GBool(matched)),
@@ -2624,14 +2641,15 @@ impl DebruijnInterpreter {
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GString(lhs), ExprInstance::EMapBody(emap)) => {
-                            let rhs = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            if !lhs.is_empty() || !rhs.is_empty() {
-                                let key_value_pairs = rhs
-                                    .clone()
-                                    .into_iter()
-                                    .map(|(k, v)| {
-                                        let key_expr = self.eval_single_expr(&k, env)?;
-                                        let value_expr = self.eval_single_expr(&v, env)?;
+                            if !lhs.is_empty() || !emap.kvs.is_empty() {
+                                let key_value_pairs = emap
+                                    .kvs
+                                    .iter()
+                                    .map(|kv| {
+                                        let key_expr = self
+                                            .eval_single_expr(unwrap_option_ref(&kv.key)?, env)?;
+                                        let value_expr = self
+                                            .eval_single_expr(unwrap_option_ref(&kv.value)?, env)?;
                                         let result = eval_to_string_pair(key_expr, value_expr)?;
                                         Ok(result)
                                     })
@@ -2639,7 +2657,7 @@ impl DebruijnInterpreter {
 
                                 self.cost.charge(interpolate_cost(
                                     lhs.len() as i64,
-                                    rhs.length() as i64,
+                                    emap.kvs.len() as i64,
                                 ))?;
 
                                 Ok(Expr {
@@ -2685,7 +2703,8 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::GByteArray(lhs), ExprInstance::GByteArray(rhs)) => {
-                            self.cost.charge(byte_array_append_cost(lhs.len()))?;
+                            self.cost
+                                .charge(byte_array_append_cost(lhs.len(), rhs.len()))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GByteArray(
                                     lhs.into_iter().chain(rhs.into_iter()).collect(),
@@ -2814,6 +2833,7 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EListBody(e1) => {
+                    self.cost.charge(collection_eval_cost(e1.ps.len()))?;
                     let evaled_ps = e1
                         .ps
                         .iter()
@@ -2838,6 +2858,7 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::ETupleBody(e1) => {
+                    self.cost.charge(collection_eval_cost(e1.ps.len()))?;
                     let evaled_ps = e1
                         .ps
                         .iter()
@@ -2861,10 +2882,9 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::ESetBody(eset) => {
-                    let set = ParSetTypeMapper::eset_to_par_set(eset.clone());
-                    let evaled_ps = set
+                    self.cost.charge(collection_eval_cost(eset.ps.len()))?;
+                    let evaled_ps = eset
                         .ps
-                        .sorted_pars
                         .iter()
                         .map(|p| self.eval_expr(p, env))
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
@@ -2874,8 +2894,20 @@ impl DebruijnInterpreter {
                         .map(|p| self.update_locally_free_par(p))
                         .collect();
 
-                    let mut evaled_set = set;
-                    evaled_set.ps = SortedParHashSet::create_from_vec(updated_ps);
+                    // Every set is built in canonical order, so a set whose
+                    // elements all evaluate to themselves needs no re-sort.
+                    if updated_ps == eset.ps {
+                        return Ok(Expr {
+                            expr_instance: Some(ExprInstance::ESetBody(eset.clone())),
+                        });
+                    }
+
+                    let evaled_set = ParSet {
+                        ps: SortedParHashSet::create_from_vec(updated_ps),
+                        connective_used: eset.connective_used,
+                        locally_free: eset.locally_free.clone(),
+                        remainder: eset.remainder.clone(),
+                    };
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::ESetBody(
                             ParSetTypeMapper::par_set_to_eset(evaled_set),
@@ -2884,20 +2916,34 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EMapBody(emap) => {
-                    let map = ParMapTypeMapper::emap_to_par_map(emap.clone());
-                    let evaled_ps = map
-                        .ps
-                        .sorted_list
+                    self.cost.charge(collection_eval_cost(2 * emap.kvs.len()))?;
+                    let evaled_ps = emap
+                        .kvs
                         .iter()
-                        .map(|(k, v)| {
-                            let e_key = self.eval_expr(k, env)?;
-                            let e_value = self.eval_expr(v, env)?;
+                        .map(|kv| {
+                            let e_key = self.eval_expr(unwrap_option_ref(&kv.key)?, env)?;
+                            let e_value = self.eval_expr(unwrap_option_ref(&kv.value)?, env)?;
                             Ok((e_key, e_value))
                         })
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-                    let mut evaled_map = map;
-                    evaled_map.ps = SortedParMap::create_from_vec(evaled_ps);
+                    // Every map is built in canonical order, so a map whose
+                    // entries all evaluate to themselves needs no re-sort.
+                    let unchanged = evaled_ps.iter().zip(&emap.kvs).all(|((key, value), kv)| {
+                        kv.key.as_ref() == Some(key) && kv.value.as_ref() == Some(value)
+                    });
+                    if unchanged {
+                        return Ok(Expr {
+                            expr_instance: Some(ExprInstance::EMapBody(emap.clone())),
+                        });
+                    }
+
+                    let evaled_map = ParMap {
+                        ps: SortedParMap::create_from_vec(evaled_ps),
+                        connective_used: emap.connective_used,
+                        locally_free: emap.locally_free.clone(),
+                        remainder: emap.remainder.clone(),
+                    };
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::EMapBody(
                             ParMapTypeMapper::par_map_to_emap(evaled_map),
@@ -3467,55 +3513,34 @@ impl DebruijnInterpreter {
                     other_expr.expr_instance.clone().unwrap(),
                 ) {
                     (ExprInstance::ESetBody(base_set), ExprInstance::ESetBody(other_set)) => {
-                        let base_par_set = ParSetTypeMapper::eset_to_par_set(base_set);
-                        let other_par_set = ParSetTypeMapper::eset_to_par_set(other_set);
-
-                        let base_ps = base_par_set.ps;
-                        let other_ps = other_par_set.ps;
-
                         self.outer
                             .cost
-                            .charge(union_cost(other_ps.length() as i64))?;
+                            .charge(union_cost(other_set.ps.len() as i64))?;
 
                         Ok(Expr {
-                            expr_instance: Some(ExprInstance::ESetBody(
-                                ParSetTypeMapper::par_set_to_eset(ParSet {
-                                    ps: base_ps.union(other_ps.ps),
-                                    connective_used: base_par_set.connective_used
-                                        || other_par_set.connective_used,
-                                    locally_free: union(
-                                        base_par_set.locally_free,
-                                        other_par_set.locally_free,
-                                    ),
-                                    remainder: None,
-                                }),
-                            )),
+                            expr_instance: Some(ExprInstance::ESetBody(ESet {
+                                ps: ParSetTypeMapper::union(base_set.ps, other_set.ps),
+                                connective_used: base_set.connective_used
+                                    || other_set.connective_used,
+                                locally_free: union(base_set.locally_free, other_set.locally_free),
+                                remainder: None,
+                            })),
                         })
                     }
 
                     (ExprInstance::EMapBody(base_map), ExprInstance::EMapBody(other_map)) => {
-                        let base_par_map = ParMapTypeMapper::emap_to_par_map(base_map);
-                        let other_par_map = ParMapTypeMapper::emap_to_par_map(other_map.clone());
-
-                        let mut base_sorted_par_map = base_par_map.ps;
-                        let other_sorted_par_map = other_par_map.ps;
-
                         self.outer
                             .cost
                             .charge(union_cost(other_map.kvs.len() as i64))?;
 
                         Ok(Expr {
-                            expr_instance: Some(ExprInstance::EMapBody(
-                                ParMapTypeMapper::par_map_to_emap(ParMap::new(
-                                    base_sorted_par_map
-                                        .extend(other_sorted_par_map.into_iter().collect())
-                                        .into_iter()
-                                        .collect(),
-                                    base_par_map.connective_used || other_par_map.connective_used,
-                                    union(base_par_map.locally_free, other_par_map.locally_free),
-                                    None,
-                                )),
-                            )),
+                            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                                kvs: ParMapTypeMapper::union(base_map.kvs, other_map.kvs),
+                                connective_used: base_map.connective_used
+                                    || other_map.connective_used,
+                                locally_free: union(base_map.locally_free, other_map.locally_free),
+                                remainder: None,
+                            })),
                         })
                     }
 
@@ -3590,55 +3615,31 @@ impl DebruijnInterpreter {
                     other_expr.expr_instance.clone().unwrap(),
                 ) {
                     (ExprInstance::ESetBody(base_set), ExprInstance::ESetBody(other_set)) => {
-                        let base_par_set = ParSetTypeMapper::eset_to_par_set(base_set);
-                        let other_par_set = ParSetTypeMapper::eset_to_par_set(other_set);
-
-                        let base_ps = base_par_set.ps;
-                        let other_ps = other_par_set.ps;
-
-                        // diff is implemented in terms of foldLeft that at each step
-                        // removes one element from the collection.
                         self.outer
                             .cost
-                            .charge(diff_cost(other_ps.length() as i64))?;
-
-                        let base_sorted_pars_set: HashSet<Par> =
-                            base_ps.sorted_pars.into_iter().collect();
-                        let other_sorted_pars_set: HashSet<Par> =
-                            other_ps.sorted_pars.into_iter().collect();
-                        let new_par_set = ParSet::create_from_vec(
-                            base_sorted_pars_set
-                                .difference(&other_sorted_pars_set)
-                                .into_iter()
-                                .cloned()
-                                .collect(),
-                        );
+                            .charge(diff_cost(other_set.ps.len() as i64))?;
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::ESetBody(
-                                ParSetTypeMapper::par_set_to_eset(new_par_set),
+                                ParSetTypeMapper::canonical_eset(ParSetTypeMapper::diff(
+                                    base_set.ps,
+                                    &other_set.ps,
+                                )),
                             )),
                         })
                     }
 
                     (ExprInstance::EMapBody(base_emap), ExprInstance::EMapBody(other_emap)) => {
-                        let base_par_map = ParMapTypeMapper::emap_to_par_map(base_emap);
-                        let other_par_map = ParMapTypeMapper::emap_to_par_map(other_emap);
-
-                        let mut base_ps = base_par_map.ps;
-                        let other_ps = other_par_map.ps;
-
                         self.outer
                             .cost
-                            .charge(diff_cost(other_ps.length() as i64))?;
-
-                        let new_par_map = ParMap::create_from_sorted_par_map(
-                            base_ps.remove_multiple(other_ps.keys()),
-                        );
+                            .charge(diff_cost(other_emap.kvs.len() as i64))?;
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EMapBody(
-                                ParMapTypeMapper::par_map_to_emap(new_par_map),
+                                ParMapTypeMapper::canonical_emap(ParMapTypeMapper::diff(
+                                    base_emap.kvs,
+                                    &other_emap.kvs,
+                                )),
                             )),
                         })
                     }
@@ -6302,20 +6303,16 @@ impl DebruijnInterpreter {
             fn add(&self, base_expr: Expr, par: Par) -> Result<Expr, InterpreterError> {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
-                        ExprInstance::ESetBody(eset) => {
-                            let base = ParSetTypeMapper::eset_to_par_set(eset);
-                            let mut base_ps = base.ps;
+                        ExprInstance::ESetBody(mut eset) => {
+                            ParSetTypeMapper::insert(&mut eset.ps, &par);
 
                             Ok(Expr {
-                                expr_instance: Some(ExprInstance::ESetBody(
-                                    ParSetTypeMapper::par_set_to_eset(ParSet {
-                                        ps: base_ps.insert(par.clone()),
-                                        connective_used: base.connective_used
-                                            || par.connective_used,
-                                        locally_free: union(base.locally_free, par.locally_free),
-                                        remainder: None,
-                                    }),
-                                )),
+                                expr_instance: Some(ExprInstance::ESetBody(ESet {
+                                    ps: eset.ps,
+                                    connective_used: eset.connective_used || par.connective_used,
+                                    locally_free: union(eset.locally_free, par.locally_free),
+                                    remainder: None,
+                                })),
                             })
                         }
 
@@ -6368,37 +6365,29 @@ impl DebruijnInterpreter {
             fn delete(&self, base_expr: Expr, par: Par) -> Result<Expr, InterpreterError> {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
-                        ExprInstance::ESetBody(eset) => {
-                            let base = ParSetTypeMapper::eset_to_par_set(eset);
-                            let mut base_ps = base.ps;
+                        ExprInstance::ESetBody(mut eset) => {
+                            ParSetTypeMapper::remove(&mut eset.ps, &par);
 
                             Ok(Expr {
-                                expr_instance: Some(ExprInstance::ESetBody(
-                                    ParSetTypeMapper::par_set_to_eset(ParSet {
-                                        ps: base_ps.remove(par.clone()),
-                                        connective_used: base.connective_used
-                                            || par.connective_used,
-                                        locally_free: union(base.locally_free, par.locally_free),
-                                        remainder: None,
-                                    }),
-                                )),
+                                expr_instance: Some(ExprInstance::ESetBody(ESet {
+                                    ps: eset.ps,
+                                    connective_used: eset.connective_used || par.connective_used,
+                                    locally_free: union(eset.locally_free, par.locally_free),
+                                    remainder: None,
+                                })),
                             })
                         }
 
-                        ExprInstance::EMapBody(emap) => {
-                            let base = ParMapTypeMapper::emap_to_par_map(emap);
-                            let mut base_ps = base.ps;
+                        ExprInstance::EMapBody(mut emap) => {
+                            ParMapTypeMapper::remove(&mut emap.kvs, &par);
 
                             Ok(Expr {
-                                expr_instance: Some(ExprInstance::EMapBody(
-                                    ParMapTypeMapper::par_map_to_emap(ParMap {
-                                        ps: base_ps.remove(par.clone()),
-                                        connective_used: base.connective_used
-                                            || par.connective_used,
-                                        locally_free: union(base.locally_free, par.locally_free),
-                                        remainder: None,
-                                    }),
-                                )),
+                                expr_instance: Some(ExprInstance::EMapBody(EMap {
+                                    kvs: emap.kvs,
+                                    connective_used: emap.connective_used || par.connective_used,
+                                    locally_free: union(emap.locally_free, par.locally_free),
+                                    remainder: None,
+                                })),
                             })
                         }
 
@@ -6626,15 +6615,12 @@ impl DebruijnInterpreter {
             fn set(&self, base_expr: Expr, key: Par, value: Par) -> Result<Par, InterpreterError> {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
-                        ExprInstance::EMapBody(emap) => {
-                            let mut base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            // let sorted_par_map = base_ps.insert((key, value));
-                            let par_map =
-                                ParMap::create_from_sorted_par_map(base_ps.insert((key, value)));
+                        ExprInstance::EMapBody(mut emap) => {
+                            ParMapTypeMapper::insert(&mut emap.kvs, &key, &value);
 
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EMapBody(
-                                    ParMapTypeMapper::par_map_to_emap(par_map),
+                                    ParMapTypeMapper::canonical_emap(emap.kvs),
                                 )),
                             }]))
                         }
@@ -6689,14 +6675,26 @@ impl DebruijnInterpreter {
             fn keys(&self, base_expr: Expr) -> Result<Par, InterpreterError> {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
+                        // A canonical map's keys are distinct and in canonical
+                        // set order: sets and maps sort by the same score.
                         ExprInstance::EMapBody(emap) => {
-                            let base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            let par_set = ParSet::create_from_vec(base_ps.keys());
+                            let keys: Vec<Par> = emap
+                                .kvs
+                                .into_iter()
+                                .map(|kv| kv.key.expect("EMap entry has a key"))
+                                .collect();
+                            let locally_free = keys
+                                .iter()
+                                .fold(Vec::new(), |acc, key| union(acc, key.locally_free.clone()));
+                            let connective_used = keys.iter().any(|key| key.connective_used);
 
                             Ok(Par::default().with_exprs(vec![Expr {
-                                expr_instance: Some(ExprInstance::ESetBody(
-                                    ParSetTypeMapper::par_set_to_eset(par_set),
-                                )),
+                                expr_instance: Some(ExprInstance::ESetBody(ESet {
+                                    ps: keys,
+                                    locally_free,
+                                    connective_used,
+                                    remainder: None,
+                                })),
                             }]))
                         }
 
@@ -6749,16 +6747,12 @@ impl DebruijnInterpreter {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
                         ExprInstance::EMapBody(emap) => {
-                            let base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            let size = base_ps.length() as i64;
-
+                            let size = emap.kvs.len() as i64;
                             Ok((size, new_gint_par(size, Vec::new(), false)))
                         }
 
                         ExprInstance::ESetBody(eset) => {
-                            let base_ps = ParSetTypeMapper::eset_to_par_set(eset).ps;
-                            let size = base_ps.length() as i64;
-
+                            let size = eset.ps.len() as i64;
                             Ok((size, new_gint_par(size, Vec::new(), false)))
                         }
 
@@ -7068,12 +7062,11 @@ impl DebruijnInterpreter {
                         }
 
                         ExprInstance::ESetBody(eset) => {
-                            let ps = ParSetTypeMapper::eset_to_par_set(eset).ps;
-                            self.outer.cost.charge(to_list_cost(ps.length() as i64))?;
+                            self.outer.cost.charge(to_list_cost(eset.ps.len() as i64))?;
 
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
-                                    ps: ps.sorted_pars,
+                                    ps: eset.ps,
                                     locally_free: Vec::new(),
                                     connective_used: false,
                                     remainder: None,
@@ -7082,19 +7075,24 @@ impl DebruijnInterpreter {
                         }
 
                         ExprInstance::EMapBody(emap) => {
-                            let ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            self.outer.cost.charge(to_list_cost(ps.length() as i64))?;
+                            self.outer
+                                .cost
+                                .charge(to_list_cost(emap.kvs.len() as i64))?;
 
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
-                                    ps: ps
-                                        .sorted_list
+                                    ps: emap
+                                        .kvs
                                         .into_iter()
-                                        .map(|(k, v)| {
+                                        .map(|kv| {
                                             Par::default().with_exprs(vec![Expr {
                                                 expr_instance: Some(ExprInstance::ETupleBody(
                                                     ETuple {
-                                                        ps: vec![k, v],
+                                                        ps: vec![
+                                                            kv.key.expect("EMap entry has a key"),
+                                                            kv.value
+                                                                .expect("EMap entry has a value"),
+                                                        ],
                                                         locally_free: Vec::new(),
                                                         connective_used: false,
                                                     },
@@ -7175,30 +7173,30 @@ impl DebruijnInterpreter {
                         }])),
 
                         ExprInstance::EMapBody(emap) => {
-                            let map = ParMapTypeMapper::emap_to_par_map(emap);
+                            let entries = emap
+                                .kvs
+                                .into_iter()
+                                .map(|kv| {
+                                    Par::default().with_exprs(vec![Expr {
+                                        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                                            ps: vec![
+                                                kv.key.expect("EMap entry has a key"),
+                                                kv.value.expect("EMap entry has a value"),
+                                            ],
+                                            locally_free: Vec::new(),
+                                            connective_used: false,
+                                        })),
+                                    }])
+                                })
+                                .collect();
 
                             Ok(Par::default().with_exprs(vec![Expr {
-                                expr_instance: Some(ExprInstance::ESetBody(
-                                    ParSetTypeMapper::par_set_to_eset(ParSet::new(
-                                        map.ps
-                                            .into_iter()
-                                            .map(|t| {
-                                                Par::default().with_exprs(vec![Expr {
-                                                    expr_instance: Some(ExprInstance::ETupleBody(
-                                                        ETuple {
-                                                            ps: vec![t.0, t.1],
-                                                            locally_free: Vec::new(),
-                                                            connective_used: false,
-                                                        },
-                                                    )),
-                                                }])
-                                            })
-                                            .collect(),
-                                        map.connective_used,
-                                        map.locally_free,
-                                        map.remainder,
-                                    )),
-                                )),
+                                expr_instance: Some(ExprInstance::ESetBody(ESet {
+                                    ps: entries,
+                                    connective_used: emap.connective_used,
+                                    locally_free: emap.locally_free,
+                                    remainder: emap.remainder,
+                                })),
                             }]))
                         }
 
@@ -7302,15 +7300,12 @@ impl DebruijnInterpreter {
                             expr_instance: Some(ExprInstance::EMapBody(emap)),
                         }])),
 
-                        ExprInstance::ESetBody(eset) => {
-                            let base = ParSetTypeMapper::eset_to_par_set(eset);
-                            self.make_map(
-                                base.ps.sorted_pars,
-                                base.connective_used,
-                                base.locally_free,
-                                base.remainder,
-                            )
-                        }
+                        ExprInstance::ESetBody(eset) => self.make_map(
+                            eset.ps,
+                            eset.connective_used,
+                            eset.locally_free,
+                            eset.remainder,
+                        ),
 
                         ExprInstance::EListBody(elist) => self.make_map(
                             elist.ps,
