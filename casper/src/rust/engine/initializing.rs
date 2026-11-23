@@ -1455,6 +1455,20 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 .record_carrier_coverage_from(lowest_held)?;
         }
 
+        // Issue #1134. Any block the node held below `min_height` is now
+        // unreachable from the restored DAG: pre-restore cruft from before this
+        // join, or data left by a prior LFS whose anchor this restore has
+        // superseded. Without a floor, GC's ancestor walk cannot cross the gap
+        // to prove those blocks are moved past, so bodies leak indefinitely.
+        // The floor is strict: `min_height` itself is part of the restore
+        // coverage; only strictly-below blocks are admitted to collection.
+        // `advance_restore_floor` is monotonic, so a fresh LFS at or below
+        // genesis is a no-op. `try_gc_store` is None on in-memory fixtures
+        // that have no transactional storage — GC is unreachable there anyway.
+        if let Some(gc) = self.block_dag_storage.try_gc_store() {
+            gc.advance_restore_floor(min_height.saturating_sub(1))?;
+        }
+
         tracing::info!(
             inserted,
             min_height,
