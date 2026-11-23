@@ -67,6 +67,11 @@ A node candidate revision never substitutes for the control revision.
 
 The operator supplies an allowed-signers file outside the worktree through local Git configuration.
 Hosted jobs obtain its public contents from the operator-managed CBC_ACCEPTANCE_ALLOWED_SIGNERS variable.
+GitHub withholds this variable from fork pull requests. Those CI runs use the public snapshot in
+`.github/cbc-allowed-signers`, checked against its SHA-256 digest in the CI workflow.
+The snapshot contains the same approved signers. A signer rotation must update the variable,
+the snapshot, and the workflow digest together. The workflow change requires CI maintainer review.
+Other CI events and production soaks still require the operator-managed variable.
 No private key enters CI.
 Agents do not enroll keys or sign production approvals.
 Missing configuration and unsigned evidence fail closed.
