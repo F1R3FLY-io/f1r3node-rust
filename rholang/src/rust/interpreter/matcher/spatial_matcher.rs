@@ -47,21 +47,42 @@ const MATCH_STEPS_PER_BYTE: usize = 16;
 /// step is a bounded unit of work: a pattern level, a bit or element a split
 /// touches.
 #[derive(Clone)]
-pub struct StepBudget(Rc<Cell<usize>>);
+pub struct StepBudget(Rc<(Cell<usize>, Cell<bool>)>);
 
 impl StepBudget {
-    pub fn new(steps: usize) -> Self { StepBudget(Rc::new(Cell::new(steps))) }
+    pub fn new(steps: usize) -> Self { StepBudget(Rc::new((Cell::new(steps), Cell::new(false)))) }
 
-    /// Spends `steps`; `None`, spending nothing, when fewer are left.
+    /// Spends `steps`; `None`, spending nothing, when fewer are left. Once a
+    /// spend is refused every later one is too, so an attempt that ran out
+    /// cannot go on to succeed through a cheaper alternative: whether it
+    /// matches would then depend on the size of the budget.
     pub fn spend(&self, steps: usize) -> Option<()> {
-        let left = self.0.get().checked_sub(steps)?;
-        self.0.set(left);
-        Some(())
+        let (left, exhausted) = &*self.0;
+        if exhausted.get() {
+            return None;
+        }
+        match left.get().checked_sub(steps) {
+            Some(remaining) => {
+                left.set(remaining);
+                Some(())
+            }
+            None => {
+                exhausted.set(true);
+                None
+            }
+        }
     }
+
+    pub fn left(&self) -> usize { self.0 .0.get() }
+
+    /// Whether a spend was refused for want of steps.
+    pub fn exhausted(&self) -> bool { self.0 .1.get() }
 }
 
-/// Running out of steps ends the attempt as a failed match, which replay
-/// reproduces because the budget and the work both depend only on the inputs.
+/// Running out of steps ends the attempt as a failed match. Until then the
+/// outcome depends only on the inputs, so a caller whose budget is not itself
+/// a function of the inputs must treat running out as a failure, not a
+/// non-match.
 #[derive(Clone)]
 pub struct SpatialMatcherContext {
     pub free_map: FreeMap,

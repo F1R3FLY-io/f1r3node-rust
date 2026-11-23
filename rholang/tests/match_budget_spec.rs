@@ -65,6 +65,31 @@ fn the_steps_a_match_needs_grow_linearly_with_the_target() {
 }
 
 #[test]
+fn a_smaller_budget_either_fails_or_binds_what_an_unlimited_one_does() {
+    for n in [5, 20] {
+        let unlimited = SpatialMatcherContext::with_budget(StepBudget::new(usize::MAX))
+            .into_match_result(ints_then_true(n), int_bool_rest())
+            .expect("the match succeeds without a limit");
+        for steps in 0..needed(n) + 200 {
+            if let Some(bindings) = SpatialMatcherContext::with_budget(StepBudget::new(steps))
+                .into_match_result(ints_then_true(n), int_bool_rest())
+            {
+                assert_eq!(bindings, unlimited, "{n} elements within {steps} steps");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_refused_spend_refuses_every_later_one() {
+    let budget = StepBudget::new(10);
+    assert!(budget.spend(11).is_none());
+    assert!(budget.spend(1).is_none());
+    assert!(budget.exhausted());
+    assert_eq!(budget.left(), 10);
+}
+
+#[test]
 fn a_match_that_runs_out_of_steps_fails_the_same_way_every_time() {
     for _ in 0..3 {
         assert!(!matches_within(4_096, 1_000));
