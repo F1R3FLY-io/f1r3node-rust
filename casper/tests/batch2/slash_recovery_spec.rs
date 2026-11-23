@@ -265,10 +265,10 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
         "merge_block parents must include block_2"
     );
 
-    // Post-merge bonds: equivocator must be at the bond floor
-    // (<=1; tests currently use floor 0). Catches a regression where
-    // the slash effect failed to land in canonical state through the
-    // multi-parent merge.
+    // Post-merge bonds: equivocator must be at the bond floor. A slashed
+    // validator may be removed from the effective bonds map, which is stake 0.
+    // Catches a regression where the slash effect failed to land in canonical
+    // state through the multi-parent merge.
     let post_merge_bonds = nodes[1]
         .runtime_manager
         .compute_bonds(&casper::rust::util::proto_util::post_state_hash(
@@ -280,7 +280,7 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
         .iter()
         .find(|b| b.validator == equivocator_pk.bytes)
         .map(|b| b.stake.clone())
-        .expect("equivocator must still appear in bonds map");
+        .unwrap_or_else(shared::rust::token_amount::TokenAmount::zero);
     assert!(
         equivocator_stake <= 1.into(),
         "post-merge equivocator stake must be at the bond floor (<=1); got {}",
@@ -469,7 +469,7 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
         .iter()
         .find(|b| b.validator == equivocator)
         .map(|b| b.stake.clone())
-        .expect("equivocator must still appear in bonds map");
+        .unwrap_or_else(shared::rust::token_amount::TokenAmount::zero);
     assert!(
         equivocator_stake <= 1.into(),
         "post-merge equivocator stake must be at the bond floor (<=1) even when a \
@@ -799,8 +799,8 @@ async fn a_slash_lost_to_the_merge_is_issued_again_by_the_merge_proposer() {
         .await
         .expect("post-state bonds");
     assert_eq!(
-        stake(&post_state_bonds),
-        Some(shared::rust::token_amount::TokenAmount::zero()),
+        stake(&post_state_bonds).unwrap_or_else(shared::rust::token_amount::TokenAmount::zero),
+        shared::rust::token_amount::TokenAmount::zero(),
         "a block whose own slash succeeded leaves the offender at stake 0"
     );
 }

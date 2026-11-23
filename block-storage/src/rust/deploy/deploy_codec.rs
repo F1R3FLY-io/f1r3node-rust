@@ -64,20 +64,23 @@ pub(super) fn checked_payload(bytes: &[u8]) -> Result<&[u8], KvStoreError> {
     Ok(payload)
 }
 
-fn verify_signature(deploy: &Signed<DeployData>) -> Result<(), KvStoreError> {
-    if deploy.verify() {
-        Ok(())
-    } else {
-        Err(KvStoreError::SerializationError(
+pub(super) fn verify_signature(deploy: &Signed<DeployData>) -> Result<(), KvStoreError> {
+    if !deploy.verify() {
+        return Err(KvStoreError::SerializationError(
             "Invalid deploy signature".to_string(),
-        ))
+        ));
     }
+    DeployData::with_complete_cosignatures(deploy.clone())
+        .map(|_| ())
+        .map_err(KvStoreError::SerializationError)
 }
 
 pub(super) fn decode(bytes: &BitVector) -> Result<Signed<DeployData>, KvStoreError> {
     let proto = DeployDataProto::decode(checked_payload(bytes)?)
         .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
-    DeployData::from_proto_unverified(proto).map_err(KvStoreError::SerializationError)
+    let deploy =
+        DeployData::from_proto_unverified(proto).map_err(KvStoreError::SerializationError)?;
+    DeployData::with_complete_cosignatures(deploy).map_err(KvStoreError::SerializationError)
 }
 
 #[cfg(test)]
@@ -107,6 +110,8 @@ mod tests {
                 shard_id: "root".into(),
                 expiration_timestamp: Some(1000),
                 parameters,
+                cosignatures: Vec::new(),
+                required_cosigners: Vec::new(),
             },
             Box::new(Secp256k1),
             PrivateKey::from_bytes(&[1; 32]),

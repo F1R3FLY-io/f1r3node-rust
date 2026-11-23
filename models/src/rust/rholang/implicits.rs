@@ -21,6 +21,8 @@ pub fn vector_par(_locally_free: Vec<u8>, _connective_used: bool) -> Par {
         conditionals: Vec::new(),
         locally_free: _locally_free,
         connective_used: _connective_used,
+        cost_signed_terms: Vec::new(),
+        cost_stacks: Vec::new(),
     }
 }
 
@@ -106,6 +108,8 @@ pub fn concatenate_pars(p: Par, mut that: Par) -> Par {
     that.bundles.extend(p.bundles);
     that.connectives.extend(p.connectives);
     that.conditionals.extend(p.conditionals);
+    that.cost_signed_terms.extend(p.cost_signed_terms);
+    that.cost_stacks.extend(p.cost_stacks);
     that.locally_free = union(std::mem::take(&mut that.locally_free), p.locally_free);
     that.connective_used |= p.connective_used;
     that

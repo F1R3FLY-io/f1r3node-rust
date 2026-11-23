@@ -295,6 +295,7 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
         extra_bytes: Bytes::new(),
         applied_from_scope: checkpoint.applied_from_scope,
         merge_base: checkpoint.merge_base.unwrap_or_default(),
+        v6: None,
     };
     let header = Header {
         parents_hash_list: snapshot

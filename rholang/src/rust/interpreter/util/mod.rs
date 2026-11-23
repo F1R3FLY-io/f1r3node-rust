@@ -1,4 +1,6 @@
-use models::rhoapi::{Bundle, Connective, Expr, If, Match, New, Par, Receive, Send};
+use models::rhoapi::{
+    Bundle, Connective, CostSignedTerm, Expr, If, Match, New, Par, Receive, Send,
+};
 use models::rust::utils::union;
 
 use super::matcher::has_locally_free::HasLocallyFree;
@@ -18,6 +20,7 @@ pub enum GeneratedMessage {
     Match(Match),
     Bundle(Bundle),
     Expr(Expr),
+    CostSignedTerm(CostSignedTerm),
     If(If),
 }
 
