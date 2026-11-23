@@ -122,5 +122,6 @@ Queued deploys are counted as `ready` (window open, released earliest deadline f
 `finalized`, `failed`, `expired` and `rejected`. A terminal deploy stays held for one lifespan after its verdict,
 so its status can still be read. `held` is the sum of all of these. `payload_bytes` is the size of the signed
 deploys held for undecided deploys, which the storage budget caps.
-`GET /queue/metrics` answers Prometheus metrics. `GET /ws/events` relays the node's
+`GET /queue/metrics` answers Prometheus metrics. `deploy_queue_refused` counts refused deploys by `reason`, the
+refusal's `error`, and by `cause`, which is `none` for a refusal without one. `GET /ws/events` relays the node's
 [event stream](websocket-events.md).
