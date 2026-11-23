@@ -1,10 +1,12 @@
-// The direct lookups must answer exactly what a lookup in the sorted
-// collections built from the same protobuf values answers, byte for byte.
+// The direct lookups on canonical collections must answer exactly what a
+// lookup in the sorted collections answers, byte for byte.
 
 use std::collections::{HashMap, HashSet};
 
-use models::rhoapi::{EMap, ESet, KeyValuePair, Par};
+use models::rhoapi::{EMap, ESet, Par};
+use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
+use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
@@ -36,28 +38,10 @@ fn mixed_par() -> Par {
 fn list(ps: Vec<Par>) -> Par { new_elist_par(ps, Vec::new(), false, None, Vec::new(), false) }
 
 fn emap(entries: Vec<(Par, Par)>) -> EMap {
-    EMap {
-        kvs: entries
-            .into_iter()
-            .map(|(k, v)| KeyValuePair {
-                key: Some(k),
-                value: Some(v),
-            })
-            .collect(),
-        locally_free: Vec::new(),
-        connective_used: false,
-        remainder: None,
-    }
+    ParMapTypeMapper::par_map_to_emap(ParMap::create_from_vec(entries))
 }
 
-fn eset(ps: Vec<Par>) -> ESet {
-    ESet {
-        ps,
-        locally_free: Vec::new(),
-        connective_used: false,
-        remainder: None,
-    }
-}
+fn eset(ps: Vec<Par>) -> ESet { ParSetTypeMapper::par_set_to_eset(ParSet::create_from_vec(ps)) }
 
 fn maps() -> Vec<EMap> {
     vec![
