@@ -951,6 +951,10 @@ jobs:
         timeout-minutes: 5
         run: bash scripts/ci/install-cbc-runtime.sh
 
+      - name: Verify the cleanup signing kit and import
+        timeout-minutes: 5
+        run: bash scripts/ci/test-soak-cleanup-signing.sh
+
       - name: Install the cleanup model checker
         timeout-minutes: 5
         run: |

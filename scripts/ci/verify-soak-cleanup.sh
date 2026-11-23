@@ -4,12 +4,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 cd "$ROOT"
 output=""
 record=0
+payloads=""
 image=""
 harness="${SOAK_HARNESS_BIN:-$ROOT/target/debug/casper-soak}"
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --output) output="$2"; shift 2 ;;
         --record) record=1; shift ;;
+        --payloads) payloads="$2"; shift 2 ;;
         --linux-image) image="$2"; shift 2 ;;
         --harness-binary) harness="$2"; shift 2 ;;
         *) exit 2 ;;
@@ -19,7 +21,14 @@ done
 mkdir -p "$output"
 output="$(cd "$output" && pwd -P)"
 [ ! -e "$output/report.json" ] || { printf 'Use a new verification output directory.\n' >&2; exit 4; }
-if [ "$record" -eq 1 ]; then [[ "$output" == "$ROOT/"* ]] || exit 4; fi
+if [ "$record" -eq 1 ]; then
+    [[ "$output" == "$ROOT/"* ]] || exit 4
+    [ -n "$payloads" ] || payloads="$(mktemp -d "${TMPDIR:-/tmp}/soak-cleanup-payloads.XXXXXX")"
+    mkdir -p "$payloads"
+    payloads="$(cd "$payloads" && pwd -P)"
+    [[ "$payloads/" != "$ROOT/"* ]] || { printf 'Write the unsigned approvals outside the worktree.\n' >&2; exit 4; }
+    [ -z "$(ls -A "$payloads")" ] || { printf 'Use an empty directory for the unsigned approvals.\n' >&2; exit 4; }
+fi
 manifest=docs/casper/soak-cleanup.json
 claim=CLAIM-SOAK-CLEANUP-001
 specification=docs/claims/soak-segment-cleanup.md
@@ -77,12 +86,9 @@ jq -n --slurpfile sources "$TMP/before.json" --slurpfile checks "$TMP/checks" \
       node_execution:false,maintainer_acceptance:"pending",live_soak:"pending"}' >"$output/report.json"
 if [ "$record" -eq 1 ]; then
     reference="${output#"$ROOT/"}/report.json"
-    mkdir "$output/unsigned-acceptance"
     while IFS= read -r path; do
         ledger="$(bash "$cbc" attributes evidence-path "$path")"
         if [ -f "$ledger" ] && [ ! -e "${ledger%.md}.claims.json" ]; then
-            mkdir -p "$(dirname "$ledger")/history"
-            cp -n "$ledger" "$(dirname "$ledger")/history/$(hash "$ledger")-$(basename "$ledger")"
             old="$(awk '/^```json$/{block=1;next} /^```/{block=0} block' "$ledger" | jq -sc 'if length==1 then .[0] else error("ambiguous legacy ledger") end')"
             jq -e --arg path "$path" --argjson old "$old" \
                 '($old.claim_ids- .artifacts[$path])|length==0' "$manifest" >/dev/null
@@ -107,10 +113,11 @@ if [ "$record" -eq 1 ]; then
               claim:$claim,adapter:"bounded-model-and-linux-fixture",status:"discharged",scope:"bounded-segment-cleanup",
               evidence:{kind:"bounded-model-and-linux-fixture",ref:$ref},waiver:null,verified_at:$at}' |
             bash "$cbc" record "$path" "$ledger" "$specification" "$inputs" "$claim" >/dev/null
-        bash "$cbc" acceptance-payload "$path" --claim-id "$claim" >"$output/unsigned-acceptance/$(basename "${ledger%.md}").json"
+        bash "$cbc" acceptance-payload "$path" --claim-id "$claim" >"$payloads/$(basename "${ledger%.md}").json"
     done < <(jq -r '.artifacts|keys[]' "$manifest")
     status=0
     bash scripts/ci/check-soak-cleanup.sh --root "$ROOT" --output "$output/status.json" >/dev/null || status=$?
     [ "$status" -eq 0 ] || [ "$status" -eq 4 ] || exit "$status"
+    printf 'Unsigned approvals: %s\n' "$payloads"
 fi
 printf 'Cleanup verification passed. Maintainer acceptance remains separate.\n'
