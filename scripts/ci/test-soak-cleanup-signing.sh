@@ -73,6 +73,11 @@ expect 2 filled-payload 'Not an unsigned approval' kit "$TMP/filled" "$TMP/kit-b
 cp -R "$TMP/payloads" "$TMP/short"
 rm "$TMP/short/$first"
 expect 2 missing-payload 'the manifest covers' kit "$TMP/short" "$TMP/kit-c"
+mkdir "$TMP/duplicate"
+for index in $(seq 1 "$(jq '.artifacts|length' "$ROOT/$manifest")"); do
+    cp "$TMP/payloads/$first" "$TMP/duplicate/copy-$index.json"
+done
+expect 2 duplicate-payloads 'exactly once' kit "$TMP/duplicate" "$TMP/kit-d"
 expect 0 kit 'approvals for fixture' kit "$TMP/payloads" "$TMP/kit"
 [ "$(find "$TMP/kit" -name '*.json' | wc -l | tr -d ' ')" -eq "$(jq '.artifacts|length' "$ROOT/$manifest")" ]
 jq -e '.accepted_by=="fixture" and (.approval_ref|endswith("/pull/1"))' "$TMP/kit/$first" >/dev/null
@@ -94,6 +99,20 @@ variant; jq '.accepted_by="reviewer"' "$TMP/kit/$first" >"$TMP/variant/$first"; 
 expect 4 mixed-signers 'do not share one signer' import "$TMP/variant"
 variant; sign "$TMP/other-key" "$TMP/variant/$first"
 expect 4 wrong-key 'does not verify' import "$TMP/variant"
+mkdir "$TMP/duplicate-kit"
+for unsigned in "$TMP/duplicate"/*.json; do
+    jq '.accepted_by="fixture"|.approved_at="2026-01-01T00:00:00Z"|.approval_ref="https://github.com/F1R3FLY-io/f1r3node-rust/pull/1"' \
+        "$unsigned" >"$TMP/duplicate-kit/$(basename "$unsigned")"
+    sign "$TMP/fixture-key" "$TMP/duplicate-kit/$(basename "$unsigned")"
+done
+expect 4 duplicate-artifacts 'exactly once' \
+    bash "$import_script" --root "$base" --kit "$TMP/duplicate-kit" --payloads "$TMP/duplicate"
+last="$(cd "$TMP/payloads" && ls ./*.json | tail -1)"
+stale="$(jq -r .artifact "$TMP/payloads/${last#./}")"
+cp "$base/$stale" "$TMP/stale-original"
+printf '\n' >>"$base/$stale"
+expect 4 stale-binding 'no longer binds' import "$TMP/kit"
+cp "$TMP/stale-original" "$base/$stale"
 [ -z "$(find "$base/docs/casper/cbc-evidence" -name '*.acceptance.json' -print -quit)" ]
 expect 0 import '"status":"accepted"' import "$TMP/kit"
 printf 'Cleanup signing: %s kit and import controls passed.\n' "$checks"

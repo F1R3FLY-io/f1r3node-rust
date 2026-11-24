@@ -47,9 +47,16 @@ for unsigned in "$payloads"/*.json; do
     identity="$current"
     ssh-keygen -Y verify -f "$signers" -I "$(jq -r .accepted_by "$approval")" -n cbc-acceptance \
         -s "$approval.sig" <"$approval" >/dev/null 2>&1 || reject "The signature does not verify for its principal: $name"
+    current="$(bash scripts/cbc.sh acceptance-payload "$(jq -r .artifact "$unsigned")" --claim-id "$claim" 2>/dev/null)" ||
+        reject "The approval no longer binds the current sources and evidence: $name"
+    jq -n -e --argjson current "$current" --slurpfile original "$unsigned" '$current == $original[0]' >/dev/null ||
+        reject "The approval no longer binds the current sources and evidence: $name"
     count=$((count + 1))
 done
 [ "$count" -eq "$expected" ] || reject "Found $count approvals; the manifest covers $expected artifacts."
+jq -s -e --slurpfile manifest "$manifest" \
+    '[.[].artifact] as $covered | ($covered|length)==($covered|unique|length) and ($covered|unique)==($manifest[0].artifacts|keys|sort)' \
+    "$payloads"/*.json >/dev/null || reject 'The approvals must cover each manifest artifact exactly once.'
 for unsigned in "$payloads"/*.json; do
     approval="$kit/$(basename "$unsigned")"
     bash scripts/cbc.sh accept "$(jq -r .artifact "$approval")" --claim-id "$claim" \

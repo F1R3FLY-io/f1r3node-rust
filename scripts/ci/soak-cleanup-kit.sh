@@ -45,6 +45,9 @@ for unsigned in "$payloads"/*.json; do
     count=$((count + 1))
 done
 [ "$count" -eq "$expected" ] || { printf 'Found %s approvals; the manifest covers %s artifacts.\n' "$count" "$expected" >&2; exit 2; }
+jq -s -e --slurpfile manifest "$manifest" \
+    '[.[].artifact] as $covered | ($covered|length)==($covered|unique|length) and ($covered|unique)==($manifest[0].artifacts|keys|sort)' \
+    "$kit"/*.json >/dev/null || { printf 'The approvals must cover each manifest artifact exactly once.\n' >&2; exit 2; }
 printf '%s approvals for %s, review %s\n' "$count" "$signer" "$ref"
 printf 'Sign them in %s:\n' "$kit"
 printf '  for f in *.json; do ssh-keygen -Y sign -f <private key> -n cbc-acceptance "$f"; done\n'

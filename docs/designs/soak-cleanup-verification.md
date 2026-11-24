@@ -123,6 +123,8 @@ The full CbC discharge gate continues to report those independent gaps.
 The import script checks the complete kit before it imports an approval:
 
 - Each unsigned payload has one approval, and the kit has no other approval.
+- The approvals cover each manifest artifact exactly once.
+- Each approval still binds the current sources, evidence, and claim set.
 - Each approval differs from its payload only in the maintainer identity, timestamp, and review reference.
 - All approvals have the same maintainer identity, timestamp, and review reference.
 - Each signature verifies for its principal through the allowed-signers file.
