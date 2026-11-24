@@ -493,7 +493,6 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
                 .map_err(|e| CasperError::Other(format!("Failed to get rspace stores: {}", e)))?;
             reporting_casper::rho_reporter(
                 &rspace_stores,
-                &block_dag_storage,
                 runtime_manager.replay_lock(),
                 rholang::rust::interpreter::external_services::ExternalServices::noop(),
             )

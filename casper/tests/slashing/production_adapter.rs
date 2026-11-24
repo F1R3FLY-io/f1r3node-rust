@@ -3,8 +3,8 @@
 //
 // Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.2.4
 // (tier model). The adapter projects the observable surface of
-// the production types — `BlockDagKeyValueStorage::
-// access_equivocations_tracker`, `RuntimeManager::compute_bonds`,
+// the production types — the DAG's held equivocations,
+// `RuntimeManager::compute_bonds`,
 // `RuntimeManager::get_active_validators` — into the harness's
 // `(validator-label, base_seq) → witness-set` view.
 //
@@ -95,31 +95,30 @@ impl SlashingProductionAdapter {
             }
         }
 
-        // Project the production equivocation records into the
-        // harness's keyed view. Each production record's witness
-        // hashes are 32-byte; we 8-byte-truncate (big-endian) into
-        // `u64` — this preserves equality / set semantics for the
-        // bisim tests because the harness allocates u64 hashes
-        // directly and the integration tests' synthetic blocks use
-        // hashes that fit in 8 bytes.
-        let validators_for_closure = validators.clone();
-        let prod_records = block_dag_storage
-            .access_equivocations_tracker(|tracker| tracker.data())
-            .map_err(|e| format!("access_equivocations_tracker failed: {}", e))?;
-        let records: Vec<(ValidatorId, SeqNum, BTreeSet<HarnessBlockHash>)> = prod_records
+        // Project the equivocations the node holds into the harness's
+        // keyed view: one record per (sender, sequence number), keyed
+        // by the base sequence number below it, with no witnesses.
+        let held: BTreeSet<(usize, i32)> = block_dag_storage
+            .get_representation()
+            .map_err(|e| format!("get_representation failed: {}", e))?
+            .invalid_blocks()
+            .expect("invalid blocks")
+            .iter()
+            .filter_map(|block| {
+                let label_idx = validators
+                    .iter()
+                    .position(|v_bytes| v_bytes.as_ref() == block.sender.as_ref())?;
+                Some((label_idx, block.sequence_number))
+            })
+            .collect();
+        let records: Vec<(ValidatorId, SeqNum, BTreeSet<HarnessBlockHash>)> = held
             .into_iter()
-            .filter_map(|prod| {
-                let label_idx = validators_for_closure
-                    .iter()
-                    .position(|v_bytes| v_bytes.as_ref() == prod.equivocator.as_ref())?;
-                let label = format!("v{}", label_idx);
-                let base_seq = prod.equivocation_base_block_seq_num as SeqNum;
-                let witnesses: BTreeSet<HarnessBlockHash> = prod
-                    .equivocation_detected_block_hashes
-                    .iter()
-                    .map(truncate_block_hash)
-                    .collect();
-                Some((label, base_seq, witnesses))
+            .map(|(label_idx, seq)| {
+                (
+                    format!("v{}", label_idx),
+                    (seq - 1) as SeqNum,
+                    BTreeSet::new(),
+                )
             })
             .collect();
 

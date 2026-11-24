@@ -118,6 +118,7 @@ async fn checkpoint_block_with(
         timestamp: now_millis,
         version: 1,
         extra_bytes: Bytes::new(),
+        chain_id: snapshot.chain_id.clone(),
     };
     let justifications: Vec<Justification> = snapshot.justifications.iter().cloned().collect();
     let unsigned = proto_util::unsigned_block_proto(

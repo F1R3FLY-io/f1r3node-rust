@@ -29,6 +29,24 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 - **Consensus boundary track (2026-10-12).** EPIC-025 tracks the design PR #627 and the implementation by Nama21yo: issue #624 with PR #651, and issue #625. Decision D7 layers the PR #651 lifecycle runtime under the ReplicationMedium contract. Our role on PR #651 and issue #625 is reviewer feedback only.
 - **Maintainer identity ratification (2026-11-13).** Status: implemented locally on `ci/maintainer-identity-ratificatio`, claimed by Codex. The maintainer selected active `ci-maintainers` membership as an additional authority for commit authors. Focused policy, workflow, queue, and release checks passed. The registry proposal was removed. Review, commit, App configuration, and rollout through `master` and `ca-canary` remain pending.
 
+### TASK-031-2: Correct HTTP deploy validation errors
+
+```yaml
+id: TASK-031-2
+epic_id: EPIC-031
+status: completed
+claimed_by: codex-session-http-deploy
+claimed_at: 2026-11-09T12:35:22Z
+branch: fix/http-deploy-error-classification
+pr_base_branch: dev
+user_story: US-015
+acceptance:
+  - "Reject maximum-charge overflow with HTTP 400 illegal_argument before admission."
+  - "Preserve typed client validation errors and HTTP 500 for internal failures."
+  - "Test JSON rejection statuses and valid exact values with existing test infrastructure."
+  - "Document HTTP 400, 415, and 422 in native and static OpenAPI and the API reference."
+```
+
 ### TASK-031-1: Complete unsigned 256-bit token amount support
 
 ```yaml

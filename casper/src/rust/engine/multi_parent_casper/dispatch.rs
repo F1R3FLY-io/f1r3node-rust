@@ -135,18 +135,16 @@ impl MultiParentCasper for MultiParentCasperImpl {
         &self,
         weights: HashMap<Validator, num_bigint::BigInt>,
     ) -> Result<f32, CasperError> {
-        let equivocating_weight =
-            self.block_dag_storage
-                .access_equivocations_tracker(|tracker| {
-                    let equivocation_records = tracker.data()?;
-                    let equivocating_weight = initial_fault::equivocating_weight(
-                        &weights,
-                        equivocation_records
-                            .iter()
-                            .map(|record| &record.equivocator),
-                    );
-                    Ok(equivocating_weight)
-                })?;
+        let dag = self.block_dag_storage.get_representation()?;
+        let mut held = Vec::new();
+        for validator in weights.keys() {
+            held.extend(dag.equivocations_of(validator)?);
+        }
+        let equivocations = initial_fault::equivocations(&held);
+        let equivocating_weight = initial_fault::equivocating_weight(
+            &weights,
+            equivocations.iter().map(|(sender, _)| sender),
+        );
 
         let total_weight = initial_fault::total_weight(&weights);
         Ok(initial_fault::normalized_initial_fault(
