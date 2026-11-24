@@ -10,7 +10,6 @@ unmaintained = "all"
 unsound = "all"
 maximum-db-staleness = "P7D"
 ignore = [
-  { id = "RUSTSEC-2026-0258", reason = "Legacy reqwest uses h2 0.3.27. Undrained streams can queue empty DATA frames. Replace the legacy HTTP dependencies." },
   { id = "RUSTSEC-2025-0134", reason = "comm directly uses rustls-pemfile 2.2.0. Legacy reqwest also uses 1.0.4. Migrate to rustls-pki-types." },
   { id = "RUSTSEC-2025-0141", reason = "The workspace uses bincode 1.3.3. Replacement requires storage and serialization compatibility tests." },
   { id = "RUSTSEC-2021-0141", reason = "rholang directly uses dotenv 0.15.0. Migrate the OpenAI configuration loader to a maintained implementation." },
