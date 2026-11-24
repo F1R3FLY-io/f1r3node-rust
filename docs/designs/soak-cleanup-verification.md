@@ -104,6 +104,7 @@ reference:
 3. Record a package with `bash scripts/ci/verify-soak-cleanup.sh --record --output docs/casper/cbc-evidence/runs/<run>`.
    The command writes the unsigned approvals to a temporary directory outside the worktree and prints its path.
    Use `--payloads <directory>` to select an empty directory outside the worktree.
+   On a macOS host, follow [Record a package](#record-a-package).
 4. Review the verification report and its source hashes.
 5. Build the signing kit with `bash scripts/ci/soak-cleanup-kit.sh --payloads <directory> --pull-request <number> --signer <principal> --kit <kit>`.
    The kit must be outside the worktree.
@@ -132,3 +133,50 @@ The scoped admission gate passes only when every cleanup approval is current.
 The unsigned payloads and the kit are temporary files.
 The package keeps the report, the status, the model, the regressions, and the check logs.
 Each accepted envelope keeps the signed payload and its signature.
+
+### Record a package
+
+Two checks need Linux. On a macOS host, run them in a container.
+Start from a clean worktree, because the report records the control revision.
+
+1. Build the Linux check image one time:
+
+   ```bash
+   docker build -t soak-shell-test:local - <<'DOCKERFILE'
+   FROM debian:bookworm
+   RUN apt-get update && apt-get install -y --no-install-recommends jq procps git perl ca-certificates && rm -rf /var/lib/apt/lists/*
+   DOCKERFILE
+   ```
+
+2. Build the Linux harness:
+
+   ```bash
+   docker run --rm -v "$PWD:/src" -v "$HOME/.cargo/registry:/usr/local/cargo/registry" -w /src \
+     -e CARGO_TARGET_DIR=/src/target/linux-soak rust:bookworm \
+     cargo build --locked -p casper-soak --bin casper-soak
+   ```
+
+3. Get the TLA+ tools that CI uses, and check the hash:
+
+   ```bash
+   curl --fail --location --create-dirs --output "$HOME/.tla/tla2tools.jar" \
+     https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+   echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $HOME/.tla/tla2tools.jar" | shasum -a 256 --check
+   ```
+
+4. Record the package:
+
+   ```bash
+   TLA2TOOLS_JAR="$HOME/.tla/tla2tools.jar" bash scripts/ci/verify-soak-cleanup.sh --record \
+     --linux-image soak-shell-test:local \
+     --harness-binary "$PWD/target/linux-soak/debug/casper-soak" \
+     --output docs/casper/cbc-evidence/runs/<run>
+   ```
+
+5. Keep the check logs. The repository ignores `*.log` files, so add a `.gitignore` file to the run directory:
+
+   ```bash
+   printf '!check-*.log\n' > docs/casper/cbc-evidence/runs/<run>/.gitignore
+   ```
+
+Name each run `soak-cleanup-<YYYYMMDD>-<NN>`.
