@@ -326,10 +326,12 @@ where
 
         let empty_queue = std::collections::VecDeque::new();
         let response_queue_pending = Arc::new(AtomicUsize::new(0));
+        let (_pruned_tx, pruned_rx) = mpsc::channel(1);
         let lfs_stream = casper::rust::engine::lfs_block_requester::stream(
             &approved_block,
             &empty_queue,
             response_rx,
+            pruned_rx,
             response_queue_pending.clone(),
             0,
             request_timeout,
