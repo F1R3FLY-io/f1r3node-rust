@@ -3,3 +3,4 @@ pub mod rspace_importer;
 pub mod instances;
 pub mod exporters;
 pub mod rspace_state_manager;
+pub mod state_walk;

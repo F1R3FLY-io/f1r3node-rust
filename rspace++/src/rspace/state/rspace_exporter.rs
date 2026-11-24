@@ -7,7 +7,7 @@ use shared::rust::{Byte, ByteVector};
 use crate::rspace::errors::{RadixTreeError, RootError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::radix_tree::{ExportData, ExportDataSettings, sequential_export};
-use crate::rspace::shared::trie_exporter::{KeyHash, TrieExporter, TrieNode};
+use crate::rspace::shared::trie_exporter::{KeyHash, NodePath, TrieExporter, TrieNode};
 
 pub trait RSpaceExporter: TrieExporter + Send + Sync {
     // Get current root
@@ -15,6 +15,21 @@ pub trait RSpaceExporter: TrieExporter + Send + Sync {
 }
 
 pub type LeafKeys = Vec<(Blake2b256Hash, ByteVector)>;
+
+pub fn node_cursor(root_hash: Blake2b256Hash, prefix: &[u8]) -> NodePath {
+    let mut size = vec![0u8; 32];
+    size[0] = prefix.len() as u8;
+    let mut padded = prefix.to_vec();
+    padded.resize(128, 0);
+
+    let mut path = vec![(root_hash, None), (Blake2b256Hash::from_bytes(size), None)];
+    path.extend(
+        padded
+            .chunks(32)
+            .map(|chunk| (Blake2b256Hash::from_bytes(chunk.to_vec()), None)),
+    );
+    path
+}
 
 pub struct RSpaceExporterInstance;
 
@@ -117,34 +132,6 @@ impl RSpaceExporterInstance {
             data_keys
         }
 
-        fn construct_last_path(
-            last_prefix: ByteVector,
-            root_hash: Blake2b256Hash,
-        ) -> Vec<(Blake2b256Hash, Option<Byte>)> {
-            let prefix_size = last_prefix.len();
-            let mut size_array: Vec<u8> = vec![prefix_size as u8];
-            size_array.extend(std::iter::repeat_n(0x00, 31));
-
-            let prefix_zeros: Vec<u8> = std::iter::repeat_n(0x00, 128 - prefix_size).collect();
-            let mut prefix128_array = last_prefix.to_vec();
-            prefix128_array.extend(prefix_zeros);
-
-            let prefix_blake0 = Blake2b256Hash::from_bytes(size_array);
-            let prefix_blake1 = Blake2b256Hash::from_bytes((prefix128_array[0..32]).to_vec());
-            let prefix_blake2 = Blake2b256Hash::from_bytes(prefix128_array[32..64].to_vec());
-            let prefix_blake3 = Blake2b256Hash::from_bytes(prefix128_array[64..96].to_vec());
-            let prefix_blake4 = Blake2b256Hash::from_bytes(prefix128_array[96..128].to_vec());
-
-            vec![
-                (root_hash, None),
-                (prefix_blake0, None),
-                (prefix_blake1, None),
-                (prefix_blake2, None),
-                (prefix_blake3, None),
-                (prefix_blake4, None),
-            ]
-        }
-
         fn construct_last_node(
             last_key: ByteVector,
             last_path: Vec<(Blake2b256Hash, Option<Byte>)>,
@@ -194,7 +181,7 @@ impl RSpaceExporterInstance {
             };
 
             let last_path = match new_last_prefix_opt {
-                Some(bytes) => construct_last_path(bytes, root_hash.clone()),
+                Some(bytes) => node_cursor(root_hash.clone(), &bytes),
                 None => Vec::new(),
             };
 
