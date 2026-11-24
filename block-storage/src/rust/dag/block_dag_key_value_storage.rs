@@ -2559,6 +2559,12 @@ mod tests {
     #[test]
     fn ft_propagation_scan_hands_off_its_worker() {
         let dir = tempfile::tempdir().unwrap();
+        rspace_plus_plus::rspace::shared::open_env_without_sync(
+            &dir.path().join("dagstorage"),
+            1 << 30,
+            32,
+        )
+        .unwrap();
         let mapping: HashMap<Db, LmdbEnvConfig> = DAG_STORES
             .iter()
             .map(|name| {
