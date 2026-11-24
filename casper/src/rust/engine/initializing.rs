@@ -544,10 +544,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                             );
                             self.update_init_queue_metrics();
                         }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to enqueue BlockMessage into block_message channel: {:?}",
-                                e
+                        Err(_) => {
+                            tracing::debug!(
+                                "Dropping BlockMessage from {}: the LFS block requester is no longer running",
+                                peer
                             );
                         }
                     }
@@ -1381,11 +1381,21 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// because it looks like success.
     fn seed_floor_caches(&self, approved_block: &ApprovedBlock) -> Result<(), CasperError> {
         let Some(seed) = &approved_block.floor_seed else {
-            tracing::warn!(
-                "LFS restore has no floor seed: this node cannot derive finality above \
-                 its anchor and will defer on blocks it cannot judge. The serving peer \
-                 predates the seed, or could not derive one."
-            );
+            if approved_block
+                .candidate
+                .block
+                .header
+                .parents_hash_list
+                .is_empty()
+            {
+                tracing::info!("LFS restore is anchored at genesis; no floor seed is needed");
+            } else {
+                tracing::warn!(
+                    "LFS restore has no floor seed: this node cannot derive finality above \
+                     its anchor and will defer on blocks it cannot judge. The serving peer \
+                     predates the seed, or could not derive one."
+                );
+            }
             return Ok(());
         };
 
@@ -1453,6 +1463,20 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         if let Some(lowest_held) = coverage_from {
             self.block_dag_storage
                 .record_carrier_coverage_from(lowest_held)?;
+        }
+
+        // Issue #1134. Any block the node held below `min_height` is now
+        // unreachable from the restored DAG: pre-restore cruft from before this
+        // join, or data left by a prior LFS whose anchor this restore has
+        // superseded. Without a floor, GC's ancestor walk cannot cross the gap
+        // to prove those blocks are moved past, so bodies leak indefinitely.
+        // The floor is strict: `min_height` itself is part of the restore
+        // coverage; only strictly-below blocks are admitted to collection.
+        // `advance_restore_floor` is monotonic, so a fresh LFS at or below
+        // genesis is a no-op. `try_gc_store` is None on in-memory fixtures
+        // that have no transactional storage — GC is unreachable there anyway.
+        if let Some(gc) = self.block_dag_storage.try_gc_store() {
+            gc.advance_restore_floor(min_height.saturating_sub(1))?;
         }
 
         tracing::info!(
