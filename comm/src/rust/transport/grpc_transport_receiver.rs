@@ -11,11 +11,12 @@ use models::routing::transport_layer_server::{TransportLayer, TransportLayerServ
 use models::routing::{Chunk, TlRequest, TlResponse};
 use prost::Message;
 use shared::rust::shared::recent_hash_filter::RecentHashFilter;
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::{oneshot, Mutex, OnceCell};
 use tokio::task::JoinHandle;
 use tonic::{Request, Response, Status};
 
 use super::f1r3fly_server::F1r3flyConnectInfo;
+use super::grpc_transport_server::Cancelable;
 use super::limited_buffer::{FlumeLimitedBuffer, LimitedBufferObservable};
 use super::messages::{Send as CommSend, StreamMessage};
 use super::packet_ops::StreamCache;
@@ -410,8 +411,12 @@ impl TransportLayerService {
                 .map(|send_msg| {
                     let handler = tell_handler.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handler(send_msg).await {
-                            tracing::error!(error = %e, "Send message handler failed");
+                        match handler(send_msg).await {
+                            Err(e @ CommError::DnsResolutionFailed(_, _)) => {
+                                tracing::debug!(error = %e, "Send message handler failed");
+                            }
+                            Err(e) => tracing::error!(error = %e, "Send message handler failed"),
+                            Ok(()) => {}
                         }
                     })
                 })
@@ -762,7 +767,7 @@ impl GrpcTransportReceiver {
         message_handlers: MessageHandlers,
         parallelism: usize,
         cache: StreamCache,
-    ) -> Result<JoinHandle<()>, CommError> {
+    ) -> Result<Cancelable, CommError> {
         use std::net::SocketAddr;
 
         use tonic::transport::Server;
@@ -827,6 +832,8 @@ impl GrpcTransportReceiver {
             })?,
         };
 
+        let (shutdown, shutdown_signal) = oneshot::channel::<()>();
+
         // Create the gRPC server with F1r3fly TLS configuration
         let server_task = tokio::spawn(async move {
             tracing::info!(
@@ -875,22 +882,17 @@ impl GrpcTransportReceiver {
                     ssl_interceptor,
                 ))
                 // Use F1r3fly incoming stream instead of standard TLS configuration
-                .serve_with_incoming(incoming)
+                .serve_with_incoming_shutdown(incoming, async {
+                    let _ = shutdown_signal.await;
+                })
                 .await;
 
             if let Err(e) = server_result {
                 tracing::error!(error = %e, "F1r3fly gRPC server failed");
             }
-
-            Ok::<(), CommError>(())
         });
 
-        // Handle the Result from the spawn task
-        Ok(tokio::spawn(async move {
-            if let Err(e) = server_task.await {
-                tracing::error!(error = %e, "F1r3fly gRPC server task panicked");
-            }
-        }))
+        Ok(Cancelable::new(server_task, shutdown))
     }
 }
 

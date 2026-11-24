@@ -13,7 +13,7 @@ use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use models::rhoapi::PCost;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
@@ -64,6 +64,9 @@ impl TestContext {
     // Helper function to create deploys from Rholang source code with timestamp and shard_id
     // Note: Used in tests that need to create blocks with specific timestamps (e.g., Test #1)
     // This wraps ConstructDeploy.sourceDeploy(..., timestamp, ..., shardId)
+    /// One deploy per source, all signed by one key, each with its own
+    /// timestamp: deploys sharing a key, timestamp and valid-after block
+    /// share their unforgeable names, so at most one of them may land.
     fn create_deploys(
         sources: Vec<&str>,
         timestamp: i64,
@@ -71,10 +74,11 @@ impl TestContext {
     ) -> Vec<Signed<DeployData>> {
         sources
             .into_iter()
-            .map(|source| {
+            .enumerate()
+            .map(|(index, source)| {
                 construct_deploy::source_deploy(
                     source.to_string(),
-                    timestamp,
+                    timestamp * 1_000 + index as i64,
                     None,
                     None,
                     Some(construct_deploy::DEFAULT_SEC.clone()),
@@ -165,6 +169,7 @@ impl TestContext {
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
             rejected_in_scope: Arc::new(DashSet::new()),
+            seeds_in_scope: Arc::new(DashMap::new()),
             max_block_num: 0,
             max_seq_nums: HashMap::new(),
             on_chain_state: OnChainCasperState {

@@ -17,6 +17,10 @@
 #   Observer:    40450-40455
 #   Prometheus:  9090
 #   Grafana:     3000 (admin/admin)
+#
+# A deploy queue fronts each validator and owns that validator's client ports
+# (4041x/4042x/4043x: 1 gRPC, 3 HTTP). Clients deploy through it; it sends
+# every other request on to its validator.
 
 x-rnode: &default-rnode
   image: ${F1R3FLY_RUST_IMAGE:-f1r3flyindustries/f1r3fly-rust:latest}
@@ -38,6 +42,27 @@ x-rnode: &default-rnode
     options:
       max-size: 100m
       max-file: "3"
+
+x-deploy-queue: &default-deploy-queue
+  image: ${F1R3FLY_RUST_IMAGE:-f1r3flyindustries/f1r3fly-rust:latest}
+  user: root
+  restart: always
+  networks:
+    - f1r3fly
+  entrypoint: ["/opt/docker/bin/deploy-queue"]
+  environment:
+    - RUST_LOG
+  logging:
+    driver: json-file
+    options:
+      max-size: 100m
+      max-file: "3"
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://127.0.0.1:40403/queue/status"]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+    start_period: 30s
 
 services:
   # =================================================================
@@ -110,9 +135,7 @@ services:
       - --native-token-decimals=${VALIDATOR1_NATIVE_TOKEN_DECIMALS:-${NATIVE_TOKEN_DECIMALS:-8}}
     ports:
       - "40410:40400"
-      - "40411:40401"
       - "40412:40402"
-      - "40413:40403"
       - "40414:40404"
       - "40415:40405"
     volumes:
@@ -145,9 +168,7 @@ services:
       - --native-token-decimals=${VALIDATOR2_NATIVE_TOKEN_DECIMALS:-${NATIVE_TOKEN_DECIMALS:-8}}
     ports:
       - "40420:40400"
-      - "40421:40401"
       - "40422:40402"
-      - "40423:40403"
       - "40424:40404"
       - "40425:40405"
     volumes:
@@ -180,9 +201,7 @@ services:
       - --native-token-decimals=${VALIDATOR3_NATIVE_TOKEN_DECIMALS:-${NATIVE_TOKEN_DECIMALS:-8}}
     ports:
       - "40430:40400"
-      - "40431:40401"
       - "40432:40402"
-      - "40433:40403"
       - "40434:40404"
       - "40435:40405"
     volumes:
@@ -192,6 +211,54 @@ services:
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ./certs/validator3/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
       - ./certs/validator3/node.key.pem:/var/lib/rnode/node.key.pem:ro
+
+  # =================================================================
+  # DEPLOY QUEUES (one per validator)
+  # =================================================================
+  deploy-queue1:
+    <<: *default-deploy-queue
+    container_name: rnode.deploy-queue1
+    command:
+      - --node-grpc=http://${VALIDATOR1_HOST:-rnode.validator1}:40401
+      - --node-http=http://${VALIDATOR1_HOST:-rnode.validator1}:40403
+      - --data-dir=/var/lib/deploy-queue
+    depends_on:
+      - validator1
+    ports:
+      - "40411:40401"
+      - "40413:40403"
+    volumes:
+      - deploy-queue1-data:/var/lib/deploy-queue
+
+  deploy-queue2:
+    <<: *default-deploy-queue
+    container_name: rnode.deploy-queue2
+    command:
+      - --node-grpc=http://${VALIDATOR2_HOST:-rnode.validator2}:40401
+      - --node-http=http://${VALIDATOR2_HOST:-rnode.validator2}:40403
+      - --data-dir=/var/lib/deploy-queue
+    depends_on:
+      - validator2
+    ports:
+      - "40421:40401"
+      - "40423:40403"
+    volumes:
+      - deploy-queue2-data:/var/lib/deploy-queue
+
+  deploy-queue3:
+    <<: *default-deploy-queue
+    container_name: rnode.deploy-queue3
+    command:
+      - --node-grpc=http://${VALIDATOR3_HOST:-rnode.validator3}:40401
+      - --node-http=http://${VALIDATOR3_HOST:-rnode.validator3}:40403
+      - --data-dir=/var/lib/deploy-queue
+    depends_on:
+      - validator3
+    ports:
+      - "40431:40401"
+      - "40433:40403"
+    volumes:
+      - deploy-queue3-data:/var/lib/deploy-queue
 
   # =================================================================
   # OBSERVER (Read-Only Node)
@@ -268,6 +335,9 @@ volumes:
   validator2-data:
   validator3-data:
   readonly-data:
+  deploy-queue1-data:
+  deploy-queue2-data:
+  deploy-queue3-data:
 
 networks:
   f1r3fly:

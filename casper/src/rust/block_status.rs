@@ -90,6 +90,9 @@ pub enum InvalidBlock {
     InvalidBlockNumber,
     InvalidRepeatDeploy,
     InvalidParents,
+    // InvalidJustifications: the block cites an equivocation whose contents
+    // are invalid.
+    InvalidJustifications,
     InvalidFollows,
     InvalidSequenceNumber,
     InvalidShardId,
@@ -115,6 +118,9 @@ pub enum InvalidBlock {
     ContainsFutureDeploy,
     NotOfInterest,
     LowDeployCost,
+    // ExcessivePhloLimit: a user deploy declares a phlo limit above the
+    // chain's max-phlo-limit.
+    ExcessivePhloLimit,
 }
 
 impl BlockStatus {
@@ -260,6 +266,7 @@ impl InvalidBlock {
             //     NeglectedEquivocation: judged against the receiver's own
             //     view of other blocks, not the signed block alone.
             //   • InvalidTransaction / InvalidBondsCache / InvalidParents /
+            //     InvalidJustifications /
             //     InvalidFollows / InvalidRepeatDeploy / InvalidBlockNumber /
             //     InvalidSequenceNumber / InvalidShardId / InvalidBlockHash /
             //     DeployNotSigned / ContainsExpiredDeploy /
@@ -280,8 +287,8 @@ impl InvalidBlock {
             //   • InvalidChainId: a block of another chain; it says nothing
             //     about conduct on this one.
             //   • NotOfInterest: local node filtering decision.
-            //   • LowDeployCost: per-deploy cost threshold; rejected at
-            //     admission, not on-chain accountable.
+            //   • LowDeployCost / ExcessivePhloLimit: per-deploy cost
+            //     bounds; rejected at admission, not on-chain accountable.
             InvalidBlock::InvalidFormat
             | InvalidBlock::InvalidSignature
             | InvalidBlock::InvalidSender
@@ -291,6 +298,7 @@ impl InvalidBlock {
             | InvalidBlock::InvalidBlockNumber
             | InvalidBlock::InvalidRepeatDeploy
             | InvalidBlock::InvalidParents
+            | InvalidBlock::InvalidJustifications
             | InvalidBlock::InvalidFollows
             | InvalidBlock::InvalidSequenceNumber
             | InvalidBlock::InvalidShardId
@@ -307,7 +315,8 @@ impl InvalidBlock {
             | InvalidBlock::InvalidRejectedDeploy
             | InvalidBlock::PrematureDeployRetry
             | InvalidBlock::NotOfInterest
-            | InvalidBlock::LowDeployCost => false,
+            | InvalidBlock::LowDeployCost
+            | InvalidBlock::ExcessivePhloLimit => false,
         }
     }
 }

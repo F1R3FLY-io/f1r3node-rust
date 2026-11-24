@@ -70,6 +70,8 @@ pub struct ShardOverrides {
     pub with_read_only_size: Option<usize>,
     pub deploy_lifespan: Option<i64>,
     pub finalization_rate: Option<i32>,
+    pub deploy_admission:
+        Option<block_storage::rust::deploy::key_value_deploy_storage::DeployPoolLimits>,
     /// Each node keeps its own RSpace, seeded with the genesis state, so it
     /// holds only the state roots it computed itself. Otherwise the nodes
     /// share one RSpace.
@@ -946,6 +948,7 @@ impl TestNode {
         let max_parent_depth = overrides.max_parent_depth;
         let deploy_lifespan = overrides.deploy_lifespan;
         let finalization_rate = overrides.finalization_rate;
+        let deploy_admission = overrides.deploy_admission.unwrap_or_default();
 
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
@@ -1070,12 +1073,12 @@ impl TestNode {
             floor_seed: None,
             sigs: vec![],
         };
-        let epoch_length = runtime_manager
+        let consensus_parameters = runtime_manager
             .get_consensus_parameters(&genesis.body.state.post_state_hash)
             .await
             .expect("consensus parameters read from the test genesis")
-            .expect("test genesis exposes getConsensusParameters")
-            .epoch_length;
+            .expect("test genesis exposes getConsensusParameters");
+        let epoch_length = consensus_parameters.epoch_length;
         let shard_conf = CasperShardConf {
             fault_tolerance_threshold: 0.1,
             fault_tolerance_threshold_ppm: 100_000,
@@ -1093,12 +1096,14 @@ impl TestNode {
             // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
+            deploy_admission,
             casper_version: genesis.header.version,
             bond_minimum: 0.into(),
             bond_maximum: (i64::MAX as u64).into(),
             epoch_length,
             quarantine_length: 20000,
             min_phlo_price: (1).into(),
+            max_phlo_limit: consensus_parameters.max_phlo_limit,
             deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled
@@ -1140,6 +1145,7 @@ impl TestNode {
             finalized_bond_cache,
             casper_shard_conf: finalization.shard_conf.clone(),
             approved_block: genesis.clone(),
+            effective_anchor: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
             finalizer: casper::rust::engine::multi_parent_casper::Finalizer::start(finalization),
             heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),

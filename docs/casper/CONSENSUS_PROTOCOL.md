@@ -103,6 +103,7 @@ Proposals are triggered by the [heartbeat proposer](#8-liveness-heartbeat-propos
    - Limited by `max_number_of_parents` and `max_parent_depth`
 4. **Compute LCA** (Lowest Common Ancestor) of selected parents — an input to [fork-choice scoring](#5-fork-choice-lmd-ghost); the [merge scope](#6-state-merging-multi-parent) is bounded by the finalized floor, not the LCA
 5. **Build justifications**: Each bonded validator's latest message hash
+   - A latest message that is a stored equivocation is not cited. The snapshot cites the sender's block at the same sequence number that is not an equivocation, which this node validated or holds as settled history. A stored equivocation's contents are unjudged, and a node that received an invalid one first refused it, so it can never add a block that cites it
 6. **Compute deploy scope**: BFS traversal within `deploy_lifespan` window to find all deploys already included in ancestor blocks
 
 **Why snapshot first?** The snapshot is immutable once created. This prevents race conditions — the proposal works against a consistent view of the DAG even as new blocks arrive concurrently.
@@ -226,29 +227,39 @@ The node limits these checks. It runs at most 2 checks at a time, and one at a t
 - Sender has stake in the main parent? Otherwise `InvalidSender`
 - **Equivocation**: a different held block has the same sender and sequence number. The node stores the block invalid with its sibling and judges nothing else of it. See [Equivocation](#equivocation)
 
-### Step 6: Parents Held as Equivocations
-- An equivocation is stored without a judgement of its contents. Before a block built on one is judged, the node judges that parent's contents with steps 7 to 10
-- Invalid parent contents make the block `InvalidParents`. A parent that the node cannot judge yet defers the block
-- The node keeps a final verdict, so it judges a parent once for all blocks built on it
+### Step 6: Phlo Limit
+- Every user deploy declares a phlo limit at or below the chain's `max-phlo-limit`? Otherwise `ExcessivePhloLimit`
+- This comes before every step that replays a deploy, so the cap bounds the replay that step 9 runs
 
-### Step 7: Block Summary
+### Step 7: Dependencies Held as Equivocations
+- An equivocation is stored without a judgement of its contents. Before a block that builds on one or cites one is judged, the node judges that equivocation's contents with steps 6 to 11
+- Invalid contents make the block `InvalidParents` for a parent and `InvalidJustifications` for a justification. An equivocation that the node cannot judge yet defers the block
+- The node keeps a final verdict, so it judges an equivocation once for all blocks that depend on it
+
+### Step 8: Block Summary
 - Recompute the block hash again
 - Structural consistency: block number progression, justification format
 
-### Step 8: Checkpoint Validation (Deploy Replay)
+### Step 9: Checkpoint Validation (Deploy Replay)
 - **Replay every deploy** via `ReplayRSpace` (replay runtime, not play runtime)
 - Verify computed post-state hash matches the block's claimed hash
 - This is the most expensive step — it proves the proposer executed correctly
 
-### Step 9: Neglected Equivocation
+### Step 10: Neglected Equivocation
 - The block's justifications include both blocks of a held pair, and the sender of the pair is bonded in the block's post-state: `NeglectedEquivocation`, block is invalid
 
-### Step 10: Deploy & State Validation
+### Step 11: Deploy & State Validation
 - Deploys are within scope, not duplicated
   - The duplicate check scans parent-scope ancestors inside the `deploy_lifespan` window, without a validity qualifier: a signature carried only by an invalid ancestor is still a repeat
   - The scan starts at `min(tip_start, max(oldest_valid_after + 1, floor - deploy_lifespan + 2))`, where `tip_start` is `max_parent_height + 1 - deploy_lifespan` and `oldest_valid_after` is the lowest `valid_after_block_number` in the block. The expiry check reads the floor clock, so a live deploy can have a copy below the tip window. The retry exemption and the retry gate read the same start, and so does the proposer's retry gate
   - A rejected-in-scope signature is exempt when its retry gate is open (see the glossary); a closed gate returns `PrematureDeployRetry`
   - The repeat-deploy signature index (see the glossary) may skip the scan for a signature with no in-window carrier when the scan starts at or above the index watermark and the recorded prune cutoff; an index hit or read failure falls back to scope-verified scanning, so index-served and scan-served verdicts are equal
+- At most one deploy per name seed (see the glossary): the block carries no two deploys with one seed, and no deploy whose seed a deploy with another signature in its ancestry already used. Either is `InvalidRepeatDeploy`
+  - A carrier whose latest disposition in the block's parent scope is a merge rejection holds no seed (`FloorContext::rejected_sigs`, the set the repeat-deploy exemption reads; no floor, no exemption). The proposer applies the same set, so when one merge rejects every deploy of a seed, one of them can still land
+  - Deploys share a seed only if they share a valid-after block, so the scan starts at `max(lowest_valid_after + 1, floor - deploy_lifespan + 2)`; a deploy below that start fails the expiry check
+  - The seed carrier index (see the glossary) skips the scan for a seed no other signature carries, under the same watermark and prune-cutoff rule as the signature index
+  - A merge keeps one deploy per seed: the deploy the merge base already holds, otherwise the smallest signature; a chain carrying another is rejected as collateral
+  - Admission refuses a deploy whose seed another signature holds in this node's pool, rejected buffer, or seed carrier index (`SeedReuse`, HTTP 409 `seed_reuse`). This is node-local: two nodes can each admit one deploy of a seed, and the rules above decide
 - Phlogiston price meets minimum
 - Invalid block tracking applied
 
@@ -564,7 +575,7 @@ Operator config files are minimal overrides — HOCON's fallback semantics merge
 
 **Genesis-locked parameters** (cannot change after network creation):
 - `fault-tolerance-threshold` and `synchrony-constraint-threshold` — written into the genesis block's on-chain state
-- `max-parent-depth`, `deploy-lifespan`, `min-phlo-price` — baked into the PoS contract and exposed via its `getConsensusParameters` getter. Validity rules (parent spread, expiry, repeat-deploy, phlo floor) fork on these, so every node reads them back at casper construction and adopts the on-chain values unconditionally over local configuration; a chain whose values are absent or out of range fails startup rather than falling back. Immutable until an on-chain parameter-upgrade mechanism exists.
+- `max-parent-depth`, `deploy-lifespan`, `min-phlo-price`, `genesis-block-data.epoch-length`, `max-phlo-limit` — baked into the PoS contract and exposed via its `getConsensusParameters` getter. Validity rules (parent spread, expiry, repeat-deploy, phlo floor, epoch judgements, phlo cap) fork on these, so every node reads them back at casper construction and adopts the on-chain values unconditionally over local configuration; a chain whose values are absent or out of range fails startup rather than falling back. Immutable until an on-chain parameter-upgrade mechanism exists.
 - `native-token-name`, `native-token-symbol`, `native-token-decimals` — baked into the `TokenMetadata` Rholang contract at `rho:system:tokenMetadata` with nonce `i64::MAX`, making them immutable via the registry's `insertSigned` protocol
 
 Changing any of these requires a new genesis (new network).

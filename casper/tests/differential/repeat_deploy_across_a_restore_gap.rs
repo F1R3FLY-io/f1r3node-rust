@@ -142,7 +142,7 @@ async fn a_restored_node_defers_a_repeat_deploy_rather_than_admitting_it() {
                     .dag
                     .carrier_index
                     .read()
-                    .record_once(&sig, 9, carrier.block_hash.to_vec())
+                    .record_once(&sig, &sig, 9, carrier.block_hash.to_vec())
                     .unwrap();
             }
             snapshot

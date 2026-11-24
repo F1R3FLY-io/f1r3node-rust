@@ -47,6 +47,30 @@ acceptance:
   - "Document HTTP 400, 415, and 422 in native and static OpenAPI and the API reference."
 ```
 
+### TASK-012-33: Bound retained deploy resources
+
+```yaml
+id: TASK-012-33
+epic_id: EPIC-012
+status: in_progress
+claimed_by: semyon-dev
+claimed_at: 2026-11-16T19:54:28Z
+branch: fix/710-bounded-deploy-admission
+pr_base_branch: dev
+pull_request: 789
+acceptance:
+  - "The deploy store keeps record and byte totals of every stored record and checks the limits under the lock of the insert."
+  - "Only a deletion that removed the record, or a quarantine move, releases its charge."
+  - "Concurrent submissions for the last free slot admit exactly one."
+  - "Admission opens the lifecycle row before the pool insert; a never-included deploy settles Expired without a local proposal."
+  - "An independent HTTP and gRPC submission limit applies before decoding and survives cancellation until blocking work completes."
+  - "The API refuses a validity height above the next block number plus max-parent-depth."
+  - "API validation uses the same next block number as the proposer."
+  - "Focused tests, build, formatting, and Clippy pass on the final revision."
+notes:
+  - "Default calibration and joint queue validation with #990 remain separate steps."
+```
+
 ### TASK-031-1: Complete unsigned 256-bit token amount support
 
 ```yaml

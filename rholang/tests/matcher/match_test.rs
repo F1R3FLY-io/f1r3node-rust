@@ -23,6 +23,7 @@ use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::*;
+use prost::Message;
 use rholang::rust::interpreter::matcher::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use rholang::rust::interpreter::util::{prepend_connective, prepend_expr};
 
@@ -34,7 +35,8 @@ fn assert_spatial_match(
     // println!("\ntest target: {:?}", target);
     // println!("\ntest pattern: {:?}", pattern);
 
-    let mut spatial_matcher = SpatialMatcherContext::new();
+    let mut spatial_matcher =
+        SpatialMatcherContext::new(target.encoded_len() + pattern.encoded_len());
     let spatial_match_result = spatial_matcher.spatial_match(target, pattern);
     let result = spatial_matcher.free_map;
 
@@ -302,6 +304,47 @@ fn matching_extras_with_free_variable_should_work() {
         0,
         prepend_expr(new_gint_par(9, Vec::new(), false), new_gint_expr(7), 0),
     )]);
+    assert!(assert_spatial_match(target, pattern, Some(expected_captures)).is_ok());
+}
+
+#[test]
+fn a_variable_capturing_several_par_fields_keeps_the_earlier_captures() {
+    let send_and_expr = prepend_expr(
+        new_send_par(
+            new_gstring_par("a".to_string(), Vec::new(), false),
+            vec![new_gint_par(1, Vec::new(), false)],
+            false,
+            Vec::new(),
+            false,
+            Vec::new(),
+            false,
+        ),
+        new_gint_expr(7),
+        0,
+    );
+    let target: Par = new_elist_par(
+        vec![new_gint_par(5, Vec::new(), false), send_and_expr.clone()],
+        Vec::new(),
+        false,
+        None,
+        Vec::new(),
+        false,
+    );
+
+    let pattern: Par = new_elist_par(
+        vec![
+            new_freevar_par(0, Vec::new()),
+            new_freevar_par(1, Vec::new()),
+        ],
+        Vec::new(),
+        true,
+        None,
+        Vec::new(),
+        true,
+    );
+
+    let expected_captures =
+        BTreeMap::from([(0, new_gint_par(5, Vec::new(), false)), (1, send_and_expr)]);
     assert!(assert_spatial_match(target, pattern, Some(expected_captures)).is_ok());
 }
 

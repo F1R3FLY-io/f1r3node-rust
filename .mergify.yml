@@ -156,6 +156,7 @@ queue_rules:
       - check-success=Test (comm)
       - check-success=Test (crypto)
       - check-success=Test (graphz)
+      - check-success=Test (deploy-queue)
       - check-success=Test (models)
       - check-success=Test (rholang)
       - check-success=Test (node)
@@ -195,6 +196,7 @@ queue_rules:
       - check-success=Test (comm)
       - check-success=Test (crypto)
       - check-success=Test (graphz)
+      - check-success=Test (deploy-queue)
       - check-success=Test (models)
       - check-success=Test (rholang)
       - check-success=Test (node)
@@ -233,6 +235,7 @@ queue_rules:
       - check-success=Test (comm)
       - check-success=Test (crypto)
       - check-success=Test (graphz)
+      - check-success=Test (deploy-queue)
       - check-success=Test (models)
       - check-success=Test (rholang)
       - check-success=Test (node)
@@ -266,6 +269,7 @@ queue_rules:
       - check-success=Test (comm)
       - check-success=Test (crypto)
       - check-success=Test (graphz)
+      - check-success=Test (deploy-queue)
       - check-success=Test (models)
       - check-success=Test (rholang)
       - check-success=Test (node)
@@ -307,6 +311,7 @@ queue_rules:
       - check-success=Test (comm)
       - check-success=Test (crypto)
       - check-success=Test (graphz)
+      - check-success=Test (deploy-queue)
       - check-success=Test (models)
       - check-success=Test (rholang)
       - check-success=Test (node)
@@ -341,6 +346,7 @@ queue_rules:
       - check-success=Test (comm)
       - check-success=Test (crypto)
       - check-success=Test (graphz)
+      - check-success=Test (deploy-queue)
       - check-success=Test (models)
       - check-success=Test (rholang)
       - check-success=Test (node)
@@ -396,10 +402,12 @@ queue_rules:
       - check-success=cargo-deny
       - check-success=Commit Policy
       - check-success=Promotion Source
+      - check-success=CI Parity
       - check-success=Test (block-storage)
       - check-success=Test (comm)
       - check-success=Test (crypto)
       - check-success=Test (graphz)
+      - check-success=Test (deploy-queue)
       - check-success=Test (models)
       - check-success=Test (rholang)
       - check-success=Test (node)
@@ -423,10 +431,12 @@ queue_rules:
       - check-success=cargo-deny
       - check-success=Commit Policy
       - check-success=Promotion Source
+      - check-success=CI Parity
       - check-success=Test (block-storage)
       - check-success=Test (comm)
       - check-success=Test (crypto)
       - check-success=Test (graphz)
+      - check-success=Test (deploy-queue)
       - check-success=Test (models)
       - check-success=Test (rholang)
       - check-success=Test (node)

@@ -5,6 +5,10 @@ use shared::rust::store::key_value_store::KvStoreError;
 #[derive(Debug, Clone, PartialEq)]
 pub enum RSpaceError {
     InterpreterError(String),
+    OutOfPhlogistons,
+    NestingLimitExceeded {
+        limit: usize,
+    },
     HistoryError(HistoryError),
     RadixTreeError(RadixTreeError),
     KvStoreError(KvStoreError),
@@ -25,6 +29,10 @@ impl std::fmt::Display for RSpaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             RSpaceError::InterpreterError(err) => write!(f, "Interpreter Error: {}", err),
+            RSpaceError::OutOfPhlogistons => write!(f, "Computation ran out of phlogistons."),
+            RSpaceError::NestingLimitExceeded { limit } => {
+                write!(f, "Nesting is deeper than the limit of {}.", limit)
+            }
             RSpaceError::HistoryError(err) => write!(f, "History Error: {}", err),
             RSpaceError::RadixTreeError(err) => write!(f, "Radix Tree Error: {}", err),
             RSpaceError::KvStoreError(err) => write!(f, "Key Value Store Error: {}", err),
@@ -123,6 +131,17 @@ pub enum RadixTreeError {
     PrefixError(String),
     CollisionError(String),
     SerializationError(String),
+    /// A trie node whose hash is referenced by an in-walk `NodePtr` is not
+    /// held in the underlying store. Carried typed so callers that walk from
+    /// a retention-pruned root (block-report replay, `exploratory-deploy`,
+    /// `get-data-at-par`, merge of a sibling below the state floor) can
+    /// surface a precise "pruned subtree" answer to their own callers
+    /// instead of panicking. Before issue #923 Option D this path used an
+    /// `assert!` in `radix_tree.rs::load_node_arc`; the assert crashed the
+    /// node when a sweep raced a new write.
+    MissingNode {
+        ptr: crate::rspace::hashing::blake2b256_hash::Blake2b256Hash,
+    },
 }
 
 impl std::fmt::Display for RadixTreeError {
@@ -133,6 +152,9 @@ impl std::fmt::Display for RadixTreeError {
             RadixTreeError::PrefixError(err) => write!(f, "Prefix Error: {}", err),
             RadixTreeError::CollisionError(err) => write!(f, "Collision Error: {}", err),
             RadixTreeError::SerializationError(err) => write!(f, "Serialization Error: {}", err),
+            RadixTreeError::MissingNode { ptr } => {
+                write!(f, "Missing trie node: ptr={}", hex::encode(ptr.bytes()))
+            }
         }
     }
 }

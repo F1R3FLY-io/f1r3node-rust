@@ -105,7 +105,7 @@ fn deploy_is_block_expired(
     latest_block_number: i64,
     deploy_lifespan: i64,
 ) -> Result<bool, CasperError> {
-    Ok(!crate::rust::util::deploy_window::is_open(
+    Ok(!models::rust::deploy_window::is_open(
         valid_after_block_number,
         latest_block_number,
         deploy_lifespan,
@@ -184,6 +184,105 @@ impl std::fmt::Display for BlockNotFoundError {
 }
 
 impl std::error::Error for BlockNotFoundError {}
+
+/// The block was once held by this node but has been deleted by the
+/// retention sweep. The DAG still carries its metadata (hash, parents,
+/// height) so we can report the height at which it lived, and the
+/// current prune floor so consumers can decide whether to ask an
+/// archive node. Distinct from [`BlockNotFoundError`], which means
+/// "we have no record of this hash at all" — a joiner that hasn't
+/// caught up yet, or an outright invalid hash. #923 Option D callers
+/// use this split so a client walking `/reporting/trace` can tell
+/// deleted history from a gap and route accordingly.
+#[derive(Debug)]
+pub struct BlockPrunedError {
+    pub hash: String,
+    /// Height of the block when it was retained. Known from the DAG
+    /// metadata index, which is not swept.
+    pub block_height: i64,
+    /// The node's current body-prune floor: the highest height for
+    /// which block bodies have been deleted. Callers can request the
+    /// same hash from an archive node with retention above this.
+    pub prune_floor: i64,
+}
+
+impl std::fmt::Display for BlockPrunedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Block {} (height {}) is below this node's prune floor (height {}). \
+             Consult an archive node to retrieve it.",
+            self.hash, self.block_height, self.prune_floor
+        )
+    }
+}
+
+impl std::error::Error for BlockPrunedError {}
+
+/// The DAG metadata index names this hash but its body is not in the
+/// block store, and the retention sweep has NOT yet advanced past this
+/// height (`block_height > prune_floor`). The body is transiently
+/// unavailable — an LFS-restore backfill horizon, a pending-body race,
+/// or (rarely) a storage inconsistency. Distinct from
+/// [`BlockPrunedError`], which the server classifies only when the
+/// sweep has reached the height and retry on this node cannot
+/// succeed. Mapped to HTTP 503 by the web layer so clients retry.
+/// See #1087.
+#[derive(Debug)]
+pub struct BlockUnavailableError {
+    pub hash: String,
+    pub block_height: i64,
+    pub prune_floor: i64,
+}
+
+impl std::fmt::Display for BlockUnavailableError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Block {} (height {}) is known to this node but its body is \
+             not currently available (prune floor is at height {}). \
+             Retry later; this node has not pruned past this height.",
+            self.hash, self.block_height, self.prune_floor
+        )
+    }
+}
+
+impl std::error::Error for BlockUnavailableError {}
+
+/// One hash that `topo_sort` returned at a given height but whose block
+/// body was no longer available in the block store when
+/// [`BlockAPI::get_blocks_by_heights`] walked the range. See #1087.
+#[derive(Debug, Clone)]
+pub struct MissingBlockEntry {
+    pub hash: BlockHash,
+    pub block_height: i64,
+}
+
+/// Envelope for [`BlockAPI::get_blocks_by_heights`] /
+/// [`BlockAPI::get_blocks_by_heights_full`]. `served` is the flat list
+/// of blocks whose bodies the node still holds, in the same order as
+/// before #1087.
+///
+/// `pruned` and `unavailable` split the "missing body" cases by the
+/// same threshold the single-hash path uses:
+/// - `pruned`: `block_height <= prune_floor`. The retention sweep has
+///   advanced past this height — the gap is permanent on this node.
+///   Mirrors [`BlockPrunedError`] semantics.
+/// - `unavailable`: `block_height > prune_floor`. The DAG names the
+///   hash but the body is not currently in the store and the sweep
+///   has not reached this height. Mirrors [`BlockUnavailableError`]
+///   semantics; retry may succeed.
+///
+/// `prune_floor` is the effective-anchor snapshot taken once at the
+/// start of the walk; the same value applies to every entry in both
+/// buckets.
+#[derive(Debug, Clone)]
+pub struct BlocksByHeightsResponse<T> {
+    pub served: Vec<T>,
+    pub pruned: Vec<MissingBlockEntry>,
+    pub unavailable: Vec<MissingBlockEntry>,
+    pub prune_floor: i64,
+}
 
 #[derive(Debug)]
 pub struct InvalidHashError(pub String);
@@ -380,6 +479,37 @@ impl std::fmt::Display for DeployValidationError {
 }
 
 impl std::error::Error for DeployValidationError {}
+
+/// A deploy whose block window or expiration timestamp has closed: no block
+/// can include it any more.
+#[derive(Debug)]
+pub struct DeployExpiredError {
+    pub message: String,
+}
+
+impl std::fmt::Display for DeployExpiredError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for DeployExpiredError {}
+
+/// The node's own validator is not bonded, so it cannot propose a block for
+/// the deploy now. It may be bonded later.
+#[derive(Debug)]
+pub struct ValidatorNotBondedError;
+
+impl std::fmt::Display for ValidatorNotBondedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "validator_not_bonded: Deploy was rejected because node's validator is not bonded."
+        )
+    }
+}
+
+impl std::error::Error for ValidatorNotBondedError {}
 
 #[derive(Debug)]
 pub struct ProposeReadOnlyError;
@@ -713,26 +843,23 @@ impl BlockAPI {
                 } else {
                     Ok(())
                 }
-            })
-            .and_then(|_| {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                if d.data.is_expired_at(now) {
-                    Err(DeployValidationError {
-                        message: format!(
-                            "Deploy has expired: expirationTimestamp={:?} is in the past.",
-                            d.data.expiration_timestamp
-                        ),
-                    })
-                } else {
-                    Ok(())
-                }
             });
 
         // Return early if validation fails
         validation_result.map_err(|e| eyre::Report::new(e))?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| eyre::eyre!("system clock is before the Unix epoch: {}", e))?
+            .as_millis() as i64;
+        if d.data.is_expired_at(now) {
+            return Err(eyre::Report::new(DeployExpiredError {
+                message: format!(
+                    "deploy_expired: expirationTimestamp={:?} is in the past.",
+                    d.data.expiration_timestamp
+                ),
+            }));
+        }
 
         let log_error_message =
             "Error: Could not deploy, casper instance was not available yet.".to_string();
@@ -759,34 +886,33 @@ impl BlockAPI {
             }
             let dag = casper.block_dag().await?;
             if !casper.is_local_validator_bonded() {
-                return Err(eyre::Report::new(DeployValidationError {
-                    message: "Deploy was rejected because node's validator is not bonded."
-                        .to_string(),
-                }));
+                return Err(eyre::Report::new(ValidatorNotBondedError));
             }
-            // A deploy admitted now can only ever land in a block that doesn't
-            // exist yet — the next one, at `latest_block_number + 1` — never
-            // in the current tip, which is already built. block_creator.rs's
-            // own expiry filter checks against exactly that next block's
-            // number (`earliest_block_number = block_number - deploy_lifespan`
-            // for the block being assembled). Checking admission against
-            // `latest_block_number` instead of `latest_block_number + 1` is
-            // off by one: a deploy admitted "just inside" the window at the
-            // current tip is then found expired by the very next block's
-            // filter, so it can never actually be included.
-            let next_block_number = dag.latest_block_number() + 1;
+            // `latest_block_number` is the highest stored block number plus
+            // one, which is the number of the next block that block_creator.rs
+            // assembles and checks with its own expiry filter.
+            let next_block_number = dag.latest_block_number();
             let deploy_lifespan = casper.casper_shard_conf().deploy_lifespan;
             if deploy_is_block_expired(
                 d.data.valid_after_block_number,
                 next_block_number,
                 deploy_lifespan,
             )? {
-                return Err(eyre::Report::new(DeployValidationError {
+                return Err(eyre::Report::new(DeployExpiredError {
                     message: format!(
-                        "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
+                        "deploy_expired: validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
                         d.data.valid_after_block_number, next_block_number, deploy_lifespan
                     ),
                 }));
+            }
+            if models::rust::deploy_window::is_too_far_ahead(
+                d.data.valid_after_block_number,
+                next_block_number,
+                casper.casper_shard_conf().max_parent_depth,
+            ) {
+                return Err(eyre::Report::new(
+                    crate::rust::casper::DeployError::InvalidFreshness,
+                ));
             }
             casper_deploy(casper, d, trigger_propose, background_tasks).await
         } else {
@@ -1201,7 +1327,7 @@ impl BlockAPI {
         start_block_number: i64,
         end_block_number: i64,
         max_blocks_limit: i32,
-    ) -> ApiErr<Vec<LightBlockInfo>> {
+    ) -> ApiErr<BlocksByHeightsResponse<LightBlockInfo>> {
         Self::get_blocks_by_heights_with_constructor(
             engine_cell,
             start_block_number,
@@ -1217,7 +1343,7 @@ impl BlockAPI {
         start_block_number: i64,
         end_block_number: i64,
         max_blocks_limit: i32,
-    ) -> ApiErr<Vec<BlockInfo>> {
+    ) -> ApiErr<BlocksByHeightsResponse<BlockInfo>> {
         Self::get_blocks_by_heights_with_constructor(
             engine_cell,
             start_block_number,
@@ -1234,7 +1360,7 @@ impl BlockAPI {
         end_block_number: i64,
         max_blocks_limit: i32,
         constructor: fn(&BlockMessage, f32, bool) -> A,
-    ) -> ApiErr<Vec<A>> {
+    ) -> ApiErr<BlocksByHeightsResponse<A>> {
         let error_message = format!(
             "Could not retrieve blocks from {} to {}",
             start_block_number, end_block_number
@@ -1245,36 +1371,94 @@ impl BlockAPI {
             start_block_number: i64,
             end_block_number: i64,
             constructor: fn(&BlockMessage, f32, bool) -> A,
-        ) -> ApiErr<Vec<A>> {
+        ) -> ApiErr<BlocksByHeightsResponse<A>> {
             let dag = casper.block_dag().await?;
 
             let topo_sort_dag = dag.topo_sort(start_block_number, Some(end_block_number))?;
 
-            let mut block_infos_at_height_acc = Vec::new();
-            for block_hashes_at_height in topo_sort_dag {
-                // A height window can name blocks this node does not hold
-                // (an LFS restore horizon); serve the held ones.
-                let mut blocks_at_height: Vec<BlockMessage> =
-                    Vec::with_capacity(block_hashes_at_height.len());
-                for block_hash in block_hashes_at_height.iter() {
-                    match casper.block_store().get(block_hash)? {
-                        Some(block) => blocks_at_height.push(block),
-                        None => tracing::debug!(
-                            "get-blocks-by-heights skipping unheld block {}",
-                            PrettyPrinter::build_string_bytes(block_hash)
-                        ),
-                    }
-                }
+            let hashes: Vec<BlockHash> = topo_sort_dag.into_iter().flatten().collect();
+            // Reuse PR #1113's single-snapshot metadata read across both
+            // served-block construction and missing-body classification.
+            // `lookup_many` reads every hash's metadata in one pass, so
+            // the response cannot straddle a finalization — the same
+            // consistency guarantee `held_block_infos` gives for the
+            // held path extends to the pruned / unavailable split.
+            let metadata = dag.lookup_many(&hashes)?;
 
-                for block in blocks_at_height {
-                    let block_info =
-                        BlockAPI::get_block_info_with_dag(casper, &dag, &block, constructor)
-                            .await?;
-                    block_infos_at_height_acc.push(block_info);
+            let mut held: Vec<BlockMessage> = Vec::new();
+            let mut held_metadata: Vec<Option<BlockMetadata>> = Vec::new();
+            let mut missing: Vec<MissingBlockEntry> = Vec::new();
+            for (hash, meta) in hashes.iter().zip(metadata.iter()) {
+                match casper.block_store().get(hash)? {
+                    Some(block) => {
+                        held.push(block);
+                        held_metadata.push(meta.clone());
+                    }
+                    None => match meta {
+                        Some(m) => missing.push(MissingBlockEntry {
+                            hash: hash.clone(),
+                            block_height: m.block_number,
+                        }),
+                        None => tracing::debug!(
+                            "get-blocks-by-heights skipping hash {} with no DAG metadata",
+                            PrettyPrinter::build_string_bytes(hash)
+                        ),
+                    },
                 }
             }
 
-            Ok(block_infos_at_height_acc)
+            // Read the retention floor *after* the walk. GC raises the
+            // anchor with fetch_max before Delete removes any body, so a
+            // body we observed missing must have had its height already
+            // passed by the anchor at the moment the delete happened.
+            // A post-walk load therefore cannot miss a GC advance that
+            // caused one of our observed misses, and a height > floor
+            // entry is genuinely not yet reached by the sweep rather
+            // than a race window artifact. See PR #1097 review.
+            let prune_floor = casper
+                .effective_anchor_handle()
+                .load(std::sync::atomic::Ordering::Acquire);
+            let (pruned, unavailable): (Vec<_>, Vec<_>) = missing
+                .into_iter()
+                .partition(|entry| entry.block_height <= prune_floor);
+
+            for entry in &pruned {
+                tracing::debug!(
+                    "get-blocks-by-heights pruned block {} at height {} (prune_floor={})",
+                    PrettyPrinter::build_string_bytes(&entry.hash),
+                    entry.block_height,
+                    prune_floor
+                );
+            }
+            for entry in &unavailable {
+                tracing::debug!(
+                    "get-blocks-by-heights unavailable block {} at height {} (prune_floor={})",
+                    PrettyPrinter::build_string_bytes(&entry.hash),
+                    entry.block_height,
+                    prune_floor
+                );
+            }
+
+            let mut served = Vec::with_capacity(held.len());
+            for (block, meta) in held.iter().zip(&held_metadata) {
+                served.push(
+                    BlockAPI::block_info_from_metadata(
+                        casper,
+                        &dag,
+                        block,
+                        meta.as_ref(),
+                        constructor,
+                    )
+                    .await?,
+                );
+            }
+
+            Ok(BlocksByHeightsResponse {
+                served,
+                pruned,
+                unavailable,
+                prune_floor,
+            })
         }
 
         let effective_end_block_number =
@@ -1411,31 +1595,17 @@ impl BlockAPI {
         let latest_block_number = dag.latest_block_number();
         let topo_sort = dag.topo_sort(latest_block_number - effective_depth as i64, None)?;
 
-        let mut block_infos_acc = Vec::new();
-        for block_hashes_at_height in topo_sort {
-            for block_hash in block_hashes_at_height {
-                // A height window can name blocks this node does not hold
-                // (an LFS restore horizon); serve the held ones.
-                let Some(block) = casper.block_store().get(&block_hash)? else {
-                    tracing::debug!(
-                        "get-blocks skipping unheld block {}",
-                        PrettyPrinter::build_string_bytes(&block_hash)
-                    );
-                    continue;
-                };
-                let block_info = BlockAPI::get_block_info_with_dag(
-                    casper.as_ref(),
-                    &dag,
-                    &block,
-                    Self::construct_light_block_info,
-                )
-                .await?;
-                block_infos_acc.push(block_info);
-            }
-        }
-
-        block_infos_acc.reverse();
-        Ok(block_infos_acc)
+        let hashes: Vec<BlockHash> = topo_sort.into_iter().flatten().collect();
+        let mut block_infos = BlockAPI::held_block_infos(
+            casper.as_ref(),
+            &dag,
+            &hashes,
+            Self::construct_light_block_info,
+            "get-blocks",
+        )
+        .await?;
+        block_infos.reverse();
+        Ok(block_infos)
     }
 
     /// Like `get_blocks` but returns full `BlockInfo` (with deploys).
@@ -1457,31 +1627,17 @@ impl BlockAPI {
         let latest_block_number = dag.latest_block_number();
         let topo_sort = dag.topo_sort(latest_block_number - effective_depth as i64, None)?;
 
-        let mut block_infos_acc = Vec::new();
-        for block_hashes_at_height in topo_sort {
-            for block_hash in block_hashes_at_height {
-                // A height window can name blocks this node does not hold
-                // (an LFS restore horizon); serve the held ones.
-                let Some(block) = casper.block_store().get(&block_hash)? else {
-                    tracing::debug!(
-                        "get-blocks-full skipping unheld block {}",
-                        PrettyPrinter::build_string_bytes(&block_hash)
-                    );
-                    continue;
-                };
-                let block_info = BlockAPI::get_block_info_with_dag(
-                    casper.as_ref(),
-                    &dag,
-                    &block,
-                    Self::construct_block_info,
-                )
-                .await?;
-                block_infos_acc.push(block_info);
-            }
-        }
-
-        block_infos_acc.reverse();
-        Ok(block_infos_acc)
+        let hashes: Vec<BlockHash> = topo_sort.into_iter().flatten().collect();
+        let mut block_infos = BlockAPI::held_block_infos(
+            casper.as_ref(),
+            &dag,
+            &hashes,
+            Self::construct_block_info,
+            "get-blocks-full",
+        )
+        .await?;
+        block_infos.reverse();
+        Ok(block_infos)
     }
 
     pub async fn show_main_chain(
@@ -1515,19 +1671,13 @@ impl BlockAPI {
                 depth,
             )?;
 
-            let mut block_infos = Vec::new();
-            for block in main_chain {
-                let block_info = BlockAPI::get_block_info_with_dag(
-                    casper,
-                    &dag_mut,
-                    &block,
-                    BlockAPI::construct_light_block_info,
-                )
-                .await?;
-                block_infos.push(block_info);
-            }
-
-            Ok(block_infos)
+            BlockAPI::block_infos_with_dag(
+                casper,
+                &dag_mut,
+                &main_chain,
+                BlockAPI::construct_light_block_info,
+            )
+            .await
         }
 
         let effective_depth = clamp_depth(depth, max_depth_limit, "show-main-chain");
@@ -1610,39 +1760,73 @@ impl BlockAPI {
                 )))
             })?;
 
-            let get_block = async {
-                let block_hash = prost::bytes::Bytes::from(hash_byte_string);
-                casper
-                    .block_store()
-                    .get(&block_hash)
-                    .map_err(|e| eyre::eyre!(e.to_string()))
-            };
-
-            let find_block = async {
+            // Resolve to the full 32-byte block hash up front, then use
+            // that same value for both the body lookup and (on miss) the
+            // DAG metadata classification. Reusing the resolved hash
+            // keeps a prefix query like `/block/aabbcc` and the matching
+            // full hash on the same classification path — without it a
+            // 6-char prefix returned 404 for a pruned block because the
+            // metadata index is keyed by full hash. See PR #1097 review.
+            let resolved_hash: Option<BlockHash> = if hash.len() == 64 {
+                Some(prost::bytes::Bytes::from(hash_byte_string))
+            } else {
                 let dag = casper
                     .block_dag()
                     .await
                     .map_err(|e| eyre::eyre!(e.to_string()))?;
-                match dag.find(hash).map_err(|e| eyre::eyre!(e.to_string()))? {
-                    Some(block_hash) => casper
-                        .block_store()
-                        .get(&block_hash)
-                        .map_err(|e| eyre::eyre!(e.to_string())),
-                    None => Ok(None),
+                dag.find(hash).map_err(|e| eyre::eyre!(e.to_string()))?
+            };
+
+            let block_opt = match resolved_hash.as_ref() {
+                Some(bytes) => casper
+                    .block_store()
+                    .get(bytes)
+                    .map_err(|e| eyre::eyre!(e.to_string()))?,
+                None => None,
+            };
+
+            let block = match block_opt {
+                Some(block) => block,
+                None => {
+                    // Body is missing. Split "never seen"
+                    // (BlockNotFoundError) from the "DAG metadata present
+                    // but body absent" cases, which the retention sweep's
+                    // floor further splits into pruned-permanent (height
+                    // <= floor) vs transiently-unavailable (height >
+                    // floor). The DAG metadata index is not swept by
+                    // #1010 / #1045, so metadata presence tells us we
+                    // knew the block once.
+                    let dag = casper.block_dag().await?;
+                    let prune_floor = casper
+                        .effective_anchor_handle()
+                        .load(std::sync::atomic::Ordering::Acquire);
+                    return Err(match resolved_hash {
+                        Some(resolved) => {
+                            let full_hash = hex::encode(&resolved);
+                            match dag.lookup(&resolved)? {
+                                Some(metadata) if metadata.block_number <= prune_floor => {
+                                    eyre::Report::new(BlockPrunedError {
+                                        hash: full_hash,
+                                        block_height: metadata.block_number,
+                                        prune_floor,
+                                    })
+                                }
+                                Some(metadata) => eyre::Report::new(BlockUnavailableError {
+                                    hash: full_hash,
+                                    block_height: metadata.block_number,
+                                    prune_floor,
+                                }),
+                                None => eyre::Report::new(BlockNotFoundError {
+                                    hash: hash.to_string(),
+                                }),
+                            }
+                        }
+                        None => eyre::Report::new(BlockNotFoundError {
+                            hash: hash.to_string(),
+                        }),
+                    });
                 }
             };
-
-            let block_f = if hash.len() == 64 {
-                get_block.await
-            } else {
-                find_block.await
-            };
-
-            let block = block_f?.ok_or_else(|| {
-                eyre::Report::new(BlockNotFoundError {
-                    hash: hash.to_string(),
-                })
-            })?;
 
             let dag = casper.block_dag().await?;
             if dag.contains(&block.block_hash)? {
@@ -1671,16 +1855,69 @@ impl BlockAPI {
         block: &BlockMessage,
         constructor: fn(&BlockMessage, f32, bool) -> A,
     ) -> ApiErr<A> {
-        let is_finalized = dag.is_finalized(&block.block_hash)?;
+        let metadata = dag.lookup(&block.block_hash)?;
+        Self::block_info_from_metadata(casper, dag, block, metadata.as_ref(), constructor).await
+    }
 
-        let normalized_fault_tolerance = if is_finalized {
-            if let Some(meta) = dag.lookup(&block.block_hash)? {
-                meta.fault_tolerance_value
-            } else {
-                Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?
+    /// Infos for the held blocks among `hashes`, in order, with every block's
+    /// metadata read in one `lookup_many`: a response never mixes state from
+    /// before and after a finalization. A height window can name blocks this
+    /// node does not hold (an LFS restore horizon); those are skipped.
+    async fn held_block_infos<M: MultiParentCasper + ?Sized, A: Sized + Send>(
+        casper: &M,
+        dag: &KeyValueDagRepresentation,
+        hashes: &[BlockHash],
+        constructor: fn(&BlockMessage, f32, bool) -> A,
+        operation: &str,
+    ) -> ApiErr<Vec<A>> {
+        let mut held = Vec::with_capacity(hashes.len());
+        for block_hash in hashes {
+            match casper.block_store().get(block_hash)? {
+                Some(block) => held.push(block),
+                None => tracing::debug!(
+                    "{operation} skipping unheld block {}",
+                    PrettyPrinter::build_string_bytes(block_hash)
+                ),
             }
-        } else {
-            Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?
+        }
+        Self::block_infos_with_dag(casper, dag, &held, constructor).await
+    }
+
+    /// Infos for `blocks`, in order, with every block's metadata read in one
+    /// `lookup_many`.
+    async fn block_infos_with_dag<M: MultiParentCasper + ?Sized, A: Sized + Send>(
+        casper: &M,
+        dag: &KeyValueDagRepresentation,
+        blocks: &[BlockMessage],
+        constructor: fn(&BlockMessage, f32, bool) -> A,
+    ) -> ApiErr<Vec<A>> {
+        let hashes: Vec<BlockHash> = blocks.iter().map(|b| b.block_hash.clone()).collect();
+        let metadata = dag.lookup_many(&hashes)?;
+        let mut block_infos = Vec::with_capacity(blocks.len());
+        for (block, metadata) in blocks.iter().zip(&metadata) {
+            block_infos.push(
+                Self::block_info_from_metadata(casper, dag, block, metadata.as_ref(), constructor)
+                    .await?,
+            );
+        }
+        Ok(block_infos)
+    }
+
+    async fn block_info_from_metadata<M: MultiParentCasper + ?Sized, A: Sized + Send>(
+        casper: &M,
+        dag: &KeyValueDagRepresentation,
+        block: &BlockMessage,
+        metadata: Option<&BlockMetadata>,
+        constructor: fn(&BlockMessage, f32, bool) -> A,
+    ) -> ApiErr<A> {
+        let is_finalized = match metadata {
+            Some(meta) => meta.finalized,
+            None => dag.is_finalized(&block.block_hash)?,
+        };
+
+        let normalized_fault_tolerance = match metadata {
+            Some(meta) if meta.finalized => meta.fault_tolerance_value,
+            _ => Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?,
         };
 
         let weights_map = proto_util::weight_map(block);
@@ -1821,9 +2058,14 @@ impl BlockAPI {
     pub fn preview_private_names(
         deployer: &ByteString,
         timestamp: i64,
+        valid_after_block_number: i64,
         name_qty: i32,
     ) -> ApiErr<Vec<ByteString>> {
-        let mut rand = Tools::unforgeable_name_rng(&PublicKey::from_bytes(deployer), timestamp);
+        let mut rand = Tools::unforgeable_name_rng(
+            &PublicKey::from_bytes(deployer),
+            timestamp,
+            valid_after_block_number,
+        );
         let safe_qty = name_qty.clamp(0, 1024) as usize;
         let ids: Vec<BlockHash> = (0..safe_qty)
             .map(|_| rand.next().into_iter().map(|b| b as u8).collect())

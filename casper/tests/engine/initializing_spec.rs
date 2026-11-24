@@ -12,6 +12,7 @@ use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::initializing::Initializing;
 use casper::rust::engine::lfs_tuple_space_requester;
 use casper::rust::errors::CasperError;
+use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::protocol_helper::packet_with_content;
 use comm::rust::test_instances::TransportLayerStub;
 use crypto::rust::hash::blake2b256::Blake2b256;
@@ -44,7 +45,11 @@ impl InitializingSpec {
     }
 
     fn after_each(fixture: &TestFixture) { fixture.transport_layer.reset(); }
-    async fn make_transition_to_running_once_approved_block_received() {
+    async fn make_transition_to_running_once_approved_block_received() -> (
+        Arc<Initializing<TransportLayerStub>>,
+        BlockMessage,
+        PeerNode,
+    ) {
         let _event_bus = shared::rust::shared::f1r3fly_events::F1r3flyEvents::new();
 
         let fixture = TestFixture::new().await;
@@ -365,6 +370,11 @@ impl InitializingSpec {
         test.await;
 
         Self::after_each(&fixture);
+        (
+            initializing_engine,
+            fixture.genesis.clone(),
+            fixture.local.clone(),
+        )
     }
 }
 
@@ -431,12 +441,44 @@ async fn create_initializing_engine_with_dag(
         fixture.estimator.clone(),
         casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
         None,
+        None,
     )))
 }
 
 #[tokio::test]
 async fn make_transition_to_running_once_approved_block_received() {
     InitializingSpec::make_transition_to_running_once_approved_block_received().await;
+}
+
+#[tokio::test]
+async fn a_genesis_restore_and_a_late_block_response_log_no_warnings() {
+    use casper::rust::engine::engine::Engine;
+    use shared::rust::tracing_init::EventCapture;
+    use tracing::Level;
+
+    let capture = EventCapture::new();
+    let _guard = capture.install();
+
+    let (initializing_engine, genesis, peer) =
+        InitializingSpec::make_transition_to_running_once_approved_block_received().await;
+    initializing_engine
+        .handle(peer, CasperMessage::BlockMessage(genesis))
+        .await
+        .expect("a late block response is accepted");
+
+    assert!(capture
+        .with_message("anchored at genesis")
+        .iter()
+        .any(|event| event.level == Level::INFO));
+    assert!(capture
+        .with_message("the LFS block requester is no longer running")
+        .iter()
+        .any(|event| event.level == Level::DEBUG));
+    assert_eq!(capture.with_message("has no floor seed"), vec![]);
+    assert_eq!(
+        capture.with_message("Failed to enqueue BlockMessage"),
+        vec![]
+    );
 }
 
 /// Test that verifies the fix for the race condition where a slow validator
@@ -908,6 +950,7 @@ fn transition_to_initializing_invokes_init_immediately() {
                     &fixture.estimator,
                     &heartbeat_signal_ref,
                     None,
+                    None,
                 )
                 .await
                 .expect("transition_to_initializing should succeed");
@@ -1200,5 +1243,49 @@ async fn store_items_from_a_peer_that_was_not_asked_are_ignored() {
     );
     assert!(engine_cell.get().await.with_casper().is_some());
 
+    InitializingSpec::after_each(&fixture);
+}
+
+#[tokio::test]
+async fn init_keeps_requesting_while_the_bootstrap_cannot_be_reached() {
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    assert_eq!(
+        fixture.rp_conf_ask.bootstrap.as_ref(),
+        Some(&fixture.rp_conf_ask.local),
+        "the fixture node is its own bootstrap"
+    );
+
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let engine_cell = Arc::new(EngineCell::init());
+    let engine = create_initializing_engine(&fixture, the_init, engine_cell)
+        .await
+        .expect("Failed to create Initializing engine");
+
+    fixture.transport_layer.reset();
+    fixture.transport_layer.set_responses(|_peer, _protocol| {
+        Err(comm::rust::errors::CommError::PeerUnavailable(
+            "TCP connection failed".to_string(),
+        ))
+    });
+
+    tokio::time::pause();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(60), {
+        use casper::rust::engine::engine::Engine;
+        engine.init()
+    })
+    .await;
+
+    assert!(
+        outcome.is_err(),
+        "init returned although the bootstrap never accepted a send: {outcome:?}. The bootstrap request is now bounded; update this test with option (c) of issue #1120"
+    );
+    assert!(
+        fixture.transport_layer.request_count() >= 6,
+        "init retried {} times in 60 s",
+        fixture.transport_layer.request_count()
+    );
     InitializingSpec::after_each(&fixture);
 }

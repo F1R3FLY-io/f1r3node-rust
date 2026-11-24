@@ -97,6 +97,7 @@ Then confirm that the reported integration pin matches each selected candidate.
 | --- | --- | --- | --- |
 | `build_base` | Resolve Target | Setup | none |
 | `promotion_source` | Promotion Source | Static check | none |
+| `ci_parity` | CI Parity | Static check | `build_base` |
 | `commit_policy` | Commit Policy | Static check | `build_base` |
 | `static_checks` | Static Checks | Static check | `build_base` |
 | `script_tests` | Script Tests | Script test | `build_base` |
@@ -410,7 +411,7 @@ The commands run the same scripts as `just promote` and `just backmerge`. The op
 CI treats the two branches like `dev` and `master`:
 
 - A push to `ca-canary` or `ca-release` runs the heavy pipeline. The merge group reuse applies to `dev` only, so every push runs the OCI integration tests.
-- A pull request to `ca-canary` or `ca-release` with the `ci-heavy` label runs the heavy pipeline. Mergify adds the label to every pull request when it opens. Its head must not be a protected branch.
+- A pull request to `ca-canary` or `ca-release` with the `ci-heavy` label runs the heavy pipeline. Mergify adds the label when the pull request opens. Into `ca-canary`, Mergify labels only a `ca/` head. The head must not be a protected branch.
 - An accepted `ca-release` commit gets a tag of the form `ca-v<version>`, for example `ca-v0.5.0-rc.1`. The tag runs the heavy pipeline. It does not match `v*`, so the GitHub release job does not run for it.
 
 Image publication:
@@ -429,6 +430,14 @@ Only `dev` and `master` publish without reviewer approval, through `protected-br
 ### Dev sync
 
 `dev` reaches the release train only through an occasional sync. A maintainer runs `just ca-sync`. The command opens a pull request from `dev` into `ca-canary` with the `ci-heavy` label. Its `ca/` head puts it in the `ca-item` queue, which uses the existing CI and review requirements. A merge into `ca-canary` does not require a soak. `ca-release` gets `dev` code only through a promotion from `ca-canary`.
+
+### Release train items
+
+A release train item is a pull request from a `ca/<type>-<topic>` head into `ca-canary`. Examples are `ca/feature-seal-limits` and `ca/fix-refund-payer`. The `ca-sync` operation owns the `ca/sync-dev-` prefix.
+
+An item branch starts from `ca-canary`. It must not merge `dev`, because `dev` code reaches `ca-canary` only through the sync. If an item needs `dev` changes, a maintainer runs `ca-sync` first. The item then merges `ca-canary`.
+
+The `ca-item` queue accepts only a `ca/` head into `ca-canary`. Mergify does not add `ci-heavy` to a `ca-canary` pull request with another head. That pull request matches no queue, and the Mergify comment shows that it waits for queue conditions. GitHub cannot change the head of an open pull request. To recover, push the head commit to a `ca/` branch and open a new pull request.
 
 ### Daily back-merge
 
@@ -496,7 +505,7 @@ The **CI Heavy Label** workflow reruns the newest CI run of the head when the `c
 | `master` | Head `promote/<UTC timestamp>` or `hotfix/*` into `master` | An approving review, no requested changes, the `masterProtect` checks, Promotion Source, the casper shards, and `ci-heavy` with the Integration Gates, or a maintainer waiver |
 | `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync | As for `dev`. No pre-merge soak requirement. |
 | `ca-daily` | Head `backmerge/ca-release-<SHA>` into `ca-canary`, opened by the promotion app | The light `ci.yml` checks and `CA Daily Provenance`. No review and no heavy run. The trusted validator accepts the release source and clean base merges only. |
-| `ca-release` | Head `promote/ca-release-<UTC timestamp>` into `ca-release` | An approving review, no requested changes, the `ci-heavy` label with the Integration Gates and no waiver, and the `dev` checks |
+| `ca-release` | Head `promote/ca-release-<UTC timestamp>` into `ca-release` | An approving review, no requested changes, the `ci-heavy` label with the Integration Gates and no waiver, `CI Parity`, and the `dev` checks |
 
 To merge a pull request into `master` or `ca-release`, get an approving review.
 
@@ -597,6 +606,25 @@ A missing or pending status also blocks the daily queue.
 The workflow and validator must reach `ca-canary` before the queue can pass this gate.
 The [design](plans/ca-daily-provenance.md) gives the verification scope.
 
+### CI parity
+
+The CI control files are every file under `.github/` and `.mergify.yml`.
+The release train must not change these files on its own branches.
+A CI change goes into `dev`, then into `master` through promotion, and then into `ca-canary` through `ca-sync`.
+
+The `CI Parity` job of `ci.yml` runs only for a `promote/ca-release-*` pull request into `ca-release`.
+It runs `.github/scripts/check-ci-parity.sh` from `master`, not from the pull request.
+For each CI control file in the proposed merge revision, the content and the mode must equal the file in `master` or in `dev`.
+A file that is absent from the revision must also be absent from `master` or from `dev`.
+A `dev` change that waits for promotion therefore passes.
+A file that was added, changed, or deleted only on `ca-canary` or `ca-release` fails, and the job names each such file.
+
+The `ca-release` queue requires `CI Parity`.
+To correct a failure, make the change on `dev`, promote it, run `just ca-sync`, and open the release promotion again.
+After this check reaches `master`, run `just ca-sync` before the next `just ca-promote`.
+Mergify reads its configuration from `master`, so the `ca-release` queue requires the check immediately.
+A promotion from a `ca-canary` without the job never gets the check.
+
 ### Soak gates
 
 `ca-soak-dispatch.yml` (Release Train Soak Dispatch) starts the gate soaks. `.github/scripts/ca-soak-dispatch.sh` does the work, and `test-ca-soak-dispatch.sh` checks it.
@@ -612,7 +640,7 @@ The dispatcher runs `merge-recovery-soak.yml` from `master` with the inputs `gat
 
 - It has its own concurrency group: one for each `ca/*` pull request, and one for `ca-release`. Item soaks run in parallel, and a gate run never cancels a `daily` or `weekend` run.
 - Its soak runner registers under a label of its own run, `f1r3fly-rust-soak-run-<run ID>`, so a parallel soak cannot take its VM.
-- It publishes no checkpoint and no dashboard series.
+- It publishes no dashboard series. Its segments end on the same 07:30 and 13:00 Pacific checkpoints as a `daily` or `weekend` run. At each checkpoint, `soak-checkpoint-publish.yml` updates the pending `Soak Gate` status. The description gives the hours soaked, the iterations, and the failures.
 - Its one restart after an infrastructure failure soaks a full new window, not the rest of the old one.
 
 At the start, the run posts `Soak Gate (22h)` or `Soak Gate (60h)` as pending on the soaked commit. At the end, `.github/scripts/report-soak-gate.sh` posts the result:

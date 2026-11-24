@@ -382,6 +382,7 @@ pub enum ResponseType {
     Success,
     /// Return internal error response
     InternalError(String),
+    Error(CommError),
 }
 
 impl Default for TestProtocolDispatcher {
@@ -453,6 +454,7 @@ impl TestProtocolDispatcher {
                     ResponseType::InternalError(msg) => {
                         Err(CommError::InternalCommunicationError(msg))
                     }
+                    ResponseType::Error(error) => Err(error),
                 }
             })
                 as Pin<Box<dyn Future<Output = Result<CommunicationResponse, CommError>> + Send>>

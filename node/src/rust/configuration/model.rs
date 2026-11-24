@@ -189,6 +189,9 @@ pub struct ApiServer {
     #[serde(rename = "http-max-body-bytes", deserialize_with = "de_bytes")]
     pub http_max_body_bytes: u32,
 
+    #[serde(rename = "deploy-max-inflight", default)]
+    pub deploy_max_inflight: Option<usize>,
+
     #[serde(rename = "max-blocks-limit")]
     pub max_blocks_limit: u32,
 

@@ -451,6 +451,32 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: .github/scripts/check-promotion-source.sh
 
+  ci_parity:
+    name: CI Parity
+    needs: build_base
+    if: github.event_name == 'pull_request' && github.base_ref == 'ca-release' && startsWith(github.head_ref, 'promote/ca-release-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
+
+      - name: Check the CI control files against master and dev
+        shell: bash -euo pipefail {0}
+        env:
+          CANDIDATE: ${{ needs.build_base.outputs.TARGET_SHA }}
+        run: |
+          git fetch --no-tags --depth=1 origin \
+            "+refs/heads/master:refs/remotes/origin/master" \
+            "+refs/heads/dev:refs/remotes/origin/dev"
+          git show refs/remotes/origin/master:.github/scripts/check-ci-parity.sh >"$RUNNER_TEMP/check-ci-parity.sh"
+          bash "$RUNNER_TEMP/check-ci-parity.sh" "$CANDIDATE" refs/remotes/origin/master refs/remotes/origin/dev
+
   # Commit identity policy for pull requests. This job reads the pull request
   # head SHA, so it has no cache step: a cache step in the same job is the
   # pattern of the CodeQL cache-poisoning rule (alerts #93 to #110).
@@ -790,6 +816,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-check-ca-daily-provenance.sh
 
+      - name: Verify CI parity check
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-check-ci-parity.sh
+
       - name: Verify Dockerfile workspace check
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-check-dockerfile-workspace.sh
@@ -1071,6 +1101,7 @@ jobs:
           - graphz
           - consensus-api
           - consensus-runtime
+          - deploy-queue
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0

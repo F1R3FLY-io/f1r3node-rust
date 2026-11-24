@@ -41,6 +41,8 @@ impl ParkedTransport {
 
 #[async_trait]
 impl TransportLayer for ParkedTransport {
+    fn queued_stream_bytes(&self) -> usize { 0 }
+
     async fn send(&self, peer: &PeerNode, _msg: &Protocol) -> Result<(), CommError> {
         if *peer == self.parked {
             tokio::time::sleep(PARK).await;
@@ -126,6 +128,8 @@ struct SaturatedTransport {
 
 #[async_trait]
 impl TransportLayer for SaturatedTransport {
+    fn queued_stream_bytes(&self) -> usize { 0 }
+
     async fn send(&self, _peer: &PeerNode, _msg: &Protocol) -> Result<(), CommError> {
         self.started.fetch_add(1, Ordering::SeqCst);
         futures::future::pending::<()>().await;

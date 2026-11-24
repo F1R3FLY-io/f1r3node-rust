@@ -25,8 +25,12 @@ impl ApplicationProvider for PreparedApplication {
         } = *self;
         drop(reporting_routes);
         let settings = &context.settings;
+        let deploy_limiter = super::api::DeployRequestLimiter::new(settings.deploy_max_inflight)?;
+        let deploy_service = api_servers
+            .deploy
+            .with_deploy_limiter(deploy_limiter.clone());
         let external = acquire_external_server(
-            api_servers.deploy.clone(),
+            deploy_service.clone(),
             settings.grpc_max_recv_message_size as usize,
             settings.keep_alive_time,
             settings.keep_alive_timeout,
@@ -38,7 +42,7 @@ impl ApplicationProvider for PreparedApplication {
         .map_err(|error| eyre::eyre!("Failed to acquire external API server: {error}"))?;
         let internal = acquire_internal_server(
             api_servers.repl,
-            api_servers.deploy,
+            deploy_service,
             api_servers.propose,
             api_servers.lsp,
             settings.grpc_max_recv_message_size as usize,
@@ -60,7 +64,8 @@ impl ApplicationProvider for PreparedApplication {
             context.discovery,
             Arc::new(context.events.new_subscribe()),
             context.startup_events,
-        );
+        )
+        .with_deploy_limiter(deploy_limiter);
         let public_http = Routes::create_main_routes(
             settings.enable_reporting,
             settings.http_max_body_bytes as usize,

@@ -17,6 +17,25 @@
 #
 # All three nodes advertise VPS2_PUBLIC_HOST with their assigned port
 # range, so peers on VPS-1 can reach each of them independently.
+#
+# A deploy queue fronts each validator and owns that validator's client ports
+# on the host (4041x/4042x: 1 gRPC, 3 HTTP). Clients deploy through it; it
+# sends every other request on to its validator.
+
+x-deploy-queue: &deploy-queue
+  image: >-
+    ${F1R3FLY_IMAGE:-us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
+  user: root
+  restart: always
+  entrypoint: ["/opt/docker/bin/deploy-queue"]
+  environment:
+    RUST_LOG:
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://127.0.0.1:40403/queue/status"]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+    start_period: 30s
 
 x-rnode-env: &rnode-env
   OPENAI_ENABLED: ${OPENAI_ENABLED:-false}
@@ -54,9 +73,7 @@ services:
       - --genesis-validator
     ports:
       - "40410:40410"
-      - "40411:40411"
       - "40412:40412"
-      - "40413:40413"
       - "40414:40414/udp"
       - "40415:40415"
     volumes:
@@ -87,9 +104,7 @@ services:
       - --genesis-validator
     ports:
       - "40420:40420"
-      - "40421:40421"
       - "40422:40422"
-      - "40423:40423"
       - "40424:40424/udp"
       - "40425:40425"
     volumes:
@@ -100,6 +115,38 @@ services:
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt:ro
       - ./certs/validator2/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
       - ./certs/validator2/node.key.pem:/var/lib/rnode/node.key.pem:ro
+
+  deploy-queue1:
+    <<: *deploy-queue
+    container_name: rnode.deploy-queue1
+    logging: *rnode-logging
+    command:
+      - --node-grpc=http://rnode.validator1:40411
+      - --node-http=http://rnode.validator1:40413
+      - --data-dir=/var/lib/deploy-queue
+    depends_on:
+      - validator1
+    ports:
+      - "40411:40401"
+      - "40413:40403"
+    volumes:
+      - deploy-queue1-data:/var/lib/deploy-queue
+
+  deploy-queue2:
+    <<: *deploy-queue
+    container_name: rnode.deploy-queue2
+    logging: *rnode-logging
+    command:
+      - --node-grpc=http://rnode.validator2:40421
+      - --node-http=http://rnode.validator2:40423
+      - --data-dir=/var/lib/deploy-queue
+    depends_on:
+      - validator2
+    ports:
+      - "40421:40401"
+      - "40423:40403"
+    volumes:
+      - deploy-queue2-data:/var/lib/deploy-queue
 
   readonly:
     image: >-
@@ -134,3 +181,5 @@ volumes:
   validator1-data:
   validator2-data:
   readonly-data:
+  deploy-queue1-data:
+  deploy-queue2-data:

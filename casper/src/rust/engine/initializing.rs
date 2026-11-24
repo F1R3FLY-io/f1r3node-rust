@@ -61,6 +61,31 @@ use crate::rust::validator_identity::ValidatorIdentity;
 const FLOOR_CACHE_CHANNEL_CAPACITY: usize = 4;
 pub(crate) const LFS_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// The minimum local height at which the startup horizon probe is still
+/// within peers' body-prune window. Matches the GC formula used in
+/// `mergeable_channels_gc::job::start_pass`: `floor - (max_parent_depth +
+/// depth_buffer + deploy_lifespan)` when block-body GC is on, `floor -
+/// (max_parent_depth + depth_buffer)` otherwise. Saturating math: when
+/// `max_parent_depth` is `i32::MAX` (unlimited), the result goes very
+/// negative and the probe becomes inert, as every real local height
+/// satisfies it. Verified in TLA+ (BelowHorizonRecovery) and in unit
+/// tests below (#1059).
+pub(crate) fn horizon_required_height(
+    peer_floor: i64,
+    max_parent_depth: i32,
+    depth_buffer: i32,
+    deploy_lifespan: i64,
+    enable_block_store_gc: bool,
+) -> i64 {
+    let citation_depth: i64 = i64::from(max_parent_depth).saturating_add(i64::from(depth_buffer));
+    let depth = if enable_block_store_gc {
+        citation_depth.saturating_add(deploy_lifespan)
+    } else {
+        citation_depth
+    };
+    peer_floor.saturating_sub(depth)
+}
+
 fn install_slot<V>(slot: &Arc<Mutex<Option<V>>>, value: V, name: &str) -> Result<(), CasperError> {
     let mut guard = slot
         .lock()
@@ -121,6 +146,15 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     /// internally; both halves live here like the other sync channels.
     floor_cache_tx: Arc<Mutex<Option<mpsc::Sender<FloorCacheResponse>>>>,
     floor_cache_rx: Arc<Mutex<Option<mpsc::Receiver<FloorCacheResponse>>>>,
+    /// Observer / validator's own stored approved block at launch. Present on
+    /// resume with on-disk data; `None` on a fresh join. When present, the
+    /// first ApprovedBlock response from peers triggers the startup horizon
+    /// probe (`on_approved_block` short-circuit): if local DAG height is
+    /// within the peer-reported window, this node skips LFS and transitions
+    /// directly to Running using the stored block as its anchor; if below,
+    /// it falls through to the usual `request_approved_state` LFS flow
+    /// (#1059).
+    stored_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
 }
 
 /// Write shipped floor-cache entries into the DAG's floor and frontier
@@ -315,6 +349,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         estimator: Estimator,
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
         state_items_tx: Option<mpsc::Sender<StoreItemsMessage>>,
+        stored_approved_block: Option<ApprovedBlock>,
     ) -> Self {
         let (floor_cache_tx, floor_cache_rx) =
             mpsc::channel::<FloorCacheResponse>(FLOOR_CACHE_CHANNEL_CAPACITY);
@@ -352,6 +387,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             state_items_tx,
             floor_cache_tx: Arc::new(Mutex::new(Some(floor_cache_tx))),
             floor_cache_rx: Arc::new(Mutex::new(Some(floor_cache_rx))),
+            stored_approved_block: Arc::new(Mutex::new(stored_approved_block)),
         };
         metrics::gauge!(
             INIT_BLOCK_MESSAGE_QUEUE_PENDING_METRIC,
@@ -509,10 +545,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                             );
                             self.update_init_queue_metrics();
                         }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to enqueue BlockMessage into block_message channel: {:?}",
-                                e
+                        Err(_) => {
+                            tracing::debug!(
+                                "Dropping BlockMessage from {}: the LFS block requester is no longer running",
+                                peer
                             );
                         }
                     }
@@ -677,6 +713,81 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     elapsed_ms = elapsed.as_millis(),
                     "Approved block accepted during initialization"
                 );
+            }
+            // #1059 startup horizon probe. Before committing to LFS, check
+            // whether the on-disk approved block is within peers' current
+            // body-prune window. If so, resume from the stored block and
+            // skip the (expensive) state restore. Below the window, fall
+            // through to the LFS path. TLA+ contract:
+            // `formal/tlaplus/below_horizon_recovery`.
+            let maybe_stored = self
+                .stored_approved_block
+                .lock()
+                .map_err(|_| {
+                    CasperError::RuntimeError(
+                        "Failed to acquire stored_approved_block lock".to_string(),
+                    )
+                })?
+                .take();
+            if let Some(stored) = maybe_stored {
+                if let Some(seed) = approved_block.floor_seed.as_ref() {
+                    let peer_floor = seed.floor_number;
+                    if peer_floor > 0 {
+                        let dag = self.block_dag_storage.get_representation()?;
+                        let our_latest: i64 = dag
+                            .latest_message_hashes()
+                            .values()
+                            .filter_map(|h| dag.lookup(h).ok().flatten().map(|m| m.block_number))
+                            .max()
+                            .unwrap_or(0);
+                        let shard = &self.casper_shard_conf;
+                        let required = horizon_required_height(
+                            peer_floor,
+                            shard.max_parent_depth,
+                            shard.mergeable_channels_gc_depth_buffer,
+                            shard.deploy_lifespan,
+                            shard.enable_block_store_gc,
+                        );
+                        if our_latest >= required {
+                            tracing::info!(
+                                peer_floor,
+                                our_latest_height = our_latest,
+                                required_height = required,
+                                "Startup horizon probe: stored state is within window. \
+                                 Resuming from stored approved block; skipping LFS (#1059)."
+                            );
+                            let transport = self.transport_layer.clone();
+                            let connections = self.connections_cell.clone();
+                            let rp_conf = self.rp_conf_ask.clone();
+                            let the_init = Arc::new(move || {
+                                let transport = transport.clone();
+                                let connections = connections.clone();
+                                let rp_conf = rp_conf.clone();
+                                Box::pin(async move {
+                                    transport
+                                        .send_fork_choice_tip_request(&connections, &rp_conf)
+                                        .await?;
+                                    Ok(())
+                                })
+                                    as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+                            });
+                            if let Err(err) = self
+                                .create_casper_and_transition_to_running(&stored, the_init)
+                                .await
+                            {
+                                self.recover_from_restore_failure(err).await?;
+                            }
+                            return Ok(());
+                        }
+                        tracing::warn!(
+                            peer_floor,
+                            our_latest_height = our_latest,
+                            required_height = required,
+                            "Startup horizon probe: stored state is below peers' GC horizon. \
+                             Running last-finalized-state sync (#1059)."
+                        );
+                    }
+                }
             }
             // The caller is a task the transport spawned for this message, and it
             // logs an error and drops it. Anything left unhandled here is
@@ -1094,7 +1205,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // Transition to Running state
         tracing::info!("request_approved_state: transitioning to Running");
-        self.create_casper_and_transition_to_running(approved_block)
+        // LFS path: state is synced from peers, no startup propose or
+        // fork-choice-tip re-ask needed. The empty init is the Scala
+        // `().pure[F]` equivalent.
+        let empty_init = Arc::new(|| {
+            Box::pin(async { Ok(()) })
+                as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+        });
+        self.create_casper_and_transition_to_running(approved_block, empty_init)
             .await?;
         tracing::info!("request_approved_state: transition_to_running completed");
 
@@ -1261,11 +1379,21 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// because it looks like success.
     fn seed_floor_caches(&self, approved_block: &ApprovedBlock) -> Result<(), CasperError> {
         let Some(seed) = &approved_block.floor_seed else {
-            tracing::warn!(
-                "LFS restore has no floor seed: this node cannot derive finality above \
-                 its anchor and will defer on blocks it cannot judge. The serving peer \
-                 predates the seed, or could not derive one."
-            );
+            if approved_block
+                .candidate
+                .block
+                .header
+                .parents_hash_list
+                .is_empty()
+            {
+                tracing::info!("LFS restore is anchored at genesis; no floor seed is needed");
+            } else {
+                tracing::warn!(
+                    "LFS restore has no floor seed: this node cannot derive finality above \
+                     its anchor and will defer on blocks it cannot judge. The serving peer \
+                     predates the seed, or could not derive one."
+                );
+            }
             return Ok(());
         };
 
@@ -1576,9 +1704,18 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     }
 
     /// **Scala equivalent**: `private def createCasperAndTransitionToRunning(approvedBlock: ApprovedBlock): F[Unit]`
+    ///
+    /// `the_init` is the init callback the transitioned Running engine
+    /// will invoke. The LFS path passes an empty init (state is already
+    /// synced from peers). The #1059 within-window short-circuit path
+    /// passes an init that does `send_fork_choice_tip_request` so the
+    /// peers' latest tips can be fetched on resume.
     async fn create_casper_and_transition_to_running(
         &self,
         approved_block: &ApprovedBlock,
+        the_init: Arc<
+            dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> + Send + Sync,
+        >,
     ) -> Result<(), CasperError> {
         let ab = approved_block.candidate.block.clone();
         let genesis_post_state_hash = ab.body.state.post_state_hash.clone();
@@ -1625,12 +1762,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // **Scala equivalent**: `transitionToRunning[F](...)`
         tracing::info!("create_casper_and_transition_to_running: calling transition_to_running");
-
-        // Create empty async init (matches Scala ().pure[F])
-        let the_init = Arc::new(|| {
-            Box::pin(async { Ok(()) })
-                as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
-        });
 
         // The spawn_periodic_tick calls below need `Arc<T>`; the
         // `Initializing` struct stores `T` directly (same shape as
@@ -1952,6 +2083,52 @@ fn blocks_for_dag(height_map: &BTreeMap<i64, HashSet<BlockHash>>) -> Vec<BlockHa
 }
 
 #[cfg(test)]
+mod horizon_required_height_tests {
+    use super::horizon_required_height;
+
+    #[test]
+    fn with_body_gc_subtracts_full_citation_plus_lifespan() {
+        // floor=1000, max_parent_depth=10, buffer=25, lifespan=300 → 1000 - 335 = 665
+        assert_eq!(horizon_required_height(1000, 10, 25, 300, true), 665);
+    }
+
+    #[test]
+    fn without_body_gc_uses_only_citation_depth() {
+        // Same peer_floor, body GC off: lifespan drops out.
+        assert_eq!(horizon_required_height(1000, 10, 25, 300, false), 965);
+    }
+
+    #[test]
+    fn small_floor_is_handled_without_underflow() {
+        // Peer at a very early floor: the probe is permissive (required
+        // height may be negative, which any real latest-message satisfies).
+        assert_eq!(horizon_required_height(50, 10, 25, 300, true), -285);
+    }
+
+    #[test]
+    fn unlimited_max_parent_depth_makes_the_probe_inert() {
+        // When max_parent_depth is the "unlimited" sentinel, required_height
+        // becomes a very large negative number (peer_floor - i32::MAX - …),
+        // which any real latest-message satisfies. The probe does not fire.
+        let required = horizon_required_height(1000, i32::MAX, 25, 300, true);
+        assert!(
+            required < -i64::from(i32::MAX / 2),
+            "unlimited parent depth should push required_height very negative, got {}",
+            required
+        );
+        // And any real height satisfies it:
+        assert!(0i64 >= required);
+    }
+
+    #[test]
+    fn negative_peer_floor_is_handled_gracefully() {
+        // Caller filters peer_floor <= 0 before reaching here, but the
+        // function must not panic for a nonsensical input.
+        assert_eq!(horizon_required_height(-1, 10, 25, 300, true), -336);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1979,6 +2156,7 @@ mod tests {
         let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
@@ -2057,6 +2235,7 @@ mod tests {
         let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),

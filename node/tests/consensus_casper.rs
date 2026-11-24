@@ -28,6 +28,7 @@ struct TestTransport;
 
 #[async_trait::async_trait]
 impl TransportLayer for TestTransport {
+    fn queued_stream_bytes(&self) -> usize { 0 }
     async fn send(&self, _: &PeerNode, _: &Protocol) -> Result<(), CommError> { Ok(()) }
     async fn broadcast(&self, _: &[PeerNode], _: &Protocol) -> Result<(), CommError> { Ok(()) }
     async fn stream(&self, _: &PeerNode, _: &Blob) -> Result<(), CommError> { Ok(()) }
@@ -117,10 +118,7 @@ impl TestApplication {
             .unwrap();
     }
 
-    async fn deploy_http(
-        &self,
-        request: node::rust::consensus::casper::api::web_api::DeployRequest,
-    ) -> String {
+    async fn deploy_http(&self, request: models::rust::deploy_request::DeployRequest) -> String {
         let response = self
             .public_http
             .clone()
@@ -307,7 +305,7 @@ async fn casper_runtime_deploy_propose_finalize_recover() {
             let deploy = casper::rust::util::construct_deploy::source_deploy_now(
                 format!("new x in {{ x!({index}) }}"), Some(key.clone()), Some(index), Some(conf.casper.shard_name.clone()),
             ).unwrap();
-            let http_request = node::rust::consensus::casper::api::web_api::DeployRequest {
+            let http_request = models::rust::deploy_request::DeployRequest {
                 data: deploy.data.clone(), deployer: hex::encode(&deploy.pk.bytes),
                 signature: hex::encode(&deploy.sig), sig_algorithm: "secp256k1".into(),
             };

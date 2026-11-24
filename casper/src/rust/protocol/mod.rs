@@ -4,12 +4,12 @@
 use comm::rust::rp::protocol_helper;
 use models::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
-    BlockMessageProto, BlockRequestProto, FloorCacheRequestProto, FloorCacheResponseProto,
-    ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto, GetWalPayloadRequestProto,
-    HasBlockProto, HasBlockRequestProto, HasSnapshotProto, HasSnapshotRequestProto,
-    HasWalPayloadProto, HasWalPayloadRequestProto, NoApprovedBlockAvailableProto,
-    SnapshotChunkResponseProto, StoreItemsMessageProto, StoreItemsMessageRequestProto,
-    UnapprovedBlockProto, WalPayloadResponseProto,
+    BlockMessageProto, BlockPrunedResponseProto, BlockRequestProto, FloorCacheRequestProto,
+    FloorCacheResponseProto, ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto,
+    GetWalPayloadRequestProto, HasBlockProto, HasBlockRequestProto, HasSnapshotProto,
+    HasSnapshotRequestProto, HasWalPayloadProto, HasWalPayloadRequestProto,
+    NoApprovedBlockAvailableProto, SnapshotChunkResponseProto, StoreItemsMessageProto,
+    StoreItemsMessageRequestProto, UnapprovedBlockProto, WalPayloadResponseProto,
 };
 use models::routing::{Packet, Protocol};
 use models::rust::block_hash::BlockHash;
@@ -65,6 +65,7 @@ pub enum CasperMessageProto {
     ApprovedBlock(ApprovedBlockProto),
     ApprovedBlockRequest(ApprovedBlockRequestProto),
     BlockRequest(BlockRequestProto),
+    BlockPrunedResponse(BlockPrunedResponseProto),
     HasBlock(HasBlockProto),
     HasBlockRequest(HasBlockRequestProto),
     ForkChoiceTipRequest(ForkChoiceTipRequestProto),
@@ -100,6 +101,7 @@ pub fn to_casper_message_proto(packet: &Packet) -> PacketParseResult<CasperMessa
         "ApprovedBlock" => convert_approved_block(packet),
         "ApprovedBlockRequest" => convert_approved_block_request(packet),
         "BlockRequest" => convert_block_request(packet),
+        "BlockPrunedResponse" => convert_block_pruned_response(packet),
         "HasBlock" => convert_has_block(packet),
         "HasBlockRequest" => convert_has_block_request(packet),
         "ForkChoiceTipRequest" => convert_fork_choice_tip_request(packet),
@@ -146,6 +148,9 @@ pub fn casper_message_from_proto(proto: CasperMessageProto) -> Result<CasperMess
             Ok(CasperMessage::from_approved_block_request(proto))
         }
         CasperMessageProto::BlockRequest(proto) => Ok(CasperMessage::from_block_request(proto)),
+        CasperMessageProto::BlockPrunedResponse(proto) => {
+            Ok(CasperMessage::from_block_pruned_response(proto))
+        }
         CasperMessageProto::HasBlock(proto) => Ok(CasperMessage::from_has_block(proto)),
         CasperMessageProto::HasBlockRequest(proto) => {
             Ok(CasperMessage::from_has_block_request(proto))
@@ -212,6 +217,10 @@ fn convert_approved_block_request(packet: &Packet) -> PacketParseResult<CasperMe
 
 fn convert_block_request(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
     parse_packet::<BlockRequestProto>(packet).map(CasperMessageProto::BlockRequest)
+}
+
+fn convert_block_pruned_response(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
+    parse_packet::<BlockPrunedResponseProto>(packet).map(CasperMessageProto::BlockPrunedResponse)
 }
 
 fn convert_has_block(packet: &Packet) -> PacketParseResult<CasperMessageProto> {

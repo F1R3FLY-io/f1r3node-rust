@@ -697,13 +697,6 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
     let heartbeat_signal_ref = casper::rust::heartbeat_signal::new_heartbeat_signal_ref();
 
     let casper_launch = {
-        // Determine which propose function to use based on autopropose config
-        let propose_f_for_launch = if conf.autopropose {
-            trigger_propose_f_opt.clone()
-        } else {
-            None
-        };
-
         info!(
             autopropose = conf.autopropose,
             heartbeat = conf.casper.heartbeat_conf.enabled,
@@ -729,7 +722,6 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
                 estimator.clone(),
                 // Explicit parameters
                 ingest,
-                propose_f_for_launch,
                 conf.casper.clone(),
                 !conf.protocol_client.disable_lfs,
                 conf.protocol_server.disable_state_exporter,
@@ -850,7 +842,23 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
         background.push((
             "consensus events",
             Box::pin(async move {
-                while let Some(event) = event_stream.next().await {
+                while let Some(item) = event_stream.next().await {
+                    let event = match item {
+                        Ok(event) => event,
+                        Err(lagged) => {
+                            metrics::counter!(
+                                "node.event_consumer.lagged_events",
+                                "source" => "node"
+                            )
+                            .increment(lagged.0);
+                            tracing::warn!(
+                                skipped = lagged.0,
+                                "Node event consumer lagged; the skipped events are lost to \
+                                 report prewarm and readiness tracking"
+                            );
+                            continue;
+                        }
+                    };
                     match &event {
                         F1r3flyEvent::BlockFinalised(finalized) if prewarm_enabled => {
                             if report_tx.send(finalized.clone()).await.is_err() {
@@ -1106,6 +1114,7 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
                         return Ok(());
                     };
                     let gc_casper_shard_conf = gc_casper.casper_shard_conf().clone();
+                    let gc_effective_anchor = gc_casper.effective_anchor_handle();
 
                     loop {
                         let progress = match tokio::runtime::Handle::try_current() {
@@ -1122,6 +1131,7 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
                                             &gc_block_store,
                                             &gc_runtime_manager,
                                             &gc_casper_shard_conf,
+                                            &gc_effective_anchor,
                                         ))
                                         .map_err(|e| CasperError::RuntimeError(e.to_string()))
                                 })?
@@ -1134,6 +1144,7 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
                                     &gc_block_store,
                                     &gc_runtime_manager,
                                     &gc_casper_shard_conf,
+                                    &gc_effective_anchor,
                                 )
                                 .await
                                 .map_err(|e| CasperError::RuntimeError(e.to_string()))?
@@ -1144,6 +1155,38 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
                             mergeable_channels_gc::GcProgress::Yielded { .. } => {
                                 tokio::task::yield_now().await
                             }
+                        }
+                    }
+
+                    let history_gc_dag = gc_block_dag_storage
+                        .get_representation()
+                        .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                    let history_gc_conf = gc_casper_shard_conf.clone();
+                    let history_gc_runtime = gc_runtime_manager.clone();
+                    let history_gc_block_store = gc_block_store.clone();
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(rt_handle)
+                            if rt_handle.runtime_flavor()
+                                == tokio::runtime::RuntimeFlavor::MultiThread =>
+                        {
+                            tokio::task::block_in_place(|| {
+                                casper::rust::util::rspace_history_gc::prune_history_once(
+                                    &history_gc_dag,
+                                    &history_gc_block_store,
+                                    &history_gc_runtime,
+                                    &history_gc_conf,
+                                )
+                                .map_err(|e| CasperError::RuntimeError(e.to_string()))
+                            })?;
+                        }
+                        _ => {
+                            casper::rust::util::rspace_history_gc::prune_history_once(
+                                &history_gc_dag,
+                                &history_gc_block_store,
+                                &history_gc_runtime,
+                                &history_gc_conf,
+                            )
+                            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
                         }
                     }
 

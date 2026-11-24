@@ -1,6 +1,86 @@
 // See node/src/main/scala/coop/rchain/node/api/package.scala
 
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
+
+use tonic::codec::Codec;
+use tonic::codegen::http;
+use tower::Service;
+
+use super::{DeployIngressBusy, DeployRequestLimiter};
+
+#[derive(Clone)]
+pub(crate) struct DeployIngressService<S> {
+    inner: S,
+    limiter: DeployRequestLimiter,
+}
+
+impl<S> DeployIngressService<S> {
+    pub(crate) fn new(inner: S, limiter: DeployRequestLimiter) -> Self { Self { inner, limiter } }
+}
+
+impl<S: tonic::server::NamedService> tonic::server::NamedService for DeployIngressService<S> {
+    const NAME: &'static str = S::NAME;
+}
+
+impl<S, B> Service<http::Request<B>> for DeployIngressService<S>
+where
+    S: Service<http::Request<B>, Response = http::Response<tonic::body::Body>>,
+    S::Future: Send + 'static,
+    S::Error: 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
+        if request.uri().path() != "/casper.v1.DeployService/doDeploy" {
+            return Box::pin(self.inner.call(request));
+        }
+        let permit = match self.limiter.try_acquire() {
+            Ok(permit) => permit,
+            Err(error) => return Box::pin(async move { Ok(deploy_busy_response(error)) }),
+        };
+        request.extensions_mut().insert(permit.clone());
+        let response = self.inner.call(request);
+        Box::pin(async move {
+            let _permit = permit;
+            response.await
+        })
+    }
+}
+
+fn deploy_busy_response(error: DeployIngressBusy) -> http::Response<tonic::body::Body> {
+    use models::casper::v1::{deploy_response, DeployResponse};
+    use models::servicemodelapi::ServiceError;
+
+    let response = DeployResponse {
+        message: Some(deploy_response::Message::Error(ServiceError {
+            messages: vec![error.to_string()],
+        })),
+    };
+    let mut codec =
+        tonic_prost::ProstCodec::<DeployResponse, models::casper::DeployDataProto>::default();
+    let body = tonic::codec::EncodeBody::new_server(
+        codec.encoder(),
+        tokio_stream::once(Ok(response)),
+        None,
+        Default::default(),
+        None,
+    );
+    let mut response = http::Response::new(tonic::body::Body::new(body));
+    response.headers_mut().insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("application/grpc"),
+    );
+    response
+}
 
 use models::casper::v1::deploy_service_server::DeployServiceServer;
 use models::casper::v1::propose_service_server::ProposeServiceServer;
@@ -100,7 +180,9 @@ pub async fn acquire_internal_server(
     let repl_server = ReplServer::new(repl_grpc_service);
     let lsp_server = LspServer::new(lsp_grpc_service);
     let propose_server = ProposeServiceServer::new(propose_grpc_service);
-    let deploy_server = DeployServiceServer::new(deploy_grpc_service);
+    let limiter = deploy_grpc_service.deploy_limiter().clone();
+    let deploy_server =
+        DeployIngressService::new(DeployServiceServer::new(deploy_grpc_service), limiter);
 
     let reflection_service = tonic_reflection::server::Builder::configure()
         .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
@@ -154,7 +236,9 @@ pub fn acquire_external_server(
     // Create adapter wrappers that implement the proto-generated server traits
     // Note: These adapters need to be implemented separately to bridge between
     // the trait-based service implementations and the proto-generated server traits
-    let deploy_server = DeployServiceServer::new(deploy_grpc_service);
+    let limiter = deploy_grpc_service.deploy_limiter().clone();
+    let deploy_server =
+        DeployIngressService::new(DeployServiceServer::new(deploy_grpc_service), limiter);
 
     let reflection_service = tonic_reflection::server::Builder::configure()
         .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)

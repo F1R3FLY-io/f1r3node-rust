@@ -19,13 +19,11 @@ use crate::rust::peer_node::{NodeIdentifier, PeerNode};
 use crate::rust::rp::chain_id::ChainIdCell;
 use crate::rust::transport::f1r3fly_connector::F1r3flyConnector;
 use crate::rust::transport::grpc_transport::{GrpcTransport, TransportLayerClientTrait};
-use crate::rust::transport::packet_ops::PacketOps;
+use crate::rust::transport::packet_ops::{OutgoingPacketCache, PacketOps};
 use crate::rust::transport::ssl_session_client_interceptor::SslSessionClientInterceptor;
 use crate::rust::transport::stream_observable::StreamObservable;
 use crate::rust::transport::transport_layer::{best_effort, Blob, TransportLayer};
 use crate::rust::utils::resolve_hostname_to_ip;
-
-type StreamCache = Arc<dashmap::DashMap<String, Vec<u8>>>;
 
 /// GRPC channel with a message buffer protecting it from resource exhaustion
 #[derive(Debug)]
@@ -91,7 +89,7 @@ pub struct GrpcTransportClient {
     channels_map: Arc<Mutex<HashMap<PeerNode, Arc<OnceCell<Arc<BufferedGrpcStreamChannel>>>>>>,
     dns_failures: Arc<Mutex<HashMap<NodeIdentifier, String>>>,
     default_send_timeout: Duration,
-    cache: StreamCache,
+    cache: OutgoingPacketCache,
 }
 
 const MIN_PEER_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
@@ -120,12 +118,18 @@ enum StreamOutcome {
     TimedOut,
 }
 
+#[derive(Clone, Copy)]
+enum ChannelStage {
+    Connect,
+    Request,
+}
+
 async fn send_cached_stream<T: TransportLayerClientTrait>(
     key: &str,
     client: &mut T,
     peer: &PeerNode,
     sender: &PeerNode,
-    cache: &StreamCache,
+    cache: &OutgoingPacketCache,
     network_id: &str,
     chain_id: Bytes,
     default_send_timeout: Duration,
@@ -285,7 +289,7 @@ impl GrpcTransportClient {
             .connect_with_connector(f1r3fly_connector)
             .await
             .map_err(|e| {
-                tracing::error!(uri = %endpoint_uri, error = %e, "F1r3flyConnector gRPC channel connect failed");
+                tracing::warn!(uri = %endpoint_uri, error = %e, "F1r3flyConnector gRPC channel connect failed");
                 CommError::InternalCommunicationError(format!(
                     "Failed to establish gRPC connection: {}",
                     e
@@ -488,27 +492,38 @@ impl GrpcTransportClient {
     {
         // Apply timeout to the entire operation
         let timed_operation = tokio::time::timeout(timeout, async {
-            let channel = self.get_channel(peer).await?;
+            let channel = self
+                .get_channel(peer)
+                .await
+                .map_err(|error| (error, ChannelStage::Connect))?;
 
             let client_guard = channel.transport_client.lock().await;
             let client = client_guard.clone(); // Clone the client for use
             drop(client_guard); // Release the lock immediately
 
-            let result = request(client).await?;
+            let result = request(client)
+                .await
+                .map_err(|error| (error, ChannelStage::Request))?;
 
             // Return control to caller thread
             // In Rust, this is handled automatically by the async runtime
             tokio::task::yield_now().await;
 
-            Ok::<A, CommError>(result)
+            Ok::<A, (CommError, ChannelStage)>(result)
         });
 
         // Handle timeout and other errors
         match timed_operation.await {
             Ok(Ok(success)) => Ok(success),
-            Ok(Err(comm_error)) => {
-                if !matches!(&comm_error, CommError::DnsResolutionFailed(_, _)) {
-                    tracing::error!(peer = %peer.to_address(), error = %comm_error, "gRPC request failed");
+            Ok(Err((comm_error, stage))) => {
+                match (&comm_error, stage) {
+                    (CommError::DnsResolutionFailed(_, _), _) => {}
+                    (_, ChannelStage::Connect) => {
+                        tracing::warn!(peer = %peer.to_address(), error = %comm_error, "gRPC request failed");
+                    }
+                    (_, ChannelStage::Request) => {
+                        tracing::error!(peer = %peer.to_address(), error = %comm_error, "gRPC request failed");
+                    }
                 }
                 Err(comm_error)
             }
@@ -535,7 +550,7 @@ impl GrpcTransportClient {
         key: &str,
         peer: &PeerNode,
         sender: &PeerNode,
-        cache: &StreamCache,
+        cache: &OutgoingPacketCache,
         network_id: &str,
         chain_id: &ChainIdCell,
         default_send_timeout: Duration,
@@ -720,6 +735,13 @@ impl TransportLayer for GrpcTransportClient {
         best_effort("stream", peers, results)
     }
 
+    fn queued_stream_bytes(&self) -> usize {
+        self.cache
+            .iter()
+            .map(|entry| entry.value().content.len())
+            .sum()
+    }
+
     /// Disconnect from a peer, shutting down any gRPC channels
     async fn disconnect(&self, peer: &PeerNode) -> Result<(), CommError> {
         self.clear_dns_failure(peer).await;
@@ -804,6 +826,23 @@ mod tests {
     fn new_accepts_normal_and_too_low_timeouts() {
         client(Duration::from_secs(5));
         client(Duration::from_millis(1));
+    }
+
+    #[test]
+    fn queued_stream_bytes_sums_the_unsent_packets() {
+        let client = client(Duration::from_secs(5));
+        assert_eq!(client.queued_stream_bytes(), 0);
+
+        let packet = |len: usize| Packet {
+            type_id: "test".to_string(),
+            content: Bytes::from(vec![0; len]),
+        };
+        client.cache.insert("a".to_string(), packet(10));
+        client.cache.insert("b".to_string(), packet(32));
+        assert_eq!(client.queued_stream_bytes(), 42);
+
+        client.cache.remove("a");
+        assert_eq!(client.queued_stream_bytes(), 32);
     }
 
     #[test]

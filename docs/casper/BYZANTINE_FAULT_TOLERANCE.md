@@ -143,21 +143,34 @@ signed blocks. Every node that holds both reaches it, in any arrival order.
   and leaves their sender bonded
 - The block is rejected. The neglecting validator keeps its stake.
 
-### Blocks Built on an Equivocation
+### Blocks That Depend on an Equivocation
 
 An equivocation is stored without a judgement of its contents, and without a
 replay, so a sibling that no block cites costs a node nothing. Before a node
-judges a block built on a stored equivocation, it judges that parent's
-contents and replays it:
+judges a block that builds on a stored equivocation or cites one in its
+justifications, it judges the equivocation's contents and replays it:
 
-- Valid parent contents enter the deploy history then, not when the parent is
+- Valid contents enter the deploy history then, not when the equivocation is
   stored.
-- Invalid parent contents make the block `InvalidParents`.
-- A parent that the node cannot judge yet defers the block.
-- The node keeps a final verdict, so it judges a parent once for all blocks
-  built on it.
+- Invalid contents make the block `InvalidParents` for a parent and
+  `InvalidJustifications` for a justification.
+- An equivocation that the node cannot judge yet defers the block.
+- The node keeps a final verdict, so it judges an equivocation once for all
+  blocks that depend on it.
 
-**Code Location:** `casper/src/rust/engine/multi_parent_casper/validation_dispatcher.rs` (`equivocating_parents_verdict`)
+A node that received an invalid equivocation first refused it, and it refuses
+it again on every delivery unless it holds the sibling. So it can never add a
+block that depends on that equivocation. The rules above make every node that
+holds the equivocation refuse the block too.
+
+An honest proposer never cites a stored equivocation. Where an equivocator's
+latest message is one, the proposer cites the sender's block at the same
+sequence number that is not an equivocation: the proposer validated that
+block, or holds it as settled history. The proposer judges nothing for this
+choice, so a sibling that no block cites still costs it nothing. The slash
+does not depend on that choice: its evidence is the two signed blocks.
+
+**Code Location:** `casper/src/rust/engine/multi_parent_casper/validation_dispatcher.rs` (`judge_twin`, `equivocating_dependencies_verdict`), `casper/src/rust/engine/multi_parent_casper/snapshot.rs` (`cite_no_twins`)
 
 ### Neglected Equivocation Detection
 
@@ -806,6 +819,16 @@ casper {
 ```
 
 The configured value only seeds genesis: it is baked into the PoS contract, and every node adopts the on-chain value at startup regardless of local configuration. A block carrying a deploy priced below the floor is rejected as invalid (`LowDeployCost`). The verdict is deliberately not slashable — the floor is an admission rule, so an underpriced block is dropped without penalizing its sender's stake. This prevents spam and ensures network sustainability.
+
+### Maximum Phlo Limit
+
+```hocon
+casper {
+  max-phlo-limit = 20000000
+}
+```
+
+The largest phlo limit a user deploy may declare. It bounds how long one deploy can hold a validator during play and replay. Like the price floor, the configured value only seeds genesis, and every node adopts the on-chain value at startup. Admission refuses a deploy above the cap. A block that carries one is invalid (`ExcessivePhloLimit`), and validation judges this before it replays any deploy of the block. The verdict is not slashable, for the same reason as `LowDeployCost`.
 
 ---
 
