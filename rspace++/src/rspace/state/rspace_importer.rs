@@ -17,6 +17,8 @@ use crate::rspace::state::rspace_exporter::RSpaceExporterInstance;
 // See rspace/src/main/scala/coop/rchain/rspace/state/RSpaceImporter.scala
 pub trait RSpaceImporter: TrieImporter + Send + Sync {
     fn get_history_item(&self, hash: KeyHash) -> Option<ByteVector>;
+
+    fn has_data_items(&self, hashes: &[KeyHash]) -> Vec<bool>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +76,29 @@ impl RSpaceImporterInstance {
         last_path: &[(Blake2b256Hash, Option<u8>)],
         chunk_size: i32,
         skip: i32,
+        get_from_history: Arc<dyn RSpaceImporter>,
+    ) -> Result<(), StateItemsError> {
+        Self::validate_subtree_items(
+            history_items,
+            data_items,
+            start_path,
+            last_path,
+            chunk_size,
+            skip,
+            None,
+            get_from_history,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn validate_subtree_items(
+        history_items: &[(Blake2b256Hash, ByteVector)],
+        data_items: &[(Blake2b256Hash, ByteVector)],
+        start_path: Vec<(Blake2b256Hash, Option<u8>)>,
+        last_path: &[(Blake2b256Hash, Option<u8>)],
+        chunk_size: i32,
+        skip: i32,
+        leaf_kind: Option<u8>,
         get_from_history: Arc<dyn RSpaceImporter>,
     ) -> Result<(), StateItemsError> {
         let received_history_size = history_items.len() as i32;
@@ -165,7 +190,7 @@ impl RSpaceImporterInstance {
             leaf_kinds
                 .entry(hash)
                 .or_default()
-                .insert(key.first().copied());
+                .insert(leaf_kind.or_else(|| key.first().copied()));
         }
 
         // Validate data hashes
