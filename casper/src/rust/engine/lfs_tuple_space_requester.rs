@@ -1,6 +1,5 @@
 // See casper/src/main/scala/coop/rchain/casper/engine/LfsTupleSpaceRequester.scala
 
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,6 +8,7 @@ use std::time::Duration;
 use async_stream;
 use async_trait::async_trait;
 use futures::Stream;
+use imbl::HashMap;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, StoreItemsMessage};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::rspace_importer::{RSpaceImporter, RSpaceImporterInstance};
