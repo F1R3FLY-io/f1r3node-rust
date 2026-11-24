@@ -21,7 +21,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
-use heed::{Env, EnvOpenOptions};
+use heed::{Env, EnvFlags, EnvOpenOptions, FlagSetMode};
 
 static ENV_CACHE: OnceLock<StdMutex<HashMap<PathBuf, Arc<Env>>>> = OnceLock::new();
 
@@ -59,9 +59,34 @@ pub fn get_or_open_env(
     Ok(env)
 }
 
+pub fn open_env_without_sync(
+    dir_path: &Path,
+    max_env_size: usize,
+    max_dbs: u32,
+) -> Result<Arc<Env>, heed::Error> {
+    let env = get_or_open_env(dir_path, max_env_size, max_dbs)?;
+    unsafe { env.set_flags(EnvFlags::NO_SYNC, FlagSetMode::Enable)? };
+    Ok(env)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_environment_opened_without_sync_stays_without_sync_for_later_consumers() {
+        let dir = tempfile::tempdir().unwrap();
+        open_env_without_sync(dir.path(), 1 << 20, 4).unwrap();
+        let env = get_or_open_env(dir.path(), 1 << 20, 4).unwrap();
+        assert_ne!(env.get_flags().unwrap() & EnvFlags::NO_SYNC.bits(), 0);
+    }
+
+    #[test]
+    fn an_environment_opened_normally_syncs_each_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = get_or_open_env(dir.path(), 1 << 20, 4).unwrap();
+        assert_eq!(env.get_flags().unwrap() & EnvFlags::NO_SYNC.bits(), 0);
+    }
 
     #[test]
     fn environment_stays_open_after_every_consumer_drops() {
