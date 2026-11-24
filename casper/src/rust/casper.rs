@@ -510,6 +510,16 @@ pub async fn hash_set_casper(
                 crate::rust::v6::resource_policy::ShardResourcePolicy::default()
             }
         };
+        let max_phlo_limit = policy.effective_max_phlo_limit(casper_shard_conf.max_phlo_limit);
+        if max_phlo_limit != casper_shard_conf.max_phlo_limit {
+            tracing::info!(
+                target: "f1r3fly.v6",
+                max_phlo_limit = casper_shard_conf.max_phlo_limit,
+                demand_cap = policy.demand_cap,
+                "a deploy cannot declare more phlo than the block demand cap: the shard's phlo cap is the demand cap"
+            );
+            casper_shard_conf.max_phlo_limit = max_phlo_limit;
+        }
         let engine = crate::rust::v6::V6Engine::new(
             &approved_block,
             runtime_manager.clone(),

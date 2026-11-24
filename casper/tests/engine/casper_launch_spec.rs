@@ -111,6 +111,40 @@ async fn a_node_that_is_its_own_bootstrap_resumes_without_probing_itself() {
 }
 
 #[tokio::test]
+async fn a_protocol_7_node_caps_deploy_phlo_at_the_block_demand_cap() {
+    use casper::rust::v6::resource_policy::{DEFAULT_DEMAND_CAP, PROTOCOL_V7};
+
+    let fixture = TestFixture::at_protocol(Some(PROTOCOL_V7)).await;
+    stored_approved_block(&fixture);
+    let mut rp_conf = fixture.rp_conf_ask.clone();
+    rp_conf.bootstrap = Some(PeerNode {
+        id: rp_conf.local.id.clone(),
+        endpoint: Endpoint::new("rnode.bootstrap".to_string(), 40400, 40404),
+    });
+    fixture.transport_layer.reset();
+    fixture.transport_layer.set_responses(|_peer, _protocol| {
+        Err(CommError::PeerUnavailable(
+            "TCP connection failed".to_string(),
+        ))
+    });
+    let engine_cell = Arc::new(EngineCell::init());
+    let launch = launcher(&fixture, rp_conf, engine_cell.clone());
+
+    tokio::time::pause();
+    let outcome = tokio::time::timeout(Duration::from_secs(60), launch.launch()).await;
+    assert!(
+        matches!(outcome, Ok(Ok(()))),
+        "launch did not resume within 60 s: {outcome:?}"
+    );
+    let engine = engine_cell.get().await;
+    let casper = engine.with_casper().expect("the resumed node is Running");
+    assert_eq!(
+        casper.casper_shard_conf().max_phlo_limit,
+        DEFAULT_DEMAND_CAP
+    );
+}
+
+#[tokio::test]
 async fn a_node_with_another_bootstrap_still_probes_it_before_resuming() {
     let fixture = TestFixture::new().await;
     stored_approved_block(&fixture);
