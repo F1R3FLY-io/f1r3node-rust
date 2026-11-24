@@ -2,6 +2,10 @@ use models::rust::utils::no_frees;
 
 use super::exports::*;
 
+/// The count of a kind a remainder or wildcard can take, as Scala's
+/// `Int.MaxValue`. Counts saturate here, so every count also fits an `isize`.
+pub const UNBOUNDED: usize = isize::MAX as usize;
+
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParCount.scala
 #[derive(Clone, Debug)]
 pub struct ParCount {
@@ -53,13 +57,13 @@ impl ParCount {
 
     pub fn _max(&self) -> ParCount {
         Self {
-            sends: 1000,
-            receives: 1000,
-            news: 1000,
-            matches: 1000,
-            exprs: 1000,
-            unforgeables: 1000,
-            bundles: 1000,
+            sends: UNBOUNDED,
+            receives: UNBOUNDED,
+            news: UNBOUNDED,
+            matches: UNBOUNDED,
+            exprs: UNBOUNDED,
+            unforgeables: UNBOUNDED,
+            bundles: UNBOUNDED,
         }
     }
 
@@ -76,14 +80,15 @@ impl ParCount {
     }
 
     pub fn add(&self, other: &Self) -> Self {
+        let add = |a: usize, b: usize| a.saturating_add(b).min(UNBOUNDED);
         Self {
-            sends: self.sends.saturating_add(other.sends),
-            receives: self.receives.saturating_add(other.receives),
-            news: self.news.saturating_add(other.news),
-            exprs: self.exprs.saturating_add(other.exprs),
-            matches: self.matches.saturating_add(other.matches),
-            unforgeables: self.unforgeables.saturating_add(other.unforgeables),
-            bundles: self.bundles.saturating_add(other.bundles),
+            sends: add(self.sends, other.sends),
+            receives: add(self.receives, other.receives),
+            news: add(self.news, other.news),
+            exprs: add(self.exprs, other.exprs),
+            matches: add(self.matches, other.matches),
+            unforgeables: add(self.unforgeables, other.unforgeables),
+            bundles: add(self.bundles, other.bundles),
         }
     }
 

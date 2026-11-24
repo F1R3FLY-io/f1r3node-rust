@@ -330,7 +330,7 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
     async fn validate_received_block(&self, block: &BlockMessage) -> Result<bool, CasperError> {
         let validation_start = std::time::Instant::now();
         let block_number = proto_util::block_number(block);
-        let block_hash_str = format!("{:?}", block.block_hash);
+        let block_hash_str = PrettyPrinter::build_string_bytes(&block.block_hash);
 
         tracing::debug!(
             "Validating received block {} at height {}",
@@ -371,8 +371,8 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
                 );
                 proto_util::creator_justification_block_message(block).map(|justification| {
                     tracing::debug!(
-                        "Found self-justification replacement: {:?}",
-                        justification.latest_block_hash
+                        "Found self-justification replacement: {}",
+                        PrettyPrinter::build_string_bytes(&justification.latest_block_hash)
                     );
                     justification.latest_block_hash
                 })
@@ -497,7 +497,7 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
 
     async fn save_block(&mut self, block: &BlockMessage) -> Result<(), CasperError> {
         let save_start = std::time::Instant::now();
-        let block_hash_str = format!("{:?}", block.block_hash);
+        let block_hash_str = PrettyPrinter::build_string_bytes(&block.block_hash);
 
         tracing::debug!("Saving block {} to store", block_hash_str);
 
