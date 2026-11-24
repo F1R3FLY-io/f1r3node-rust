@@ -230,24 +230,28 @@ The node limits these checks. It runs at most 2 checks at a time, and one at a t
 - Sender has stake in the main parent? Otherwise `InvalidSender`
 - **Equivocation**: a different held block has the same sender and sequence number. The node stores the block invalid with its sibling and judges nothing else of it. See [Equivocation](#equivocation)
 
-### Step 6: Dependencies Held as Equivocations
-- An equivocation is stored without a judgement of its contents. Before a block that builds on one or cites one is judged, the node judges that equivocation's contents with steps 7 to 10
+### Step 6: Phlo Limit
+- Every user deploy declares a phlo limit at or below the chain's `max-phlo-limit`? Otherwise `ExcessivePhloLimit`
+- This comes before every step that replays a deploy, so the cap bounds the replay that step 9 runs
+
+### Step 7: Dependencies Held as Equivocations
+- An equivocation is stored without a judgement of its contents. Before a block that builds on one or cites one is judged, the node judges that equivocation's contents with steps 6 to 11
 - Invalid contents make the block `InvalidParents` for a parent and `InvalidJustifications` for a justification. An equivocation that the node cannot judge yet defers the block
 - The node keeps a final verdict, so it judges an equivocation once for all blocks that depend on it
 
-### Step 7: Block Summary
+### Step 8: Block Summary
 - Recompute the block hash again
 - Structural consistency: block number progression, justification format
 
-### Step 8: Checkpoint Validation (Deploy Replay)
+### Step 9: Checkpoint Validation (Deploy Replay)
 - **Replay every deploy** via `ReplayRSpace` (replay runtime, not play runtime)
 - Verify computed post-state hash matches the block's claimed hash
 - This is the most expensive step — it proves the proposer executed correctly
 
-### Step 9: Neglected Equivocation
+### Step 10: Neglected Equivocation
 - The block's justifications include both blocks of a held pair, and the sender of the pair is bonded in the block's post-state: `NeglectedEquivocation`, block is invalid
 
-### Step 10: Deploy & State Validation
+### Step 11: Deploy & State Validation
 - Deploys are within scope, not duplicated
   - The duplicate check scans parent-scope ancestors inside the `deploy_lifespan` window, without a validity qualifier: a signature carried only by an invalid ancestor is still a repeat
   - The scan starts at `min(tip_start, max(oldest_valid_after + 1, floor - deploy_lifespan + 2))`, where `tip_start` is `max_parent_height + 1 - deploy_lifespan` and `oldest_valid_after` is the lowest `valid_after_block_number` in the block. The expiry check reads the floor clock, so a live deploy can have a copy below the tip window. The retry exemption and the retry gate read the same start, and so does the proposer's retry gate
@@ -574,7 +578,7 @@ Operator config files are minimal overrides — HOCON's fallback semantics merge
 
 **Genesis-locked parameters** (cannot change after network creation):
 - `fault-tolerance-threshold` — written into the proof-of-stake contract as an integer in parts per million and exposed via its `getFaultToleranceThresholdPpm` getter. Every node adopts the on-chain value at casper construction.
-- `max-parent-depth`, `deploy-lifespan`, `min-phlo-price`, `epoch-length` — baked into the PoS contract and exposed via its `getConsensusParameters` getter. Validity rules fork on these: parent spread, expiry, repeat-deploy, phlo floor, and the slash authorization and neglect epochs. Every node reads them back at casper construction and always adopts the on-chain values. If a value is absent or out of range, startup fails. No method changes them on a running shard.
+- `max-parent-depth`, `deploy-lifespan`, `min-phlo-price`, `epoch-length`, `max-phlo-limit` — baked into the PoS contract and exposed via its `getConsensusParameters` getter. Validity rules fork on these: parent spread, expiry, repeat-deploy, phlo floor, phlo cap, and the slash authorization and neglect epochs. Every node reads them back at casper construction and always adopts the on-chain values. If a value is absent or out of range, startup fails. No method changes them on a running shard.
 - `native-token-name`, `native-token-symbol`, `native-token-decimals` — baked into the `TokenMetadata` Rholang contract at `rho:system:tokenMetadata` with nonce `i64::MAX`, making them immutable via the registry's `insertSigned` protocol
 
 - `quarantine-length`, `bond-minimum`, `bond-maximum`, `number-of-active-validators` — macro parameters of the PoS contract. The contract enforces them in state.

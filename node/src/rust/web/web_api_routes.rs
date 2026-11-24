@@ -7,6 +7,7 @@ use axum::Router;
 use serde::Deserialize;
 
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
+use crate::rust::api::serde_types::blocks_by_heights_response::BlocksByHeightsHttpResponse;
 use crate::rust::api::web_api::{
     DataAtNameByBlockHashRequest, DeployResponse, PrepareRequest, PrepareResponse, ReadyResponse,
     RhoDataResponse, WebApi,
@@ -18,6 +19,16 @@ use crate::rust::web::shared_handlers::{
 #[derive(Debug, Deserialize)]
 pub struct ViewQuery {
     pub view: Option<String>,
+}
+
+// Query for `/blocks/{start}/{end}`. `view` behaves as elsewhere;
+// `include_missing` opts into the #1087 `pruned` / `unavailable` /
+// `pruneFloor` envelope. Absent or false keeps the pre-#1087 bare
+// array response so existing clients are unaffected.
+#[derive(Debug, Deserialize)]
+pub struct BlocksByHeightsQuery {
+    pub view: Option<String>,
+    pub include_missing: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -205,9 +216,10 @@ pub async fn last_finalized_block_handler(
         ("start" = i64, Path, description = "Start block height (inclusive)"),
         ("end" = i64, Path, description = "End block height (inclusive); clamped to the configured maximum range"),
         ("view" = Option<String>, Query, description = "Response view: `summary` (default) returns block headers only; `full` includes deploy list"),
+        ("include_missing" = Option<bool>, Query, description = "Opt into the #1087 envelope: when true, the body is `{ blocks, pruned, unavailable, pruneFloor }` where `pruned` (block_height <= pruneFloor, permanent on this node) and `unavailable` (block_height > pruneFloor, retry eligible) carry hashes topo_sort named at a walked height whose bodies this node no longer holds. Absent or false returns the pre-#1087 bare array of served blocks for backward compatibility."),
     ),
     responses(
-        (status = 200, description = "Blocks in the requested height range; may be empty if no blocks exist yet", body = Vec<BlockInfoSerde>),
+        (status = 200, description = "Bare array of blocks (default) or the #1087 envelope with `blocks`, `pruned`, `unavailable`, and `pruneFloor` when `include_missing=true`. 200 holds for the envelope even when `pruned` or `unavailable` are non-empty — partial success is the normal case under retention sweeps. The `oneOf` reflects the two shapes so code-generated clients can decode either.", body = BlocksByHeightsHttpResponse),
         (status = 400, description = "Non-integer path segment (`invalid_path_parameter`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`, `history_error`)", body = ApiErrorResponse),
     ),
@@ -216,7 +228,7 @@ pub async fn last_finalized_block_handler(
 pub async fn get_blocks_by_heights_handler(
     State(app_state): State<AppState>,
     AppPath((start, end)): AppPath<(i64, i64)>,
-    AppQuery(query): AppQuery<ViewQuery>,
+    AppQuery(query): AppQuery<BlocksByHeightsQuery>,
 ) -> Response {
     use crate::rust::api::web_api::ViewMode;
 
@@ -224,11 +236,22 @@ pub async fn get_blocks_by_heights_handler(
         Some("full") => ViewMode::Full,
         _ => ViewMode::Summary,
     };
+    let include_missing = query.include_missing.unwrap_or(false);
     let web_api = app_state.web_api.clone();
     match offload(move || async move { web_api.get_blocks_by_heights(start, end, view).await })
         .await
     {
-        Ok(response) => Json(response).into_response(),
+        // Default to the pre-#1087 bare array so existing consumers are
+        // unaffected. Only opted-in callers receive the envelope with the
+        // pruned / unavailable / prune_floor metadata. The untagged enum
+        // keeps the wire shape identical to each variant while letting
+        // the response-body schema cover both.
+        Ok(response) if include_missing => {
+            Json(BlocksByHeightsHttpResponse::Envelope(response)).into_response()
+        }
+        Ok(response) => {
+            Json(BlocksByHeightsHttpResponse::BareArray(response.blocks)).into_response()
+        }
         Err(e) => AppError(e).into_response(),
     }
 }
@@ -803,7 +826,9 @@ mod tests {
             _: i64,
             _: i64,
             _: ViewMode,
-        ) -> eyre::Result<Vec<crate::rust::api::serde_types::block_info::BlockInfoSerde>> {
+        ) -> eyre::Result<
+            crate::rust::api::serde_types::blocks_by_heights_response::BlocksByHeightsResponseSerde,
+        > {
             unimplemented!()
         }
         async fn is_finalized(&self, _: String) -> eyre::Result<bool> { unimplemented!() }
@@ -1183,6 +1208,7 @@ mod router_tests {
 
     use super::*;
     use crate::rust::api::admin_web_api::AdminWebApi;
+    use crate::rust::api::serde_types::blocks_by_heights_response::BlocksByHeightsResponseSerde;
     use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
     use crate::rust::api::web_api::{
         ApiStatus, BalanceResponse, BondStatusResponse, DelegationEntry, DelegationsResponse,
@@ -1281,6 +1307,7 @@ mod router_tests {
                 deploy_lifespan: Some(50),
                 max_user_deploys_per_block: Some(4),
                 max_parent_depth: Some(25),
+                max_phlo_limit: Some(20_000_000),
                 casper_protocol_version: Some(7),
                 accounting_authority_version: 8,
             })
@@ -1341,8 +1368,13 @@ mod router_tests {
             _: i64,
             _: i64,
             _: ViewMode,
-        ) -> eyre::Result<Vec<BlockInfoSerde>> {
-            Ok(vec![block_info()])
+        ) -> eyre::Result<BlocksByHeightsResponseSerde> {
+            Ok(BlocksByHeightsResponseSerde {
+                blocks: vec![block_info()],
+                pruned: Vec::new(),
+                unavailable: Vec::new(),
+                prune_floor: 0,
+            })
         }
 
         async fn is_finalized(&self, _: String) -> eyre::Result<bool> { Ok(true) }
@@ -1866,7 +1898,17 @@ mod router_tests {
 
         let (status, json) = get_response("/blocks/1/5").await;
         assert_eq!(status, StatusCode::OK);
+        // #1087: default response remains the pre-#1087 bare array so
+        // existing HTTP consumers keep working; the envelope is opt-in.
         assert_eq!(json.as_array().unwrap().len(), 1);
+
+        let (status, json) = get_response("/blocks/1/5?include_missing=true").await;
+        assert_eq!(status, StatusCode::OK);
+        // #1087: envelope shape when opted in.
+        assert_eq!(json["blocks"].as_array().unwrap().len(), 1);
+        assert!(json["pruned"].as_array().unwrap().is_empty());
+        assert!(json["unavailable"].as_array().unwrap().is_empty());
+        assert_eq!(json["pruneFloor"].as_i64().unwrap(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]

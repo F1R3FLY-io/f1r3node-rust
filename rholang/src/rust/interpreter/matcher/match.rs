@@ -3,6 +3,7 @@ use std::marker::{Send, Sync};
 use models::rhoapi::expr::ExprInstance;
 use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::{new_elist_expr, to_vec};
+use prost::Message;
 use rho_pure_eval::Env as PureEnv;
 use rspace_plus_plus::rspace::r#match::Match;
 
@@ -20,7 +21,8 @@ unsafe impl Sync for Matcher {}
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.scala - matchListPar
 impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
     fn get(&self, pattern: &BindPattern, data: &ListParWithRandom) -> Option<ListParWithRandom> {
-        let mut spatial_matcher = SpatialMatcherContext::new();
+        let mut spatial_matcher =
+            SpatialMatcherContext::new(data.encoded_len() + pattern.encoded_len());
 
         // Match against borrowed pattern/data — fold_match clones only the
         // per-element head pairs it actually walks, not the whole vectors.

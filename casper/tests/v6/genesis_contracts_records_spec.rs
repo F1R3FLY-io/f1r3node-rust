@@ -254,8 +254,8 @@ new rl(`rho:registry:lookup`), d(`rho:system:deployerId`), keccak(`rho:crypto:ke
       for (@e <- epoch) { @"check"!(("getEpochLength", e > 0)) } |
       for (@q <- quarantine) { @"check"!(("getQuarantineLength", q >= 0)) } |
       for (@t <- threshold) { @"check"!(("getFaultToleranceThresholdPpm", t >= 0)) } |
-      for (@(depth, lifespan, price, epochLength) <- params) {
-        @"check"!(("getConsensusParameters", depth != Nil and lifespan != Nil and price != Nil and epochLength > 0))
+      for (@(depth, lifespan, price, epochLength, phloLimit) <- params) {
+        @"check"!(("getConsensusParameters", depth != Nil and lifespan != Nil and price != Nil and epochLength > 0 and phloLimit > 0))
       } |
       @PoS!("withdraw", *d, *withdraw) |
       for (@(ok, why) <- withdraw) { @"check"!(("withdraw", not ok and why == "Unknown validator handle")) } |

@@ -138,8 +138,9 @@ pub async fn read_on_chain_consensus_parameters(
         .ok_or_else(|| {
             CasperError::RuntimeError(
                 "PoS contract exposes no getConsensusParameters: max-parent-depth, \
-                 deploy-lifespan, min-phlo-price and epoch-length are consensus values and MUST come \
-                 from chain state; refusing to fall back to local configuration (it \
+                 deploy-lifespan, min-phlo-price, epoch-length and max-phlo-limit are consensus \
+                 values and MUST come from chain state; refusing to fall back to local \
+                 configuration (it \
                  would diverge this node's validity verdicts from its peers')"
                     .to_string(),
             )

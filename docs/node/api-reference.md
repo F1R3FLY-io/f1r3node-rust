@@ -35,7 +35,7 @@ All HTTP endpoints return errors as structured JSON. Every non-2xx response body
 | `404` | Requested resource not found | `block_not_found`, `deploy_not_found`, `endpoint_not_found` |
 | `405` | HTTP method not allowed for this path | `method_not_allowed` |
 | `415` | Unsupported JSON content type | `invalid_request_body` |
-| `422` | Invalid JSON fields or execution failure | `invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `user_abort`, `aggregate_error` |
+| `422` | Invalid JSON fields or execution failure | `invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `nesting_limit_exceeded`, `user_abort`, `aggregate_error` |
 | `409` | Expected state conflict (empty mempool, propose refused) | `no_new_deploys`, `validator_not_bonded`, `not_enough_new_blocks`, `too_far_ahead_of_finalized` |
 | `500` | Node-side failure | `interpreter_internal_error`, `runtime_error`, `replay_failure`, `signing_error`, `kv_store_error`, `history_error`, `system_runtime_error`, `stream_error`, `lock_error`, `other_error`, `unknown_error` |
 | `502` | Upstream or peer communication failure | `comm_error`, `external_service_error` |
@@ -149,6 +149,7 @@ curl http://localhost:40403/api/status
   "deployLifespan": 300,
   "maxUserDeploysPerBlock": 128,
   "maxParentDepth": 25,
+  "maxPhloLimit": 20000000,
   "casperProtocolVersion": 7,
   "accountingAuthorityVersion": 8
 }
@@ -177,11 +178,12 @@ curl http://localhost:40403/api/status
 | `deployLifespan` | int/null | Blocks a deploy stays includable after its `validAfterBlockNumber`. `null` until casper is up |
 | `maxUserDeploysPerBlock` | int/null | Most user deploys one block carries. `null` until casper is up |
 | `maxParentDepth` | int/null | How far below the tip a block may cite, in blocks. `null` until casper is up |
+| `maxPhloLimit` | int/null | Largest `phloLimit` a deploy may declare, the chain-adopted cap. `null` until casper is up |
 | `casperProtocolVersion` | int/null | Casper protocol version of the shard, from its approved block. 7 is the cost-accounted protocol. `null` until casper is up |
 | `accountingAuthorityVersion` | int | Version of the node accounting module (8). It is independent of the protocol version |
 
-The four values from `latestBlockNumber` to `maxParentDepth` let a deploy client, such as a [deploy queue](deploy-queue.md), choose `validAfterBlockNumber`
-and pace its deploys.
+The values from `latestBlockNumber` to `maxParentDepth` let a deploy client, such as a
+[deploy queue](deploy-queue.md), choose `validAfterBlockNumber` and pace its deploys.
 
 ---
 
@@ -337,11 +339,11 @@ curl -X POST http://localhost:40413/api/deploy \
 | Status | Condition |
 |--------|-----------|
 | `200` | Deploy accepted; body is the deploy ID (hex string) |
-| `400` | Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, shard ID mismatch, forbidden key, or phlo price below minimum. A closed validity window or a past expiration timestamp causes `deploy_expired`. A `validAfterBlockNumber` above `latestBlockNumber + maxParentDepth` causes `invalid_deploy_window`. |
+| `400` | Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, shard ID mismatch, forbidden key, phlo price below minimum, or phlo limit above `maxPhloLimit`. A closed validity window or a past expiration timestamp causes `deploy_expired`. A `validAfterBlockNumber` above `latestBlockNumber + maxParentDepth` causes `invalid_deploy_window`. |
 | `409` | The node already holds the signature (`duplicate_deploy`) |
 | `413` | The deploy record is larger than `casper.deploy-admission.max-bytes` (`deploy_too_large`); do not retry |
 | `415` | Unsupported content type (`invalid_request_body`) |
-| `422` | Invalid JSON field type or value, including deploy parameter names and values, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
+| `422` | Invalid JSON field type or value, including deploy parameter names and values, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `nesting_limit_exceeded`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`) |
 | `502` | Peer communication failure (`comm_error`) |
 | `503` | The deploy pool is at its record or byte limit (`deploy_pool_busy`), admission changed during its attempts or the submission limit is reached (`deploy_admission_busy`), or the node's validator is not bonded (`validator_not_bonded`). Retry the same signed deploy later, or send it to another validator |
@@ -629,7 +631,7 @@ curl -X POST http://localhost:40453/api/explore-deploy \
 | `200` | Execution succeeded; returns channel data |
 | `400` | Malformed body, invalid Rholang, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `readonly_node_required`) |
 | `415` | Unsupported content type (`invalid_request_body`) |
-| `422` | Invalid JSON field type or value, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
+| `422` | Invalid JSON field type or value, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `nesting_limit_exceeded`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 | `502` | External service failure (`external_service_error`) |
 | `503` | Exploratory capacity is occupied (`observer_busy`); carries `Retry-After` |
@@ -661,7 +663,7 @@ curl -X POST http://localhost:40453/api/explore-deploy-by-block-hash \
 | `400` | Malformed body, invalid Rholang, invalid block hash, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`) |
 | `415` | Unsupported content type (`invalid_request_body`) |
 | `404` | Specified block not found (`block_not_found`) |
-| `422` | Invalid JSON field type or value, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
+| `422` | Invalid JSON field type or value, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `nesting_limit_exceeded`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 | `502` | External service failure (`external_service_error`) |
 | `503` | Exploratory capacity is occupied (`observer_busy`); carries `Retry-After` |
@@ -732,6 +734,7 @@ curl "http://localhost:40453/reporting/trace?blockHash=3bfdf56f...&forceReplay=f
 | `200` | Trace report returned |
 | `400` | `blockHash` query parameter is missing, empty, or contains non-hex characters; or node is not read-only (`invalid_query_parameter`, `invalid_hash`, `readonly_node_required`) |
 | `404` | Specified block not found (`block_not_found`) |
+| `422` | The block carries a deploy whose phlo limit is above `maxPhloLimit`, so it is not replayed. Genesis is exempt |
 | `500` | Node-side failure (`replay_failure`, `kv_store_error`, `lock_error`, `unknown_error`) |
 
 ---
@@ -762,7 +765,7 @@ curl http://localhost:40453/api/balance/11112BpS5mG8...
 | `200` | Balance returned |
 | `400` | Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`) |
 | `404` | Specified block not found (`block_not_found`) |
-| `422` | Exploratory deploy execution failed (`rholang_execution_error`, `out_of_phlogistons`) |
+| `422` | Exploratory deploy execution failed (`rholang_execution_error`, `out_of_phlogistons`, `nesting_limit_exceeded`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 
 #### `GET /api/registry/{uri}`
@@ -787,7 +790,7 @@ curl http://localhost:40453/api/registry/rho:id:abc...
 | `200` | Data returned |
 | `400` | Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`) |
 | `404` | Specified block not found (`block_not_found`) |
-| `422` | Exploratory deploy execution failed (`rholang_execution_error`, `out_of_phlogistons`) |
+| `422` | Exploratory deploy execution failed (`rholang_execution_error`, `out_of_phlogistons`, `nesting_limit_exceeded`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 
 #### `GET /api/validators`
@@ -983,7 +986,7 @@ curl -X POST http://localhost:40453/api/estimate-cost \
  | `400` | Malformed body, invalid Rholang, invalid block hash, invalid deployer key, or node is not read-only (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`) |
 | `415` | Unsupported content type (`invalid_request_body`) |
 | `404` | Specified block not found (`block_not_found`) |
-| `422` | Invalid JSON field type or value, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`) |
+| `422` | Invalid JSON field type or value, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `nesting_limit_exceeded`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 
 ---

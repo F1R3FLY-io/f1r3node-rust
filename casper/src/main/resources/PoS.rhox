@@ -9,6 +9,7 @@
 // maxParentDepth - the parent-spread validity bound (citability horizon), in blocks
 // deployLifespan - the deploy validity window, in blocks
 // minPhloPrice - the minimum accepted deploy phlo price
+// maxPhloLimit - the largest phlo limit a user deploy may declare
 // posMultiSigPublicKeys - public keys
 // posMultiSigQuorum - how many confirmations are necessary to use multi-sig vault
 /*
@@ -690,12 +691,13 @@ in {
                 returnCh!($$faultToleranceThresholdPpm$$)
               } |
               // Exposes the consensus-critical shard parameters as one tuple:
-              // (maxParentDepth, deployLifespan, minPhloPrice). Validity rules
-              // fork on divergence, so every node reads these back at startup
-              // and runs them regardless of local configuration. Immutable
-              // until an on-chain parameter-upgrade mechanism exists.
+              // (maxParentDepth, deployLifespan, minPhloPrice, epochLength,
+              // maxPhloLimit). Validity rules fork on divergence, so every
+              // node reads these back at startup and runs them regardless of
+              // local configuration. Immutable until an on-chain
+              // parameter-upgrade mechanism exists.
               contract PoS(@"getConsensusParameters", returnCh) = {
-                returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$n, $$epochLength$$))
+                returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$n, $$epochLength$$, $$maxPhloLimit$$))
               } |
               contract PoS(@"getMinimumBond", returnCh) = {
                 returnCh!($$minimumBond$$n)

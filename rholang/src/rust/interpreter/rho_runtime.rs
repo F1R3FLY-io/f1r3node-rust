@@ -48,7 +48,6 @@ use super::system_processes::{
 };
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 use crate::rust::interpreter::external_services::ExternalServices;
-use crate::rust::interpreter::grpc_client_service::GrpcClientService;
 use crate::rust::interpreter::metrics_constants::{
     CREATE_CHECKPOINT_TIME_METRIC, CREATE_SOFT_CHECKPOINT_TIME_METRIC, EVALUATE_TIME_METRIC,
     RUNTIME_CHECKPOINT_TOTAL_METRIC, RUNTIME_METRICS_SOURCE,
@@ -1118,19 +1117,6 @@ fn std_system_processes() -> Vec<Definition> {
             remainder: None,
         },
         Definition {
-            urn: "rho:io:grpcTell".to_string(),
-            fixed_channel: FixedChannels::grpc_tell(),
-            arity: 3,
-            body_ref: BodyRefs::GRPC_TELL,
-            handler: Box::new(|ctx| {
-                Box::new(move |args| {
-                    let ctx = ctx.clone();
-                    Box::pin(async move { ctx.system_processes.clone().grpc_tell(args).await })
-                })
-            }),
-            remainder: None,
-        },
-        Definition {
             urn: "rho:io:devNull".to_string(),
             fixed_channel: FixedChannels::dev_null(),
             arity: 1,
@@ -1511,7 +1497,6 @@ fn dispatch_table_creator(
     extra_system_processes: &mut Vec<Definition>,
     openai_service: SharedOpenAIService,
     ollama_service: SharedOllamaService,
-    grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
     fs_handles: super::io::handle_table::FileHandleTable,
     urn_phase: UrnPhase,
@@ -1578,7 +1563,6 @@ fn dispatch_table_creator(
             urn_map.clone(),
             openai_service.clone(),
             ollama_service.clone(),
-            grpc_client_service.clone(),
             chromadb_service.clone(),
             urn_phase.clone(),
         ));
@@ -1658,7 +1642,6 @@ async fn setup_reducer(
     mergeable_tags: Arc<HashMap<Par, MergeType>>,
     openai_service: SharedOpenAIService,
     ollama_service: SharedOllamaService,
-    grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
     cost: _cost,
     fs_handles: super::io::handle_table::FileHandleTable,
@@ -1690,7 +1673,6 @@ async fn setup_reducer(
         extra_system_processes,
         openai_service,
         ollama_service,
-        grpc_client_service,
         chromadb_service,
         fs_handles,
         urn_phase.clone(),
@@ -1922,7 +1904,6 @@ where
     // Use services from ExternalServices
     let openai_service = external_services.openai.clone();
     let ollama_service = external_services.ollama.clone();
-    let grpc_client_service = external_services.grpc_client.clone();
     let chromadb_service = external_services.chroma.clone();
     let reducer = setup_reducer(
         charging_rspace,
@@ -1935,7 +1916,6 @@ where
         mergeable_tags,
         openai_service,
         ollama_service,
-        grpc_client_service,
         chromadb_service,
         cost,
         fs_handles,

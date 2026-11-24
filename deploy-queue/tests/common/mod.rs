@@ -81,6 +81,7 @@ fn status_body(highest: i64, lfb: i64) -> Value {
         "deployLifespan": 50,
         "maxUserDeploysPerBlock": 4,
         "maxParentDepth": 25,
+        "maxPhloLimit": 20_000_000,
         "isValidator": true,
         "isReadOnly": false,
     })
@@ -192,12 +193,21 @@ where
 }
 
 pub fn deploy(valid_after: i64, shard_id: &str, seed: u8) -> Signed<DeployData> {
+    deploy_with_phlo_limit(valid_after, shard_id, seed, 100_000)
+}
+
+pub fn deploy_with_phlo_limit(
+    valid_after: i64,
+    shard_id: &str,
+    seed: u8,
+    phlo_limit: i64,
+) -> Signed<DeployData> {
     Signed::create(
         DeployData {
             term: "new x in { x!(1) }".to_string(),
             time_stamp: i64::from(seed),
             phlo_price: 1.into(),
-            phlo_limit: 100_000,
+            phlo_limit,
             valid_after_block_number: valid_after,
             shard_id: shard_id.to_string(),
             expiration_timestamp: None,

@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use common::{deploy, eventually, finalized_verdict, FakeNode, Queue};
+use common::{deploy, deploy_with_phlo_limit, eventually, finalized_verdict, FakeNode, Queue};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
@@ -424,6 +424,15 @@ async fn refusals_follow_the_node_rules() {
         queue.handle.intake(deploy(90, "other", 3)).await,
         Err(IntakeError::IllegalArgument(_))
     ));
+    assert!(matches!(
+        queue.handle.intake(deploy_with_phlo_limit(90, "root", 5, 20_000_001)).await,
+        Err(IntakeError::IllegalArgument(message)) if message.contains("maximum limit 20000000")
+    ));
+    queue
+        .handle
+        .intake(deploy_with_phlo_limit(90, "root", 6, 20_000_000))
+        .await
+        .unwrap();
     assert!(matches!(
         queue.handle.intake(deploy(50, "root", 4)).await,
         Err(IntakeError::DeployExpired(_))
