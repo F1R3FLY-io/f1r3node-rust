@@ -104,30 +104,86 @@ reference:
 
 ## Operator procedure
 
-1. Install the pinned runtime with bash scripts/ci/install-cbc-runtime.sh.
-2. Review the verification report and its source hashes.
-3. Configure the external allowed-signers file through cbc.acceptanceAllowedSigners.
-4. Export each cleanup approval with scripts/cbc.sh acceptance-payload and the cleanup claim ID.
-5. Complete the maintainer identity, timestamp, and review reference in each payload.
-6. Sign each completed payload independently in the cbc-acceptance namespace.
-7. Import each approval with scripts/cbc.sh accept and the cleanup claim ID.
-8. Set CBC_ACCEPTANCE_ALLOWED_SIGNERS to the same approved public signers in the repository configuration.
-9. Run scripts/ci/check-soak-cleanup.sh before launch.
+1. Install the pinned runtime with `bash scripts/ci/install-cbc-runtime.sh`.
+2. Configure the external allowed-signers file through `cbc.acceptanceAllowedSigners`.
+3. Record a package with `bash scripts/ci/verify-soak-cleanup.sh --record --output docs/casper/cbc-evidence/runs/<run>`.
+   The command writes the unsigned approvals to a temporary directory outside the worktree and prints its path.
+   Use `--payloads <directory>` to select an empty directory outside the worktree.
+   On a macOS host, follow [Record a package](#record-a-package).
+4. Review the verification report and its source hashes.
+5. Build the signing kit with `bash scripts/ci/soak-cleanup-kit.sh --payloads <directory> --pull-request <number> --signer <principal> --kit <kit>`.
+   The kit must be outside the worktree.
+   The script sets the same maintainer identity, timestamp, and review reference in each approval.
+6. The maintainer signs each approval in the kit in the `cbc-acceptance` namespace.
+7. Import the kit with `bash scripts/ci/soak-cleanup-import.sh --kit <kit> --payloads <directory>`.
+8. Set `CBC_ACCEPTANCE_ALLOWED_SIGNERS` to the same approved public signers in the repository configuration.
+9. Run `scripts/ci/check-soak-cleanup.sh` before launch.
 
-The agent prepares unsigned payloads only.
+The agent prepares the package and the kit only.
+The maintainer keeps the private key and signs each approval.
 The shared skill requires independent maintainer acceptance.
 Existing claims can remain pending even when the focused cleanup claim passes.
 The full CbC discharge gate continues to report those independent gaps.
 
-For example, import one independently completed and signed cleanup approval:
+The import script checks the complete kit before it imports an approval:
 
-```bash
-bash scripts/cbc.sh accept scripts/run-merge-recovery-soak.sh \
-  --claim-id CLAIM-SOAK-CLEANUP-001 \
-  --approval approval.json --signature approval.json.sig
-bash scripts/ci/check-soak-cleanup.sh
-```
+- Each unsigned payload has one approval, and the kit has no other approval.
+- The approvals cover each manifest artifact exactly once.
+- Each approval still binds the current sources, evidence, and claim set.
+- Each approval differs from its payload only in the maintainer identity, timestamp, and review reference.
+- All approvals have the same maintainer identity, timestamp, and review reference.
+- Each signature verifies for its principal through the allowed-signers file.
 
-The verification package contains the unsigned payloads for all covered artifacts.
-Complete and sign each payload before import.
+After the import, the script runs `scripts/ci/check-soak-cleanup.sh`.
 The scoped admission gate passes only when every cleanup approval is current.
+
+The unsigned payloads and the kit are temporary files.
+The package keeps the report, the status, the model, the regressions, and the check logs.
+Each accepted envelope keeps the signed payload and its signature.
+
+### Record a package
+
+Two checks need Linux. On a macOS host, run them in a container.
+Start from a clean worktree, because the report records the control revision.
+
+1. Build the Linux check image one time:
+
+   ```bash
+   docker build -t soak-shell-test:local - <<'DOCKERFILE'
+   FROM debian:bookworm
+   RUN apt-get update && apt-get install -y --no-install-recommends jq procps git perl ca-certificates && rm -rf /var/lib/apt/lists/*
+   DOCKERFILE
+   ```
+
+2. Build the Linux harness:
+
+   ```bash
+   docker run --rm -v "$PWD:/src" -v "$HOME/.cargo/registry:/usr/local/cargo/registry" -w /src \
+     -e CARGO_TARGET_DIR=/src/target/linux-soak rust:bookworm \
+     cargo build --locked -p casper-soak --bin casper-soak
+   ```
+
+3. Get the TLA+ tools that CI uses, and check the hash:
+
+   ```bash
+   curl --fail --location --create-dirs --output "$HOME/.tla/tla2tools.jar" \
+     https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+   echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $HOME/.tla/tla2tools.jar" | shasum -a 256 --check
+   ```
+
+4. Record the package:
+
+   ```bash
+   TLA2TOOLS_JAR="$HOME/.tla/tla2tools.jar" bash scripts/ci/verify-soak-cleanup.sh --record \
+     --linux-image soak-shell-test:local \
+     --harness-binary "$PWD/target/linux-soak/debug/casper-soak" \
+     --output docs/casper/cbc-evidence/runs/<run>
+   ```
+
+5. Keep the check logs. The repository ignores `*.log` files, so add a `.gitignore` file to the run directory:
+
+   ```bash
+   printf '!check-*.log\n' > docs/casper/cbc-evidence/runs/<run>/.gitignore
+   ```
+
+Name each run `soak-cleanup-<YYYYMMDD>-<NN>`.
