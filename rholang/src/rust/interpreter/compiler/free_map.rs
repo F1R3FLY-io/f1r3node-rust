@@ -6,6 +6,14 @@ use models::rhoapi::connective::ConnectiveInstance;
 use super::free_context::FreeContext;
 use super::id_context::{IdContextPos, IdContextSpan};
 
+/// A name bound again: the name, the span it had before and the span that
+/// shadows it.
+pub type Shadowed = (
+    String,
+    rholang_parser::SourceSpan,
+    rholang_parser::SourceSpan,
+);
+
 /// The contents are shared between copies and copied on the first write, so
 /// handing the map to each of many sub-processes costs a reference count.
 #[derive(Debug, Clone, PartialEq)]
@@ -59,20 +67,8 @@ impl<T: Clone> FreeMap<T> {
         bindings.into_iter().fold(self, Self::put_pos)
     }
 
-    /// Returns the new map, and the shadowed variables with the span each had
-    /// before and the span that shadows it
-    #[allow(clippy::type_complexity)]
-    pub fn merge(
-        mut self,
-        free_map: FreeMap<T>,
-    ) -> (
-        FreeMap<T>,
-        Vec<(
-            String,
-            rholang_parser::SourceSpan,
-            rholang_parser::SourceSpan,
-        )>,
-    ) {
+    /// Returns the new map and the names it shadows.
+    pub fn merge(mut self, free_map: FreeMap<T>) -> (FreeMap<T>, Vec<Shadowed>) {
         let mut shadowed = Vec::new();
         let level_bindings = Arc::make_mut(&mut self.level_bindings);
         for (name, free_context) in Arc::unwrap_or_clone(free_map.level_bindings) {
