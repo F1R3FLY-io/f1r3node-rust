@@ -89,6 +89,7 @@ pub fn normalize_name<'ast>(
 
                         None => match input.free_map.get(name) {
                             None => {
+                                let level = input.free_map.next_level;
                                 let updated_free_map = input.free_map.put_pos((
                                     name.to_string(),
                                     VarSort::NameSort,
@@ -98,7 +99,7 @@ pub fn normalize_name<'ast>(
                                     expr_instance: Some(expr::ExprInstance::EVarBody(EVar {
                                         v: Some(model_var {
                                             var_instance: Some(var::VarInstance::FreeVar(
-                                                input.free_map.next_level as i32,
+                                                level as i32,
                                             )),
                                         }),
                                     })),
