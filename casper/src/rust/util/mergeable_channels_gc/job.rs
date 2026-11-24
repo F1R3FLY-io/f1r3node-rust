@@ -418,7 +418,11 @@ where
                         // dropping it here does not change any honest-path
                         // verdict — only a byzantine block that cites across
                         // this horizon can observe the deletion.
-                        if pass.conf.enable_block_store_gc && blocks.discard_stored(&hash)? {
+                        let is_genesis = block.header.parents_hash_list.is_empty();
+                        if pass.conf.enable_block_store_gc
+                            && !is_genesis
+                            && blocks.discard_stored(&hash)?
+                        {
                             blocks_deleted += 1;
                         }
                     }
@@ -1128,7 +1132,10 @@ mod tests {
 
         for hash in &all {
             let body_present = blocks.get(hash).unwrap().is_some();
-            if expected.contains(hash) {
+            if *hash == all[0] {
+                assert!(expected.contains(hash), "the pass must reach genesis");
+                assert!(body_present, "the genesis body must survive the pass");
+            } else if expected.contains(hash) {
                 assert!(!body_present, "flag-on must drop the body at {hash:?}",);
             } else {
                 assert!(
@@ -1178,9 +1185,10 @@ mod tests {
                     total_blocks_deleted += blocks_deleted;
                     total_mergeable_deleted += deleted;
                     assert_eq!(
-                        total_blocks_deleted, total_mergeable_deleted,
-                        "every collected block whose body was present is also \
-                         counted as a block-store deletion",
+                        total_blocks_deleted + 1,
+                        total_mergeable_deleted,
+                        "every collected block except genesis is also counted as a \
+                         block-store deletion",
                     );
                     assert!(total_blocks_deleted > 0);
                     return;
