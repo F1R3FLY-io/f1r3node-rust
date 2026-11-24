@@ -50,6 +50,7 @@ pub fn normalize_p_var<'ast>(
                     }
 
                     None => {
+                        let level = input.free_map.next_level;
                         let new_bindings_pair = input.free_map.put_span((
                             var_name.to_string(),
                             VarSort::ProcSort,
@@ -59,7 +60,7 @@ pub fn normalize_p_var<'ast>(
                         Ok(ProcVisitOutputs {
                             par: prepend_expr(
                                 input.par,
-                                new_freevar_expr(input.free_map.next_level as i32),
+                                new_freevar_expr(level as i32),
                                 input.bound_map_chain.depth() as i32,
                             ),
                             free_map: new_bindings_pair,

@@ -38,9 +38,10 @@ fn handle_var<'ast>(
                 None => {
                     // Use IdContextPos for single position Id types
                     let binding = (name.to_string(), VarSort::ProcSort, *pos);
+                    let level = known_free.next_level;
                     let new_bindings_pair = known_free.put_pos(binding);
                     let free_var = ModelsVar {
-                        var_instance: Some(FreeVar(known_free.next_level as i32)),
+                        var_instance: Some(FreeVar(level as i32)),
                     };
                     Ok((Some(free_var), new_bindings_pair))
                 }
