@@ -321,7 +321,11 @@ impl TransportLayerServer for GrpcTransportServer {
                                 Ok(())
                             }
                             Err(e) => {
-                                tracing::error!(error = %e, "gRPC message dispatch failed");
+                                if matches!(e, CommError::DnsResolutionFailed(_, _)) {
+                                    tracing::debug!(error = %e, "gRPC message dispatch failed");
+                                } else {
+                                    tracing::error!(error = %e, "gRPC message dispatch failed");
+                                }
                                 Err(e)
                             }
                         }

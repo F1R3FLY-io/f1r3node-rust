@@ -544,10 +544,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                             );
                             self.update_init_queue_metrics();
                         }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to enqueue BlockMessage into block_message channel: {:?}",
-                                e
+                        Err(_) => {
+                            tracing::debug!(
+                                "Dropping BlockMessage from {}: the LFS block requester is no longer running",
+                                peer
                             );
                         }
                     }
@@ -1381,11 +1381,21 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// because it looks like success.
     fn seed_floor_caches(&self, approved_block: &ApprovedBlock) -> Result<(), CasperError> {
         let Some(seed) = &approved_block.floor_seed else {
-            tracing::warn!(
-                "LFS restore has no floor seed: this node cannot derive finality above \
-                 its anchor and will defer on blocks it cannot judge. The serving peer \
-                 predates the seed, or could not derive one."
-            );
+            if approved_block
+                .candidate
+                .block
+                .header
+                .parents_hash_list
+                .is_empty()
+            {
+                tracing::info!("LFS restore is anchored at genesis; no floor seed is needed");
+            } else {
+                tracing::warn!(
+                    "LFS restore has no floor seed: this node cannot derive finality above \
+                     its anchor and will defer on blocks it cannot judge. The serving peer \
+                     predates the seed, or could not derive one."
+                );
+            }
             return Ok(());
         };
 
