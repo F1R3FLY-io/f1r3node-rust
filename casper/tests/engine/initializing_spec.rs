@@ -1250,7 +1250,7 @@ async fn run_restore_that_cites_pruned_genesis(
     fixture: &TestFixture,
     answer_from: comm::rust::peer_node::PeerNode,
     within: std::time::Duration,
-) -> bool {
+) -> (bool, bool) {
     use casper::rust::engine::engine::Engine;
     use models::casper::BlockRequestProto;
     use models::rust::block_implicits::get_random_block;
@@ -1373,24 +1373,47 @@ async fn run_restore_that_cites_pruned_genesis(
     })
     .await
     .is_ok();
+    let restarted = reached_floor_cache && {
+        respond_with_floor_cache(&engine, fixture.local.clone(), genesis_hash).await;
+        tokio::time::timeout(within, async {
+            while !fixture
+                .transport_layer
+                .get_all_requests()
+                .iter()
+                .any(|request| {
+                    matches!(&request.msg.message, Some(ProtocolMessage::Packet(packet))
+                        if packet.type_id == "ApprovedBlockRequest")
+                })
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .is_ok()
+    };
     restore.abort();
-    reached_floor_cache
+    (reached_floor_cache, restarted)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_restore_that_cites_pruned_genesis_passes_the_block_download() {
+async fn a_restore_that_cites_pruned_genesis_fails_once_nobody_ships_the_block() {
     let mut fixture = TestFixture::new().await;
     fixture.casper_shard_conf.max_parent_depth = 25;
     InitializingSpec::before_each(&fixture);
     let bootstrap = fixture.local.clone();
+    let (reached_floor_cache, restarted) = run_restore_that_cites_pruned_genesis(
+        &fixture,
+        bootstrap,
+        std::time::Duration::from_secs(60),
+    )
+    .await;
     assert!(
-        run_restore_that_cites_pruned_genesis(
-            &fixture,
-            bootstrap,
-            std::time::Duration::from_secs(60)
-        )
-        .await,
-        "the restore must go on to the floor cache"
+        reached_floor_cache,
+        "a pruned genesis must not hold the block download"
+    );
+    assert!(
+        restarted,
+        "a restore without the cited genesis must fail and ask for the approved state again"
     );
     InitializingSpec::after_each(&fixture);
 }
@@ -1400,13 +1423,14 @@ async fn a_pruned_answer_from_a_peer_that_is_not_the_bootstrap_is_ignored() {
     let mut fixture = TestFixture::new().await;
     fixture.casper_shard_conf.max_parent_depth = 25;
     InitializingSpec::before_each(&fixture);
+    let (reached_floor_cache, _) = run_restore_that_cites_pruned_genesis(
+        &fixture,
+        stranger(),
+        std::time::Duration::from_secs(20),
+    )
+    .await;
     assert!(
-        !run_restore_that_cites_pruned_genesis(
-            &fixture,
-            stranger(),
-            std::time::Duration::from_secs(20)
-        )
-        .await,
+        !reached_floor_cache,
         "a stranger must not end the wait for a block"
     );
     InitializingSpec::after_each(&fixture);

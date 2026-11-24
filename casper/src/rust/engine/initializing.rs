@@ -241,6 +241,28 @@ fn require_genesis_hash(block_dag_storage: &BlockDagKeyValueStorage) -> Result<(
     }
 }
 
+fn require_cited_genesis_block(
+    block_dag_storage: &BlockDagKeyValueStorage,
+    genesis_skipped: bool,
+) -> Result<(), CasperError> {
+    if !genesis_skipped {
+        return Ok(());
+    }
+    let held = match block_dag_storage.genesis_hash()? {
+        Some(genesis) => block_dag_storage.get_representation()?.contains(&genesis)?,
+        None => false,
+    };
+    if held {
+        return Ok(());
+    }
+    Err(CasperError::RuntimeError(
+        "The chain cites the genesis block, but the bootstrap has pruned its body and did not \
+         ship it. This node cannot process blocks that cite genesis, so it cannot follow this \
+         chain. Use a bootstrap that still holds the genesis block."
+            .to_string(),
+    ))
+}
+
 /// Publish the genesis hash of a restore as this node's chain identity.
 ///
 /// The restore does this before its replay and before it creates Casper. A
@@ -1117,6 +1139,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 .next_back()
                 .copied()
                 .unwrap_or(anchor_height);
+            let genesis_skipped = st.skipped.values().any(|height| *height == 0);
             self.populate_dag(st.coverage_bound(), st.height_map)
                 .await?;
             // After the blocks are in, never before: the caches are keyed by
@@ -1126,6 +1149,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             self.request_floor_cache(approved_block, restored_min, restored_max)
                 .await?;
             establish_chain_identity(&self.block_dag_storage, &self.rp_conf_ask.chain_id)?;
+            require_cited_genesis_block(&self.block_dag_storage, genesis_skipped)?;
         } else {
             tracing::warn!(
                 "request_approved_state: block_request_stream returned no final state (None)"
@@ -2516,6 +2540,54 @@ mod tests {
                 block_store2.get(&genesis.block_hash).unwrap().is_none(),
                 "a refused copy leaves no trace in the block store"
             );
+        });
+    }
+
+    #[test]
+    fn a_restore_that_skipped_genesis_needs_the_shipped_block() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut kvm = InMemoryStoreManager::new();
+            let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            let block = |number: i64, parents: Vec<BlockHash>| {
+                get_random_block(
+                    Some(number),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(parents),
+                    Some(vec![]),
+                    None,
+                    None,
+                    Some(vec![]),
+                    None,
+                    None,
+                )
+            };
+            let genesis = block(0, vec![]);
+            let anchor = block(5, vec![BlockHash::from(vec![0xaa; 32])]);
+            dag_storage.insert(&anchor, InsertMode::Approved).unwrap();
+
+            assert!(require_cited_genesis_block(&dag_storage, false).is_ok());
+            assert!(require_cited_genesis_block(&dag_storage, true).is_err());
+
+            dag_storage
+                .record_genesis_hash(genesis.block_hash.clone())
+                .unwrap();
+            let error = require_cited_genesis_block(&dag_storage, true).unwrap_err();
+            assert!(!is_permanent_restore_failure(&error));
+
+            dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+            assert!(require_cited_genesis_block(&dag_storage, true).is_ok());
         });
     }
 
