@@ -25,8 +25,8 @@ use futures::stream::StreamExt;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, CasperMessage, FloorCacheResponse, StoreItemsMessage,
-    StoreItemsMessageRequest,
+    ApprovedBlock, BlockMessage, BlockPrunedResponse, CasperMessage, FloorCacheResponse,
+    StoreItemsMessage, StoreItemsMessageRequest,
 };
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
@@ -59,6 +59,8 @@ use crate::rust::validator_identity::ValidatorIdentity;
 /// Shared by `Initializing::new` and `reinstall_sync_channels`, so a retry gets
 /// the same channel as the first attempt.
 const FLOOR_CACHE_CHANNEL_CAPACITY: usize = 4;
+
+const BLOCK_PRUNED_CHANNEL_CAPACITY: usize = 256;
 
 /// The minimum local height at which the startup horizon probe is still
 /// within peers' body-prune window. Matches the GC formula used in
@@ -145,6 +147,8 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     /// internally; both halves live here like the other sync channels.
     floor_cache_tx: Arc<Mutex<Option<mpsc::Sender<FloorCacheResponse>>>>,
     floor_cache_rx: Arc<Mutex<Option<mpsc::Receiver<FloorCacheResponse>>>>,
+    block_pruned_tx: Arc<Mutex<Option<mpsc::Sender<BlockPrunedResponse>>>>,
+    block_pruned_rx: Arc<Mutex<Option<mpsc::Receiver<BlockPrunedResponse>>>>,
     /// Observer / validator's own stored approved block at launch. Present on
     /// resume with on-disk data; `None` on a fresh join. When present, the
     /// first ApprovedBlock response from peers triggers the startup horizon
@@ -352,6 +356,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     ) -> Self {
         let (floor_cache_tx, floor_cache_rx) =
             mpsc::channel::<FloorCacheResponse>(FLOOR_CACHE_CHANNEL_CAPACITY);
+        let (block_pruned_tx, block_pruned_rx) =
+            mpsc::channel::<BlockPrunedResponse>(BLOCK_PRUNED_CHANNEL_CAPACITY);
         let state = Self {
             transport_layer,
             rp_conf_ask,
@@ -386,6 +392,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             state_items_tx,
             floor_cache_tx: Arc::new(Mutex::new(Some(floor_cache_tx))),
             floor_cache_rx: Arc::new(Mutex::new(Some(floor_cache_rx))),
+            block_pruned_tx: Arc::new(Mutex::new(Some(block_pruned_tx))),
+            block_pruned_rx: Arc::new(Mutex::new(Some(block_pruned_rx))),
             stored_approved_block: Arc::new(Mutex::new(stored_approved_block)),
         };
         metrics::gauge!(
@@ -575,6 +583,34 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                         tracing::warn!(
                             "floor-cache channel full or closed; dropping response (the \
                              request loop re-asks)"
+                        );
+                    }
+                }
+                Ok(())
+            }
+            CasperMessage::BlockPrunedResponse(resp) => {
+                if self.rp_conf_ask.bootstrap.as_ref() != Some(&peer) {
+                    tracing::debug!(
+                        "Ignoring BlockPrunedResponse from {}: only the bootstrap's answer counts.",
+                        peer
+                    );
+                    return Ok(());
+                }
+                if let Some(genesis) = self.rp_conf_ask.chain_id.get() {
+                    if (resp.block_height == 0) != (resp.hash == *genesis) {
+                        tracing::warn!(
+                            block = %PrettyPrinter::build_string_bytes(&resp.hash),
+                            height = resp.block_height,
+                            "BlockPrunedResponse disagrees with this node's genesis hash; ignoring it"
+                        );
+                        return Ok(());
+                    }
+                }
+                let sender = self.block_pruned_tx.lock().unwrap().as_ref().cloned();
+                if let Some(tx) = sender {
+                    if tx.try_send(resp).is_err() {
+                        tracing::debug!(
+                            "pruned-block channel full or closed; the next request round asks again"
                         );
                     }
                 }
@@ -890,6 +926,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         install_slot(&self.floor_cache_tx, floor_cache_tx, "floor_cache_tx")?;
         install_slot(&self.floor_cache_rx, floor_cache_rx, "floor_cache_rx")?;
 
+        let (block_pruned_tx, block_pruned_rx) =
+            mpsc::channel::<BlockPrunedResponse>(BLOCK_PRUNED_CHANNEL_CAPACITY);
+        install_slot(&self.block_pruned_tx, block_pruned_tx, "block_pruned_tx")?;
+        install_slot(&self.block_pruned_rx, block_pruned_rx, "block_pruned_rx")?;
+
         self.block_message_queue_pending.store(0, Ordering::Relaxed);
         self.tuple_space_queue_pending.store(0, Ordering::Relaxed);
         Ok(())
@@ -976,6 +1017,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     CasperError::RuntimeError("Block message receiver not available".to_string())
                 })?;
 
+        let block_pruned_rx = self.block_pruned_rx.lock().unwrap().take().ok_or_else(|| {
+            CasperError::RuntimeError("Pruned block receiver not available".to_string())
+        })?;
+
         // Create block requester wrapper with needed components and stream
         let mut block_requester = BlockRequesterWrapper::new(
             &self.transport_layer,
@@ -1005,6 +1050,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 approved_block,
                 &empty_queue,
                 response_message_rx,
+                block_pruned_rx,
                 self.block_message_queue_pending.clone(),
                 min_block_number_for_deploy_lifespan,
                 lfs_request_timeout,
@@ -1071,7 +1117,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 .next_back()
                 .copied()
                 .unwrap_or(anchor_height);
-            self.populate_dag(st.lower_bound, st.height_map).await?;
+            self.populate_dag(st.coverage_bound(), st.height_map)
+                .await?;
             // After the blocks are in, never before: the caches are keyed by
             // hash, and a floor entry pointing at a block the DAG does not hold
             // reads back as a missing block rather than as a floor.
