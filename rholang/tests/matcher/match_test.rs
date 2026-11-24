@@ -23,6 +23,7 @@ use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::*;
+use prost::Message;
 use rholang::rust::interpreter::matcher::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use rholang::rust::interpreter::util::{prepend_connective, prepend_expr};
 
@@ -34,7 +35,8 @@ fn assert_spatial_match(
     // println!("\ntest target: {:?}", target);
     // println!("\ntest pattern: {:?}", pattern);
 
-    let mut spatial_matcher = SpatialMatcherContext::new();
+    let mut spatial_matcher =
+        SpatialMatcherContext::new(target.encoded_len() + pattern.encoded_len());
     let spatial_match_result = spatial_matcher.spatial_match(target, pattern);
     let result = spatial_matcher.free_map;
 

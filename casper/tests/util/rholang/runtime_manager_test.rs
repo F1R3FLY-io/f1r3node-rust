@@ -211,7 +211,7 @@ async fn comput_state_should_charge_for_deploys() {
 fn bitmask_flags_deploy(body: &str) -> Signed<DeployData> {
     construct_deploy::source_deploy_now_full(
         format!(r#"new t(`rho:system:bitmaskMergeableTag`) in {{ {body} }}"#),
-        Some(100000),
+        Some(1_000_000),
         None,
         None,
         None,
@@ -403,6 +403,63 @@ async fn a_value_at_the_nesting_limit_is_stored_read_back_and_replayed() {
                 .await
                 .unwrap();
             assert_eq!(read_back, vec![expected]);
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// `match { 0 | … | ints-1 | "s0" | … | "s9" } { { String | … | rest } => … }`
+/// with ten `String` connectives: each scans past every int, so the match
+/// needs work that grows with `ints` and the cost ten times over.
+fn ten_string_connectives_match(ints: usize) -> String {
+    let target = (0..ints)
+        .map(|i| i.to_string())
+        .chain((0..10).map(|i| format!("\"s{i}\"")))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let pattern = ["String"; 10].join(" | ");
+    format!(
+        r#"match {{ {target} }} {{ {{ {pattern} | rest }} => {{ @"matched"!(1) }} _ => {{ @"unmatched"!(1) }} }}"#
+    )
+}
+
+/// A `match` is charged per step: with the phlo for its steps it matches, and
+/// without it the deploy fails out of phlo; both replay identically.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_match_is_charged_per_step_and_replays_identically() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            for (phlo_limit, fails) in [(1_000_000, false), (100_000, true)] {
+                let state = genesis_block.body.state.post_state_hash.clone();
+                let deploy = construct_deploy::source_deploy_now_full(
+                    ten_string_connectives_match(1000),
+                    Some(phlo_limit),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+                let (next, processed) =
+                    compute_state(&mut runtime_manager, &genesis_context, deploy, &state).await;
+                assert_eq!(processed.is_failed, fails, "phlo limit {phlo_limit}");
+                let replayed =
+                    replay_compute_state(&mut runtime_manager, &genesis_context, processed, &state)
+                        .await
+                        .unwrap();
+                assert_eq!(replayed, next);
+                if !fails {
+                    let taken = runtime_manager
+                        .get_data(
+                            next,
+                            &new_gstring_par("matched".to_string(), Vec::new(), false),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(taken, vec![new_gint_par(1, Vec::new(), false)]);
+                }
+            }
         },
     )
     .await

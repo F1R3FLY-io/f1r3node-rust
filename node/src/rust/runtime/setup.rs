@@ -745,12 +745,10 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
     let casper_launch = {
         // Determine which propose function to use based on autopropose config
-        let propose_f_for_launch = if conf.autopropose {
-            trigger_propose_f_opt.clone()
-        } else {
-            None
-        };
-
+        // Startup-propose on direct-to-Running path was tied to the former
+        // `connect_to_existing_network`; removed in #1059 as part of the
+        // unified Initializing resume. Validators still propose at their
+        // regular heartbeat cadence once Running.
         info!(
             autopropose = conf.autopropose,
             heartbeat = conf.casper.heartbeat_conf.enabled,
@@ -775,7 +773,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             estimator.clone(),
             // Explicit parameters
             ingest,
-            propose_f_for_launch,
             conf.casper.clone(),
             !conf.protocol_client.disable_lfs,
             conf.protocol_server.disable_state_exporter,

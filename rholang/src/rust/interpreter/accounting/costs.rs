@@ -106,6 +106,17 @@ pub fn boolean_or_cost() -> Cost { Cost::create(2, "boolean or") }
 
 pub fn comparison_cost() -> Cost { Cost::create(3, "comparison") }
 
+// A match step is a pattern level or an element a split reads or copies.
+pub fn match_steps_cost(steps: usize) -> Cost { Cost::create(steps as i64, "match steps") }
+
+// Strings compare byte by byte up to the shorter one's length.
+pub fn string_comparison_cost(left_len: usize, right_len: usize) -> Cost {
+    Cost::create(
+        comparison_cost().value + left_len.min(right_len) as i64,
+        "string comparison",
+    )
+}
+
 pub fn multiplication_cost() -> Cost { Cost::create(9, "multiplication") }
 
 pub fn division_cost() -> Cost { Cost::create(9, "division") }
@@ -261,15 +272,9 @@ pub fn union_cost(num_elements: i64) -> Cost {
     )
 }
 
-// GByteArray uses ByteString internally which in turn are implemented using
-// data structure called Rope for which append operation is O(logN)
-pub fn byte_array_append_cost(left_len: usize) -> Cost {
-    if left_len == 0 {
-        Cost::create(0, "byte array append")
-    } else {
-        let size = left_len as f64;
-        Cost::create(size.log(10.0) as i64, "byte array append")
-    }
+// Byte array append builds a new array of both operands' bytes.
+pub fn byte_array_append_cost(left_len: usize, right_len: usize) -> Cost {
+    Cost::create((left_len + right_len) as i64, "byte array append")
 }
 
 // According to scala doc Vector#append is eC so it's n*eC.
@@ -314,7 +319,21 @@ pub fn method_call_cost() -> Cost { Cost::create(10, "method call") }
 
 pub fn op_call_cost() -> Cost { Cost::create(10, "op call") }
 
-pub fn var_eval_cost() -> Cost { Cost::create(10, "var eval") }
+// A copy runs at memory bandwidth, far faster per byte than the
+// interpreter step one phlo prices, so copies are charged per this many bytes.
+const BYTES_COPIED_PER_PHLO: usize = 32;
+
+fn copy_cost(bytes: usize) -> i64 { bytes.div_ceil(BYTES_COPIED_PER_PHLO) as i64 }
+
+// Evaluating a collection evaluates each of its elements.
+pub fn collection_eval_cost(elements: usize) -> Cost {
+    Cost::create(10 * elements as i64, "collection eval")
+}
+
+// Reading a variable copies its bound value.
+pub fn var_eval_cost(value: &Par) -> Cost {
+    Cost::create(10 + copy_cost(value.encoded_len()), "var eval")
+}
 
 pub fn send_eval_cost() -> Cost { Cost::create(11, "send eval") }
 
@@ -353,6 +372,23 @@ pub fn storage_cost_consume(
 
     Cost::create(total_cost, "consume storage")
 }
+
+// A COMM hands copies of the fired continuation's body and the matched data to
+// dispatch, every time it fires.
+pub fn comm_body_copy_bytes(continuation: &TaggedContinuation) -> usize {
+    match continuation.tagged_cont.as_ref() {
+        Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(body), ..
+        })) => body.encoded_len(),
+        _ => 0,
+    }
+}
+
+pub fn comm_data_copy_bytes(matched: &ListParWithRandom) -> usize {
+    matched.pars.iter().map(|par| par.encoded_len()).sum()
+}
+
+pub fn comm_copy_cost(bytes: usize) -> Cost { Cost::create(copy_cost(bytes), "comm copy") }
 
 pub fn storage_cost_produce(channel: &Par, data: &ListParWithRandom) -> Cost {
     let channel_cost = channel.encoded_len() as i64;

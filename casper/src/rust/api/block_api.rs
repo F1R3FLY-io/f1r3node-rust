@@ -350,6 +350,71 @@ impl std::fmt::Display for BlockPrunedError {
 
 impl std::error::Error for BlockPrunedError {}
 
+/// The DAG metadata index names this hash but its body is not in the
+/// block store, and the retention sweep has NOT yet advanced past this
+/// height (`block_height > prune_floor`). The body is transiently
+/// unavailable — an LFS-restore backfill horizon, a pending-body race,
+/// or (rarely) a storage inconsistency. Distinct from
+/// [`BlockPrunedError`], which the server classifies only when the
+/// sweep has reached the height and retry on this node cannot
+/// succeed. Mapped to HTTP 503 by the web layer so clients retry.
+/// See #1087.
+#[derive(Debug)]
+pub struct BlockUnavailableError {
+    pub hash: String,
+    pub block_height: i64,
+    pub prune_floor: i64,
+}
+
+impl std::fmt::Display for BlockUnavailableError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Block {} (height {}) is known to this node but its body is \
+             not currently available (prune floor is at height {}). \
+             Retry later; this node has not pruned past this height.",
+            self.hash, self.block_height, self.prune_floor
+        )
+    }
+}
+
+impl std::error::Error for BlockUnavailableError {}
+
+/// One hash that `topo_sort` returned at a given height but whose block
+/// body was no longer available in the block store when
+/// [`BlockAPI::get_blocks_by_heights`] walked the range. See #1087.
+#[derive(Debug, Clone)]
+pub struct MissingBlockEntry {
+    pub hash: BlockHash,
+    pub block_height: i64,
+}
+
+/// Envelope for [`BlockAPI::get_blocks_by_heights`] /
+/// [`BlockAPI::get_blocks_by_heights_full`]. `served` is the flat list
+/// of blocks whose bodies the node still holds, in the same order as
+/// before #1087.
+///
+/// `pruned` and `unavailable` split the "missing body" cases by the
+/// same threshold the single-hash path uses:
+/// - `pruned`: `block_height <= prune_floor`. The retention sweep has
+///   advanced past this height — the gap is permanent on this node.
+///   Mirrors [`BlockPrunedError`] semantics.
+/// - `unavailable`: `block_height > prune_floor`. The DAG names the
+///   hash but the body is not currently in the store and the sweep
+///   has not reached this height. Mirrors [`BlockUnavailableError`]
+///   semantics; retry may succeed.
+///
+/// `prune_floor` is the effective-anchor snapshot taken once at the
+/// start of the walk; the same value applies to every entry in both
+/// buckets.
+#[derive(Debug, Clone)]
+pub struct BlocksByHeightsResponse<T> {
+    pub served: Vec<T>,
+    pub pruned: Vec<MissingBlockEntry>,
+    pub unavailable: Vec<MissingBlockEntry>,
+    pub prune_floor: i64,
+}
+
 #[derive(Debug)]
 pub struct InvalidHashError(pub String);
 
@@ -1292,7 +1357,7 @@ impl BlockAPI {
         start_block_number: i64,
         end_block_number: i64,
         max_blocks_limit: i32,
-    ) -> ApiErr<Vec<LightBlockInfo>> {
+    ) -> ApiErr<BlocksByHeightsResponse<LightBlockInfo>> {
         Self::get_blocks_by_heights_with_constructor(
             engine_cell,
             start_block_number,
@@ -1308,7 +1373,7 @@ impl BlockAPI {
         start_block_number: i64,
         end_block_number: i64,
         max_blocks_limit: i32,
-    ) -> ApiErr<Vec<BlockInfo>> {
+    ) -> ApiErr<BlocksByHeightsResponse<BlockInfo>> {
         Self::get_blocks_by_heights_with_constructor(
             engine_cell,
             start_block_number,
@@ -1325,7 +1390,7 @@ impl BlockAPI {
         end_block_number: i64,
         max_blocks_limit: i32,
         constructor: fn(&BlockMessage, f32, bool) -> A,
-    ) -> ApiErr<Vec<A>> {
+    ) -> ApiErr<BlocksByHeightsResponse<A>> {
         let error_message = format!(
             "Could not retrieve blocks from {} to {}",
             start_block_number, end_block_number
@@ -1336,14 +1401,94 @@ impl BlockAPI {
             start_block_number: i64,
             end_block_number: i64,
             constructor: fn(&BlockMessage, f32, bool) -> A,
-        ) -> ApiErr<Vec<A>> {
+        ) -> ApiErr<BlocksByHeightsResponse<A>> {
             let dag = casper.block_dag().await?;
 
             let topo_sort_dag = dag.topo_sort(start_block_number, Some(end_block_number))?;
 
             let hashes: Vec<BlockHash> = topo_sort_dag.into_iter().flatten().collect();
-            BlockAPI::held_block_infos(casper, &dag, &hashes, constructor, "get-blocks-by-heights")
-                .await
+            // Reuse PR #1113's single-snapshot metadata read across both
+            // served-block construction and missing-body classification.
+            // `lookup_many` reads every hash's metadata in one pass, so
+            // the response cannot straddle a finalization — the same
+            // consistency guarantee `held_block_infos` gives for the
+            // held path extends to the pruned / unavailable split.
+            let metadata = dag.lookup_many(&hashes)?;
+
+            let mut held: Vec<BlockMessage> = Vec::new();
+            let mut held_metadata: Vec<Option<BlockMetadata>> = Vec::new();
+            let mut missing: Vec<MissingBlockEntry> = Vec::new();
+            for (hash, meta) in hashes.iter().zip(metadata.iter()) {
+                match casper.block_store().get(hash)? {
+                    Some(block) => {
+                        held.push(block);
+                        held_metadata.push(meta.clone());
+                    }
+                    None => match meta {
+                        Some(m) => missing.push(MissingBlockEntry {
+                            hash: hash.clone(),
+                            block_height: m.block_number,
+                        }),
+                        None => tracing::debug!(
+                            "get-blocks-by-heights skipping hash {} with no DAG metadata",
+                            PrettyPrinter::build_string_bytes(hash)
+                        ),
+                    },
+                }
+            }
+
+            // Read the retention floor *after* the walk. GC raises the
+            // anchor with fetch_max before Delete removes any body, so a
+            // body we observed missing must have had its height already
+            // passed by the anchor at the moment the delete happened.
+            // A post-walk load therefore cannot miss a GC advance that
+            // caused one of our observed misses, and a height > floor
+            // entry is genuinely not yet reached by the sweep rather
+            // than a race window artifact. See PR #1097 review.
+            let prune_floor = casper
+                .effective_anchor_handle()
+                .load(std::sync::atomic::Ordering::Acquire);
+            let (pruned, unavailable): (Vec<_>, Vec<_>) = missing
+                .into_iter()
+                .partition(|entry| entry.block_height <= prune_floor);
+
+            for entry in &pruned {
+                tracing::debug!(
+                    "get-blocks-by-heights pruned block {} at height {} (prune_floor={})",
+                    PrettyPrinter::build_string_bytes(&entry.hash),
+                    entry.block_height,
+                    prune_floor
+                );
+            }
+            for entry in &unavailable {
+                tracing::debug!(
+                    "get-blocks-by-heights unavailable block {} at height {} (prune_floor={})",
+                    PrettyPrinter::build_string_bytes(&entry.hash),
+                    entry.block_height,
+                    prune_floor
+                );
+            }
+
+            let mut served = Vec::with_capacity(held.len());
+            for (block, meta) in held.iter().zip(&held_metadata) {
+                served.push(
+                    BlockAPI::block_info_from_metadata(
+                        casper,
+                        &dag,
+                        block,
+                        meta.as_ref(),
+                        constructor,
+                    )
+                    .await?,
+                );
+            }
+
+            Ok(BlocksByHeightsResponse {
+                served,
+                pruned,
+                unavailable,
+                prune_floor,
+            })
         }
 
         let effective_end_block_number =
@@ -1681,59 +1826,67 @@ impl BlockAPI {
                 )))
             })?;
 
-            let get_block = async {
-                let block_hash = prost::bytes::Bytes::from(hash_byte_string);
-                casper
-                    .block_store()
-                    .get(&block_hash)
-                    .map_err(|e| eyre::eyre!(e.to_string()))
-            };
-
-            let find_block = async {
+            // Resolve to the full 32-byte block hash up front, then use
+            // that same value for both the body lookup and (on miss) the
+            // DAG metadata classification. Reusing the resolved hash
+            // keeps a prefix query like `/block/aabbcc` and the matching
+            // full hash on the same classification path — without it a
+            // 6-char prefix returned 404 for a pruned block because the
+            // metadata index is keyed by full hash. See PR #1097 review.
+            let resolved_hash: Option<BlockHash> = if hash.len() == 64 {
+                Some(prost::bytes::Bytes::from(hash_byte_string))
+            } else {
                 let dag = casper
                     .block_dag()
                     .await
                     .map_err(|e| eyre::eyre!(e.to_string()))?;
-                match dag.find(hash).map_err(|e| eyre::eyre!(e.to_string()))? {
-                    Some(block_hash) => casper
-                        .block_store()
-                        .get(&block_hash)
-                        .map_err(|e| eyre::eyre!(e.to_string())),
-                    None => Ok(None),
-                }
+                dag.find(hash).map_err(|e| eyre::eyre!(e.to_string()))?
             };
 
-            let block_f = if hash.len() == 64 {
-                get_block.await
-            } else {
-                find_block.await
+            let block_opt = match resolved_hash.as_ref() {
+                Some(bytes) => casper
+                    .block_store()
+                    .get(bytes)
+                    .map_err(|e| eyre::eyre!(e.to_string()))?,
+                None => None,
             };
 
-            let block = match block_f? {
+            let block = match block_opt {
                 Some(block) => block,
                 None => {
-                    // The body is missing. Distinguish "was it ever here"
-                    // (BlockNotFoundError) from "we had it, the retention
-                    // sweep deleted it" (BlockPrunedError). The DAG metadata
-                    // index is not swept by #1010 / #1045, so its presence
-                    // of the hash tells us we knew the block once.
+                    // Body is missing. Split "never seen"
+                    // (BlockNotFoundError) from the "DAG metadata present
+                    // but body absent" cases, which the retention sweep's
+                    // floor further splits into pruned-permanent (height
+                    // <= floor) vs transiently-unavailable (height >
+                    // floor). The DAG metadata index is not swept by
+                    // #1010 / #1045, so metadata presence tells us we
+                    // knew the block once.
                     let dag = casper.block_dag().await?;
-                    let padded_hash = pad_hex_string(hash);
-                    let hash_bytes = hex::decode(&padded_hash).map_err(|_| {
-                        eyre::Report::new(InvalidHashError(format!(
-                            "'{}' is not valid block hash",
-                            hash
-                        )))
-                    })?;
-                    let dag_hash: prost::bytes::Bytes = hash_bytes.into();
-                    return Err(match dag.lookup(&dag_hash)? {
-                        Some(metadata) => eyre::Report::new(BlockPrunedError {
-                            hash: hash.to_string(),
-                            block_height: metadata.block_number,
-                            prune_floor: casper
-                                .effective_anchor_handle()
-                                .load(std::sync::atomic::Ordering::Acquire),
-                        }),
+                    let prune_floor = casper
+                        .effective_anchor_handle()
+                        .load(std::sync::atomic::Ordering::Acquire);
+                    return Err(match resolved_hash {
+                        Some(resolved) => {
+                            let full_hash = hex::encode(&resolved);
+                            match dag.lookup(&resolved)? {
+                                Some(metadata) if metadata.block_number <= prune_floor => {
+                                    eyre::Report::new(BlockPrunedError {
+                                        hash: full_hash,
+                                        block_height: metadata.block_number,
+                                        prune_floor,
+                                    })
+                                }
+                                Some(metadata) => eyre::Report::new(BlockUnavailableError {
+                                    hash: full_hash,
+                                    block_height: metadata.block_number,
+                                    prune_floor,
+                                }),
+                                None => eyre::Report::new(BlockNotFoundError {
+                                    hash: hash.to_string(),
+                                }),
+                            }
+                        }
                         None => eyre::Report::new(BlockNotFoundError {
                             hash: hash.to_string(),
                         }),

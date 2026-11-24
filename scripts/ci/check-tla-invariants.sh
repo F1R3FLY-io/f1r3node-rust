@@ -118,6 +118,7 @@ POST_FIX_CONFIGS=(
     node_observation/MC_PairedForkChoice
     node_observation/MC_DisplayProjection
     scope_trapped_gc/MC_ScopeTrappedGC
+    below_horizon_recovery/MC_BelowHorizonRecovery
 )
 
 TLC_WORKERS=auto

@@ -3,27 +3,21 @@
 use std::collections::HashMap;
 
 use super::rholang::sorter::ordering::Ordering;
-use super::rholang::sorter::par_sort_matcher::ParSortMatcher;
-use super::rholang::sorter::sortable::Sortable;
 use crate::rhoapi::Par;
 
 #[derive(Clone, Debug)]
 pub struct SortedParMap {
     pub ps: HashMap<Par, Par>,
-    // TODO: Merge `sortedList` and `sortedMap` into one VectorMap once available - OLD
     pub sorted_list: Vec<(Par, Par)>,
-    sorted_map: HashMap<Par, Par>,
 }
 
 impl SortedParMap {
     pub fn create_from_map(map: HashMap<Par, Par>) -> Self {
         let sorted_list = Ordering::sort_map(&map);
-        let sorted_map = sorted_list.iter().cloned().collect();
 
         SortedParMap {
             ps: map,
             sorted_list,
-            sorted_map,
         }
     }
 
@@ -39,47 +33,13 @@ impl SortedParMap {
         self.sorted_list.iter().map(move |(k, v)| f((k, v)))
     }
 
-    // alias for '+'
-    pub fn insert(&mut self, kv: (Par, Par)) -> SortedParMap {
-        self.sorted_map.insert(kv.0, kv.1);
-        Self::create_from_map(self.sorted_map.clone())
-    }
-
-    // alias for '++'
-    pub fn extend(&mut self, kvs: Vec<(Par, Par)>) -> SortedParMap {
-        for kv in kvs {
-            self.insert(kv);
-        }
-        Self::create_from_map(self.sorted_map.clone())
-    }
-
-    // alias for '-'
-    pub fn remove(&mut self, key: Par) -> SortedParMap {
-        self.sorted_map.remove(&Self::sort(&key));
-        Self::create_from_map(self.sorted_map.clone())
-    }
-
-    // alias for '--'
-    pub fn remove_multiple(&mut self, keys: Vec<Par>) -> SortedParMap {
-        for key in keys {
-            self.sorted_map.remove(&Self::sort(&key));
-        }
-        Self::create_from_map(self.sorted_map.clone())
-    }
-
     pub fn keys(&self) -> Vec<Par> { self.sorted_list.iter().map(|kv| kv.0.clone()).collect() }
 
     pub fn values(&self) -> Vec<Par> { self.sorted_list.iter().map(|kv| kv.1.clone()).collect() }
 
     pub fn equals(&self, that: SortedParMap) -> bool { self.sorted_list == that.sorted_list }
 
-    pub fn length(&self) -> usize { self.sorted_list.len() }
-
-    pub fn is_empty(&self) -> bool {
-        self.ps.is_empty() && self.sorted_list.is_empty() && self.sorted_map.is_empty()
-    }
-
-    fn sort(par: &Par) -> Par { ParSortMatcher::sort_match(par).term.clone() }
+    pub fn is_empty(&self) -> bool { self.ps.is_empty() && self.sorted_list.is_empty() }
 }
 
 impl IntoIterator for SortedParMap {

@@ -14,7 +14,6 @@ pub mod env;
 pub mod errors;
 pub mod external_services;
 pub mod garbage;
-pub mod grpc_client_service;
 pub mod host_work;
 pub mod interpreter;
 pub mod io;

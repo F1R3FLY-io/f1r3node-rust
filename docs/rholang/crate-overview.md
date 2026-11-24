@@ -171,7 +171,6 @@ Rholang operations implemented in Rust, accessible via fixed unforgeable channel
 | `gpt4` | 20 | OpenAI GPT-4 (non-deterministic) |
 | `dalle3` | 21 | OpenAI DALL-E 3 (non-deterministic) |
 | `text_to_audio` | 22 | OpenAI TTS (non-deterministic) |
-| `grpc_tell` | 25 | External gRPC client |
 | `dev_null` | 26 | Discard output |
 | `abort` | 27 | Abort computation |
 | `ollama_chat` | 28 | Ollama chat (non-deterministic) |
@@ -279,7 +278,7 @@ The `cost_accounting_spec.rs` suite includes:
 - `total_cost_of_evaluation` -- verifies cost log internal consistency
 - Phlo exhaustion tests for single and multiple execution branches
 
-The `non_deterministic_processes_spec.rs` suite contains 9 replay consistency tests using the `evaluate_and_replay()` helper, which follows a play-checkpoint-rig-replay-verify cycle: evaluate the Rholang term, create a soft checkpoint, configure mock services to fail, replay from the checkpoint, and verify the replay trace matches the original. Tests cover GPT-4, DALL-E 3, TTS, and gRPC tell for both success and error cases.
+The `non_deterministic_processes_spec.rs` suite contains 7 replay consistency tests using the `evaluate_and_replay()` helper, which follows a play-checkpoint-rig-replay-verify cycle: evaluate the Rholang term, create a soft checkpoint, configure mock services to fail, replay from the checkpoint, and verify the replay trace matches the original. Tests cover GPT-4, DALL-E 3, and TTS for both success and error cases.
 
 **See also:** [rholang/ crate README](../../rholang/README.md) | [Rholang Tutorial](./rholangtut.md) | [Pattern Matching](./rholangmatchingtut.md) | [Ollama Integration](./ollama.md)
 

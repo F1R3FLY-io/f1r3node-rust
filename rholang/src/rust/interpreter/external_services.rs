@@ -7,7 +7,6 @@ use super::chromadb_service::{
     create_chromadb_service, create_noop_chromadb_service, SharedChromaDBService,
 };
 use super::errors::InterpreterError;
-use super::grpc_client_service::GrpcClientService;
 use super::ollama_service::{
     create_disabled_ollama_service, create_ollama_service, create_ollama_service_validated,
     OllamaConfig, SharedOllamaService,
@@ -22,7 +21,6 @@ use super::openai_service::{
 pub struct ExternalServices {
     pub openai: SharedOpenAIService,
     pub ollama: SharedOllamaService,
-    pub grpc_client: GrpcClientService,
     pub openai_enabled: bool,
     pub ollama_enabled: bool,
     pub is_validator: bool,
@@ -35,7 +33,6 @@ impl ExternalServices {
         Self {
             openai: create_openai_service(openai_config),
             ollama: create_ollama_service(ollama_config),
-            grpc_client: GrpcClientService::new_real(),
             openai_enabled: openai_config.enabled,
             ollama_enabled: ollama_config.enabled,
             is_validator: true,
@@ -44,12 +41,11 @@ impl ExternalServices {
     }
 
     /// Create external services for an observer node
-    /// Observers have OpenAI, Ollama and GrpcTell disabled for security
+    /// Observers have OpenAI and Ollama disabled for security
     pub fn for_observer() -> Self {
         Self {
             openai: create_noop_openai_service(),
             ollama: create_disabled_ollama_service(),
-            grpc_client: GrpcClientService::new_noop(),
             openai_enabled: false,
             ollama_enabled: false,
             is_validator: false,
@@ -63,7 +59,6 @@ impl ExternalServices {
         Self {
             openai: create_noop_openai_service(),
             ollama: create_disabled_ollama_service(),
-            grpc_client: GrpcClientService::new_noop(),
             openai_enabled: false,
             ollama_enabled: false,
             is_validator: false,
@@ -96,7 +91,6 @@ impl ExternalServices {
         Ok(Self {
             openai: create_openai_service(openai_config),
             ollama: create_ollama_service_validated(ollama_config).await?,
-            grpc_client: GrpcClientService::new_real(),
             openai_enabled: openai_config.enabled,
             ollama_enabled: ollama_config.enabled,
             is_validator: true,
