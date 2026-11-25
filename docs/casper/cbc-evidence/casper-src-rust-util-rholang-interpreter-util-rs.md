@@ -70,3 +70,38 @@ Claim:
   "verified_at": "2026-08-27T23:01:30Z"
 }
 ```
+
+---
+
+## 2026-11-25 — CLAIM-FINALITY-001 (base probe follows the merge base)
+
+- **Status:** discharged
+- **Adapter:** agentic
+- **Commit:** be4b3bec2
+- **Verified:** 2026-11-25T01:23:39Z
+
+Claim:
+
+> CLAIM-FINALITY-001 (docs/claims/settled-effect-probe-equivalence.md): `sig_settled_in_base` and the name-seed scan walk the state lineage of the merge base, the block whose state the merge builds on, so a merge that falls back to the floor drops no work of the main parent's lineage without a rejection record.
+
+```json
+{
+  "schema": "cbc-claim/v1",
+  "claim_id": "CLAIM-FINALITY-001",
+  "artifact": {
+    "path": "casper/src/rust/util/rholang/interpreter_util.rs",
+    "commit": "be4b3bec2",
+    "id": "casper-src-rust-util-rholang-interpreter-util-rs"
+  },
+  "claim": "CLAIM-FINALITY-001: sig_settled_in_base and merge_name_seeds take the scope anchor (the merge base), not the main parent, so the settled set describes the state the merge applies scope chains to.",
+  "adapter": "agentic",
+  "status": "discharged",
+  "evidence": {
+    "kind": "test",
+    "ref": "casper merging::floor_fallback_spec::a_merge_re_based_on_the_floor_accounts_for_the_main_parents_work",
+    "counterexample": null,
+    "detail": "The test drives compute_parents_post_state with real blocks onto the floor fallback path. With the main parent as the probe base, deploys of the main parent's lineage above the floor reach neither the merged state nor a rejection record, and the test fails. With the merge base, each either reaches the state or is recorded, and the test passes. The reference walk and the batched set (C2) are unchanged; only the probe argument moved."
+  },
+  "verified_at": "2026-11-25T01:23:39Z"
+}
+```
