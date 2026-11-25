@@ -13,6 +13,9 @@ GitHub can display the SVG files without a PlantUML extension.
 | [Storage](storage/README.md) | Named databases, record encodings, snapshots, files, and logical contract state |
 | [Type inventory](memory/inventory.md) | Searchable source-to-diagram index |
 | [Machine-readable inventory](memory/inventory.json) | Exact declared fields, source locations, and referenced type names |
+| [Memory cardinality and size](memory/sizing.md) | Per-field assessments, ownership rules, and production owner limits |
+| [Storage cardinality and size](storage/sizing.md) | Record-count growth, byte formulas, and physical accounting |
+| [Runtime observations](storage/observed.md) | Timestamped counts, page sizes, and bounded record-size samples |
 
 ## Scope
 

@@ -4,6 +4,157 @@
 
 ![catalog-casper-022](catalog-casper-022.svg)
 
+## Cardinality and Size
+
+[Method, units, limits, and runtime evidence](sizing.md). These are declaration-level assessments, not measured live counts.
+
+### GenesisCeremonyMaster
+
+Cardinality: 0..n live values. Current count and owner-level limits are not derivable from this declaration.
+
+Size: Sum of field inline layouts plus compiler padding, then uniquely owned allocations. repr and custom implementations can change layout.
+
+| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |
+| --- | --- | --- | --- |
+| `approve_protocol` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `transport_layer` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `rp_conf_ask` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+
+### GenesisValidator
+
+Cardinality: 0..n live values. Current count and owner-level limits are not derivable from this declaration.
+
+Size: Sum of field inline layouts plus compiler padding, then uniquely owned allocations. repr and custom implementations can change layout.
+
+| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |
+| --- | --- | --- | --- |
+| `ingest` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `casper_shard_conf` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `validator_id` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `block_approver` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `transport_layer` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `rp_conf_ask` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `connections_cell` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `last_approved_block` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `event_publisher` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `engine_cell` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `block_store` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `block_dag_storage` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `deploy_storage` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `rejected_deploy_buffer` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `rspace_state_manager` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `runtime_manager` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `estimator` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `seen_candidates` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `approved_block_pull_last` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `heartbeat_signal_ref` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `state_items_tx` | 0..1 present payload | Option layout includes any tag or niche optimization. Do not assume I(T) + 1 | None when absent. Present payload: 1 value. Follow the referenced declaration or external implementation. No allocation bound established. |
+
+### SeenCandidates
+
+Cardinality: 0..n live values. Current count and owner-level limits are not derivable from this declaration.
+
+Size: Sum of field inline layouts plus compiler padding, then uniquely owned allocations. repr and custom implementations can change layout.
+
+| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |
+| --- | --- | --- | --- |
+| `set` | 0..n distinct elements | Container and hasher implementation required | Element storage, owned allocations, spare capacity and index overhead. No type-level count cap |
+| `fifo` | 0..n elements | Container implementation required | Element storage, owned allocations, spare capacity or per-node links. No type-level count cap |
+| `max_entries` | 1 scalar | 8 B | None |
+
+### Initializing
+
+Cardinality: 0..n live values. Current count and owner-level limits are not derivable from this declaration.
+
+Size: Sum of field inline layouts plus compiler padding, then uniquely owned allocations. repr and custom implementations can change layout.
+
+| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |
+| --- | --- | --- | --- |
+| `transport_layer` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `rp_conf_ask` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `connections_cell` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `last_approved_block` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `block_store` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `block_dag_storage` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `deploy_storage` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `rejected_deploy_buffer` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `rspace_state_manager` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `ingest` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `casper_shard_conf` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `validator_id` | 0..1 present payload | Option layout includes any tag or niche optimization. Do not assume I(T) + 1 | None when absent. Present payload: 1 value. Follow the referenced declaration or external implementation. No allocation bound established. |
+| `the_init` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `block_message_rx` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `tuple_space_rx` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `block_message_tx` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `tuple_space_tx` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `block_message_queue_pending` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `tuple_space_queue_pending` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `trim_state` | 1 scalar | 1 B | None |
+| `disable_state_exporter` | 1 scalar | 1 B | None |
+| `start_requester` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `init_started_at` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `no_approved_block_retries` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `restore_failures` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `event_publisher` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `engine_cell` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `runtime_manager` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `estimator` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `heartbeat_signal_ref` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `state_items_tx` | 0..1 present payload | Option layout includes any tag or niche optimization. Do not assume I(T) + 1 | None when absent. Present payload: 1 value. Follow the referenced declaration or external implementation. No allocation bound established. |
+| `floor_cache_tx` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `floor_cache_rx` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `block_pruned_tx` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `block_pruned_rx` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+| `stored_approved_block` | 1 shared strong reference | Pointer or fat pointer, depending on target type | One shared allocation holds the target, counters and alignment. Count it once across all handles |
+
+### BlockRequesterWrapper
+
+Cardinality: 0..n live values. Current count and owner-level limits are not derivable from this declaration.
+
+Size: Sum of field inline layouts plus compiler padding, then uniquely owned allocations. repr and custom implementations can change layout.
+
+| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |
+| --- | --- | --- | --- |
+| `transport_layer` | 1 borrowed reference | Pointer or fat pointer. Referent layout required | No owned allocation. Referent: 1 value |
+| `connections_cell` | 1 borrowed reference | Pointer or fat pointer. Referent layout required | No owned allocation. Referent: 1 value |
+| `rp_conf_ask` | 1 borrowed reference | Pointer or fat pointer. Referent layout required | No owned allocation. Referent: 1 value |
+| `block_store` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+| `validate_block_fn` | 1 owned target | Pointer or fat pointer, depending on target type | I(target) and its owned allocations, plus allocator overhead. Zero-sized targets need no allocation |
+
+### TupleSpaceRequester
+
+Cardinality: 0..n live values. Current count and owner-level limits are not derivable from this declaration.
+
+Size: Sum of field inline layouts plus compiler padding, then uniquely owned allocations. repr and custom implementations can change layout.
+
+| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |
+| --- | --- | --- | --- |
+| `transport_layer` | 1 borrowed reference | Pointer or fat pointer. Referent layout required | No owned allocation. Referent: 1 value |
+| `rp_conf_ask` | 1 borrowed reference | Pointer or fat pointer. Referent layout required | No owned allocation. Referent: 1 value |
+
+### HorizonRequester
+
+Cardinality: 0..n live values. Current count and owner-level limits are not derivable from this declaration.
+
+Size: Sum of field inline layouts plus compiler padding, then uniquely owned allocations. repr and custom implementations can change layout.
+
+| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |
+| --- | --- | --- | --- |
+| `transport_layer` | 1 borrowed reference | Pointer or fat pointer. Referent layout required | No owned allocation. Referent: 1 value |
+| `rp_conf_ask` | 1 borrowed reference | Pointer or fat pointer. Referent layout required | No owned allocation. Referent: 1 value |
+
+### ReqStatus
+
+Cardinality: 0..n live values. Current count and owner-level limits are not derivable from this declaration.
+
+Size: Compiler enum layout plus allocations of the active variant only. Do not sum alternative variants.
+
+| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |
+| --- | --- | --- | --- |
+| `Init` | 1 mutually exclusive alternative | No payload. Enum discriminant layout required | None for this unit variant |
+| `Requested` | 1 mutually exclusive alternative | No payload. Enum discriminant layout required | None for this unit variant |
+| `Received` | 1 mutually exclusive alternative | No payload. Enum discriminant layout required | None for this unit variant |
+
 ## Cross-Page References
 
 - `BlockRequesterWrapper: block_store -> KeyValueBlockStore [catalog-block-storage-008.svg]`

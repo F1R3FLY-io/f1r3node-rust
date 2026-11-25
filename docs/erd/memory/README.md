@@ -22,6 +22,8 @@ The generated catalog contains the full declared fields and variants within the 
 Use the [type inventory](inventory.md) to find a type by name or source file.
 Each row links to a rendered diagram and its PlantUML source.
 Each `catalog-*.md` page embeds that diagram and lists resolved cross-page references.
+It also gives cardinality and size assessments for every entity and field.
+See [sizing rules and limits](sizing.md) and the [machine-readable assessments](sizing.json).
 
 | Source tree | Data covered |
 | --- | --- |

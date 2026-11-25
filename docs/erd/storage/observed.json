@@ -1,0 +1,4357 @@
+{
+  "schema_version": 1,
+  "started_utc": "2026-11-25T10:01:46Z",
+  "finished_utc": "2026-11-25T10:01:58Z",
+  "documentation_base_revision": "7a2ee6456e3cf4b11fd4147a6136a62233f9a62d",
+  "stores": [
+    {
+      "file_allocated_bytes": 13262848,
+      "file_length_bytes": 13258752,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/blockstorage",
+      "sample_started_unix_seconds": 1795600907,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "blocks",
+          "page_bytes": 11190272,
+          "page_size": 4096,
+          "records": 1033,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 1980765,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 24792,
+            "record_mean_bytes": 7737.36328125,
+            "record_min_bytes": 6071,
+            "records": 256,
+            "value_max_bytes": 24752,
+            "value_min_bytes": 6031
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 3656,
+      "container": "rnode.bootstrap"
+    },
+    {
+      "file_allocated_bytes": 9891840,
+      "file_length_bytes": 9887744,
+      "map_size_bytes": 107374182400,
+      "path": "/var/lib/rnode/dagstorage",
+      "sample_started_unix_seconds": 1795600907,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "blocks-approved",
+          "page_bytes": 1564672,
+          "page_size": 4096,
+          "records": 1,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 9,
+            "key_min_bytes": 9,
+            "key_value_bytes": 1560008,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 1560008,
+            "record_mean_bytes": 1560008,
+            "record_min_bytes": 1560008,
+            "records": 1,
+            "value_max_bytes": 1559999,
+            "value_min_bytes": 1559999
+          },
+          "status": "open"
+        },
+        {
+          "name": "block-metadata",
+          "page_bytes": 3403776,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 247296,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 966,
+            "record_mean_bytes": 966,
+            "record_min_bytes": 966,
+            "records": 256,
+            "value_max_bytes": 918,
+            "value_min_bytes": 918
+          },
+          "status": "open"
+        },
+        {
+          "name": "latest-messages",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 3,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 81,
+            "key_min_bytes": 81,
+            "key_value_bytes": 387,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 129,
+            "record_mean_bytes": 129,
+            "record_min_bytes": 129,
+            "records": 3,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-membership-v1",
+          "page_bytes": 274432,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 16640,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 65,
+            "record_mean_bytes": 65,
+            "record_min_bytes": 65,
+            "records": 256,
+            "value_max_bytes": 25,
+            "value_min_bytes": 25
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-height-v1",
+          "page_bytes": 184320,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 16384,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 64,
+            "record_mean_bytes": 64,
+            "record_min_bytes": 64,
+            "records": 256,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-children-v1",
+          "page_bytes": 1081344,
+          "page_size": 4096,
+          "records": 7023,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 72,
+            "key_min_bytes": 72,
+            "key_value_bytes": 22528,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 88,
+            "record_mean_bytes": 88,
+            "record_min_bytes": 88,
+            "records": 256,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-sequence-v1",
+          "page_bytes": 544768,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 110,
+            "key_min_bytes": 45,
+            "key_value_bytes": 32191,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 126,
+            "record_mean_bytes": 125.74609375,
+            "record_min_bytes": 61,
+            "records": 256,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-equivocations-v1",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "genesis-hash",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 1,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 23,
+            "key_min_bytes": 23,
+            "key_value_bytes": 71,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 71,
+            "record_mean_bytes": 71,
+            "record_min_bytes": 71,
+            "records": 1,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-history-state-v1",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 3,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 27,
+            "key_min_bytes": 20,
+            "key_value_bytes": 200,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 110,
+            "record_mean_bytes": 66.66666666666667,
+            "record_min_bytes": 43,
+            "records": 3,
+            "value_max_bytes": 90,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-gc-retry-v1",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 3,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 168,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 56,
+            "record_mean_bytes": 56,
+            "record_min_bytes": 56,
+            "records": 3,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "floor-index",
+          "page_bytes": 380928,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 24576,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 96,
+            "record_mean_bytes": 96,
+            "record_min_bytes": 96,
+            "records": 256,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "frontier-index",
+          "page_bytes": 376832,
+          "page_size": 4096,
+          "records": 2343,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 24576,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 96,
+            "record_mean_bytes": 96,
+            "record_min_bytes": 96,
+            "records": 256,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "mergeable-channel-cache",
+          "page_bytes": 1175552,
+          "page_size": 4096,
+          "records": 1032,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 133,
+            "key_min_bytes": 133,
+            "key_value_bytes": 150008,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 634,
+            "record_mean_bytes": 585.96875,
+            "record_min_bytes": 581,
+            "records": 256,
+            "value_max_bytes": 501,
+            "value_min_bytes": 448
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy-lifecycle-events",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy-lifecycle-terminal",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 14,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 87,
+            "key_min_bytes": 86,
+            "key_value_bytes": 2108,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 151,
+            "record_mean_bytes": 150.57142857142858,
+            "record_min_bytes": 150,
+            "records": 14,
+            "value_max_bytes": 64,
+            "value_min_bytes": 64
+          },
+          "status": "open"
+        },
+        {
+          "name": "carrier-index",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "carrier-index-seeds",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "carrier-index-meta",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 4,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 30,
+            "key_min_bytes": 25,
+            "key_value_bytes": 173,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 46,
+            "record_mean_bytes": 43.25,
+            "record_min_bytes": 41,
+            "records": 4,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 12974,
+      "container": "rnode.bootstrap"
+    },
+    {
+      "file_allocated_bytes": 32768,
+      "file_length_bytes": 32768,
+      "map_size_bytes": 1073741824,
+      "path": "/var/lib/rnode/deploystorage",
+      "sample_started_unix_seconds": 1795600907,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "deploy_storage",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "rejected_deploy_buffer",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy_storage_seeds",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "rejected_deploy_buffer_seeds",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy_storage_quarantine",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "rejected_deploy_buffer_quarantine",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 6,
+      "container": "rnode.bootstrap"
+    },
+    {
+      "file_allocated_bytes": 15548416,
+      "file_length_bytes": 15544320,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/rspace/history",
+      "sample_started_unix_seconds": 1795600907,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "rspace-history",
+          "page_bytes": 14819328,
+          "page_size": 4096,
+          "records": 11722,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 155017,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 8809,
+            "record_mean_bytes": 605.53515625,
+            "record_min_bytes": 150,
+            "records": 256,
+            "value_max_bytes": 8769,
+            "value_min_bytes": 110
+          },
+          "status": "open"
+        },
+        {
+          "name": "rspace-roots",
+          "page_bytes": 24576,
+          "page_size": 4096,
+          "records": 238,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 40,
+            "key_min_bytes": 20,
+            "key_value_bytes": 12147,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 60,
+            "record_mean_bytes": 51.03781512605042,
+            "record_min_bytes": 51,
+            "records": 238,
+            "value_max_bytes": 40,
+            "value_min_bytes": 11
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 5111,
+      "container": "rnode.bootstrap"
+    },
+    {
+      "file_allocated_bytes": 45838336,
+      "file_length_bytes": 45834240,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/rspace/cold",
+      "sample_started_unix_seconds": 1795600907,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "rspace-cold",
+          "page_bytes": 45268992,
+          "page_size": 4096,
+          "records": 12439,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 659857,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 40968,
+            "record_mean_bytes": 2577.56640625,
+            "record_min_bytes": 218,
+            "records": 256,
+            "value_max_bytes": 40920,
+            "value_min_bytes": 170
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 237,
+      "container": "rnode.bootstrap"
+    },
+    {
+      "file_allocated_bytes": 32768,
+      "file_length_bytes": 32768,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/eval/history",
+      "sample_started_unix_seconds": 1795600907,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "eval-history",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "eval-roots",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 2,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 40,
+            "key_min_bytes": 20,
+            "key_value_bytes": 111,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 60,
+            "record_mean_bytes": 55.5,
+            "record_min_bytes": 51,
+            "records": 2,
+            "value_max_bytes": 40,
+            "value_min_bytes": 11
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 3,
+      "container": "rnode.bootstrap"
+    },
+    {
+      "file_allocated_bytes": 12288,
+      "file_length_bytes": 12288,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/eval/cold",
+      "sample_started_unix_seconds": 1795600907,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "eval-cold",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 1,
+      "container": "rnode.bootstrap"
+    },
+    {
+      "file_allocated_bytes": 12288,
+      "file_length_bytes": 12288,
+      "map_size_bytes": 10995116277760,
+      "path": "/var/lib/rnode/reporting",
+      "sample_started_unix_seconds": 1795600907,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "reporting-cache",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 1,
+      "container": "rnode.bootstrap"
+    },
+    {
+      "path": "/var/lib/rnode/transaction",
+      "status": "environment absent",
+      "tables": [],
+      "container": "rnode.bootstrap"
+    },
+    {
+      "path": "/var/lib/rnode/rspace/casper/v2/channels",
+      "status": "environment absent",
+      "tables": [],
+      "container": "rnode.bootstrap"
+    },
+    {
+      "file_allocated_bytes": 13303808,
+      "file_length_bytes": 13299712,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/blockstorage",
+      "sample_started_unix_seconds": 1795600908,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "blocks",
+          "page_bytes": 11157504,
+          "page_size": 4096,
+          "records": 1030,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 1980808,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 24792,
+            "record_mean_bytes": 7737.53125,
+            "record_min_bytes": 6071,
+            "records": 256,
+            "value_max_bytes": 24752,
+            "value_min_bytes": 6031
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 3659,
+      "container": "rnode.validator1"
+    },
+    {
+      "file_allocated_bytes": 9748480,
+      "file_length_bytes": 9744384,
+      "map_size_bytes": 107374182400,
+      "path": "/var/lib/rnode/dagstorage",
+      "sample_started_unix_seconds": 1795600908,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "blocks-approved",
+          "page_bytes": 1564672,
+          "page_size": 4096,
+          "records": 1,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 9,
+            "key_min_bytes": 9,
+            "key_value_bytes": 1560008,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 1560008,
+            "record_mean_bytes": 1560008,
+            "record_min_bytes": 1560008,
+            "records": 1,
+            "value_max_bytes": 1559999,
+            "value_min_bytes": 1559999
+          },
+          "status": "open"
+        },
+        {
+          "name": "block-metadata",
+          "page_bytes": 3399680,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 247296,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 966,
+            "record_mean_bytes": 966,
+            "record_min_bytes": 966,
+            "records": 256,
+            "value_max_bytes": 918,
+            "value_min_bytes": 918
+          },
+          "status": "open"
+        },
+        {
+          "name": "latest-messages",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 3,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 81,
+            "key_min_bytes": 81,
+            "key_value_bytes": 387,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 129,
+            "record_mean_bytes": 129,
+            "record_min_bytes": 129,
+            "records": 3,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-membership-v1",
+          "page_bytes": 278528,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 16640,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 65,
+            "record_mean_bytes": 65,
+            "record_min_bytes": 65,
+            "records": 256,
+            "value_max_bytes": 25,
+            "value_min_bytes": 25
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-height-v1",
+          "page_bytes": 184320,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 16384,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 64,
+            "record_mean_bytes": 64,
+            "record_min_bytes": 64,
+            "records": 256,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-children-v1",
+          "page_bytes": 1089536,
+          "page_size": 4096,
+          "records": 7023,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 72,
+            "key_min_bytes": 72,
+            "key_value_bytes": 22528,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 88,
+            "record_mean_bytes": 88,
+            "record_min_bytes": 88,
+            "records": 256,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-sequence-v1",
+          "page_bytes": 536576,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 110,
+            "key_min_bytes": 45,
+            "key_value_bytes": 32191,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 126,
+            "record_mean_bytes": 125.74609375,
+            "record_min_bytes": 61,
+            "records": 256,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-equivocations-v1",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "genesis-hash",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 1,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 23,
+            "key_min_bytes": 23,
+            "key_value_bytes": 71,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 71,
+            "record_mean_bytes": 71,
+            "record_min_bytes": 71,
+            "records": 1,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-history-state-v1",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 4,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 27,
+            "key_min_bytes": 20,
+            "key_value_bytes": 240,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 110,
+            "record_mean_bytes": 60,
+            "record_min_bytes": 40,
+            "records": 4,
+            "value_max_bytes": 90,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-gc-retry-v1",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 3,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 168,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 56,
+            "record_mean_bytes": 56,
+            "record_min_bytes": 56,
+            "records": 3,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "floor-index",
+          "page_bytes": 372736,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 24576,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 96,
+            "record_mean_bytes": 96,
+            "record_min_bytes": 96,
+            "records": 256,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "frontier-index",
+          "page_bytes": 372736,
+          "page_size": 4096,
+          "records": 2343,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 24576,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 96,
+            "record_mean_bytes": 96,
+            "record_min_bytes": 96,
+            "records": 256,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "mergeable-channel-cache",
+          "page_bytes": 1167360,
+          "page_size": 4096,
+          "records": 1029,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 133,
+            "key_min_bytes": 133,
+            "key_value_bytes": 150008,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 634,
+            "record_mean_bytes": 585.96875,
+            "record_min_bytes": 581,
+            "records": 256,
+            "value_max_bytes": 501,
+            "value_min_bytes": 448
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy-lifecycle-events",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy-lifecycle-terminal",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 14,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 87,
+            "key_min_bytes": 86,
+            "key_value_bytes": 2108,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 151,
+            "record_mean_bytes": 150.57142857142858,
+            "record_min_bytes": 150,
+            "records": 14,
+            "value_max_bytes": 64,
+            "value_min_bytes": 64
+          },
+          "status": "open"
+        },
+        {
+          "name": "carrier-index",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "carrier-index-seeds",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "carrier-index-meta",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 4,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 30,
+            "key_min_bytes": 25,
+            "key_value_bytes": 173,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 46,
+            "record_mean_bytes": 43.25,
+            "record_min_bytes": 41,
+            "records": 4,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 12959,
+      "container": "rnode.validator1"
+    },
+    {
+      "file_allocated_bytes": 32768,
+      "file_length_bytes": 32768,
+      "map_size_bytes": 1073741824,
+      "path": "/var/lib/rnode/deploystorage",
+      "sample_started_unix_seconds": 1795600909,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "deploy_storage",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "rejected_deploy_buffer",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy_storage_seeds",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "rejected_deploy_buffer_seeds",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy_storage_quarantine",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "rejected_deploy_buffer_quarantine",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 6,
+      "container": "rnode.validator1"
+    },
+    {
+      "file_allocated_bytes": 15556608,
+      "file_length_bytes": 15552512,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/rspace/history",
+      "sample_started_unix_seconds": 1795600909,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "rspace-history",
+          "page_bytes": 14815232,
+          "page_size": 4096,
+          "records": 11722,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 155017,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 8809,
+            "record_mean_bytes": 605.53515625,
+            "record_min_bytes": 150,
+            "records": 256,
+            "value_max_bytes": 8769,
+            "value_min_bytes": 110
+          },
+          "status": "open"
+        },
+        {
+          "name": "rspace-roots",
+          "page_bytes": 24576,
+          "page_size": 4096,
+          "records": 238,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 40,
+            "key_min_bytes": 20,
+            "key_value_bytes": 12147,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 60,
+            "record_mean_bytes": 51.03781512605042,
+            "record_min_bytes": 51,
+            "records": 238,
+            "value_max_bytes": 40,
+            "value_min_bytes": 11
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 5971,
+      "container": "rnode.validator1"
+    },
+    {
+      "file_allocated_bytes": 52002816,
+      "file_length_bytes": 51998720,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/rspace/cold",
+      "sample_started_unix_seconds": 1795600909,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "rspace-cold",
+          "page_bytes": 51437568,
+          "page_size": 4096,
+          "records": 13173,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 1368278,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 62293,
+            "record_mean_bytes": 5344.8359375,
+            "record_min_bytes": 179,
+            "records": 256,
+            "value_max_bytes": 62253,
+            "value_min_bytes": 139
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 238,
+      "container": "rnode.validator1"
+    },
+    {
+      "file_allocated_bytes": 32768,
+      "file_length_bytes": 32768,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/eval/history",
+      "sample_started_unix_seconds": 1795600909,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "eval-history",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "eval-roots",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 2,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 40,
+            "key_min_bytes": 20,
+            "key_value_bytes": 111,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 60,
+            "record_mean_bytes": 55.5,
+            "record_min_bytes": 51,
+            "records": 2,
+            "value_max_bytes": 40,
+            "value_min_bytes": 11
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 3,
+      "container": "rnode.validator1"
+    },
+    {
+      "file_allocated_bytes": 12288,
+      "file_length_bytes": 12288,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/eval/cold",
+      "sample_started_unix_seconds": 1795600909,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "eval-cold",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 1,
+      "container": "rnode.validator1"
+    },
+    {
+      "file_allocated_bytes": 12288,
+      "file_length_bytes": 12288,
+      "map_size_bytes": 10995116277760,
+      "path": "/var/lib/rnode/reporting",
+      "sample_started_unix_seconds": 1795600909,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "reporting-cache",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 1,
+      "container": "rnode.validator1"
+    },
+    {
+      "path": "/var/lib/rnode/transaction",
+      "status": "environment absent",
+      "tables": [],
+      "container": "rnode.validator1"
+    },
+    {
+      "path": "/var/lib/rnode/rspace/casper/v2/channels",
+      "status": "environment absent",
+      "tables": [],
+      "container": "rnode.validator1"
+    },
+    {
+      "file_allocated_bytes": 13324288,
+      "file_length_bytes": 13320192,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/blockstorage",
+      "sample_started_unix_seconds": 1795600910,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "blocks",
+          "page_bytes": 11165696,
+          "page_size": 4096,
+          "records": 1030,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 1980808,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 24792,
+            "record_mean_bytes": 7737.53125,
+            "record_min_bytes": 6071,
+            "records": 256,
+            "value_max_bytes": 24752,
+            "value_min_bytes": 6031
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 3659,
+      "container": "rnode.validator2"
+    },
+    {
+      "file_allocated_bytes": 9953280,
+      "file_length_bytes": 9949184,
+      "map_size_bytes": 107374182400,
+      "path": "/var/lib/rnode/dagstorage",
+      "sample_started_unix_seconds": 1795600910,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "blocks-approved",
+          "page_bytes": 1564672,
+          "page_size": 4096,
+          "records": 1,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 9,
+            "key_min_bytes": 9,
+            "key_value_bytes": 1560008,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 1560008,
+            "record_mean_bytes": 1560008,
+            "record_min_bytes": 1560008,
+            "records": 1,
+            "value_max_bytes": 1559999,
+            "value_min_bytes": 1559999
+          },
+          "status": "open"
+        },
+        {
+          "name": "block-metadata",
+          "page_bytes": 3403776,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 247296,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 966,
+            "record_mean_bytes": 966,
+            "record_min_bytes": 966,
+            "records": 256,
+            "value_max_bytes": 918,
+            "value_min_bytes": 918
+          },
+          "status": "open"
+        },
+        {
+          "name": "latest-messages",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 3,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 81,
+            "key_min_bytes": 81,
+            "key_value_bytes": 387,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 129,
+            "record_mean_bytes": 129,
+            "record_min_bytes": 129,
+            "records": 3,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-membership-v1",
+          "page_bytes": 270336,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 16640,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 65,
+            "record_mean_bytes": 65,
+            "record_min_bytes": 65,
+            "records": 256,
+            "value_max_bytes": 25,
+            "value_min_bytes": 25
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-height-v1",
+          "page_bytes": 184320,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 16384,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 64,
+            "record_mean_bytes": 64,
+            "record_min_bytes": 64,
+            "records": 256,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-children-v1",
+          "page_bytes": 1089536,
+          "page_size": 4096,
+          "records": 7023,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 72,
+            "key_min_bytes": 72,
+            "key_value_bytes": 22528,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 88,
+            "record_mean_bytes": 88,
+            "record_min_bytes": 88,
+            "records": 256,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-sequence-v1",
+          "page_bytes": 540672,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 110,
+            "key_min_bytes": 45,
+            "key_value_bytes": 32191,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 126,
+            "record_mean_bytes": 125.74609375,
+            "record_min_bytes": 61,
+            "records": 256,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-equivocations-v1",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "genesis-hash",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 1,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 23,
+            "key_min_bytes": 23,
+            "key_value_bytes": 71,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 71,
+            "record_mean_bytes": 71,
+            "record_min_bytes": 71,
+            "records": 1,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-history-state-v1",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 4,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 27,
+            "key_min_bytes": 20,
+            "key_value_bytes": 240,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 110,
+            "record_mean_bytes": 60,
+            "record_min_bytes": 40,
+            "records": 4,
+            "value_max_bytes": 90,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-gc-retry-v1",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 3,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 168,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 56,
+            "record_mean_bytes": 56,
+            "record_min_bytes": 56,
+            "records": 3,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "floor-index",
+          "page_bytes": 393216,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 24576,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 96,
+            "record_mean_bytes": 96,
+            "record_min_bytes": 96,
+            "records": 256,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "frontier-index",
+          "page_bytes": 385024,
+          "page_size": 4096,
+          "records": 2343,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 24576,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 96,
+            "record_mean_bytes": 96,
+            "record_min_bytes": 96,
+            "records": 256,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "mergeable-channel-cache",
+          "page_bytes": 1204224,
+          "page_size": 4096,
+          "records": 1029,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 133,
+            "key_min_bytes": 133,
+            "key_value_bytes": 150008,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 634,
+            "record_mean_bytes": 585.96875,
+            "record_min_bytes": 581,
+            "records": 256,
+            "value_max_bytes": 501,
+            "value_min_bytes": 448
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy-lifecycle-events",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy-lifecycle-terminal",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 14,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 87,
+            "key_min_bytes": 86,
+            "key_value_bytes": 2108,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 151,
+            "record_mean_bytes": 150.57142857142858,
+            "record_min_bytes": 150,
+            "records": 14,
+            "value_max_bytes": 64,
+            "value_min_bytes": 64
+          },
+          "status": "open"
+        },
+        {
+          "name": "carrier-index",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "carrier-index-seeds",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "carrier-index-meta",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 4,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 30,
+            "key_min_bytes": 25,
+            "key_value_bytes": 173,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 46,
+            "record_mean_bytes": 43.25,
+            "record_min_bytes": 41,
+            "records": 4,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 12955,
+      "container": "rnode.validator2"
+    },
+    {
+      "file_allocated_bytes": 32768,
+      "file_length_bytes": 32768,
+      "map_size_bytes": 1073741824,
+      "path": "/var/lib/rnode/deploystorage",
+      "sample_started_unix_seconds": 1795600910,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "deploy_storage",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "rejected_deploy_buffer",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy_storage_seeds",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "rejected_deploy_buffer_seeds",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy_storage_quarantine",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "rejected_deploy_buffer_quarantine",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 6,
+      "container": "rnode.validator2"
+    },
+    {
+      "file_allocated_bytes": 15441920,
+      "file_length_bytes": 15437824,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/rspace/history",
+      "sample_started_unix_seconds": 1795600910,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "rspace-history",
+          "page_bytes": 14716928,
+          "page_size": 4096,
+          "records": 11722,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 155017,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 8809,
+            "record_mean_bytes": 605.53515625,
+            "record_min_bytes": 150,
+            "records": 256,
+            "value_max_bytes": 8769,
+            "value_min_bytes": 110
+          },
+          "status": "open"
+        },
+        {
+          "name": "rspace-roots",
+          "page_bytes": 24576,
+          "page_size": 4096,
+          "records": 238,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 40,
+            "key_min_bytes": 20,
+            "key_value_bytes": 12147,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 60,
+            "record_mean_bytes": 51.03781512605042,
+            "record_min_bytes": 51,
+            "records": 238,
+            "value_max_bytes": 40,
+            "value_min_bytes": 11
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 5973,
+      "container": "rnode.validator2"
+    },
+    {
+      "file_allocated_bytes": 52027392,
+      "file_length_bytes": 52023296,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/rspace/cold",
+      "sample_started_unix_seconds": 1795600910,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "rspace-cold",
+          "page_bytes": 51449856,
+          "page_size": 4096,
+          "records": 13173,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 1368278,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 62293,
+            "record_mean_bytes": 5344.8359375,
+            "record_min_bytes": 179,
+            "records": 256,
+            "value_max_bytes": 62253,
+            "value_min_bytes": 139
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 238,
+      "container": "rnode.validator2"
+    },
+    {
+      "file_allocated_bytes": 32768,
+      "file_length_bytes": 32768,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/eval/history",
+      "sample_started_unix_seconds": 1795600910,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "eval-history",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "eval-roots",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 2,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 40,
+            "key_min_bytes": 20,
+            "key_value_bytes": 111,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 60,
+            "record_mean_bytes": 55.5,
+            "record_min_bytes": 51,
+            "records": 2,
+            "value_max_bytes": 40,
+            "value_min_bytes": 11
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 3,
+      "container": "rnode.validator2"
+    },
+    {
+      "file_allocated_bytes": 12288,
+      "file_length_bytes": 12288,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/eval/cold",
+      "sample_started_unix_seconds": 1795600910,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "eval-cold",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 1,
+      "container": "rnode.validator2"
+    },
+    {
+      "file_allocated_bytes": 12288,
+      "file_length_bytes": 12288,
+      "map_size_bytes": 10995116277760,
+      "path": "/var/lib/rnode/reporting",
+      "sample_started_unix_seconds": 1795600911,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "reporting-cache",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 1,
+      "container": "rnode.validator2"
+    },
+    {
+      "path": "/var/lib/rnode/transaction",
+      "status": "environment absent",
+      "tables": [],
+      "container": "rnode.validator2"
+    },
+    {
+      "path": "/var/lib/rnode/rspace/casper/v2/channels",
+      "status": "environment absent",
+      "tables": [],
+      "container": "rnode.validator2"
+    },
+    {
+      "file_allocated_bytes": 13357056,
+      "file_length_bytes": 13352960,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/blockstorage",
+      "sample_started_unix_seconds": 1795600912,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "blocks",
+          "page_bytes": 11169792,
+          "page_size": 4096,
+          "records": 1030,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 1980808,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 24792,
+            "record_mean_bytes": 7737.53125,
+            "record_min_bytes": 6071,
+            "records": 256,
+            "value_max_bytes": 24752,
+            "value_min_bytes": 6031
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 3659,
+      "container": "rnode.validator3"
+    },
+    {
+      "file_allocated_bytes": 9269248,
+      "file_length_bytes": 9265152,
+      "map_size_bytes": 107374182400,
+      "path": "/var/lib/rnode/dagstorage",
+      "sample_started_unix_seconds": 1795600912,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "blocks-approved",
+          "page_bytes": 1564672,
+          "page_size": 4096,
+          "records": 1,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 9,
+            "key_min_bytes": 9,
+            "key_value_bytes": 1560008,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 1560008,
+            "record_mean_bytes": 1560008,
+            "record_min_bytes": 1560008,
+            "records": 1,
+            "value_max_bytes": 1559999,
+            "value_min_bytes": 1559999
+          },
+          "status": "open"
+        },
+        {
+          "name": "block-metadata",
+          "page_bytes": 3407872,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 247296,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 966,
+            "record_mean_bytes": 966,
+            "record_min_bytes": 966,
+            "records": 256,
+            "value_max_bytes": 918,
+            "value_min_bytes": 918
+          },
+          "status": "open"
+        },
+        {
+          "name": "latest-messages",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 3,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 81,
+            "key_min_bytes": 81,
+            "key_value_bytes": 387,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 129,
+            "record_mean_bytes": 129,
+            "record_min_bytes": 129,
+            "records": 3,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-membership-v1",
+          "page_bytes": 274432,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 16640,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 65,
+            "record_mean_bytes": 65,
+            "record_min_bytes": 65,
+            "records": 256,
+            "value_max_bytes": 25,
+            "value_min_bytes": 25
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-height-v1",
+          "page_bytes": 184320,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 16384,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 64,
+            "record_mean_bytes": 64,
+            "record_min_bytes": 64,
+            "records": 256,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-children-v1",
+          "page_bytes": 1085440,
+          "page_size": 4096,
+          "records": 7023,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 72,
+            "key_min_bytes": 72,
+            "key_value_bytes": 22528,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 88,
+            "record_mean_bytes": 88,
+            "record_min_bytes": 88,
+            "records": 256,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-sequence-v1",
+          "page_bytes": 540672,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 110,
+            "key_min_bytes": 45,
+            "key_value_bytes": 32191,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 126,
+            "record_mean_bytes": 125.74609375,
+            "record_min_bytes": 61,
+            "records": 256,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-equivocations-v1",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "genesis-hash",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 1,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 23,
+            "key_min_bytes": 23,
+            "key_value_bytes": 71,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 71,
+            "record_mean_bytes": 71,
+            "record_min_bytes": 71,
+            "records": 1,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-history-state-v1",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 4,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 27,
+            "key_min_bytes": 20,
+            "key_value_bytes": 240,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 110,
+            "record_mean_bytes": 60,
+            "record_min_bytes": 40,
+            "records": 4,
+            "value_max_bytes": 90,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-gc-retry-v1",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 3,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 168,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 56,
+            "record_mean_bytes": 56,
+            "record_min_bytes": 56,
+            "records": 3,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "floor-index",
+          "page_bytes": 380928,
+          "page_size": 4096,
+          "records": 2344,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 24576,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 96,
+            "record_mean_bytes": 96,
+            "record_min_bytes": 96,
+            "records": 256,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "frontier-index",
+          "page_bytes": 380928,
+          "page_size": 4096,
+          "records": 2343,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 24576,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 96,
+            "record_mean_bytes": 96,
+            "record_min_bytes": 96,
+            "records": 256,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "mergeable-channel-cache",
+          "page_bytes": 1142784,
+          "page_size": 4096,
+          "records": 1029,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 133,
+            "key_min_bytes": 133,
+            "key_value_bytes": 150008,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 634,
+            "record_mean_bytes": 585.96875,
+            "record_min_bytes": 581,
+            "records": 256,
+            "value_max_bytes": 501,
+            "value_min_bytes": 448
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy-lifecycle-events",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy-lifecycle-terminal",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 14,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 87,
+            "key_min_bytes": 86,
+            "key_value_bytes": 2108,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 151,
+            "record_mean_bytes": 150.57142857142858,
+            "record_min_bytes": 150,
+            "records": 14,
+            "value_max_bytes": 64,
+            "value_min_bytes": 64
+          },
+          "status": "open"
+        },
+        {
+          "name": "carrier-index",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "carrier-index-seeds",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "carrier-index-meta",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 4,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 30,
+            "key_min_bytes": 25,
+            "key_value_bytes": 173,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 46,
+            "record_mean_bytes": 43.25,
+            "record_min_bytes": 41,
+            "records": 4,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 12955,
+      "container": "rnode.validator3"
+    },
+    {
+      "file_allocated_bytes": 32768,
+      "file_length_bytes": 32768,
+      "map_size_bytes": 1073741824,
+      "path": "/var/lib/rnode/deploystorage",
+      "sample_started_unix_seconds": 1795600912,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "deploy_storage",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "rejected_deploy_buffer",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy_storage_seeds",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "rejected_deploy_buffer_seeds",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy_storage_quarantine",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "rejected_deploy_buffer_quarantine",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 6,
+      "container": "rnode.validator3"
+    },
+    {
+      "file_allocated_bytes": 15351808,
+      "file_length_bytes": 15347712,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/rspace/history",
+      "sample_started_unix_seconds": 1795600912,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "rspace-history",
+          "page_bytes": 14819328,
+          "page_size": 4096,
+          "records": 11722,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 155017,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 8809,
+            "record_mean_bytes": 605.53515625,
+            "record_min_bytes": 150,
+            "records": 256,
+            "value_max_bytes": 8769,
+            "value_min_bytes": 110
+          },
+          "status": "open"
+        },
+        {
+          "name": "rspace-roots",
+          "page_bytes": 24576,
+          "page_size": 4096,
+          "records": 238,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 40,
+            "key_min_bytes": 20,
+            "key_value_bytes": 12147,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 60,
+            "record_mean_bytes": 51.03781512605042,
+            "record_min_bytes": 51,
+            "records": 238,
+            "value_max_bytes": 40,
+            "value_min_bytes": 11
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 5970,
+      "container": "rnode.validator3"
+    },
+    {
+      "file_allocated_bytes": 51994624,
+      "file_length_bytes": 51990528,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/rspace/cold",
+      "sample_started_unix_seconds": 1795600912,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "rspace-cold",
+          "page_bytes": 51412992,
+          "page_size": 4096,
+          "records": 13173,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 1368278,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 62293,
+            "record_mean_bytes": 5344.8359375,
+            "record_min_bytes": 179,
+            "records": 256,
+            "value_max_bytes": 62253,
+            "value_min_bytes": 139
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 238,
+      "container": "rnode.validator3"
+    },
+    {
+      "file_allocated_bytes": 32768,
+      "file_length_bytes": 32768,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/eval/history",
+      "sample_started_unix_seconds": 1795600912,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "eval-history",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "eval-roots",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 2,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 40,
+            "key_min_bytes": 20,
+            "key_value_bytes": 111,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 60,
+            "record_mean_bytes": 55.5,
+            "record_min_bytes": 51,
+            "records": 2,
+            "value_max_bytes": 40,
+            "value_min_bytes": 11
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 3,
+      "container": "rnode.validator3"
+    },
+    {
+      "file_allocated_bytes": 12288,
+      "file_length_bytes": 12288,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/eval/cold",
+      "sample_started_unix_seconds": 1795600912,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "eval-cold",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 1,
+      "container": "rnode.validator3"
+    },
+    {
+      "file_allocated_bytes": 12288,
+      "file_length_bytes": 12288,
+      "map_size_bytes": 10995116277760,
+      "path": "/var/lib/rnode/reporting",
+      "sample_started_unix_seconds": 1795600912,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "reporting-cache",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 1,
+      "container": "rnode.validator3"
+    },
+    {
+      "path": "/var/lib/rnode/transaction",
+      "status": "environment absent",
+      "tables": [],
+      "container": "rnode.validator3"
+    },
+    {
+      "path": "/var/lib/rnode/rspace/casper/v2/channels",
+      "status": "environment absent",
+      "tables": [],
+      "container": "rnode.validator3"
+    },
+    {
+      "file_allocated_bytes": 13312000,
+      "file_length_bytes": 13307904,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/blockstorage",
+      "sample_started_unix_seconds": 1795600913,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "blocks",
+          "page_bytes": 11206656,
+          "page_size": 4096,
+          "records": 1036,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 1980765,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 24792,
+            "record_mean_bytes": 7737.36328125,
+            "record_min_bytes": 6071,
+            "records": 256,
+            "value_max_bytes": 24752,
+            "value_min_bytes": 6031
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 3659,
+      "container": "rnode.readonly"
+    },
+    {
+      "file_allocated_bytes": 9560064,
+      "file_length_bytes": 9555968,
+      "map_size_bytes": 107374182400,
+      "path": "/var/lib/rnode/dagstorage",
+      "sample_started_unix_seconds": 1795600913,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "blocks-approved",
+          "page_bytes": 1564672,
+          "page_size": 4096,
+          "records": 1,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 9,
+            "key_min_bytes": 9,
+            "key_value_bytes": 1560008,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 1560008,
+            "record_mean_bytes": 1560008,
+            "record_min_bytes": 1560008,
+            "records": 1,
+            "value_max_bytes": 1559999,
+            "value_min_bytes": 1559999
+          },
+          "status": "open"
+        },
+        {
+          "name": "block-metadata",
+          "page_bytes": 3411968,
+          "page_size": 4096,
+          "records": 2347,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 247296,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 966,
+            "record_mean_bytes": 966,
+            "record_min_bytes": 966,
+            "records": 256,
+            "value_max_bytes": 918,
+            "value_min_bytes": 918
+          },
+          "status": "open"
+        },
+        {
+          "name": "latest-messages",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 3,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 81,
+            "key_min_bytes": 81,
+            "key_value_bytes": 387,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 129,
+            "record_mean_bytes": 129,
+            "record_min_bytes": 129,
+            "records": 3,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-membership-v1",
+          "page_bytes": 266240,
+          "page_size": 4096,
+          "records": 2347,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 16640,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 65,
+            "record_mean_bytes": 65,
+            "record_min_bytes": 65,
+            "records": 256,
+            "value_max_bytes": 25,
+            "value_min_bytes": 25
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-height-v1",
+          "page_bytes": 184320,
+          "page_size": 4096,
+          "records": 2347,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 16384,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 64,
+            "record_mean_bytes": 64,
+            "record_min_bytes": 64,
+            "records": 256,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-children-v1",
+          "page_bytes": 1089536,
+          "page_size": 4096,
+          "records": 7032,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 72,
+            "key_min_bytes": 72,
+            "key_value_bytes": 22528,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 88,
+            "record_mean_bytes": 88,
+            "record_min_bytes": 88,
+            "records": 256,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-sequence-v1",
+          "page_bytes": 536576,
+          "page_size": 4096,
+          "records": 2347,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 110,
+            "key_min_bytes": 45,
+            "key_value_bytes": 32191,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 126,
+            "record_mean_bytes": 125.74609375,
+            "record_min_bytes": 61,
+            "records": 256,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-equivocations-v1",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "genesis-hash",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 1,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 23,
+            "key_min_bytes": 23,
+            "key_value_bytes": 71,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 71,
+            "record_mean_bytes": 71,
+            "record_min_bytes": 71,
+            "records": 1,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-history-state-v1",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 4,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 27,
+            "key_min_bytes": 20,
+            "key_value_bytes": 240,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 110,
+            "record_mean_bytes": 60,
+            "record_min_bytes": 40,
+            "records": 4,
+            "value_max_bytes": 90,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "dag-gc-retry-v1",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 3,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 168,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 56,
+            "record_mean_bytes": 56,
+            "record_min_bytes": 56,
+            "records": 3,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        },
+        {
+          "name": "floor-index",
+          "page_bytes": 380928,
+          "page_size": 4096,
+          "records": 2347,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 24576,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 96,
+            "record_mean_bytes": 96,
+            "record_min_bytes": 96,
+            "records": 256,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "frontier-index",
+          "page_bytes": 376832,
+          "page_size": 4096,
+          "records": 2346,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 48,
+            "key_min_bytes": 48,
+            "key_value_bytes": 24576,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 96,
+            "record_mean_bytes": 96,
+            "record_min_bytes": 96,
+            "records": 256,
+            "value_max_bytes": 48,
+            "value_min_bytes": 48
+          },
+          "status": "open"
+        },
+        {
+          "name": "mergeable-channel-cache",
+          "page_bytes": 1191936,
+          "page_size": 4096,
+          "records": 1035,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 133,
+            "key_min_bytes": 133,
+            "key_value_bytes": 150008,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 634,
+            "record_mean_bytes": 585.96875,
+            "record_min_bytes": 581,
+            "records": 256,
+            "value_max_bytes": 501,
+            "value_min_bytes": 448
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy-lifecycle-events",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy-lifecycle-terminal",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 14,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 87,
+            "key_min_bytes": 86,
+            "key_value_bytes": 2108,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 151,
+            "record_mean_bytes": 150.57142857142858,
+            "record_min_bytes": 150,
+            "records": 14,
+            "value_max_bytes": 64,
+            "value_min_bytes": 64
+          },
+          "status": "open"
+        },
+        {
+          "name": "carrier-index",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "carrier-index-seeds",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "carrier-index-meta",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 4,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 30,
+            "key_min_bytes": 25,
+            "key_value_bytes": 173,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 46,
+            "record_mean_bytes": 43.25,
+            "record_min_bytes": 41,
+            "records": 4,
+            "value_max_bytes": 16,
+            "value_min_bytes": 16
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 12973,
+      "container": "rnode.readonly"
+    },
+    {
+      "file_allocated_bytes": 32768,
+      "file_length_bytes": 32768,
+      "map_size_bytes": 1073741824,
+      "path": "/var/lib/rnode/deploystorage",
+      "sample_started_unix_seconds": 1795600913,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "deploy_storage",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "rejected_deploy_buffer",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy_storage_seeds",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "rejected_deploy_buffer_seeds",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "deploy_storage_quarantine",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "rejected_deploy_buffer_quarantine",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 6,
+      "container": "rnode.readonly"
+    },
+    {
+      "file_allocated_bytes": 15474688,
+      "file_length_bytes": 15470592,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/rspace/history",
+      "sample_started_unix_seconds": 1795600913,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "rspace-history",
+          "page_bytes": 14749696,
+          "page_size": 4096,
+          "records": 11722,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 155017,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 8809,
+            "record_mean_bytes": 605.53515625,
+            "record_min_bytes": 150,
+            "records": 256,
+            "value_max_bytes": 8769,
+            "value_min_bytes": 110
+          },
+          "status": "open"
+        },
+        {
+          "name": "rspace-roots",
+          "page_bytes": 24576,
+          "page_size": 4096,
+          "records": 238,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 40,
+            "key_min_bytes": 20,
+            "key_value_bytes": 12147,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 60,
+            "record_mean_bytes": 51.03781512605042,
+            "record_min_bytes": 51,
+            "records": 238,
+            "value_max_bytes": 40,
+            "value_min_bytes": 11
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 7456,
+      "container": "rnode.readonly"
+    },
+    {
+      "file_allocated_bytes": 52129792,
+      "file_length_bytes": 52125696,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/rspace/cold",
+      "sample_started_unix_seconds": 1795600913,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "rspace-cold",
+          "page_bytes": 51539968,
+          "page_size": 4096,
+          "records": 13178,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 1355895,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 62293,
+            "record_mean_bytes": 5296.46484375,
+            "record_min_bytes": 179,
+            "records": 256,
+            "value_max_bytes": 62253,
+            "value_min_bytes": 139
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 240,
+      "container": "rnode.readonly"
+    },
+    {
+      "file_allocated_bytes": 32768,
+      "file_length_bytes": 32768,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/eval/history",
+      "sample_started_unix_seconds": 1795600914,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "eval-history",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "eval-roots",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 2,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 40,
+            "key_min_bytes": 20,
+            "key_value_bytes": 111,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 60,
+            "record_mean_bytes": 55.5,
+            "record_min_bytes": 51,
+            "records": 2,
+            "value_max_bytes": 40,
+            "value_min_bytes": 11
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 3,
+      "container": "rnode.readonly"
+    },
+    {
+      "file_allocated_bytes": 12288,
+      "file_length_bytes": 12288,
+      "map_size_bytes": 1099511627776,
+      "path": "/var/lib/rnode/eval/cold",
+      "sample_started_unix_seconds": 1795600914,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "eval-cold",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 1,
+      "container": "rnode.readonly"
+    },
+    {
+      "file_allocated_bytes": 35684352,
+      "file_length_bytes": 35680256,
+      "map_size_bytes": 10995116277760,
+      "path": "/var/lib/rnode/reporting",
+      "sample_started_unix_seconds": 1795600914,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "reporting-cache",
+          "page_bytes": 35631104,
+          "page_size": 4096,
+          "records": 2338,
+          "sample": {
+            "complete": false,
+            "key_max_bytes": 40,
+            "key_min_bytes": 40,
+            "key_value_bytes": 3115512,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 39173,
+            "record_mean_bytes": 12169.96875,
+            "record_min_bytes": 9100,
+            "records": 256,
+            "value_max_bytes": 39133,
+            "value_min_bytes": 9060
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 2339,
+      "container": "rnode.readonly"
+    },
+    {
+      "path": "/var/lib/rnode/transaction",
+      "status": "environment absent",
+      "tables": [],
+      "container": "rnode.readonly"
+    },
+    {
+      "path": "/var/lib/rnode/rspace/casper/v2/channels",
+      "status": "environment absent",
+      "tables": [],
+      "container": "rnode.readonly"
+    },
+    {
+      "file_allocated_bytes": 16384,
+      "file_length_bytes": 16384,
+      "map_size_bytes": 17179869184,
+      "path": "/var/lib/deploy-queue",
+      "sample_started_unix_seconds": 1795600914,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "records",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "payloads",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "meta",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 1,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 6,
+            "key_min_bytes": 6,
+            "key_value_bytes": 10,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 10,
+            "record_mean_bytes": 10,
+            "record_min_bytes": 10,
+            "records": 1,
+            "value_max_bytes": 4,
+            "value_min_bytes": 4
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 1,
+      "container": "rnode.deploy-queue1"
+    },
+    {
+      "file_allocated_bytes": 16384,
+      "file_length_bytes": 16384,
+      "map_size_bytes": 17179869184,
+      "path": "/var/lib/deploy-queue",
+      "sample_started_unix_seconds": 1795600915,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "records",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "payloads",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "meta",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 1,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 6,
+            "key_min_bytes": 6,
+            "key_value_bytes": 10,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 10,
+            "record_mean_bytes": 10,
+            "record_min_bytes": 10,
+            "records": 1,
+            "value_max_bytes": 4,
+            "value_min_bytes": 4
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 1,
+      "container": "rnode.deploy-queue2"
+    },
+    {
+      "file_allocated_bytes": 16384,
+      "file_length_bytes": 16384,
+      "map_size_bytes": 17179869184,
+      "path": "/var/lib/deploy-queue",
+      "sample_started_unix_seconds": 1795600916,
+      "status": "read-only snapshot",
+      "tables": [
+        {
+          "name": "records",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "payloads",
+          "page_bytes": 0,
+          "page_size": 4096,
+          "records": 0,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": null,
+            "key_min_bytes": null,
+            "key_value_bytes": 0,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": null,
+            "record_mean_bytes": null,
+            "record_min_bytes": null,
+            "records": 0,
+            "value_max_bytes": null,
+            "value_min_bytes": null
+          },
+          "status": "open"
+        },
+        {
+          "name": "meta",
+          "page_bytes": 4096,
+          "page_size": 4096,
+          "records": 1,
+          "sample": {
+            "complete": true,
+            "key_max_bytes": 6,
+            "key_min_bytes": 6,
+            "key_value_bytes": 10,
+            "method": "first keys in LMDB order, not a random sample",
+            "record_max_bytes": 10,
+            "record_mean_bytes": 10,
+            "record_min_bytes": 10,
+            "records": 1,
+            "value_max_bytes": 4,
+            "value_min_bytes": 4
+          },
+          "status": "open"
+        }
+      ],
+      "transaction_id": 1,
+      "container": "rnode.deploy-queue3"
+    }
+  ],
+  "metrics": [
+    {
+      "container": "rnode.bootstrap",
+      "metrics": [
+        "dag_resident_child_keys 2344",
+        "parents_post_state_cache_size{source=\"f1r3fly.casper\"} 64",
+        "dag_lfb_height 780",
+        "dag_held_blocks 2344",
+        "dag_max_height 782",
+        "dag_resident_blocks 2344",
+        "dag_resident_edges 7023",
+        "block_index_cache_size{source=\"f1r3fly.casper\"} 8",
+        "dag_resident_cutoff 0"
+      ]
+    },
+    {
+      "container": "rnode.validator1",
+      "metrics": [
+        "dag_max_height 782",
+        "dag_resident_blocks 2344",
+        "dag_resident_cutoff 0",
+        "block_index_cache_size{source=\"f1r3fly.casper\"} 8",
+        "dag_held_blocks 2344",
+        "dag_resident_child_keys 2344",
+        "dag_resident_edges 7023",
+        "dag_lfb_height 780",
+        "parents_post_state_cache_size{source=\"f1r3fly.casper\"} 64"
+      ]
+    },
+    {
+      "container": "rnode.validator2",
+      "metrics": [
+        "block_index_cache_size{source=\"f1r3fly.casper\"} 8",
+        "dag_resident_cutoff 0",
+        "dag_held_blocks 2344",
+        "dag_max_height 782",
+        "parents_post_state_cache_size{source=\"f1r3fly.casper\"} 64",
+        "dag_resident_child_keys 2344",
+        "dag_lfb_height 780",
+        "dag_resident_blocks 2344",
+        "dag_resident_edges 7023"
+      ]
+    },
+    {
+      "container": "rnode.validator3",
+      "metrics": [
+        "dag_resident_edges 7023",
+        "dag_held_blocks 2344",
+        "dag_resident_child_keys 2344",
+        "parents_post_state_cache_size{source=\"f1r3fly.casper\"} 64",
+        "block_index_cache_size{source=\"f1r3fly.casper\"} 9",
+        "dag_resident_blocks 2344",
+        "dag_lfb_height 780",
+        "dag_resident_cutoff 0",
+        "dag_max_height 782"
+      ]
+    },
+    {
+      "container": "rnode.readonly",
+      "metrics": [
+        "dag_resident_blocks 2347",
+        "dag_resident_edges 7032",
+        "dag_resident_child_keys 2347",
+        "dag_lfb_height 781",
+        "dag_resident_cutoff 0",
+        "dag_held_blocks 2347",
+        "dag_max_height 783",
+        "block_index_cache_size{source=\"f1r3fly.casper\"} 8",
+        "parents_post_state_cache_size{source=\"f1r3fly.casper\"} 64"
+      ]
+    }
+  ],
+  "status": [
+    {
+      "container": "rnode.bootstrap",
+      "isReady": true,
+      "peers": 4,
+      "latestBlockNumber": 783,
+      "lastFinalizedBlockNumber": 780
+    },
+    {
+      "container": "rnode.validator1",
+      "isReady": true,
+      "peers": 4,
+      "latestBlockNumber": 783,
+      "lastFinalizedBlockNumber": 780
+    },
+    {
+      "container": "rnode.validator2",
+      "isReady": true,
+      "peers": 4,
+      "latestBlockNumber": 783,
+      "lastFinalizedBlockNumber": 780
+    },
+    {
+      "container": "rnode.validator3",
+      "isReady": true,
+      "peers": 4,
+      "latestBlockNumber": 783,
+      "lastFinalizedBlockNumber": 780
+    },
+    {
+      "container": "rnode.readonly",
+      "isReady": true,
+      "peers": 4,
+      "latestBlockNumber": 784,
+      "lastFinalizedBlockNumber": 781
+    }
+  ],
+  "containers": [
+    {
+      "container": "rnode.bootstrap",
+      "running": true,
+      "started": "2026-11-25T08:36:10.628438587Z",
+      "health": "healthy",
+      "oom_killed": false
+    },
+    {
+      "container": "rnode.validator1",
+      "running": true,
+      "started": "2026-11-25T08:36:10.612682909Z",
+      "health": "healthy",
+      "oom_killed": false
+    },
+    {
+      "container": "rnode.validator2",
+      "running": true,
+      "started": "2026-11-25T08:36:10.644913264Z",
+      "health": "healthy",
+      "oom_killed": false
+    },
+    {
+      "container": "rnode.validator3",
+      "running": true,
+      "started": "2026-11-25T08:36:10.611072286Z",
+      "health": "healthy",
+      "oom_killed": false
+    },
+    {
+      "container": "rnode.readonly",
+      "running": true,
+      "started": "2026-11-25T08:36:10.615340884Z",
+      "health": "healthy",
+      "oom_killed": false
+    },
+    {
+      "container": "rnode.deploy-queue1",
+      "running": true,
+      "started": "2026-11-25T08:36:10.983003204Z",
+      "health": "healthy",
+      "oom_killed": false
+    },
+    {
+      "container": "rnode.deploy-queue2",
+      "running": true,
+      "started": "2026-11-25T08:36:11.269688074Z",
+      "health": "healthy",
+      "oom_killed": false
+    },
+    {
+      "container": "rnode.deploy-queue3",
+      "running": true,
+      "started": "2026-11-25T08:36:11.038773327Z",
+      "health": "healthy",
+      "oom_killed": false
+    }
+  ],
+  "resources": [
+    {
+      "container": "rnode.bootstrap",
+      "cpu": "0.75%",
+      "memory": "167.9MiB / 6GiB",
+      "memory_percent": "2.73%",
+      "pids": "26"
+    },
+    {
+      "container": "rnode.validator1",
+      "cpu": "0.25%",
+      "memory": "162.1MiB / 6GiB",
+      "memory_percent": "2.64%",
+      "pids": "26"
+    },
+    {
+      "container": "rnode.validator2",
+      "cpu": "0.30%",
+      "memory": "161.5MiB / 6GiB",
+      "memory_percent": "2.63%",
+      "pids": "25"
+    },
+    {
+      "container": "rnode.validator3",
+      "cpu": "0.26%",
+      "memory": "155.4MiB / 6GiB",
+      "memory_percent": "2.53%",
+      "pids": "24"
+    },
+    {
+      "container": "rnode.readonly",
+      "cpu": "0.36%",
+      "memory": "212.9MiB / 6GiB",
+      "memory_percent": "3.47%",
+      "pids": "27"
+    },
+    {
+      "container": "rnode.deploy-queue1",
+      "cpu": "0.00%",
+      "memory": "10.73MiB / 1GiB",
+      "memory_percent": "1.05%",
+      "pids": "2"
+    },
+    {
+      "container": "rnode.deploy-queue2",
+      "cpu": "0.00%",
+      "memory": "10.43MiB / 1GiB",
+      "memory_percent": "1.02%",
+      "pids": "2"
+    },
+    {
+      "container": "rnode.deploy-queue3",
+      "cpu": "0.00%",
+      "memory": "10.48MiB / 1GiB",
+      "memory_percent": "1.02%",
+      "pids": "2"
+    }
+  ],
+  "restarts": [
+    {
+      "container": "rnode.bootstrap",
+      "restarts": 0
+    },
+    {
+      "container": "rnode.validator1",
+      "restarts": 0
+    },
+    {
+      "container": "rnode.validator2",
+      "restarts": 0
+    },
+    {
+      "container": "rnode.validator3",
+      "restarts": 0
+    },
+    {
+      "container": "rnode.readonly",
+      "restarts": 0
+    },
+    {
+      "container": "rnode.deploy-queue1",
+      "restarts": 0
+    },
+    {
+      "container": "rnode.deploy-queue2",
+      "restarts": 0
+    },
+    {
+      "container": "rnode.deploy-queue3",
+      "restarts": 0
+    }
+  ],
+  "images": [
+    {
+      "container": "rnode.bootstrap",
+      "image_id": "sha256:5f232462c1181d233e587adf39e0ca7c326491d0bf24e3b40e9c66ba7e92c32f"
+    },
+    {
+      "container": "rnode.validator1",
+      "image_id": "sha256:5f232462c1181d233e587adf39e0ca7c326491d0bf24e3b40e9c66ba7e92c32f"
+    },
+    {
+      "container": "rnode.validator2",
+      "image_id": "sha256:5f232462c1181d233e587adf39e0ca7c326491d0bf24e3b40e9c66ba7e92c32f"
+    },
+    {
+      "container": "rnode.validator3",
+      "image_id": "sha256:5f232462c1181d233e587adf39e0ca7c326491d0bf24e3b40e9c66ba7e92c32f"
+    },
+    {
+      "container": "rnode.readonly",
+      "image_id": "sha256:5f232462c1181d233e587adf39e0ca7c326491d0bf24e3b40e9c66ba7e92c32f"
+    },
+    {
+      "container": "rnode.deploy-queue1",
+      "image_id": "sha256:5f232462c1181d233e587adf39e0ca7c326491d0bf24e3b40e9c66ba7e92c32f"
+    },
+    {
+      "container": "rnode.deploy-queue2",
+      "image_id": "sha256:5f232462c1181d233e587adf39e0ca7c326491d0bf24e3b40e9c66ba7e92c32f"
+    },
+    {
+      "container": "rnode.deploy-queue3",
+      "image_id": "sha256:5f232462c1181d233e587adf39e0ca7c326491d0bf24e3b40e9c66ba7e92c32f"
+    }
+  ]
+}

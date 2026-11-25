@@ -11,6 +11,8 @@ use syn::parse::Parser;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 
+mod sizing;
+
 const CRATES: &[&str] = &[
     "block-storage",
     "casper",
@@ -567,6 +569,7 @@ fn generate(root: &Path, entities: &mut [Entity], check: bool) -> Result<(), Box
             e.diagram.replace(".svg", ".puml")
         ));
     }
+    let mut sizes = Vec::new();
     for (stem, indices) in &pages {
         let mut text = format!(
             "@startuml\n!include ../style.puml\ntitle {}\n",
@@ -645,9 +648,53 @@ fn generate(root: &Path, entities: &mut [Entity], check: bool) -> Result<(), Box
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        output(&destination.join(format!("{stem}.md")), &format!("# {}\n\n[Inventory](inventory.md) | [PlantUML]({stem}.puml)\n\n![{}]({stem}.svg)\n\n## Cross-Page References\n\n{}\n", stem.replace('-', " "), stem, references), check)?;
+        let mut sizing_text = String::from("## Cardinality and Size\n\n[Method, units, limits, and runtime evidence](sizing.md). These are declaration-level assessments, not measured live counts.\n");
+        for &i in indices {
+            let e = &entities[i];
+            let fields: Vec<_> = e
+                .fields
+                .iter()
+                .map(|f| sizing::field(&e.kind, &f.ty, &f.name))
+                .collect();
+            let count = sizing::entity_count(&e.kind, &e.scope);
+            let size = sizing::entity_size(&e.kind);
+            sizing_text.push_str(&format!("\n### {}\n\nCardinality: {count}.\n\nSize: {size}.\n\n| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |\n| --- | --- | --- | --- |\n", e.name));
+            for (f, a) in e.fields.iter().zip(&fields) {
+                let layout = match a.inline_bytes {
+                    Some(n) if a.inline_layout != format!("{n} B") => {
+                        format!("{n} B. {}", a.inline_layout)
+                    }
+                    _ => a.inline_layout.clone(),
+                };
+                sizing_text.push_str(&format!(
+                    "| `{}` | {} | {} | {} |\n",
+                    f.name.replace('|', "&#124;"),
+                    a.cardinality,
+                    layout,
+                    a.additional_storage.replace('|', "&#124;")
+                ));
+            }
+            if fields.is_empty() {
+                sizing_text.push_str("| No declared fields | 0 field payloads | Compiler layout required | No field-owned allocations |\n");
+            }
+            sizes.push(serde_json::json!({
+                "entity": e.name, "source": e.source, "line": e.line, "scope": e.scope,
+                "kind": e.kind, "page": format!("{stem}.md"), "cardinality": count, "data_size": size,
+                "fields": e.fields.iter().zip(&fields).map(|(f, a)| serde_json::json!({"name": f.name, "type": f.ty, "assessment": a})).collect::<Vec<_>>()
+            }));
+        }
+        output(&destination.join(format!("{stem}.md")), &format!("# {}\n\n[Inventory](inventory.md) | [PlantUML]({stem}.puml)\n\n![{}]({stem}.svg)\n\n{sizing_text}\n## Cross-Page References\n\n{}\n", stem.replace('-', " "), stem, references), check)?;
     }
     output(&destination.join("inventory.md"), &index, check)?;
+    output(
+        &destination.join("sizing.json"),
+        &(serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1, "basis": "Source declarations, not a heap capture. See sizing.md",
+            "generator_target": std::env::consts::ARCH, "pointer_bytes": std::mem::size_of::<usize>(),
+            "entities": sizes,
+        }))? + "\n"),
+        check,
+    )?;
     output(
         &destination.join("inventory.json"),
         &(serde_json::to_string_pretty(&entities)? + "\n"),
@@ -787,6 +834,7 @@ fn check_storage(root: &Path) -> Result<(), Box<dyn Error>> {
     let queue = fs::read_to_string(root.join("deploy-queue/src/store.rs"))?;
     stores.visit_file(&syn::parse_file(&queue)?);
     let readme = fs::read_to_string(root.join("docs/erd/storage/README.md"))?;
+    let sizes = fs::read_to_string(root.join("docs/erd/storage/sizing.md"))?;
     let mut diagrams = String::new();
     for entry in fs::read_dir(root.join("docs/erd/storage"))? {
         let p = entry?.path();
@@ -803,6 +851,9 @@ fn check_storage(root: &Path) -> Result<(), Box<dyn Error>> {
         .into());
     }
     for name in &stores.names {
+        if !sizes.contains(&format!("| `{name}` |")) {
+            return Err(format!("database missing cardinality and size assessment: {name}").into());
+        }
         if !readme.contains(&format!("`{name}`")) {
             return Err(format!("undocumented database: {name}").into());
         }
@@ -986,5 +1037,40 @@ mod tests {
         proto_message(&msg, ".p", "fixture.proto", &mut entities);
         assert_eq!(entities[0].fields[0].ty, "repeated .p.Outer.Inner");
         assert_eq!(entities[1].scope, ".p.Outer");
+    }
+
+    #[test]
+    fn generated_assessment_covers_every_entity_and_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = Collector {
+            source: "sample/src/lib.rs".into(),
+            scope: vec![],
+            entities: vec![],
+        };
+        c.visit_file(&syn::parse_file("struct A { n: u64, values: Option<Vec<u8>> } enum B { Empty, Full(A) } type Alias = B;").unwrap());
+        generate(dir.path(), &mut c.entities, false).unwrap();
+        generate(dir.path(), &mut c.entities, true).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(
+            &fs::read(dir.path().join("docs/erd/memory/sizing.json")).unwrap(),
+        )
+        .unwrap();
+        let entries = parsed["entities"].as_array().unwrap();
+        assert_eq!(entries.len(), c.entities.len());
+        for (entry, entity) in entries.iter().zip(&c.entities) {
+            assert_eq!(
+                entry["fields"].as_array().unwrap().len(),
+                entity.fields.len()
+            );
+            assert!(!entry["cardinality"].as_str().unwrap().is_empty());
+            let page = fs::read_to_string(
+                dir.path()
+                    .join("docs/erd/memory")
+                    .join(entry["page"].as_str().unwrap()),
+            )
+            .unwrap();
+            assert!(page.contains(&format!("### {}", entity.name)));
+        }
+        assert_eq!(entries[0]["fields"][0]["assessment"]["inline_bytes"], 8);
+        assert!(entries[0]["fields"][1]["assessment"]["inline_bytes"].is_null());
     }
 }

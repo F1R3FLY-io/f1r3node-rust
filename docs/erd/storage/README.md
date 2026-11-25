@@ -4,6 +4,9 @@ The node uses named LMDB databases and structured files, not a relational databa
 These diagrams show record keys, encodings, and logical relationships.
 They do not imply database-enforced foreign keys.
 
+See [cardinality and size](sizing.md) for all database and file entities.
+[Runtime observations](observed.md) distinguish exact counts from bounded size samples.
+
 ## Diagrams
 
 | Diagram | Rendered view | Editable source |

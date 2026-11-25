@@ -4,6 +4,94 @@
 
 ![catalog-rholang-010](catalog-rholang-010.svg)
 
+## Cardinality and Size
+
+[Method, units, limits, and runtime evidence](sizing.md). These are declaration-level assessments, not measured live counts.
+
+### FsCloseArgs
+
+Cardinality: 0..n live values. Current count and owner-level limits are not derivable from this declaration.
+
+Size: Sum of field inline layouts plus compiler padding, then uniquely owned allocations. repr and custom implementations can change layout.
+
+| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |
+| --- | --- | --- | --- |
+| `fd` | 1 scalar | 8 B | None |
+
+### FS_CLOSE_ENTRY
+
+Cardinality: One slot per linked process instance. Lazy payload can be uninitialized.
+
+Size: Declared slot or lazy wrapper layout plus initialized owned allocations.
+
+| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |
+| --- | --- | --- | --- |
+| `value` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+
+### FsOpenHandler
+
+Cardinality: 0..n live values. Current count and owner-level limits are not derivable from this declaration.
+
+Size: Sum of field inline layouts plus compiler padding, then uniquely owned allocations. repr and custom implementations can change layout.
+
+| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |
+| --- | --- | --- | --- |
+| No declared fields | 0 field payloads | Compiler layout required | No field-owned allocations |
+
+### FsOpenArgs
+
+Cardinality: 0..n live values. Current count and owner-level limits are not derivable from this declaration.
+
+Size: Sum of field inline layouts plus compiler padding, then uniquely owned allocations. repr and custom implementations can change layout.
+
+| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |
+| --- | --- | --- | --- |
+| `root` | 0..n UTF-8 bytes | 24 B. String header on the generator target | capacity() bytes, excluding allocator overhead. UTF-8 byte length is not character count |
+| `rel` | 0..n UTF-8 bytes | 24 B. String header on the generator target | capacity() bytes, excluding allocator overhead. UTF-8 byte length is not character count |
+| `mode` | 0..n UTF-8 bytes | 24 B. String header on the generator target | capacity() bytes, excluding allocator overhead. UTF-8 byte length is not character count |
+| `cmode` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+
+### FS_OPEN_ENTRY
+
+Cardinality: One slot per linked process instance. Lazy payload can be uninitialized.
+
+Size: Declared slot or lazy wrapper layout plus initialized owned allocations.
+
+| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |
+| --- | --- | --- | --- |
+| `value` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+
+### FsQuarantineHandler
+
+Cardinality: 0..n live values. Current count and owner-level limits are not derivable from this declaration.
+
+Size: Sum of field inline layouts plus compiler padding, then uniquely owned allocations. repr and custom implementations can change layout.
+
+| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |
+| --- | --- | --- | --- |
+| No declared fields | 0 field payloads | Compiler layout required | No field-owned allocations |
+
+### FsQuarantineArgs
+
+Cardinality: 0..n live values. Current count and owner-level limits are not derivable from this declaration.
+
+Size: Sum of field inline layouts plus compiler padding, then uniquely owned allocations. repr and custom implementations can change layout.
+
+| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |
+| --- | --- | --- | --- |
+| `root` | 0..n UTF-8 bytes | 24 B. String header on the generator target | capacity() bytes, excluding allocator overhead. UTF-8 byte length is not character count |
+| `rel` | 0..n UTF-8 bytes | 24 B. String header on the generator target | capacity() bytes, excluding allocator overhead. UTF-8 byte length is not character count |
+
+### FS_QUARANTINE_ENTRY
+
+Cardinality: One slot per linked process instance. Lazy payload can be uninitialized.
+
+Size: Declared slot or lazy wrapper layout plus initialized owned allocations.
+
+| Field or variant | Cardinality | Inline bytes or layout | Additional storage or wire encoding |
+| --- | --- | --- | --- |
+| `value` | 1 value | Compiler layout required | Follow the referenced declaration or external implementation. No allocation bound established. |
+
 ## Cross-Page References
 
 - `FS_CLOSE_ENTRY: value -> FsHandlerEntry [catalog-rholang-008.svg]`

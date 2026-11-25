@@ -23,10 +23,10 @@ entity "dag-history-state-v1" as State {
   --
   dag.progress : DagProgress
   gc.discovery : DiscoveryState
-  gc.retry-cursor : optional cursor bytes
+  gc.retry-cursor : raw cursor bytes when present
   gc.effective-anchor : height
   gc.restore-floor : height
-  values use bincode
+  other values use bincode
 }
 entity DiscoveryState {
   claimed_ceiling : Option<i64>
