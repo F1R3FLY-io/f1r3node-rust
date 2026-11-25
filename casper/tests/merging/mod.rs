@@ -4,5 +4,6 @@ mod conflict_detection_perf_spec;
 mod floor_fallback_spec;
 mod merge_number_channel_spec;
 mod merging_cases;
+mod number_cell_creator_spec;
 mod rejected_sibling_chain_spec;
 mod sibling_chains_order_guard_spec;

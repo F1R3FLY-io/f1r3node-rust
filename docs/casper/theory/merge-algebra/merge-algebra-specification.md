@@ -81,6 +81,7 @@ Given a base state and a set of deploy chains to merge:
   detection on the monolithic index. The user/system partition **MUST NOT** hide a
   cross-partition conflict.
 - **R-SIBLING.** Every chain of one block carries the block's pre→post diff on each channel that the chain touches. On a channel that 2 chains of one block share, the diff of each chain thus also holds the effect of the other chain. When the merge removes a chain (any rejection, a dedup drop of a stale copy, or a drop of a chain reusing another deploy's name seed), it **MUST** also reject each kept chain of the same source block that shares a non-mergeable datum channel or a continuation key with the removed chain (`reject_siblings_sharing_channels`, `dag_merger.rs`). A seed-dropped chain's effect is absent from the base, so it also seeds the lineage expansion; a dedup-dropped chain's effect is in the base, so it does not. The rule and the lineage expansion (`reject_stale_diff_descendants`) run inside the unavailable retry loop, after the branch walk and `split_untagged_writes_to_folded_channels`. The loop then resolves the conflicts again without the chains that they reject. Thus the walk and the untagged-write rule see the final survivor set. The rule applies again to each chain that it rejects, until no chain changes. A channel that the kept chain folds as a number channel is exempt, because the merge recomputes it from the per-deploy number diffs. Settled (pinned) chains stay exempt (#341). The result is the least fixed point of a pairwise relation over on-DAG data, so it is a pure function of the chain set (R-DET). Without this rule, a kept sibling applies the effect of a rejected deploy, and the effect applies again when recovery re-proposes the deploy (safety **S8**, issue #873).
+- **R-CREATOR.** A chain's delta on a tagged number cell applies to the base's value of the cell, and an absent cell reads as 0. A chain creates a cell when its block's pre-state held no value there and its post-state does. A chain that holds a value on a cell it did not create computed its delta on a value that its block's pre-state held. The merge **MUST** reject such a chain when the base holds no value on the cell and no surviving chain of the merge creates it (`split_unavailable_branch_consumes`, `dag_merger.rs`). Then the work that created the cell is absent, for example because an earlier merge rejected it, and the delta would make the cell from nothing. When recovery re-runs the creator, the creator makes the cell again, so the cell holds 2 values (safety **S9**, issue #1040). The check runs inside the unavailable retry loop, so a chain whose creator the same pass rejects is caught on the next pass. The inputs are the chains' recorded state changes and the base state, so the result is a pure function of the merge inputs (R-DET).
 
 ## 3. Determinism (normative — the safety core)
 
@@ -113,6 +114,7 @@ Given a base state and a set of deploy chains to merge:
   any input the old comparator ordered deterministically, and is deterministic on **all**
   inputs — safe under a mixed-version (rolling) upgrade.
 - **R-SIBLING is a hard fork.** R-SIBLING changes the merged post-state and the rejected-deploy set of each merge that removes a chain and keeps a sibling that shares a non-mergeable channel with it. A node without R-SIBLING computes a different result for such a merge, so the shard **MUST** upgrade all validators together. A merge that keeps all such siblings, or removes all of them, gives the same result as before. The lineage expansion also moved into the retry loop, so conflict resolution runs again without the chains that it rejects. A chain that lost a conflict only to such a chain can now be kept.
+- **R-CREATOR is a hard fork.** R-CREATOR rejects a chain that a node without it applies, in each merge where a chain writes a number cell that neither the base nor a surviving chain holds. A node without R-CREATOR computes a different result for such a merge, so the shard **MUST** upgrade all validators together. Every other merge gives the same result as before.
 
 ## 5. Disclosed algebraic properties (normative)
 
@@ -135,6 +137,7 @@ Given a base state and a set of deploy chains to merge:
   guise of a determinism fix. The determinism guarantee is *byte-identical recomputation of
   the current semantics*, **not** a redefinition of the merge.
   - **R-SIBLING is a correctness fix, not a determinism fix.** It changes which chains the merge applies, and it does not change the `combine` operator or the fold order. N-SEMANTICS does not apply to it.
+  - **R-CREATOR is a correctness fix, not a determinism fix,** for the same reason.
   - **Runtime guard (allowed, semantics-preserving).** The *assumption* R-ORDER relies on —
     that no order-dependent survivor pair reaches apply — **MAY** be enforced by a
     detection-only runtime guard (`OrderDependenceGuard`, `conflict_set_merger.rs`) that trips
@@ -158,6 +161,7 @@ Given a base state and a set of deploy chains to merge:
 | **S6** | A comparator hardening breaks agreement with a live `v0.4.16` node on an input the old order already resolved deterministically (violates R-APPEND). |
 | **S7** | A merge persists an IntegerAdd **tagged number cell** holding > 1 datum, so a later RhoVM read trips the IntegerAdd single-value invariant and **halts finalization** (violates R-SVC) — RCA-asi-devnet-finality-halt. |
 | **S8** | A kept chain applies the effect of a removed sibling chain of the same block on a shared non-mergeable channel. A rejected deploy then has a partial effect, and its effect applies twice after recovery (violates R-SIBLING) — issue #873. |
+| **S9** | A kept chain applies its delta to a number cell whose creator is absent from the merged state. The cell is made from nothing, recovery creates it again, and it holds 2 values, so every later merge that reads it fails (violates R-CREATOR) — issue #1040. |
 
 ## 8. Conformance
 
