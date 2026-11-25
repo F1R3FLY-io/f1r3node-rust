@@ -411,8 +411,12 @@ impl TransportLayerService {
                 .map(|send_msg| {
                     let handler = tell_handler.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handler(send_msg).await {
-                            tracing::error!(error = %e, "Send message handler failed");
+                        match handler(send_msg).await {
+                            Err(e @ CommError::DnsResolutionFailed(_, _)) => {
+                                tracing::debug!(error = %e, "Send message handler failed");
+                            }
+                            Err(e) => tracing::error!(error = %e, "Send message handler failed"),
+                            Ok(()) => {}
                         }
                     })
                 })

@@ -1645,7 +1645,7 @@ fn setup_maps_and_refs(
     // Wave 4 handler slice.  Register the URN here so FsGenesis
     // composition (slice 5.36) can bind `new fsRemoveDir(
     // `rho:io:fs:native:1.0.0/removeDir`)` without tripping
-    // `eval_new`'s "No value set for URN" check.  Dir.rho sends to
+    // `eval_new`'s `UnknownUrnError`.  Dir.rho sends to
     // this channel inside its `removeDir` method only fire when a
     // user-held Dir cap invokes removeDir — not during genesis
     // composition.
@@ -2137,7 +2137,7 @@ mod tests {
     /// after `setup_maps_and_refs` runs.  Slice 5.43 added the
     /// registration so FsGenesis composition can bind
     /// `new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`)` without
-    /// tripping eval_new's "No value set for URN" check.  Pinning the
+    /// tripping eval_new's `UnknownUrnError`.  Pinning the
     /// urn_map entry here catches a regression that removes the
     /// explicit registration (which is NOT auto-generated from
     /// FS_HANDLERS — the handler is trait-exempt).

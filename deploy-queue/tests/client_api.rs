@@ -147,29 +147,40 @@ async fn http_refusals_keep_the_node_error_envelope() {
             code,
             body["error"].as_str().unwrap().to_string(),
             retry_after,
+            body.get("cause")
+                .map(|cause| cause.as_str().unwrap().to_string()),
         )
     };
 
-    let (code, kind, _) = refusal(post_deploy(&served, "{".to_string()).await).await;
+    let (code, kind, _, cause) = refusal(post_deploy(&served, "{".to_string()).await).await;
     assert_eq!(
-        (code.as_u16(), kind.as_str()),
-        (400, "invalid_request_body")
+        (code.as_u16(), kind.as_str(), cause),
+        (400, "invalid_request_body", None)
     );
 
     let other_shard = request_body(&deploy(90, "other", 3));
-    let (code, kind, _) = refusal(post_deploy(&served, other_shard).await).await;
-    assert_eq!((code.as_u16(), kind.as_str()), (400, "illegal_argument"));
+    let (code, kind, _, cause) = refusal(post_deploy(&served, other_shard).await).await;
+    assert_eq!(
+        (code.as_u16(), kind.as_str(), cause),
+        (400, "illegal_argument", None)
+    );
 
     let held = request_body(&deploy(95, "root", 5));
     assert_eq!(post_deploy(&served, held.clone()).await.status(), 200);
-    let (code, kind, _) = refusal(post_deploy(&served, held).await).await;
-    assert_eq!((code.as_u16(), kind.as_str()), (409, "duplicate_deploy"));
+    let (code, kind, _, cause) = refusal(post_deploy(&served, held).await).await;
+    assert_eq!(
+        (code.as_u16(), kind.as_str(), cause),
+        (409, "duplicate_deploy", None)
+    );
 
     // Open through block 109 at lifespan 50, but landing from tip 100 needs a
     // height of inclusion plus the 25-height margin.
     let too_late = request_body(&deploy(60, "root", 6));
-    let (code, kind, retry_after) = refusal(post_deploy(&served, too_late).await).await;
-    assert_eq!((code.as_u16(), kind.as_str()), (503, "deploy_queue_full"));
+    let (code, kind, retry_after, cause) = refusal(post_deploy(&served, too_late).await).await;
+    assert_eq!(
+        (code.as_u16(), kind.as_str(), cause.as_deref()),
+        (503, "deploy_queue_full", Some("validator"))
+    );
     assert!(retry_after.unwrap().parse::<u64>().is_ok());
     queue.stop();
 }
@@ -330,6 +341,7 @@ async fn grpc_intake_answers_as_the_node_does() {
         .await
         .unwrap_err();
     assert_eq!(full.code(), tonic::Code::ResourceExhausted);
+    assert_eq!(full.metadata().get("cause").unwrap(), "validator");
     assert!(full
         .metadata()
         .get("retry-after")

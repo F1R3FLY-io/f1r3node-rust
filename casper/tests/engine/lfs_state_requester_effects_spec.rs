@@ -438,6 +438,8 @@ impl RSpaceImporter for MockRSpaceImporter {
         // This prevents the UnexpectedEof error we're seeing
         Some(vec![0u8; 32]) // Return 32 bytes of dummy data
     }
+
+    fn has_data_items(&self, hashes: &[KeyHash]) -> Vec<bool> { vec![true; hashes.len()] }
 }
 
 /// Creates test setup

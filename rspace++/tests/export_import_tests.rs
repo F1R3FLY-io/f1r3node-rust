@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use rspace_plus_plus::rspace::errors::RadixTreeError;
@@ -8,7 +8,9 @@ use rspace_plus_plus::rspace::history::cold_store::{
 };
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepositoryInstances;
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
-use rspace_plus_plus::rspace::history::radix_tree::try_decode;
+use rspace_plus_plus::rspace::history::radix_tree::{
+    ExportData, ExportDataSettings, Item, empty_node, hash_node, sequential_export, try_decode,
+};
 use rspace_plus_plus::rspace::hot_store::{HotStoreInstances, HotStoreState};
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -646,4 +648,177 @@ async fn test_setup() -> (
     let space2 = RSpace::apply(history_repository2, store2, Arc::new(Box::new(StringMatch)));
 
     (space1, exporter1, importer1, space2, exporter2, importer2)
+}
+
+type NodeStore = HashMap<ByteVector, ByteVector>;
+type NodeReader = Arc<dyn Fn(&ByteVector) -> Option<ByteVector>>;
+
+fn store_radix_node(keys: &[ByteVector], depth: usize, store: &mut NodeStore) -> ByteVector {
+    let mut node = empty_node();
+    for group in keys.chunk_by(|a, b| a[depth] == b[depth]) {
+        let (first, last) = (&group[0], &group[group.len() - 1]);
+        node[first[depth] as usize] = if group.len() == 1 {
+            Item::Leaf {
+                prefix: first[depth + 1..].to_vec(),
+                value: Blake2b256Hash::new(first).bytes(),
+            }
+        } else {
+            let mut child_depth = depth + 1;
+            while first[child_depth] == last[child_depth] {
+                child_depth += 1;
+            }
+            Item::NodePtr {
+                prefix: first[depth + 1..child_depth].to_vec(),
+                ptr: store_radix_node(group, child_depth, store),
+            }
+        };
+    }
+    let (hash, bytes) = hash_node(&node);
+    store.insert(hash.clone(), bytes);
+    hash
+}
+
+fn radix_tree_of(leaf_count: u32) -> (ByteVector, NodeStore) {
+    let mut keys: Vec<ByteVector> = (0..leaf_count)
+        .map(|i| {
+            let mut key = Blake2b256Hash::new(&i.to_le_bytes()).bytes();
+            if i % 7 == 0 {
+                key[..3].copy_from_slice(&[1, 2, 3]);
+            }
+            key
+        })
+        .collect();
+    keys.sort();
+    let mut store = NodeStore::new();
+    let root = store_radix_node(&keys, 0, &mut store);
+    (root, store)
+}
+
+fn depth_first(hash: &ByteVector, prefix: ByteVector, store: &NodeStore, out: &mut ExportData) {
+    out.node_keys.push(hash.clone());
+    for (index, item) in try_decode(&store[hash]).unwrap().into_iter().enumerate() {
+        let mut full = prefix.clone();
+        full.push(index as u8);
+        match item {
+            Item::EmptyItem => {}
+            Item::Leaf { prefix, value } => {
+                full.extend(prefix);
+                out.leaf_prefixes.push(full);
+                out.leaf_values.push(value);
+            }
+            Item::NodePtr { prefix, ptr } => {
+                full.extend(prefix);
+                depth_first(&ptr, full, store, out);
+            }
+        }
+    }
+}
+
+fn export_settings() -> ExportDataSettings {
+    ExportDataSettings {
+        flag_node_prefixes: false,
+        flag_node_keys: true,
+        flag_node_values: false,
+        flag_leaf_prefixes: true,
+        flag_leaf_values: true,
+    }
+}
+
+fn empty_export() -> ExportData {
+    ExportData {
+        node_prefixes: Vec::new(),
+        node_keys: Vec::new(),
+        node_values: Vec::new(),
+        leaf_prefixes: Vec::new(),
+        leaf_values: Vec::new(),
+    }
+}
+
+fn reader(store: &NodeStore) -> NodeReader {
+    let store = store.clone();
+    Arc::new(move |hash: &ByteVector| store.get(hash).cloned())
+}
+
+#[test]
+fn pages_of_any_size_join_into_the_depth_first_export() {
+    let (root, store) = radix_tree_of(2_000);
+    let mut expected = empty_export();
+    depth_first(&root, Vec::new(), &store, &mut expected);
+
+    for take in [1, 2, 7, 64, 1_024, 100_000] {
+        let mut joined = empty_export();
+        let mut last_prefix = None;
+        loop {
+            let (page, next) = sequential_export(
+                root.clone(),
+                last_prefix,
+                0,
+                take,
+                reader(&store),
+                export_settings(),
+            )
+            .unwrap();
+            assert!(page.node_keys.len() <= take as usize);
+            joined.node_keys.extend(page.node_keys);
+            joined.leaf_prefixes.extend(page.leaf_prefixes);
+            joined.leaf_values.extend(page.leaf_values);
+            if next.is_none() {
+                break;
+            }
+            last_prefix = next;
+        }
+        assert_eq!(joined.node_keys, expected.node_keys, "take {take}");
+        assert_eq!(joined.leaf_prefixes, expected.leaf_prefixes, "take {take}");
+        assert_eq!(joined.leaf_values, expected.leaf_values, "take {take}");
+    }
+}
+
+#[test]
+fn a_skip_drops_exactly_the_leading_nodes() {
+    let (root, store) = radix_tree_of(500);
+    let export = |skip, take| {
+        sequential_export(root.clone(), None, skip, take, reader(&store), export_settings())
+            .unwrap()
+            .0
+            .node_keys
+    };
+    let all = export(0, 100_000);
+    assert_eq!(export(5, 20), all[5..25]);
+    assert_eq!(export(1, 1), all[1..2]);
+}
+
+#[test]
+fn an_export_from_an_unknown_path_or_a_missing_node_is_an_error() {
+    let (root, mut store) = radix_tree_of(500);
+    let export = |store: &NodeStore, last_prefix| {
+        sequential_export(root.clone(), last_prefix, 0, 100_000, reader(store), export_settings())
+    };
+    assert!(matches!(export(&store, Some(vec![1, 2])), Err(RadixTreeError::PrefixError(_))));
+    assert!(matches!(export(&store, Some(vec![9; 40])), Err(RadixTreeError::PrefixError(_))));
+
+    let child = export(&store, None).unwrap().0.node_keys[1].clone();
+    store.remove(&child);
+    assert!(matches!(export(&store, None), Err(RadixTreeError::KeyNotFound(_))));
+    assert!(matches!(export(&store, Some(vec![1, 2, 3])), Err(RadixTreeError::KeyNotFound(_))));
+
+    store.remove(&root);
+    let (data, next) = export(&store, None).unwrap();
+    assert!(data.node_keys.is_empty() && next.is_none());
+}
+
+#[test]
+fn the_export_time_of_a_page_is_linear_in_its_size() {
+    let (root, store) = radix_tree_of(100_000);
+    let started = std::time::Instant::now();
+    let (page, next) =
+        sequential_export(root, None, 0, 100_000, reader(&store), export_settings()).unwrap();
+
+    assert_eq!(page.node_keys.len(), store.len());
+    assert!(next.is_none());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "the export of {} nodes took {:?}",
+        store.len(),
+        started.elapsed()
+    );
 }
