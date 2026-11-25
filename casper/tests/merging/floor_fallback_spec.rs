@@ -40,6 +40,19 @@ fn deploy(source: &str, key: &PrivateKey) -> Signed<DeployData> {
     .unwrap()
 }
 
+fn deploy_at(source: &str, key: &PrivateKey, timestamp: i64) -> Signed<DeployData> {
+    construct_deploy::source_deploy(
+        source.to_string(),
+        timestamp,
+        Some(5_000_000),
+        None,
+        Some(key.clone()),
+        None,
+        None,
+    )
+    .unwrap()
+}
+
 fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -250,4 +263,43 @@ async fn a_merge_re_based_on_the_floor_accounts_for_the_main_parents_work() {
     let m_applied = merged.applied_from_scope.contains(&m_sig);
     assert_eq!(m_applied, chain.holds(&merged.state, "ff-m").await);
     assert!(m_applied || recorded.contains(&m_sig));
+}
+
+/// X and Y share a name seed. X lands in F, Y in a sibling S of F. Merging
+/// S (main parent) with a child of F whose floor is F re-bases on F, which
+/// S's history does not reach. F already holds the seed through X, so Y must
+/// not be applied on top of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_merge_re_based_on_the_floor_keeps_the_floors_holder_of_a_name_seed() {
+    let mut chain = Chain::new().await;
+    let genesis = chain.genesis.clone();
+    let p = chain
+        .block(
+            &[&genesis],
+            vec![deploy(r#"@"ns-p"!(0)"#, &chain.vault(0))],
+            1,
+        )
+        .await;
+    let timestamp = now_millis();
+    let x = deploy_at(r#"@"ns-x"!(1)"#, &chain.vault(1), timestamp);
+    let y = deploy_at(r#"@"ns-y"!(1)"#, &chain.vault(1), timestamp);
+    let y_sig = y.sig.clone();
+    let f = chain.block(&[&p], vec![x], 2).await;
+    let s = chain.block(&[&p], vec![y], 2).await;
+    let child = chain
+        .block(&[&f], vec![deploy(r#"@"ns-c"!(1)"#, &chain.vault(2))], 3)
+        .await;
+
+    let dag = chain.dag_storage.get_representation().unwrap();
+    dag.put_cached_floor(child.block_hash.clone(), f.block_hash.clone())
+        .unwrap();
+    dag.put_cached_floor(s.block_hash.clone(), p.block_hash.clone())
+        .unwrap();
+    let merged = chain.merge(&[&s, &child]).await;
+
+    assert_eq!(merged.merge_base.as_ref(), Some(&f.block_hash));
+    assert!(chain.holds(&merged.state, "ns-x").await);
+    assert!(chain.holds(&merged.state, "ns-c").await);
+    assert!(!merged.applied_from_scope.contains(&y_sig));
+    assert!(!chain.holds(&merged.state, "ns-y").await);
 }
