@@ -872,7 +872,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         let transfer_unforgeable_for_reports = transfer_unforgeable.clone();
         let event_pub_for_reports = event_publisher.clone();
         let report_dag = block_dag_storage.clone();
-        let (recover, mut recovery_requested) = watch::channel(());
+        let (recover, recovery_requested) = watch::channel(());
         let reported = Arc::new(parking_lot::Mutex::new(RecentBlockReports::default()));
         let live_reported = reported.clone();
         let live_report_api = report_api.clone();
@@ -917,15 +917,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                     &startup_history,
                 )
             };
-            while recovery_requested.changed().await.is_ok() {
-                if let Err(error) = recover_once().await {
-                    tracing::warn!(%error, "Block report recovery scan failed; retrying");
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    if let Err(error) = recover_once().await {
-                        tracing::warn!(%error, "Block report recovery scan failed after retry");
-                    }
-                }
-            }
+            run_report_recovery(recovery_requested, recover_once).await;
         });
         Some((report_tx, recover))
     } else {
@@ -1356,6 +1348,37 @@ mod report_event_tests {
     }
 
     #[tokio::test]
+    async fn a_single_request_retries_until_recovery_succeeds() {
+        let (request, requested) = watch::channel(());
+        let (attempt, mut attempts) = mpsc::unbounded_channel();
+        request.send_replace(());
+        let worker = tokio::spawn(async move {
+            let mut count = 0;
+            super::run_report_recovery(requested, || {
+                count += 1;
+                attempt.send(count).unwrap();
+                std::future::ready(if count < 3 {
+                    Err(eyre::eyre!("temporary storage error"))
+                } else {
+                    Ok(())
+                })
+            })
+            .await;
+        });
+        for count in 1..=3 {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(5), attempts.recv())
+                    .await
+                    .unwrap(),
+                Some(count)
+            );
+        }
+        drop(request);
+        worker.await.unwrap();
+        assert!(attempts.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn a_full_report_queue_requests_recovery_without_blocking_readiness() {
         let events = F1r3flyEvents::new();
         let stream = events.consume();
@@ -1418,6 +1441,7 @@ mod report_event_tests {
             BlockDagKeyValueStorage, InsertMode,
         };
         use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+        use casper::rust::api::block_report_api::BlockReportError;
         use casper::rust::engine::engine_cell::EngineCell;
         use casper::rust::report_store::ReportStore;
         use casper::rust::safety_oracle::CliqueOracleImpl;
@@ -1456,7 +1480,7 @@ mod report_event_tests {
             None,
         );
         storage.insert(&genesis, InsertMode::Approved).unwrap();
-        let block = get_random_block(
+        let ancestor = get_random_block(
             Some(1),
             None,
             None,
@@ -1465,6 +1489,27 @@ mod report_event_tests {
             None,
             None,
             Some(vec![genesis.block_hash]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        storage
+            .insert(&ancestor, InsertMode::Equivocation {
+                sibling: vec![0xee; 32].into(),
+            })
+            .unwrap();
+        let block = get_random_block(
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![ancestor.block_hash.clone()]),
             None,
             None,
             None,
@@ -1521,7 +1566,7 @@ mod report_event_tests {
             .unwrap();
         let api = super::BlockReportAPI::new(
             casper::rust::reporting_casper::noop(),
-            reports,
+            reports.clone(),
             EngineCell::init(),
             KeyValueBlockStore::new(
                 Arc::new(InMemoryKeyValueStore::new()),
@@ -1556,7 +1601,7 @@ mod report_event_tests {
         let stream = events.consume();
         let (sender, mut queued) = mpsc::channel(1);
         let (recover, mut recovery_requested) = watch::channel(());
-        let F1r3flyEvent::BlockFinalised(mut lost) = finalized(1) else {
+        let F1r3flyEvent::BlockFinalised(mut lost) = finalized(2) else {
             unreachable!()
         };
         lost.block_hash = hex::encode(&block.block_hash);
@@ -1578,7 +1623,7 @@ mod report_event_tests {
 
         let mut outcomes = events.consume();
         let reported = parking_lot::Mutex::new(super::RecentBlockReports::default());
-        super::recover_block_reports(
+        let error = super::recover_block_reports(
             &storage,
             &api,
             &transfer_channel,
@@ -1587,13 +1632,24 @@ mod report_event_tests {
             &startup,
         )
         .await
-        .unwrap();
+        .expect_err("the finalized equivocation still needs a report");
+        assert!(matches!(
+            error.downcast_ref::<BlockReportError>(),
+            Some(BlockReportError::CasperNotInitialized)
+        ));
+        assert!(reported.lock().hashes.contains_key(&block.block_hash));
+        reports
+            .put(vec![(
+                ancestor.block_hash.to_vec(),
+                BlockEventInfo::default(),
+            )])
+            .unwrap();
         super::handle_block_finalized(&api, &transfer_channel, &events, lost, &reported).await;
         reported.lock().publish(
             &events,
             &transfer_channel,
             block.block_hash.clone(),
-            1,
+            2,
             1,
             &report,
         );
@@ -1608,6 +1664,7 @@ mod report_event_tests {
         .await
         .unwrap();
 
+        assert!(reported.lock().hashes.contains_key(&ancestor.block_hash));
         let Some(Ok(F1r3flyEvent::TransfersAvailable(event))) =
             outcomes.next().now_or_never().flatten()
         else {
@@ -1620,7 +1677,8 @@ mod report_event_tests {
         let startup = super::StartupReportHistory::FinalizedHashes(
             super::startup_finalized_report_hashes(&storage, &api).unwrap(),
         );
-        assert!(startup.should_suppress_publication(&block.block_hash, 1));
+        assert!(startup.should_suppress_publication(&block.block_hash, 2));
+        assert!(startup.should_suppress_publication(&ancestor.block_hash, 1));
         let restarted = parking_lot::Mutex::new(super::RecentBlockReports::default());
         super::recover_block_reports(
             &storage,
@@ -1772,6 +1830,26 @@ where
         Err(error) => {
             tracing::warn!(%error, startup_height, "Could not read finalized report history after retry; limiting recovered transfer notifications to blocks above the startup LFB");
             StartupReportHistory::HeightFallback(startup_height)
+        }
+    }
+}
+
+async fn run_report_recovery<F: Future<Output = eyre::Result<()>>>(
+    mut requested: watch::Receiver<()>,
+    mut recover: impl FnMut() -> F,
+) {
+    use std::time::Duration;
+
+    while requested.changed().await.is_ok() {
+        let mut delay = Duration::from_secs(1);
+        while let Err(error) = recover().await {
+            tracing::warn!(%error, ?delay, "Block report recovery incomplete; retrying");
+            tokio::time::sleep(delay).await;
+            if requested.has_changed().is_err() {
+                return;
+            }
+            requested.borrow_and_update();
+            delay = (delay * 2).min(Duration::from_secs(60));
         }
     }
 }
