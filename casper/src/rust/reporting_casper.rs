@@ -113,6 +113,7 @@ impl ReportingCasper for RhoReporterCasper {
             &block.body.deploys,
             &block.body.system_deploys,
             !is_genesis,
+            is_genesis,
             &block_data,
             proto_util::slash_evidence_senders(proto_util::slash_evidence(block)),
         )
@@ -128,6 +129,7 @@ impl RhoReporterCasper {
         terms: &[ProcessedDeploy],
         system_deploys: &[ProcessedSystemDeploy],
         with_cost_accounting: bool,
+        is_genesis: bool,
         block_data: &BlockData,
         invalid_blocks: HashMap<
             models::rust::block_hash::BlockHash,
@@ -159,6 +161,7 @@ impl RhoReporterCasper {
         } else {
             None
         };
+        let _genesis = is_genesis.then(|| runtime.runtime.enter_genesis_phase());
 
         let mut deploy_results = Vec::new();
         for (idx, term) in terms.iter().enumerate() {

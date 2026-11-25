@@ -263,6 +263,7 @@ async fn a_finalized_siblings_deploy_is_never_rejected_by_cost_adjudication() {
         &HashSet::new(),
         &std::collections::HashMap::new(),
         &name_seeds,
+        casper::rust::merging::conflict_set_merger::RejectionSearch::EXHAUSTIVE,
     )
     .expect("merge");
 
@@ -347,6 +348,7 @@ async fn a_settled_carriers_closed_window_deploy_is_not_window_rejected() {
         &HashSet::new(),
         &std::collections::HashMap::new(),
         &name_seeds,
+        casper::rust::merging::conflict_set_merger::RejectionSearch::EXHAUSTIVE,
     )
     .expect("merge");
 

@@ -121,6 +121,7 @@ pub enum InvalidBlock {
     // ExcessivePhloLimit: a user deploy declares a phlo limit above the
     // chain's max-phlo-limit.
     ExcessivePhloLimit,
+    InvalidDeployCost,
 }
 
 impl BlockStatus {
@@ -289,6 +290,8 @@ impl InvalidBlock {
             //   • NotOfInterest: local node filtering decision.
             //   • LowDeployCost / ExcessivePhloLimit: per-deploy cost
             //     bounds; rejected at admission, not on-chain accountable.
+            //   • InvalidDeployCost: a fee admission rule; the verdict does
+            //     not authorize slashing.
             InvalidBlock::InvalidFormat
             | InvalidBlock::InvalidSignature
             | InvalidBlock::InvalidSender
@@ -316,7 +319,8 @@ impl InvalidBlock {
             | InvalidBlock::PrematureDeployRetry
             | InvalidBlock::NotOfInterest
             | InvalidBlock::LowDeployCost
-            | InvalidBlock::ExcessivePhloLimit => false,
+            | InvalidBlock::ExcessivePhloLimit
+            | InvalidBlock::InvalidDeployCost => false,
         }
     }
 }

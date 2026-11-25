@@ -36,6 +36,27 @@ use crate::rust::validator_identity::ValidatorIdentity;
 
 #[async_trait]
 impl Casper for MultiParentCasperImpl {
+    fn v6_engine(&self) -> Option<Arc<crate::rust::v6::V6Engine>> { self.v6.clone() }
+
+    fn offered_pool_status(
+        &self,
+        deploy_id: &[u8],
+    ) -> Result<crate::rust::v6::receipt::PoolStatus, CasperError> {
+        use crate::rust::v6::receipt::PoolStatus;
+        if self.deploy_storage.contains_sig(deploy_id)?
+            || self
+                .rejected_deploy_buffer
+                .lock()?
+                .contains_sig(deploy_id)?
+        {
+            return Ok(PoolStatus::Pending);
+        }
+        Ok(match self.deploy_storage.rejection(deploy_id) {
+            Some(rejection) => PoolStatus::Rejected(rejection),
+            None => PoolStatus::Absent,
+        })
+    }
+
     async fn request_block_from_peers(&self, hash: BlockHash) -> Result<(), CasperError> {
         self.ingest.need(hash).await
     }

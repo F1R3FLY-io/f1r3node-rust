@@ -10,6 +10,7 @@ use casper::rust::api::block_api::{
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
+use casper::rust::v6::receipt::OfferedStatus;
 use casper::rust::ProposeFunction;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -20,6 +21,8 @@ use models::casper::LightBlockInfo;
 use models::rust::deploy_parameters::{DeployParameter, RholangValue};
 use models::rust::deploy_request::DeployRequest;
 use num_bigint::BigInt;
+use rholang::rust::interpreter::accounting::rev_stack::native;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use serde::{Deserialize, Serialize};
 use shared::rust::token_amount::TokenAmount;
 use tokio::time::sleep;
@@ -111,6 +114,10 @@ pub trait WebApi {
     /// Find a deploy by ID with the specified view.
     async fn find_deploy(&self, deploy_id: String, view: ViewMode) -> Result<DeployResponse>;
 
+    async fn offered_receipt(&self, _deploy_id: String) -> Result<OfferedReceiptResponse> {
+        Err(eyre!("offer status is not available on this node"))
+    }
+
     /// Perform exploratory deploy against the requested block or the LFB post-state.
     async fn exploratory_deploy(
         &self,
@@ -167,6 +174,18 @@ pub trait WebApi {
     /// Get active validator set via exploratory deploy against PoS contract.
     /// Queries against `block_hash` if provided, otherwise LFB.
     async fn get_validators(&self, block_hash: Option<String>) -> Result<ValidatorsResponse>;
+
+    /// Get full delegation state via exploratory deploy against PoS contract.
+    /// Queries against `block_hash` if provided, otherwise LFB.
+    async fn get_delegations(&self, block_hash: Option<String>) -> Result<DelegationsResponse>;
+
+    /// Get delegation state for one delegator via exploratory deploy against PoS contract.
+    /// Queries against `block_hash` if provided, otherwise LFB.
+    async fn get_delegator(
+        &self,
+        pubkey: String,
+        block_hash: Option<String>,
+    ) -> Result<DelegatorStateResponse>;
 
     /// Get epoch info via exploratory deploy against PoS contract.
     /// Queries against `block_hash` if provided, otherwise LFB.
@@ -278,6 +297,56 @@ pub struct WebApiImpl {
     epoch_length: i32,
     quarantine_length: i32,
     is_ready: Arc<AtomicBool>,
+    wallet_path: WalletPath,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WalletPath {
+    #[default]
+    Legacy,
+    Native,
+}
+
+fn balance_query_term(
+    wallet_path: WalletPath,
+    address: &str,
+) -> Result<(String, Vec<DeployParameter>)> {
+    if !VaultAddress::is_valid(address) {
+        return Err(eyre!("Invalid REV address {}", address));
+    }
+    match wallet_path {
+        WalletPath::Native => Ok((
+            native::balance_term(address).map_err(|e| eyre!(e))?,
+            Vec::new(),
+        )),
+        WalletPath::Legacy => Ok((BALANCE_RHOLANG_TEMPLATE.to_string(), vec![
+            DeployParameter {
+                name: "address".to_string(),
+                value: RholangValue::String(address.to_string()),
+            },
+        ])),
+    }
+}
+
+fn balance_from_result(wallet_path: WalletPath, address: &str, pars: Vec<Par>) -> Result<String> {
+    match wallet_path {
+        WalletPath::Native => {
+            let first = pars
+                .first()
+                .ok_or_else(|| eyre!("No balance result for address {}", address))?;
+            native::parse_balance(first)
+                .map(|balance| balance.to_string())
+                .map_err(|e| eyre!("Balance lookup for address {} failed: {}", address, e))
+        }
+        WalletPath::Legacy => {
+            let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
+            match exprs.first() {
+                Some(RhoExpr::ExprBigInt { data }) => Ok(data.clone()),
+                Some(RhoExpr::ExprInt { data }) => Ok(data.to_string()),
+                _ => Err(eyre!("Unexpected balance result for address {}", address)),
+            }
+        }
+    }
 }
 
 impl WebApiImpl {
@@ -324,7 +393,13 @@ impl WebApiImpl {
             epoch_length,
             quarantine_length,
             is_ready,
+            wallet_path: WalletPath::default(),
         }
+    }
+
+    pub fn with_wallet_path(mut self, wallet_path: WalletPath) -> Self {
+        self.wallet_path = wallet_path;
+        self
     }
     /// Resolve a block hash to query against. If provided, use it; otherwise use LFB.
     /// Returns (block_hash, block_number).
@@ -347,6 +422,61 @@ impl WebApiImpl {
                 Ok((bi.block_hash.clone(), bi.block_number))
             }
         }
+    }
+
+    async fn get_pos_value(&self, method: &str, resolved_hash: &str) -> Result<RhoExpr> {
+        let term = format!(
+            r#"new return, rl(`rho:registry:lookup`), poSCh in {{
+  rl!(`rho:system:pos`, *poSCh) |
+  for(@(_, PoS) <- poSCh) {{
+    @PoS!("{method}", *return)
+  }}
+}}"#
+        );
+
+        let (pars, _block, _cost) = BlockAPI::exploratory_deploy(
+            &self.engine_cell,
+            term,
+            Some(resolved_hash.to_string()),
+            false,
+            self.dev_mode,
+            None,
+            Vec::new(),
+        )
+        .await?;
+
+        let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
+        exprs
+            .into_iter()
+            .next()
+            .ok_or_else(|| eyre!("No result from PoS method {}", method))
+    }
+
+    async fn get_pos_amount_map(
+        &self,
+        method: &str,
+        resolved_hash: &str,
+    ) -> Result<HashMap<String, TokenAmount>> {
+        let expr = self.get_pos_value(method, resolved_hash).await?;
+        parse_amount_map(method, &expr)
+    }
+
+    async fn get_pos_nested_amount_map(
+        &self,
+        method: &str,
+        resolved_hash: &str,
+    ) -> Result<HashMap<String, HashMap<String, TokenAmount>>> {
+        let expr = self.get_pos_value(method, resolved_hash).await?;
+        parse_nested_amount_map(method, &expr)
+    }
+
+    async fn get_pos_pending_undelegations(
+        &self,
+        method: &str,
+        resolved_hash: &str,
+    ) -> Result<HashMap<String, HashMap<String, PendingUndelegationInfo>>> {
+        let expr = self.get_pos_value(method, resolved_hash).await?;
+        parse_pending_undelegation_map(method, &expr)
     }
 
     /// Enrich a BlockInfoSerde with transfer data from the block report.
@@ -620,6 +750,15 @@ impl WebApi for WebApiImpl {
         }
     }
 
+    async fn offered_receipt(&self, deploy_id: String) -> Result<OfferedReceiptResponse> {
+        let id = parse_offered_id(&deploy_id)?;
+        let status = BlockAPI::offered_status(&self.engine_cell, &id).await?;
+        Ok(OfferedReceiptResponse::from_status(
+            hex::encode(&id),
+            status,
+        ))
+    }
+
     async fn find_deploy(&self, deploy_id: String, view: ViewMode) -> Result<DeployResponse> {
         let deploy_id_bytes = hex::decode(&deploy_id).map_err(|_| {
             eyre::Report::new(InvalidHashError(format!(
@@ -867,12 +1006,7 @@ impl WebApi for WebApiImpl {
         address: String,
         block_hash: Option<String>,
     ) -> Result<BalanceResponse> {
-        let term = BALANCE_RHOLANG_TEMPLATE.to_string();
-
-        let parameters = vec![DeployParameter {
-            name: "address".to_string(),
-            value: RholangValue::String(address.clone()),
-        }];
+        let (term, parameters) = balance_query_term(self.wallet_path, &address)?;
 
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
@@ -887,12 +1021,7 @@ impl WebApi for WebApiImpl {
         )
         .await?;
 
-        let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
-        let balance = match exprs.first() {
-            Some(RhoExpr::ExprBigInt { data }) => data.clone(),
-            Some(RhoExpr::ExprInt { data }) => data.to_string(),
-            _ => return Err(eyre!("Unexpected balance result for address {}", address)),
-        };
+        let balance = balance_from_result(self.wallet_path, &address, pars)?;
 
         Ok(BalanceResponse {
             address,
@@ -938,61 +1067,81 @@ impl WebApi for WebApiImpl {
     }
 
     async fn get_validators(&self, block_hash: Option<String>) -> Result<ValidatorsResponse> {
-        let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
-  rl!(`rho:system:pos`, *poSCh) |
-  for(@(_, PoS) <- poSCh) {
-    @PoS!("getBonds", *return)
-  }
-}"#
-        .to_string();
-
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
-
-        let (pars, _block, _cost) = BlockAPI::exploratory_deploy(
-            &self.engine_cell,
-            term,
-            Some(resolved_hash.clone()),
-            false,
-            self.dev_mode,
-            None,
-            Vec::new(),
-        )
-        .await?;
-
-        let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
+        let self_bonds = self.get_pos_amount_map("getBonds", &resolved_hash).await?;
+        let effective_bonds = self
+            .get_pos_amount_map("getEffectiveBonds", &resolved_hash)
+            .await?;
 
         let mut validators = Vec::new();
-
-        // getBonds returns a Rholang map: {pubkey: stake, ...}
-        // ExprMap keys are already String (extracted by extract_key_from_expr)
-        if let Some(RhoExpr::ExprMap { data }) = exprs.first() {
-            for (public_key, value) in data {
-                let stake = match value {
-                    RhoExpr::ExprBigInt { data } => {
-                        TokenAmount::parse(data).map_err(|e| eyre!(e))?
-                    }
-                    other => {
-                        return Err(eyre!(
-                            "Unexpected stake type for validator {}: {:?}",
-                            public_key,
-                            other
-                        ))
-                    }
-                };
-                validators.push(ValidatorInfo {
-                    public_key: public_key.clone(),
-                    stake,
-                });
-            }
+        for (public_key, effective_stake) in effective_bonds {
+            let self_stake = self_bonds
+                .get(&public_key)
+                .cloned()
+                .unwrap_or_else(TokenAmount::zero);
+            let delegated_stake =
+                delegated_part("getEffectiveBonds", &effective_stake, &self_stake)?;
+            validators.push(ValidatorInfo {
+                public_key,
+                stake: effective_stake,
+                self_stake,
+                delegated_stake,
+            });
         }
 
         let total_stake = sum_validator_stakes(&validators);
+        let total_self_stake = validators.iter().map(|v| v.self_stake.as_bigint()).sum();
+        let total_delegated_stake = validators
+            .iter()
+            .map(|v| v.delegated_stake.as_bigint())
+            .sum();
         Ok(ValidatorsResponse {
             validators,
             total_stake,
+            total_self_stake,
+            total_delegated_stake,
             block_number,
             block_hash: resolved_hash,
         })
+    }
+
+    async fn get_delegations(&self, block_hash: Option<String>) -> Result<DelegationsResponse> {
+        let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
+        let delegations = self
+            .get_pos_nested_amount_map("getDelegations", &resolved_hash)
+            .await?;
+        let delegated_totals = self
+            .get_pos_amount_map("getDelegatedTotals", &resolved_hash)
+            .await?;
+        let delegator_rewards = parse_reward_map(
+            "getDelegatorRewards",
+            &self
+                .get_pos_value("getDelegatorRewards", &resolved_hash)
+                .await?,
+        )?;
+        let pending_undelegations = self
+            .get_pos_pending_undelegations("getPendingUndelegations", &resolved_hash)
+            .await?;
+
+        Ok(DelegationsResponse {
+            delegations,
+            delegated_totals,
+            delegator_rewards,
+            pending_undelegations,
+            block_number,
+            block_hash: resolved_hash,
+        })
+    }
+
+    async fn get_delegator(
+        &self,
+        pubkey: String,
+        block_hash: Option<String>,
+    ) -> Result<DelegatorStateResponse> {
+        let _ = validate_and_decode_pubkey(&pubkey)?;
+        let snapshot = self.get_delegations(block_hash).await?;
+
+        Ok(delegator_state_from_snapshot(pubkey, snapshot))
     }
 
     async fn get_epoch(&self, block_hash: Option<String>) -> Result<EpochResponse> {
@@ -1106,43 +1255,27 @@ impl WebApi for WebApiImpl {
     ) -> Result<ValidatorStatusResponse> {
         let _ = validate_and_decode_pubkey(&pubkey)?;
 
-        let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
-            rl!(`rho:system:pos`, *poSCh) |
-            for(@(_, PoS) <- poSCh) { @PoS!("getBonds", *return) }
-        }"#
-        .to_string();
-
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
-
-        let (pars, _block, _cost) = BlockAPI::exploratory_deploy(
-            &self.engine_cell,
-            term,
-            Some(resolved_hash.clone()),
-            false,
-            self.dev_mode,
-            None,
-            Vec::new(),
-        )
-        .await?;
-
-        let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
-
-        let mut is_bonded = false;
-        let mut stake = None;
-
-        if let Some(RhoExpr::ExprMap { data }) = exprs.first() {
-            if let Some(value) = data.get(&pubkey) {
-                is_bonded = true;
-                if let RhoExpr::ExprBigInt { data } = value {
-                    stake = Some(TokenAmount::parse(data).map_err(|e| eyre!(e))?);
-                }
+        let self_bonds = self.get_pos_amount_map("getBonds", &resolved_hash).await?;
+        let effective_bonds = self
+            .get_pos_amount_map("getEffectiveBonds", &resolved_hash)
+            .await?;
+        let self_stake = self_bonds.get(&pubkey).cloned();
+        let effective_stake = effective_bonds.get(&pubkey).cloned();
+        let is_bonded = self_stake.as_ref().is_some_and(|stake| !stake.is_zero());
+        let delegated_stake = match (effective_stake.as_ref(), self_stake.as_ref()) {
+            (Some(effective), Some(own)) => {
+                Some(delegated_part("getEffectiveBonds", effective, own)?)
             }
-        }
+            _ => None,
+        };
 
         Ok(ValidatorStatusResponse {
             public_key: pubkey,
             is_bonded,
-            stake,
+            stake: effective_stake,
+            self_stake,
+            delegated_stake,
             block_number,
             block_hash: resolved_hash,
         })
@@ -1566,6 +1699,87 @@ pub struct VersionInfo {
     pub node: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferedRejectionJson {
+    pub reason: String,
+    pub pre_state_root: Option<String>,
+    pub block_number: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferedReceiptJson {
+    pub outcome: String,
+    pub comm_phlo: u64,
+    pub compute_phlo: u64,
+    pub event_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferedReceiptResponse {
+    pub deploy_id: String,
+    pub status: String,
+    pub block_hash: Option<String>,
+    pub rejection: Option<OfferedRejectionJson>,
+    pub receipt: Option<OfferedReceiptJson>,
+}
+
+pub fn parse_offered_id(deploy_id: &str) -> Result<Vec<u8>> {
+    match hex::decode(deploy_id.trim_start_matches("0x")) {
+        Ok(id) if !id.is_empty() => Ok(id),
+        _ => Err(eyre::Report::new(InvalidHashError(format!(
+            "'{}' is not a hex deploy id",
+            deploy_id
+        )))),
+    }
+}
+
+impl OfferedReceiptResponse {
+    pub fn from_status(deploy_id: String, status: OfferedStatus) -> Self {
+        let mut response = OfferedReceiptResponse {
+            deploy_id,
+            status: String::new(),
+            block_hash: None,
+            rejection: None,
+            receipt: None,
+        };
+        response.status = match status {
+            OfferedStatus::Unknown => "unknown",
+            OfferedStatus::Pending => "pending",
+            OfferedStatus::Rejected(rejection) => {
+                response.rejection = Some(OfferedRejectionJson {
+                    reason: rejection.reason,
+                    pre_state_root: rejection.pre_state_root.map(hex::encode),
+                    block_number: rejection.block_number,
+                });
+                "rejected"
+            }
+            OfferedStatus::Ordered { block_hash } => {
+                response.block_hash = Some(hex::encode(block_hash));
+                "ordered"
+            }
+            OfferedStatus::NotRetained { block_hash } => {
+                response.block_hash = Some(hex::encode(block_hash));
+                "notRetained"
+            }
+            OfferedStatus::Executed(receipt) => {
+                response.block_hash = Some(hex::encode(&receipt.block_hash));
+                response.receipt = Some(OfferedReceiptJson {
+                    outcome: format!("{:?}", receipt.outcome),
+                    comm_phlo: receipt.comm_phlo,
+                    compute_phlo: receipt.compute_phlo,
+                    event_count: receipt.event_count,
+                });
+                "executed"
+            }
+        }
+        .to_string();
+        response
+    }
+}
+
 /// Unified deploy response. Default (full) includes all fields.
 /// Summary view (`?view=summary`) omits Optional fields for lightweight polling.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1654,6 +1868,12 @@ pub struct ValidatorInfo {
     pub public_key: String,
     #[schema(value_type = String)]
     pub stake: TokenAmount,
+    #[serde(rename = "selfStake")]
+    #[schema(value_type = String)]
+    pub self_stake: TokenAmount,
+    #[serde(rename = "delegatedStake")]
+    #[schema(value_type = String)]
+    pub delegated_stake: TokenAmount,
 }
 
 /// Active validator set response
@@ -1664,6 +1884,81 @@ pub struct ValidatorsResponse {
     #[serde(with = "shared::rust::decimal::unsigned")]
     #[schema(value_type = String)]
     pub total_stake: BigInt,
+    #[serde(rename = "totalSelfStake")]
+    #[serde(with = "shared::rust::decimal::unsigned")]
+    #[schema(value_type = String)]
+    pub total_self_stake: BigInt,
+    #[serde(rename = "totalDelegatedStake")]
+    #[serde(with = "shared::rust::decimal::unsigned")]
+    #[schema(value_type = String)]
+    pub total_delegated_stake: BigInt,
+    #[serde(rename = "blockNumber")]
+    pub block_number: i64,
+    #[serde(rename = "blockHash")]
+    pub block_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct PendingUndelegationInfo {
+    #[schema(value_type = String)]
+    pub amount: TokenAmount,
+    #[serde(rename = "unlockBlock")]
+    pub unlock_block: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct DelegationEntry {
+    #[serde(rename = "validatorPublicKey")]
+    pub validator_public_key: String,
+    #[schema(value_type = String)]
+    pub amount: TokenAmount,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct PendingUndelegationEntry {
+    #[serde(rename = "validatorPublicKey")]
+    pub validator_public_key: String,
+    #[schema(value_type = String)]
+    pub amount: TokenAmount,
+    #[serde(rename = "unlockBlock")]
+    pub unlock_block: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DelegationsResponse {
+    #[schema(value_type = HashMap<String, HashMap<String, String>>)]
+    pub delegations: HashMap<String, HashMap<String, TokenAmount>>,
+    #[serde(rename = "delegatedTotals")]
+    #[schema(value_type = HashMap<String, String>)]
+    pub delegated_totals: HashMap<String, TokenAmount>,
+    #[serde(rename = "delegatorRewards")]
+    pub delegator_rewards: HashMap<String, String>,
+    #[serde(rename = "pendingUndelegations")]
+    pub pending_undelegations: HashMap<String, HashMap<String, PendingUndelegationInfo>>,
+    #[serde(rename = "blockNumber")]
+    pub block_number: i64,
+    #[serde(rename = "blockHash")]
+    pub block_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DelegatorStateResponse {
+    #[serde(rename = "publicKey")]
+    pub public_key: String,
+    #[serde(rename = "activeDelegations")]
+    pub active_delegations: Vec<DelegationEntry>,
+    #[serde(rename = "pendingUndelegations")]
+    pub pending_undelegations: Vec<PendingUndelegationEntry>,
+    #[serde(rename = "claimableRewards")]
+    pub claimable_rewards: String,
+    #[serde(rename = "totalActiveDelegated")]
+    #[serde(with = "shared::rust::decimal::unsigned")]
+    #[schema(value_type = String)]
+    pub total_active_delegated: BigInt,
+    #[serde(rename = "totalPendingUndelegation")]
+    #[serde(with = "shared::rust::decimal::unsigned")]
+    #[schema(value_type = String)]
+    pub total_pending_undelegation: BigInt,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]
@@ -1737,6 +2032,12 @@ pub struct ValidatorStatusResponse {
     pub is_bonded: bool,
     #[schema(value_type = Option<String>)]
     pub stake: Option<TokenAmount>,
+    #[serde(rename = "selfStake")]
+    #[schema(value_type = Option<String>)]
+    pub self_stake: Option<TokenAmount>,
+    #[serde(rename = "delegatedStake")]
+    #[schema(value_type = Option<String>)]
+    pub delegated_stake: Option<TokenAmount>,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]
@@ -1750,6 +2051,147 @@ pub struct BondStatusResponse {
     pub public_key: String,
     #[serde(rename = "isBonded")]
     pub is_bonded: bool,
+}
+
+fn parse_stake_amount(method: &str, value: &RhoExpr) -> Result<TokenAmount> {
+    let amount = match value {
+        RhoExpr::ExprInt { data } => BigInt::from(*data),
+        RhoExpr::ExprBigInt { data } => data.parse::<BigInt>()?,
+        _ => {
+            return Err(eyre!(
+                "Expected an integer amount from {}: {:?}",
+                method,
+                value
+            ))
+        }
+    };
+    TokenAmount::new(amount)
+        .map_err(|error| eyre!("Invalid staking amount from {}: {}", method, error))
+}
+
+fn delegated_part(method: &str, effective: &TokenAmount, own: &TokenAmount) -> Result<TokenAmount> {
+    TokenAmount::new(effective.as_bigint() - own.as_bigint()).map_err(|error| {
+        eyre!(
+            "Effective stake below self stake from {}: {}",
+            method,
+            error
+        )
+    })
+}
+
+fn parse_amount_map(method: &str, expr: &RhoExpr) -> Result<HashMap<String, TokenAmount>> {
+    let RhoExpr::ExprMap { data } = expr else {
+        return Err(eyre!("Expected map result from {}: {:?}", method, expr));
+    };
+    data.iter()
+        .map(|(key, value)| Ok((key.clone(), parse_stake_amount(method, value)?)))
+        .collect()
+}
+
+fn parse_reward_map(method: &str, expr: &RhoExpr) -> Result<HashMap<String, String>> {
+    let RhoExpr::ExprMap { data } = expr else {
+        return Err(eyre!("Expected map result from {}: {:?}", method, expr));
+    };
+
+    data.iter()
+        .map(|(public_key, value)| {
+            let amount = match value {
+                RhoExpr::ExprBigInt { data } => data.clone(),
+                RhoExpr::ExprInt { data } => data.to_string(),
+                _ => {
+                    return Err(eyre!(
+                        "Unexpected reward value type from {} for key {}: {:?}",
+                        method,
+                        public_key,
+                        value
+                    ));
+                }
+            };
+            Ok((public_key.clone(), amount))
+        })
+        .collect()
+}
+
+fn parse_nested_amount_map(
+    method: &str,
+    expr: &RhoExpr,
+) -> Result<HashMap<String, HashMap<String, TokenAmount>>> {
+    let RhoExpr::ExprMap { data } = expr else {
+        return Err(eyre!(
+            "Expected nested map result from {}: {:?}",
+            method,
+            expr
+        ));
+    };
+    data.iter()
+        .map(|(key, value)| Ok((key.clone(), parse_amount_map(method, value)?)))
+        .collect()
+}
+
+fn parse_pending_undelegation_map(
+    method: &str,
+    expr: &RhoExpr,
+) -> Result<HashMap<String, HashMap<String, PendingUndelegationInfo>>> {
+    let RhoExpr::ExprMap { data } = expr else {
+        return Err(eyre!(
+            "Expected pending-undelegation map result from {}: {:?}",
+            method,
+            expr
+        ));
+    };
+
+    let mut values = HashMap::new();
+    for (delegator, validator_expr) in data {
+        let RhoExpr::ExprMap {
+            data: validator_map,
+        } = validator_expr
+        else {
+            return Err(eyre!(
+                "Unexpected pending-undelegation inner type from {} for delegator {}: {:?}",
+                method,
+                delegator,
+                validator_expr
+            ));
+        };
+
+        let mut parsed_validators = HashMap::new();
+        for (validator, pending_expr) in validator_map {
+            let RhoExpr::ExprTuple { data } = pending_expr else {
+                return Err(eyre!(
+                    "Unexpected pending-undelegation value type from {} for {}/{}: {:?}",
+                    method,
+                    delegator,
+                    validator,
+                    pending_expr
+                ));
+            };
+            let [amount_expr, unlock_expr] = data.as_slice() else {
+                return Err(eyre!(
+                    "Unexpected pending-undelegation tuple arity from {} for {}/{}: {:?}",
+                    method,
+                    delegator,
+                    validator,
+                    pending_expr
+                ));
+            };
+            let amount = parse_stake_amount(method, amount_expr)?;
+            let RhoExpr::ExprInt { data: unlock_block } = unlock_expr else {
+                return Err(eyre!(
+                    "Unexpected pending-undelegation unlock type from {} for {}/{}: {:?}",
+                    method,
+                    delegator,
+                    validator,
+                    unlock_expr
+                ));
+            };
+            parsed_validators.insert(validator.clone(), PendingUndelegationInfo {
+                amount,
+                unlock_block: *unlock_block,
+            });
+        }
+        values.insert(delegator.clone(), parsed_validators);
+    }
+    Ok(values)
 }
 
 // Error types
@@ -1784,6 +2226,61 @@ fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
         eyre::Report::new(InvalidPublicKeyError(format!("invalid public key: {}", e)))
     })?;
     Ok(bytes)
+}
+
+fn delegator_state_from_snapshot(
+    pubkey: String,
+    snapshot: DelegationsResponse,
+) -> DelegatorStateResponse {
+    let mut active_delegations = snapshot
+        .delegations
+        .get(&pubkey)
+        .into_iter()
+        .flat_map(|validator_map| validator_map.iter())
+        .map(|(validator_public_key, amount)| DelegationEntry {
+            validator_public_key: validator_public_key.clone(),
+            amount: amount.clone(),
+        })
+        .collect::<Vec<_>>();
+    active_delegations.sort_by(|a, b| a.validator_public_key.cmp(&b.validator_public_key));
+
+    let mut pending_undelegations = snapshot
+        .pending_undelegations
+        .get(&pubkey)
+        .into_iter()
+        .flat_map(|validator_map| validator_map.iter())
+        .map(|(validator_public_key, pending)| PendingUndelegationEntry {
+            validator_public_key: validator_public_key.clone(),
+            amount: pending.amount.clone(),
+            unlock_block: pending.unlock_block,
+        })
+        .collect::<Vec<_>>();
+    pending_undelegations.sort_by(|a, b| a.validator_public_key.cmp(&b.validator_public_key));
+
+    let total_active_delegated = active_delegations
+        .iter()
+        .map(|entry| entry.amount.as_bigint())
+        .sum();
+    let total_pending_undelegation = pending_undelegations
+        .iter()
+        .map(|entry| entry.amount.as_bigint())
+        .sum();
+    let claimable_rewards = snapshot
+        .delegator_rewards
+        .get(&pubkey)
+        .cloned()
+        .unwrap_or_else(|| "0".to_string());
+
+    DelegatorStateResponse {
+        public_key: pubkey,
+        active_delegations,
+        pending_undelegations,
+        claimable_rewards,
+        total_active_delegated,
+        total_pending_undelegation,
+        block_number: snapshot.block_number,
+        block_hash: snapshot.block_hash,
+    }
 }
 
 // Conversion functions for protobuf generated types
@@ -2193,6 +2690,138 @@ mod tests {
 
     use super::*;
 
+    fn tuple(flag: bool, value: Par) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: vec![
+                    Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(ExprInstance::GBool(flag)),
+                    }]),
+                    value,
+                ],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }])
+    }
+
+    fn int(n: i64) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(n)),
+        }])
+    }
+
+    const ADDRESS: &str = "1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5";
+
+    #[test]
+    fn balance_query_uses_the_selected_wallet_path() {
+        let (native, native_params) = balance_query_term(WalletPath::Native, ADDRESS).unwrap();
+        assert!(native.contains("rho:rev:wallet"));
+        assert!(!native.contains("findOrCreate"));
+        assert!(native_params.is_empty());
+        let (legacy, legacy_params) = balance_query_term(WalletPath::Legacy, ADDRESS).unwrap();
+        assert!(legacy.contains("findOrCreate"));
+        assert!(!legacy.contains(ADDRESS));
+        assert_eq!(legacy_params.len(), 1);
+        assert_eq!(WalletPath::default(), WalletPath::Legacy);
+    }
+
+    #[test]
+    fn balance_query_rejects_addresses_that_are_not_valid() {
+        let injected = format!("{ADDRESS}\", *vaultCh) | @\"x\"!(\"y");
+        for path in [WalletPath::Native, WalletPath::Legacy] {
+            for bad in ["", "lala", injected.as_str()] {
+                assert!(balance_query_term(path, bad).is_err(), "{path:?} {bad}");
+            }
+        }
+    }
+
+    #[test]
+    fn native_balance_results_parse() {
+        let ok = balance_from_result(WalletPath::Native, ADDRESS, vec![tuple(true, int(42))]);
+        assert_eq!(ok.unwrap(), "42");
+        let failed = balance_from_result(WalletPath::Native, ADDRESS, vec![tuple(false, int(0))]);
+        assert!(failed.is_err());
+        assert!(balance_from_result(WalletPath::Native, ADDRESS, vec![]).is_err());
+        let legacy = balance_from_result(WalletPath::Legacy, ADDRESS, vec![int(7)]);
+        assert_eq!(legacy.unwrap(), "7");
+    }
+
+    #[test]
+    fn offered_ids_are_non_empty_hex() {
+        let id = "ab".repeat(70);
+        assert_eq!(parse_offered_id(&id).unwrap(), vec![0xab; 70]);
+        assert_eq!(parse_offered_id(&format!("0x{id}")).unwrap(), vec![
+            0xab;
+            70
+        ]);
+        for bad in ["zz", "abc", "", "0x"] {
+            assert!(parse_offered_id(bad)
+                .unwrap_err()
+                .downcast_ref::<InvalidHashError>()
+                .is_some());
+        }
+    }
+
+    #[test]
+    fn offered_statuses_serialize_with_their_details() {
+        use block_storage::rust::deploy::offer_rejection::OfferRejection;
+        use casper::rust::v6::block_record::EnvelopeOutcome;
+        use casper::rust::v6::receipt::OfferedReceipt;
+
+        let unknown = serde_json::to_value(OfferedReceiptResponse::from_status(
+            "aa".into(),
+            OfferedStatus::Unknown,
+        ))
+        .unwrap();
+        assert_eq!(unknown["status"], "unknown");
+        assert!(unknown["receipt"].is_null());
+
+        let rejected = serde_json::to_value(OfferedReceiptResponse::from_status(
+            "aa".into(),
+            OfferedStatus::Rejected(OfferRejection {
+                deploy_id: vec![7; 70],
+                pre_state_root: Some(vec![1, 2]),
+                block_number: 9,
+                reason: "unfunded".into(),
+            }),
+        ))
+        .unwrap();
+        assert_eq!(rejected["status"], "rejected");
+        assert_eq!(rejected["rejection"]["reason"], "unfunded");
+        assert_eq!(rejected["rejection"]["preStateRoot"], "0102");
+        assert_eq!(rejected["rejection"]["blockNumber"], 9);
+
+        let not_retained = serde_json::to_value(OfferedReceiptResponse::from_status(
+            "aa".into(),
+            OfferedStatus::NotRetained {
+                block_hash: vec![0xcd].into(),
+            },
+        ))
+        .unwrap();
+        assert_eq!(not_retained["status"], "notRetained");
+        assert_eq!(not_retained["blockHash"], "cd");
+
+        let executed = serde_json::to_value(OfferedReceiptResponse::from_status(
+            "aa".into(),
+            OfferedStatus::Executed(OfferedReceipt {
+                block_hash: vec![0xef].into(),
+                outcome: EnvelopeOutcome::Completed,
+                comm_phlo: 2,
+                compute_phlo: 40,
+                event_count: 5,
+            }),
+        ))
+        .unwrap();
+        assert_eq!(executed["status"], "executed");
+        assert_eq!(executed["blockHash"], "ef");
+        let receipt = &executed["receipt"];
+        assert_eq!(receipt["outcome"], "Completed");
+        assert_eq!(receipt["commPhlo"], 2);
+        assert_eq!(receipt["computePhlo"], 40);
+        assert_eq!(receipt["eventCount"], 5);
+    }
+
     fn param_env(name: &str, value: RholangValue) -> HashMap<String, Par> {
         let mut env = HashMap::new();
         env.insert(format!("rho:deploy:param:{}", name), value.to_par());
@@ -2276,11 +2905,13 @@ mod tests {
             (BigInt::from(1) << 128usize).to_string(),
             max.to_string(),
         ] {
-            let info = serde_json::json!({"publicKey": "validator", "stake": stake});
+            let info = serde_json::json!({"publicKey": "validator", "stake": stake,
+                "selfStake": stake, "delegatedStake": "0"});
             let value: ValidatorInfo = serde_json::from_value(info.clone()).unwrap();
             assert_eq!(serde_json::to_value(value).unwrap(), info);
             let status = serde_json::json!({"publicKey": "validator", "isBonded": true,
-                "stake": stake, "blockNumber": 0, "blockHash": "hash"});
+                "stake": stake, "selfStake": stake, "delegatedStake": "0",
+                "blockNumber": 0, "blockHash": "hash"});
             let value: ValidatorStatusResponse = serde_json::from_value(status.clone()).unwrap();
             assert_eq!(serde_json::to_value(value).unwrap(), status);
         }
@@ -2295,7 +2926,8 @@ mod tests {
             serde_json::json!((max + 1u8).to_string()),
         ] {
             assert!(serde_json::from_value::<ValidatorInfo>(serde_json::json!(
-                {"publicKey": "validator", "stake": stake}))
+                {"publicKey": "validator", "stake": stake,
+                 "selfStake": "0", "delegatedStake": "0"}))
             .is_err());
             assert!(
                 serde_json::from_value::<ValidatorStatusResponse>(serde_json::json!(
@@ -2306,13 +2938,18 @@ mod tests {
         }
         let status: ValidatorStatusResponse = serde_json::from_value(serde_json::json!(
             {"publicKey": "validator", "isBonded": false, "stake": null,
+             "selfStake": null, "delegatedStake": null,
              "blockNumber": 0, "blockHash": "hash"}))
         .unwrap();
         assert!(status.stake.is_none());
         let total = TokenAmount::max().into_bigint() * 2u8;
         let response: ValidatorsResponse = serde_json::from_value(serde_json::json!(
-            {"validators": [], "totalStake": total.to_string(), "blockNumber": 0, "blockHash": "hash"})).unwrap();
+            {"validators": [], "totalStake": total.to_string(),
+             "totalSelfStake": total.to_string(), "totalDelegatedStake": "0",
+             "blockNumber": 0, "blockHash": "hash"}))
+        .unwrap();
         assert_eq!(response.total_stake, total);
+        assert_eq!(response.total_self_stake, total);
     }
 
     #[test]
@@ -2352,9 +2989,11 @@ mod tests {
 
     #[test]
     fn validator_totals_preserve_sums_above_uint256() {
-        let validator = |stake| ValidatorInfo {
+        let validator = |stake: TokenAmount| ValidatorInfo {
             public_key: "validator".to_string(),
+            self_stake: stake.clone(),
             stake,
+            delegated_stake: TokenAmount::zero(),
         };
         assert_eq!(sum_validator_stakes(&[]), BigInt::from(0));
         let max = TokenAmount::max();
@@ -2368,6 +3007,8 @@ mod tests {
         let json = serde_json::to_value(ValidatorsResponse {
             validators,
             total_stake: total_stake.clone(),
+            total_self_stake: total_stake.clone(),
+            total_delegated_stake: BigInt::from(0),
             block_number: 1,
             block_hash: "block".to_string(),
         })
@@ -2381,6 +3022,8 @@ mod tests {
         let response = |stake: Option<TokenAmount>| ValidatorStatusResponse {
             public_key: "validator".to_string(),
             is_bonded: stake.is_some(),
+            self_stake: stake.clone(),
+            delegated_stake: stake.as_ref().map(|_| TokenAmount::zero()),
             stake,
             block_number: 1,
             block_hash: "block".to_string(),
@@ -2565,6 +3208,8 @@ mod tests {
                 shard_id: "".to_string(),
                 expiration_timestamp: None,
                 parameters: Vec::new(),
+                cosignatures: Vec::new(),
+                required_cosigners: Vec::new(),
             },
             deployer: "0123456789abcdef".to_string(),
             signature: "fedcba9876543210".to_string(),
@@ -3466,6 +4111,200 @@ mod tests {
         let (_sk, pk) = crypto::rust::signatures::secp256k1::Secp256k1.new_key_pair();
         let valid = validate_and_decode_pubkey(&hex::encode(&pk.bytes)).unwrap();
         assert_eq!(valid, pk.bytes.to_vec());
+    }
+
+    #[test]
+    fn staking_json_preserves_large_amounts_as_decimal_strings() {
+        let amount = "100000000000000000001";
+        let response = ValidatorInfo {
+            public_key: "validator".to_string(),
+            stake: amount.parse().unwrap(),
+            self_stake: amount.parse().unwrap(),
+            delegated_stake: TokenAmount::zero(),
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["stake"], amount);
+        assert_eq!(json["selfStake"], amount);
+        assert_eq!(json["delegatedStake"], "0");
+        assert_eq!(
+            serde_json::from_value::<ValidatorInfo>(json).unwrap().stake,
+            response.stake
+        );
+        let pending = PendingUndelegationInfo {
+            amount: response.stake,
+            unlock_block: 7,
+        };
+        let json = serde_json::to_value(&pending).unwrap();
+        assert_eq!(json["amount"], amount);
+        assert_eq!(json["unlockBlock"], 7);
+        assert_eq!(
+            serde_json::from_value::<PendingUndelegationInfo>(json).unwrap(),
+            pending
+        );
+    }
+
+    #[test]
+    fn test_delegator_state_from_snapshot_sorts_and_totals() {
+        let secp = crypto::rust::signatures::secp256k1::Secp256k1;
+        let (_sk0, delegator_pk) = secp.new_key_pair();
+        let (_sk1, validator_a_pk) = secp.new_key_pair();
+        let (_sk2, validator_b_pk) = secp.new_key_pair();
+        let delegator = hex::encode(&delegator_pk.bytes);
+        let validator_a = hex::encode(&validator_a_pk.bytes);
+        let validator_b = hex::encode(&validator_b_pk.bytes);
+        validate_and_decode_pubkey(&delegator).unwrap();
+
+        let snapshot = DelegationsResponse {
+            delegations: HashMap::from([(
+                delegator.clone(),
+                HashMap::from([
+                    (validator_b.clone(), 7.into()),
+                    (validator_a.clone(), 5.into()),
+                ]),
+            )]),
+            delegated_totals: HashMap::from([
+                (validator_a.clone(), 5.into()),
+                (validator_b.clone(), 7.into()),
+            ]),
+            delegator_rewards: HashMap::from([(
+                delegator.clone(),
+                "9223372036854775808".to_string(),
+            )]),
+            pending_undelegations: HashMap::from([(
+                delegator.clone(),
+                HashMap::from([
+                    (validator_b.clone(), PendingUndelegationInfo {
+                        amount: 3.into(),
+                        unlock_block: 99,
+                    }),
+                    (validator_a.clone(), PendingUndelegationInfo {
+                        amount: 2.into(),
+                        unlock_block: 88,
+                    }),
+                ]),
+            )]),
+            block_number: 42,
+            block_hash: "block-hash".to_string(),
+        };
+
+        let absent = delegator_state_from_snapshot("absent".to_string(), snapshot.clone());
+        assert_eq!(absent.claimable_rewards, "0");
+        let state = delegator_state_from_snapshot(delegator.clone(), snapshot);
+        let mut expected_active_delegations = vec![
+            DelegationEntry {
+                validator_public_key: validator_a.clone(),
+                amount: 5.into(),
+            },
+            DelegationEntry {
+                validator_public_key: validator_b.clone(),
+                amount: 7.into(),
+            },
+        ];
+        expected_active_delegations
+            .sort_by(|a, b| a.validator_public_key.cmp(&b.validator_public_key));
+        let mut expected_pending_undelegations = vec![
+            PendingUndelegationEntry {
+                validator_public_key: validator_a,
+                amount: 2.into(),
+                unlock_block: 88,
+            },
+            PendingUndelegationEntry {
+                validator_public_key: validator_b,
+                amount: 3.into(),
+                unlock_block: 99,
+            },
+        ];
+        expected_pending_undelegations
+            .sort_by(|a, b| a.validator_public_key.cmp(&b.validator_public_key));
+
+        assert_eq!(state.public_key, delegator);
+        assert_eq!(state.active_delegations, expected_active_delegations);
+        assert_eq!(state.pending_undelegations, expected_pending_undelegations);
+        assert_eq!(state.claimable_rewards, "9223372036854775808");
+        assert_eq!(state.total_active_delegated, BigInt::from(12));
+        assert_eq!(state.total_pending_undelegation, BigInt::from(5));
+        assert_eq!(state.block_number, 42);
+        assert_eq!(state.block_hash, "block-hash");
+    }
+
+    #[test]
+    fn delegation_reward_map_preserves_bigint_and_legacy_int_values() {
+        let expr = RhoExpr::ExprMap {
+            data: HashMap::from([
+                ("large".to_string(), RhoExpr::ExprBigInt {
+                    data: "184467440737095516160000".to_string(),
+                }),
+                ("legacy".to_string(), RhoExpr::ExprInt { data: 42 }),
+            ]),
+        };
+        let rewards = parse_reward_map("getDelegatorRewards", &expr).unwrap();
+        assert_eq!(rewards["large"], "184467440737095516160000");
+        assert_eq!(rewards["legacy"], "42");
+        assert_eq!(
+            serde_json::to_value(rewards).unwrap()["large"],
+            "184467440737095516160000"
+        );
+    }
+
+    #[test]
+    fn delegation_reward_map_rejects_non_numeric_values() {
+        let value = RhoExpr::ExprString {
+            data: "42".to_string(),
+        };
+        assert!(parse_reward_map("getDelegatorRewards", &value).is_err());
+        let expr = RhoExpr::ExprMap {
+            data: HashMap::from([("delegator".to_string(), value)]),
+        };
+        assert!(parse_reward_map("getDelegatorRewards", &expr).is_err());
+    }
+
+    #[test]
+    fn test_delegation_state_parsers() {
+        let delegations_expr = RhoExpr::ExprMap {
+            data: [("delegator".to_string(), RhoExpr::ExprMap {
+                data: [("validator".to_string(), RhoExpr::ExprBigInt {
+                    data: "30".to_string(),
+                })]
+                .into_iter()
+                .collect(),
+            })]
+            .into_iter()
+            .collect(),
+        };
+        let delegations = parse_nested_amount_map("getDelegations", &delegations_expr).unwrap();
+        assert_eq!(delegations["delegator"]["validator"], 30.into());
+
+        let pending_expr = RhoExpr::ExprMap {
+            data: [("delegator".to_string(), RhoExpr::ExprMap {
+                data: [("validator".to_string(), RhoExpr::ExprTuple {
+                    data: vec![
+                        RhoExpr::ExprBigInt {
+                            data: "7".to_string(),
+                        },
+                        RhoExpr::ExprInt { data: 55 },
+                    ],
+                })]
+                .into_iter()
+                .collect(),
+            })]
+            .into_iter()
+            .collect(),
+        };
+        let pending =
+            parse_pending_undelegation_map("getPendingUndelegations", &pending_expr).unwrap();
+        assert_eq!(pending["delegator"]["validator"], PendingUndelegationInfo {
+            amount: 7.into(),
+            unlock_block: 55,
+        });
+    }
+
+    #[test]
+    fn delegation_amounts_reject_negative_values() {
+        let expr = RhoExpr::ExprMap {
+            data: HashMap::from([("validator".to_string(), RhoExpr::ExprInt { data: -1 })]),
+        };
+        assert!(parse_amount_map("getDelegatedTotals", &expr).is_err());
+        assert!(delegated_part("getEffectiveBonds", &1.into(), &2.into()).is_err());
     }
 
     #[test]

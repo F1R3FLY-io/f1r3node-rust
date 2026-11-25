@@ -31,6 +31,8 @@ pub enum DeployRequestError {
     UnsupportedAlgorithm(String),
     #[error("Invalid signature: the signature does not verify for this deployer and deploy data")]
     Unverified,
+    #[error("Invalid cosignatures: {0}")]
+    Cosignatures(String),
 }
 
 impl DeployRequest {
@@ -63,6 +65,9 @@ impl DeployRequest {
             sig_algorithm,
         )
         .ok_or(DeployRequestError::Unverified)
+        .and_then(|signed| {
+            DeployData::with_complete_cosignatures(signed).map_err(DeployRequestError::Cosignatures)
+        })
     }
 }
 
@@ -85,6 +90,8 @@ mod tests {
             shard_id: "root".to_string(),
             expiration_timestamp: None,
             parameters: Vec::new(),
+            cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         }
     }
 
