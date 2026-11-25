@@ -106,6 +106,7 @@ pub const DAG_MERGE_REJECTION_OPTIONS_METRIC: &str = "dag.merge.rejection.option
 pub const DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC: &str = "dag.merge.state-application.actions";
 pub const DAG_MERGE_REJECTED_NUMBER_CELL_WITHOUT_CREATOR_METRIC: &str =
     "dag.merge.rejected.number-cell-without-creator";
+pub const BLOCK_INDEX_CREATED_CELL_LINK_METRIC: &str = "block-index.created-cell-link";
 pub const BLOCK_REPLAY_SYSDEPLOY_EVAL_TIME_METRIC: &str = "block.replay.sysdeploy.eval.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC: &str = "block.replay.sysdeploy.check.time";
 pub const BLOCK_REPLAY_RUNTIME_LOCK_WAIT_TIME_METRIC: &str = "block.replay.runtime.lock-wait.time";

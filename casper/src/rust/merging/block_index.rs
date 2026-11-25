@@ -1,5 +1,7 @@
 // See casper/src/main/scala/coop/rchain/casper/merging/BlockIndex.scala
 
+use std::collections::HashSet;
+
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
@@ -14,6 +16,9 @@ use rspace_plus_plus::rspace::trace::event::Produce;
 use crate::rust::errors::CasperError;
 use crate::rust::merging::deploy_chain_index::DeployChainIndex;
 use crate::rust::merging::deploy_index::DeployIndex;
+use crate::rust::metrics_constants::{
+    BLOCK_INDEX_CREATED_CELL_LINK_METRIC, MERGING_METRICS_SOURCE,
+};
 use crate::rust::util::event_converter;
 
 #[derive(Clone)]
@@ -53,6 +58,34 @@ pub fn create_event_log_index(
         produce_touches_pre_state_join,
         mergeable_chs,
     )
+}
+
+/// `merging_logic::depends`, plus a link through a number cell the block's
+/// pre-state lacks: the deploy that creates such a cell and a deploy that reads
+/// the value it left belong to one chain. `depends` ignores number-cell values
+/// so that writers of an existing cell stay independent, but a reader of a
+/// fresh cell has no value without its creator.
+fn depends_within_block(
+    target: &EventLogIndex,
+    source: &EventLogIndex,
+    cells_created_in_block: &HashSet<Blake2b256Hash>,
+) -> bool {
+    if merging_logic::depends(target, source) {
+        return true;
+    }
+    let linked = merging_logic::produces_created_and_not_destroyed(source)
+        .0
+        .iter()
+        .filter(|produce| cells_created_in_block.contains(&produce.channel_hash))
+        .any(|produce| {
+            target.produces_consumed.0.contains(produce)
+                || target.produces_peeked.0.contains(produce)
+        });
+    if linked {
+        metrics::counter!(BLOCK_INDEX_CREATED_CELL_LINK_METRIC, "source" => MERGING_METRICS_SOURCE)
+            .increment(1);
+    }
+    linked
 }
 
 pub fn new(
@@ -170,13 +203,35 @@ pub fn new(
     let mut all_deploy_indices = usr_deploy_indices;
     all_deploy_indices.extend(sys_deploy_indices);
 
+    let pre_state_reader = history_repository
+        .get_history_reader(pre_state_hash)
+        .map_err(CasperError::HistoryError)?;
+    let mut cells_created_in_block: HashSet<Blake2b256Hash> = HashSet::new();
+    for cell in all_deploy_indices
+        .iter()
+        .flat_map(|d| d.event_log_index.number_channels_data.keys())
+    {
+        if !cells_created_in_block.contains(cell)
+            && pre_state_reader
+                .get_data(cell)
+                .map_err(CasperError::HistoryError)?
+                .is_empty()
+        {
+            cells_created_in_block.insert(cell.clone());
+        }
+    }
+
     // Here deploys from a single block are examined. Atm deploys in block are executed sequentially,
     // so all conflicts are resolved according to order of sequential execution.
     // Therefore there won't be any conflicts between event logs. But there can be dependencies.
     let deploy_chains = merging_logic::compute_related_sets(
         &all_deploy_indices.into_iter().collect(),
         |l: &DeployIndex, r: &DeployIndex| {
-            merging_logic::depends(&l.event_log_index, &r.event_log_index)
+            depends_within_block(
+                &l.event_log_index,
+                &r.event_log_index,
+                &cells_created_in_block,
+            )
         },
     );
 
