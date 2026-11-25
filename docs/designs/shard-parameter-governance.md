@@ -103,7 +103,7 @@ The class column is a proposal. The review in section 13 confirms each row.
 | Minimum phlo price | `getConsensusParameters` | Deploy validity | Governed | Neutral (execution) |
 | Deploy lifespan | `getConsensusParameters` | Expiry and repeat-deploy validity | Governed | Neutral (deploy pool) |
 | Fault-tolerance threshold (ppm) | `getFaultToleranceThresholdPpm` | Finalized floor, finality decision | Governed | Mechanism |
-| Maximum parent depth | `getConsensusParameters` | Parent-spread validity, citability horizon | Governed | Mechanism (`DagMedium`) |
+| Maximum parent depth | `getConsensusParameters` | Parent-spread validity, citability horizon, history and mergeable-channel GC horizon | Governed | Mechanism (`DagMedium`) |
 | Epoch length | `getConsensusParameters` | Slash authorization, neglect | Governed | Mechanism |
 | Quarantine length | Proof-of-stake contract at genesis | Withdrawal rules in the contract | Governed | Mechanism |
 | Bond minimum and bond maximum | Proof-of-stake contract at genesis | Bond method in the contract | Governed | Mechanism |
@@ -116,7 +116,7 @@ The class column is a proposal. The review in section 13 confirms each row.
 | Synchrony constraint threshold and recovery settings | Local configuration | Proposer gate only | Node-local | Mechanism |
 | Height constraint threshold | Local configuration | Proposer gate only | Node-local | Mechanism |
 | Maximum user deploys per block, deploy admission limits, deploy play budget | Local configuration | Proposer packaging and admission | Node-local | Neutral (deploy pool) |
-| Garbage collection and pruning settings | Local configuration | Local storage | Node-local | Neutral |
+| Garbage collection and pruning switches, intervals, and the GC depth buffer | Local configuration | Local storage | Node-local. The GC horizon uses the governed `max-parent-depth` and `deploy-lifespan` values | Neutral |
 
 The aligned rows are the alignment gap. Two validators with different values for one of them can reach different verdicts for the same block. The proposal is that no aligned setting remains when a production shard starts.
 
