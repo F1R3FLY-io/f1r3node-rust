@@ -112,6 +112,7 @@ The Cargo workspace contains 10 crates:
 | Document | Description |
 |----------|-------------|
 | [Entity-Relationship Diagrams](./erd/README.md) | Rendered PlantUML diagrams of runtime types, database records, and structured files |
+| [Storage Improvement Proposals](./improvement-proposals/README.md) | Draft designs for storage-only compression and subtree deduplication of canonical cold leaves |
 | [F1r3fly Architecture](./f1r3fly_architecture.md) | High-level architecture overview |
 | [F1r3fly State Diagram](./f1r3fly_state_diagram.md) | Node lifecycle state diagrams |
 | [Namespaces & Scaling](./archive/namespaces-scaling-mercury.md) | Namespace organization, regional namespaces |
