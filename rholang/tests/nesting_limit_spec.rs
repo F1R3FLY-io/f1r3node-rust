@@ -13,6 +13,8 @@ use rholang::rust::interpreter::test_utils::resources::with_runtime;
 /// The stack of a node's runtime worker threads.
 const WORKER_STACK: usize = 2 * 1024 * 1024;
 
+type SourceOfSize = fn(usize) -> String;
+
 fn nested_list_send(lists: usize) -> String {
     format!("@0!({}0{})", "[".repeat(lists), "]".repeat(lists))
 }
@@ -106,7 +108,7 @@ fn parallel_composition_adds_no_level_and_a_quoted_name_does() {
 
 #[test]
 fn a_desugared_term_is_measured_by_the_term_it_compiles_to() {
-    let largest_compiling: [(&str, fn(usize) -> String, usize); 5] = [
+    let largest_compiling: [(&str, SourceOfSize, usize); 5] = [
         ("sequential let", sequential_let, 126),
         ("sequential receipts", sequential_receipts, 127),
         ("synchronous send chain", sync_send_chain, 63),
