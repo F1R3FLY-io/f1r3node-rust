@@ -106,6 +106,14 @@ The soaks of 2026-10-15 and 2026-10-16 stopped on a workflow defect before the f
 
 The four failures are two sustained phases on subprocess (14:11Z with 2 deploys not finalized, and 23:08Z with 9), and two high phases (17:29Z on Docker with 13, and 20:28Z on subprocess with 14). In all four, the deploys entered blocks and then waited for finality (section 10.3). The workflow counted 5 failures. The fifth is most likely an iteration that the end of segment 1 interrupted, with no test result.
 
+**DAG lock and storage commits ([issue #1151](https://github.com/F1R3FLY-io/f1r3node-rust/issues/1151), 2026-11-25).** The sustained-phase failures of the November soaks have a measured cause in node code, on both release lines.
+
+| Fact | Source | Effect on the design |
+|---|---|---|
+| Soak [45320106018](https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/45320106018) on `dev` `5538481a2` failed 2 of 112 iterations, and soak [44651811768](https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/44651811768) on `ca-release` `bc7ce6299` failed 5 of 290. All the located failures ran on subprocess, and 0 of 201 Docker iterations failed. Each failure is a `getBlocks` tip read that no validator answered in 3 s, with no deploy left unfinalized. | Issue #1151 | The failure is read latency, not finality. It explains the provider difference of the step 0 baseline. |
+| In the failed iterations, each validator held the DAG global write lock for 2 to 4.4 s to insert one block. The insert came right after a last finalized block advance. All validators insert the same block at the same time, so `getBlocks` and `/status` stall on every validator together. | Node logs of both soaks | A read waits on a block insert. The design must keep reads off this lock (section 4). |
+| A local run with timing instrumentation measured the insert. LMDB commits in the carrier index and the deploy lifecycle store took 87 to 91 percent of the lock hold time. Each deploy makes about three separate synced write transactions, at 22 to 26 ms on average and up to 472 ms. | Issue #1151 | The insert cost is the number of synced commits times the commit latency. Slower synced writes, as on the soak runner disk with subprocess shards, give a longer stall from the same code. |
+
 ---
 
 ## 4. Principles
@@ -117,6 +125,7 @@ The four failures are two sustained phases on subprocess (14:11Z with 2 deploys 
 | Graceful degradation | When the node is near a limit, it removes optional work first and limits intake second. It does not run out of memory or miss a watchdog deadline. |
 | Closed loop | Each step down or up follows a measured signal over several intervals. A step never follows one sample. |
 | Measure, do not guess | Each tier has baseline targets. A soak profile checks the targets for each mechanism. |
+| Fix defects, do not adapt to them | A measured defect gets a code fix first. The controller does not limit work to hide a defect. For example, the node must not make a synced storage commit while it holds a lock that block admission or API reads need (issue #1151). |
 
 ---
 
@@ -239,6 +248,7 @@ pub struct ControlUpdate {
 ```
 
 - `HostClass` records the container or process context, for example `docker` or `subprocess`. The soak evidence shows that this class changes the result.
+- `disk_p99_write_micros` is the p99 time of one small synced commit, that is, a write transaction and its sync to disk. It is not a throughput value. The synced commit time sets the cost of a DAG insert (section 3, issue #1151).
 - A `TierProfile` gives the floor and the ceiling of each control for one tier. A mechanism supplies default profiles. An operator can narrow them in the configuration, but cannot widen them.
 - `NodeRole` records whether the node is a bonded validator. A read-only observer and a bootstrap node are non-validators. The node reads its role from the bonds at the last finalized block, and it reads the role again when the bonds change.
 - `FloorRule` gives the floor of a control. `Fixed` is a constant. `BlocksPerHeight` is the number of active validators, minus `validator_offset` on a validator node. The `cbc-casper` binding uses an offset of 1, because a validator does not replay its own block (section 10.1).
@@ -307,7 +317,7 @@ Rules:
 |---|---|---|
 | CPU use and run-queue delay | Node | Probe and runtime sampler |
 | Memory pressure against the cgroup limit | Node | Runtime sampler |
-| Disk write latency | Node | Storage layer |
+| Disk write latency, as the p99 time of a synced storage commit (section 6) | Node | Storage layer |
 | Tokio scheduler delay | Node | Runtime sampler |
 | API intake queue depth and age | Node | API layer |
 | Command admission wait and deadline misses | Lifecycle | `ConsensusRuntime` |
@@ -362,6 +372,7 @@ The A9 rejection search cap (`casper.rejection-search-cap-from-height`) changes 
 | Own carriers past the depth horizon | Own blocks whose deploys play again because the block left the parent-depth horizon (issue #541) |
 | Floor-pacing engagements | `block-creator.floor-pacing-engaged` of stall-loop A3. It counts proposals that carry no user deploys because the floor distance is above the threshold. |
 | Finalizer progress | The `finalizer.cursor.*` and `finalizer.commit.*` counters of stall-loop A1c (section 9.1) |
+| DAG lock wait and hold | The time that a block insert holds the DAG global lock, and the time that a read waits for it (issue #1151). A long hold is a defect, not overload. The controller does not step down on it. It writes a record and reports it on the status API. |
 
 ### 10.3 The sustained phase
 
@@ -414,6 +425,13 @@ The branches have no pull requests yet. Each branch was 42 to 49 commits behind 
 On legacy multi-parent shards, A-LIN does not hold. The A1c integration run logged commits that contain the previous last finalized block only through a secondary parent. A1c therefore logs and counts an A-LIN violation on a legacy shard, and halts on a v6 shard.
 
 The Track A branches change files that `.gitattributes` tags `cbc=mandatory`, for example `block_creator.rs`, `finalization_runner.rs`, and `conflict_set_merger.rs`. They add no CbC claims. A claim or a recorded waiver for each tagged file is a condition for the merge.
+
+**Track A item from issue #1151 (2026-11-25).** The DAG insert stall of section 3 is a Track A item with a measured cause. It is on `master`, `dev`, `ca-canary`, and `ca-release`. Branch `fix/1151-dag-insert-lock-stall` holds the fix. The fix has two parts:
+
+1. Write the carrier index and the deploy lifecycle events of a block in one synced commit for each store. Today a block makes about three commits for each deploy.
+2. Keep synced commits out of the DAG global write lock, or let `getBlocks` and `/status` read a DAG snapshot without that lock.
+
+The fix changes the `cbc=mandatory` files `block_dag_key_value_storage.rs` and `carrier_index.rs`, so it needs a CbC claim. The gate is a subprocess soak with no tip-read failure and no insert that holds the lock for 1 s or more.
 
 v6 shards are outside the scope of this design (section 17). On a v6 shard, structural validity checks the sum of the phlo limits of a block against a per-block demand cap. A future v6 descriptor must therefore keep each admission ceiling at or below that protocol cap. Its replay signal becomes the lag of the executed root behind the last finalized block. Open question Q9 records this.
 
@@ -638,6 +656,7 @@ The Ethereum values were checked on 2026-10-13 against the `master` branch of th
 | A wrong probe result selects a tier that is too high. | The closed loop steps down from measured signals. The operator can name the tier. |
 | A control changes block validity by accident. | Invariants I1 to I3, the CbC claim, and a mixed-tier test |
 | The sustained-phase cause is outside node control. | Open question Q1. The close-out depends on TASK-021-13. |
+| The controller hides a code defect. A level that limits intake also reduces the storage commits of each block, so it shortens the DAG insert stall of issue #1151 without a fix. | The principle "Fix defects, do not adapt to them" (section 4). The DAG lock signal of section 10.2 reports the defect, and the controller does not step down on it. |
 | The names of PR #651 change before merge. | Decision A7. The implementation starts after the merge. |
 
 ---
