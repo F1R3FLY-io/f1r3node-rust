@@ -375,23 +375,20 @@ pub fn storage_cost_consume(
 
 // A COMM hands copies of the fired continuation's body and the matched data to
 // dispatch, every time it fires.
-pub fn comm_copy_cost<'a>(
-    continuation: &TaggedContinuation,
-    matched: impl IntoIterator<Item = &'a ListParWithRandom>,
-) -> Cost {
-    let body_len = match continuation.tagged_cont.as_ref() {
+pub fn comm_body_copy_bytes(continuation: &TaggedContinuation) -> usize {
+    match continuation.tagged_cont.as_ref() {
         Some(TaggedCont::ParBody(ParWithRandom {
             body: Some(body), ..
         })) => body.encoded_len(),
         _ => 0,
-    };
-    let data_len: usize = matched
-        .into_iter()
-        .flat_map(|data| data.pars.iter())
-        .map(|par| par.encoded_len())
-        .sum();
-    Cost::create(copy_cost(body_len + data_len), "comm copy")
+    }
 }
+
+pub fn comm_data_copy_bytes(matched: &ListParWithRandom) -> usize {
+    matched.pars.iter().map(|par| par.encoded_len()).sum()
+}
+
+pub fn comm_copy_cost(bytes: usize) -> Cost { Cost::create(copy_cost(bytes), "comm copy") }
 
 pub fn storage_cost_produce(channel: &Par, data: &ListParWithRandom) -> Cost {
     let channel_cost = channel.encoded_len() as i64;

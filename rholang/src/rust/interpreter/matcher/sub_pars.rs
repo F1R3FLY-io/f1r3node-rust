@@ -246,6 +246,8 @@ impl SubPars {
             matches: matches.rest(&self.par.matches),
             unforgeables: unforgeables.rest(&self.par.unforgeables),
             bundles: bundles.rest(&self.par.bundles),
+            cost_signed_terms: self.par.cost_signed_terms.clone(),
+            cost_stacks: self.par.cost_stacks.clone(),
             ..Default::default()
         })
     }
