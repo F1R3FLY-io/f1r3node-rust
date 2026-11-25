@@ -105,3 +105,38 @@ Claim:
   "verified_at": "2026-11-25T01:23:39Z"
 }
 ```
+
+---
+
+## 2026-11-25 — CLAIM-FINALITY-001 (the name-seed scan follows the merge base)
+
+- **Status:** discharged
+- **Adapter:** agentic
+- **Commit:** 1f1a21eac
+- **Verified:** 2026-11-25T16:00:19Z
+
+Claim:
+
+> CLAIM-FINALITY-001 (docs/claims/settled-effect-probe-equivalence.md): `merge_name_seeds` walks the merge base, so when the base falls back to a floor outside the main parent's ancestry, a seed the floor already holds keeps its holder and no second deploy with that seed is applied.
+
+```json
+{
+  "schema": "cbc-claim/v1",
+  "claim_id": "CLAIM-FINALITY-001",
+  "artifact": {
+    "path": "casper/src/rust/util/rholang/interpreter_util.rs",
+    "commit": "1f1a21eac",
+    "id": "casper-src-rust-util-rholang-interpreter-util-rs"
+  },
+  "claim": "CLAIM-FINALITY-001, name-seed half: merge_name_seeds takes the scope anchor, so the seeds held by the merge base include those of a floor the main parent's ancestry does not reach.",
+  "adapter": "agentic",
+  "status": "discharged",
+  "evidence": {
+    "kind": "test",
+    "ref": "casper merging::floor_fallback_spec::a_merge_re_based_on_the_floor_keeps_the_floors_holder_of_a_name_seed",
+    "counterexample": null,
+    "detail": "X and Y share a name seed; X lands in the floor F and Y in a sibling S of F. Merging S as the main parent with a child of F re-bases on F. With the main parent as the scan base, the scan misses F's X, the merge applies Y on top of it, and the test fails; with the merge base, the merge keeps X as the seed's holder and drops Y, and the test passes. The settled-sig half is covered by a_merge_re_based_on_the_floor_accounts_for_the_main_parents_work."
+  },
+  "verified_at": "2026-11-25T16:00:19Z"
+}
+```
