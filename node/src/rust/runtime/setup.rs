@@ -879,21 +879,18 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         let live_transfer = transfer_unforgeable_for_reports.clone();
         let live_events = event_pub_for_reports.clone();
 
-        let history_dag = report_dag.clone();
-        let history_api = report_api.clone();
-        let startup_finalized = tokio::task::spawn_blocking(move || {
-            startup_finalized_report_hashes(&history_dag, &history_api)
-        })
-        .await
-        .map_err(eyre::Report::from)
-        .and_then(std::convert::identity);
-        let startup_finalized = match startup_finalized {
-            Ok(hashes) => Some(hashes),
-            Err(error) => {
-                tracing::warn!(%error, "Could not read finalized report history at startup");
-                None
+        let startup_height = report_dag.last_finalized_height().unwrap_or(0);
+        let startup_history = load_startup_report_history(startup_height, || {
+            let history_dag = report_dag.clone();
+            let history_api = report_api.clone();
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    startup_finalized_report_hashes(&history_dag, &history_api)
+                })
+                .await?
             }
-        };
+        })
+        .await;
 
         tokio::spawn(async move {
             while let Some(finalized) = report_rx.recv().await {
@@ -917,7 +914,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                     &transfer_unforgeable_for_reports,
                     &event_pub_for_reports,
                     &reported,
-                    startup_finalized.as_ref(),
+                    &startup_history,
                 )
             };
             while recovery_requested.changed().await.is_ok() {
@@ -1476,10 +1473,6 @@ mod report_event_tests {
             None,
         );
         storage.insert(&block, InsertMode::Normal).unwrap();
-        storage
-            .record_directly_finalized(block.block_hash.clone(), 1.0, |_| async { Ok(()) })
-            .await
-            .unwrap();
 
         let transfer_channel = crate::rust::web::transaction::transfer_unforgeable();
         let (_, public_key) = Secp256k1.new_key_pair();
@@ -1538,6 +1531,27 @@ mod report_event_tests {
             false,
         );
 
+        let startup_height = storage.last_finalized_height().unwrap();
+        let mut startup_reads = 0;
+        let startup = super::load_startup_report_history(startup_height, || {
+            startup_reads += 1;
+            std::future::ready(if startup_reads == 1 {
+                Err(eyre::eyre!("temporary startup read failure"))
+            } else {
+                super::startup_finalized_report_hashes(&storage, &api)
+            })
+        })
+        .await;
+        assert_eq!(startup_reads, 2);
+        assert!(matches!(
+            &startup,
+            super::StartupReportHistory::FinalizedHashes(_)
+        ));
+
+        storage
+            .record_directly_finalized(block.block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
         let events = F1r3flyEvents::new();
         let stream = events.consume();
         let (sender, mut queued) = mpsc::channel(1);
@@ -1564,14 +1578,13 @@ mod report_event_tests {
 
         let mut outcomes = events.consume();
         let reported = parking_lot::Mutex::new(super::RecentBlockReports::default());
-        let startup = std::collections::HashSet::new();
         super::recover_block_reports(
             &storage,
             &api,
             &transfer_channel,
             &events,
             &reported,
-            Some(&startup),
+            &startup,
         )
         .await
         .unwrap();
@@ -1590,7 +1603,7 @@ mod report_event_tests {
             &transfer_channel,
             &events,
             &reported,
-            Some(&startup),
+            &startup,
         )
         .await
         .unwrap();
@@ -1604,8 +1617,10 @@ mod report_event_tests {
         assert_eq!(event.deploys[0].transfers[0].amount, "7");
         assert!(outcomes.next().now_or_never().is_none());
 
-        let startup = super::startup_finalized_report_hashes(&storage, &api).unwrap();
-        assert!(startup.contains(&block.block_hash));
+        let startup = super::StartupReportHistory::FinalizedHashes(
+            super::startup_finalized_report_hashes(&storage, &api).unwrap(),
+        );
+        assert!(startup.should_suppress_publication(&block.block_hash, 1));
         let restarted = parking_lot::Mutex::new(super::RecentBlockReports::default());
         super::recover_block_reports(
             &storage,
@@ -1613,13 +1628,41 @@ mod report_event_tests {
             &transfer_channel,
             &events,
             &restarted,
-            Some(&startup),
+            &startup,
         )
         .await
         .unwrap();
         assert!(
             outcomes.next().now_or_never().is_none(),
             "startup history is not republished"
+        );
+
+        let mut startup_reads = 0;
+        let fallback = super::load_startup_report_history(startup_height, || {
+            startup_reads += 1;
+            std::future::ready(Err(eyre::eyre!("startup history unavailable")))
+        })
+        .await;
+        assert_eq!(startup_reads, 2);
+        assert!(fallback.should_suppress_publication(&block.block_hash, startup_height));
+        let restarted = parking_lot::Mutex::new(super::RecentBlockReports::default());
+        super::recover_block_reports(
+            &storage,
+            &api,
+            &transfer_channel,
+            &events,
+            &restarted,
+            &fallback,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(
+                outcomes.next().now_or_never().flatten(),
+                Some(Ok(F1r3flyEvent::TransfersAvailable(event)))
+                    if event.block_hash == hex::encode(&block.block_hash)
+            ),
+            "a new block still publishes transfers after a startup history read error"
         );
         task.abort();
     }
@@ -1696,13 +1739,50 @@ fn startup_finalized_report_hashes(
     })
 }
 
+enum StartupReportHistory {
+    FinalizedHashes(HashSet<BlockHash>),
+    HeightFallback(i64),
+}
+
+impl StartupReportHistory {
+    fn should_suppress_publication(&self, hash: &BlockHash, height: i64) -> bool {
+        match self {
+            Self::FinalizedHashes(hashes) => hashes.contains(hash),
+            Self::HeightFallback(startup_height) => height <= *startup_height,
+        }
+    }
+}
+
+async fn load_startup_report_history<F>(
+    startup_height: i64,
+    mut load: impl FnMut() -> F,
+) -> StartupReportHistory
+where
+    F: Future<Output = eyre::Result<HashSet<BlockHash>>>,
+{
+    match load().await {
+        Ok(hashes) => return StartupReportHistory::FinalizedHashes(hashes),
+        Err(error) => {
+            tracing::warn!(%error, "Could not read finalized report history at startup; retrying")
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    match load().await {
+        Ok(hashes) => StartupReportHistory::FinalizedHashes(hashes),
+        Err(error) => {
+            tracing::warn!(%error, startup_height, "Could not read finalized report history after retry; limiting recovered transfer notifications to blocks above the startup LFB");
+            StartupReportHistory::HeightFallback(startup_height)
+        }
+    }
+}
+
 async fn recover_block_reports(
     storage: &BlockDagKeyValueStorage,
     report_api: &BlockReportAPI,
     transfer_unforgeable: &models::rhoapi::Par,
     event_publisher: &F1r3flyEvents,
     reported: &parking_lot::Mutex<RecentBlockReports>,
-    startup_finalized: Option<&HashSet<BlockHash>>,
+    startup_history: &StartupReportHistory,
 ) -> eyre::Result<()> {
     let dag = storage.get_representation_after_finalization().await?;
     report_api
@@ -1710,12 +1790,9 @@ async fn recover_block_reports(
             &dag,
             |hash| !reported.lock().hashes.contains_key(hash),
             |hash, height, report| {
-                let Some(startup_finalized) = startup_finalized else {
-                    return;
-                };
                 let mut reported = reported.lock();
                 let start = report_api.recovery_window_start(height);
-                if startup_finalized.contains(&hash) {
+                if startup_history.should_suppress_publication(&hash, height) {
                     reported.record(hash, height, start);
                 } else {
                     reported.publish(

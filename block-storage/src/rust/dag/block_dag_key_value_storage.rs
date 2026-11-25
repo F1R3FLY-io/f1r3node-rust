@@ -1459,6 +1459,15 @@ impl BlockDagKeyValueStorage {
             .map(|(hash, _)| hash.clone())
     }
 
+    pub fn last_finalized_height(&self) -> Option<i64> {
+        let guard = self.block_metadata_index.read();
+        let dag_state = guard.dag_state().read();
+        dag_state
+            .last_finalized_block
+            .as_ref()
+            .map(|(_, height)| *height)
+    }
+
     /// Storage-level twin of `KeyValueDagRepresentation::deploy_canonical_appearance`
     /// (same shared lifecycle tables), for callers holding the storage rather
     /// than a representation. Lock order: `block_metadata_index` before
