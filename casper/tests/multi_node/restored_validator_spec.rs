@@ -24,7 +24,6 @@ async fn admit(node: &mut TestNode, block: &BlockMessage) {
 }
 
 async fn propose_everywhere(nodes: &mut [TestNode], proposer: usize) -> BlockMessage {
-    tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
     let block = nodes[proposer]
         .create_block_unsafe(&[])
         .await
@@ -77,22 +76,24 @@ async fn a_restored_validator_does_not_reuse_the_sequence_number_of_its_lost_blo
         node.allow_empty_blocks = true;
     }
 
-    let kept = propose_everywhere(&mut nodes, 0).await;
-    let mut before_restore = Vec::new();
-    for peer in 1..4 {
-        before_restore.push(propose_everywhere(&mut nodes, peer).await);
-    }
-    let lost = propose_everywhere(&mut nodes, 0).await;
-
     let mut restored = TestNode::create_network(genesis, 1, Some(0.0), None, None, None)
         .await
         .expect("restored node")
         .remove(0);
+    let kept = propose_everywhere(&mut nodes, 0).await;
     admit(&mut restored, &kept).await;
-    for block in &before_restore {
-        admit(&mut restored, block).await;
+    for peer in 1..4 {
+        let block = propose_everywhere(&mut nodes, peer).await;
+        admit(&mut restored, &block).await;
     }
-    assert!(restored.casper.hold_proposals_until_own_history_known());
+    let lost = nodes[0].create_block_unsafe(&[]).await.expect("lost block");
+    for peer in [0, 1, 3] {
+        admit(&mut nodes[peer], &lost).await;
+    }
+    assert!(restored
+        .casper
+        .hold_proposals_until_own_history_known()
+        .expect("hold"));
 
     let identity = restored.validator_id_opt.clone().expect("validator");
     let mut proposer = proposer_for(&restored, identity, restored.tle.clone());
@@ -107,23 +108,26 @@ async fn a_restored_validator_does_not_reuse_the_sequence_number_of_its_lost_blo
         early.propose_result.propose_status
     );
 
-    let first_peer_block = propose_everywhere(&mut nodes, 1).await;
+    let stale_peer_block = propose_everywhere(&mut nodes, 2).await;
+    admit(&mut nodes[2], &lost).await;
     admit(&mut restored, &lost).await;
-    admit(&mut restored, &first_peer_block).await;
+    admit(&mut restored, &stale_peer_block).await;
+    for peer in [1, 3] {
+        let block = propose_everywhere(&mut nodes, peer).await;
+        admit(&mut restored, &block).await;
+    }
     let partial = proposer
         .propose(restored.casper.clone(), true)
         .await
         .expect("propose");
     assert!(
         partial.block_message_opt.is_none() && is_held(&partial.propose_result.propose_status),
-        "the gate opened before every other active validator had a block after the restore: {:?}",
+        "the gate opened while a peer's latest block still cited the older own block: {:?}",
         partial.propose_result.propose_status
     );
 
-    for peer in 2..4 {
-        let block = propose_everywhere(&mut nodes, peer).await;
-        admit(&mut restored, &block).await;
-    }
+    let caught_up_peer_block = propose_everywhere(&mut nodes, 2).await;
+    admit(&mut restored, &caught_up_peer_block).await;
     let resumed = proposer
         .propose(restored.casper.clone(), true)
         .await
@@ -152,9 +156,11 @@ async fn a_held_node_that_is_not_bonded_reports_that_it_is_not_bonded() {
         node.allow_empty_blocks = true;
     }
     propose_everywhere(&mut nodes, 1).await;
-    tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
     let joiner = &nodes[0];
-    assert!(joiner.casper.hold_proposals_until_own_history_known());
+    assert!(joiner
+        .casper
+        .hold_proposals_until_own_history_known()
+        .expect("hold"));
 
     let (unbonded_key, _) = Secp256k1.new_key_pair();
     let mut proposer = proposer_for(
