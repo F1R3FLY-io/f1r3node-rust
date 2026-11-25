@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/merging/BlockIndex.scala
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
@@ -206,20 +206,24 @@ pub fn new(
     let pre_state_reader = history_repository
         .get_history_reader(pre_state_hash)
         .map_err(CasperError::HistoryError)?;
-    let mut cells_created_in_block: HashSet<Blake2b256Hash> = HashSet::new();
+    let mut pre_state_holds: HashMap<Blake2b256Hash, bool> = HashMap::new();
     for cell in all_deploy_indices
         .iter()
         .flat_map(|d| d.event_log_index.number_channels_data.keys())
     {
-        if !cells_created_in_block.contains(cell)
-            && pre_state_reader
+        if !pre_state_holds.contains_key(cell) {
+            let held = !pre_state_reader
                 .get_data(cell)
                 .map_err(CasperError::HistoryError)?
-                .is_empty()
-        {
-            cells_created_in_block.insert(cell.clone());
+                .is_empty();
+            pre_state_holds.insert(cell.clone(), held);
         }
     }
+    let cells_created_in_block: HashSet<Blake2b256Hash> = pre_state_holds
+        .into_iter()
+        .filter(|(_, held)| !held)
+        .map(|(cell, _)| cell)
+        .collect();
 
     // Here deploys from a single block are examined. Atm deploys in block are executed sequentially,
     // so all conflicts are resolved according to order of sequential execution.
