@@ -1,0 +1,59 @@
+@startuml
+!include ../style.puml
+title catalog models 027
+entity "StateHash" as E946 <<alias>> {
+  models/src/rust/block/state_hash.rs:6
+  --
+  value : prost :: bytes :: Bytes
+}
+entity "StateHashSerde" as E947 <<struct>> {
+  models/src/rust/block/state_hash.rs:10
+  --
+  0 : StateHash
+}
+entity "BlockHash" as E948 <<alias>> {
+  models/src/rust/block_hash.rs:5
+  --
+  value : prost :: bytes :: Bytes
+}
+entity "BlockHashSerde" as E949 <<struct>> {
+  models/src/rust/block_hash.rs:9
+  --
+  0 : BlockHash
+}
+entity "BlockMetadata" as E950 <<struct>> {
+  models/src/rust/block_metadata.rs:13
+  --
+  block_hash : Bytes
+  parents : Vec &#60; Bytes &#62;
+  sender : Bytes
+  justifications : Vec &#60; Justification &#62;
+  weight_map : BTreeMap &#60; Bytes , TokenAmount &#62;
+  block_number : i64
+  sequence_number : i32
+  equivocates : Option &#60; Bytes &#62;
+  directly_finalized : bool
+  finalized : bool
+  fault_tolerance_value : f32
+  merge_base : Bytes
+}
+entity "BundleOps" as E951 <<struct>> {
+  models/src/rust/bundle_ops.rs:5
+  --
+}
+entity "PrettyPrinter" as E952 <<struct>> {
+  models/src/rust/casper/pretty_printer.rs:10
+  --
+}
+entity "ByteString" as E953 <<alias>> {
+  models/src/rust/casper/protocol/casper_message.rs:19
+  --
+  value : prost :: bytes :: Bytes
+}
+E947 --> E946 : 0
+E949 --> E948 : 0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

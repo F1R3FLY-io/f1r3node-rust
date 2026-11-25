@@ -1,0 +1,60 @@
+@startuml
+!include ../style.puml
+title catalog comm 011
+entity "INSTANCE" as E618 <<static>> {
+  comm/src/rust/transport/hostname_trust_manager_factory.rs:75
+  HostnameTrustManagerFactory::instance
+  --
+  value : std :: sync :: OnceLock &#60; HostnameTrustManagerFactory &#62;
+}
+entity "HostnameTrustManager" as E619 <<struct>> {
+  comm/src/rust/transport/hostname_trust_manager_factory.rs:278
+  --
+}
+entity "F1r3flyClientCertVerifier" as E620 <<struct>> {
+  comm/src/rust/transport/hostname_trust_manager_factory.rs:500
+  --
+  trust_manager : Arc &#60; HostnameTrustManager &#62;
+}
+entity "FlumeLimitedBuffer" as E621 <<struct>> {
+  comm/src/rust/transport/limited_buffer.rs:31
+  --
+  sender : Mutex &#60; Option &#60; flume :: Sender &#60; T &#62; &#62; &#62;
+  receiver : flume :: Receiver &#60; T &#62;
+  buffer_size : usize
+  subscribed : AtomicBool
+}
+entity "ServerMessage" as E622 <<enum>> {
+  comm/src/rust/transport/messages.rs:6
+  --
+  Send.0 : Send
+  StreamMessage.0 : StreamMessage
+}
+entity "Send" as E623 <<struct>> {
+  comm/src/rust/transport/messages.rs:15
+  --
+  msg : Protocol
+}
+entity "StreamMessage" as E624 <<struct>> {
+  comm/src/rust/transport/messages.rs:26
+  --
+  sender : PeerNode
+  type_id : String
+  chain_id : Bytes
+  key : String
+  compressed : bool
+  content_length : i32
+}
+entity "StreamCache" as E625 <<alias>> {
+  comm/src/rust/transport/packet_ops.rs:13
+  --
+  value : Arc &#60; DashMap &#60; String , Vec &#60; u8 &#62; &#62; &#62;
+}
+E620 --> E619 : trust_manager
+E622 --> E623 : Send.0
+E622 --> E624 : StreamMessage.0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

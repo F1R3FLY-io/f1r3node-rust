@@ -1,0 +1,73 @@
+@startuml
+!include ../style.puml
+title catalog models 026
+entity "InternalServerError" as E938 <<protobuf>> {
+  models/src/main/protobuf/routing.proto
+  .routing
+  --
+  error #1 : Bytes
+}
+entity "Node" as E939 <<protobuf>> {
+  models/src/main/protobuf/routing.proto
+  .routing
+  --
+  id #1 : Bytes
+  host #2 : Bytes
+  tcp_port #3 : Uint32
+  udp_port #4 : Uint32
+}
+entity "Packet" as E940 <<protobuf>> {
+  models/src/main/protobuf/routing.proto
+  .routing
+  --
+  typeId #1 : String
+  content #2 : Bytes
+}
+entity "Protocol" as E941 <<protobuf>> {
+  models/src/main/protobuf/routing.proto
+  .routing
+  --
+  header #1 : .routing.Header
+  heartbeat #2 oneof message : .routing.Heartbeat
+  protocol_handshake #3 oneof message : .routing.ProtocolHandshake
+  protocol_handshake_response #4 oneof message :\n    .routing.ProtocolHandshakeResponse
+  packet #5 oneof message : .routing.Packet
+  disconnect #6 oneof message : .routing.Disconnect
+}
+entity "ProtocolHandshake" as E942 <<protobuf>> {
+  models/src/main/protobuf/routing.proto
+  .routing
+  --
+  nonce #1 : Bytes
+  formatVersion #2 : Uint32
+}
+entity "ProtocolHandshakeResponse" as E943 <<protobuf>> {
+  models/src/main/protobuf/routing.proto
+  .routing
+  --
+  nonce #1 : Bytes
+  formatVersion #2 : Uint32
+}
+entity "TLRequest" as E944 <<protobuf>> {
+  models/src/main/protobuf/routing.proto
+  .routing
+  --
+  protocol #1 : .routing.Protocol
+}
+entity "TLResponse" as E945 <<protobuf>> {
+  models/src/main/protobuf/routing.proto
+  .routing
+  --
+  ack #1 oneof payload : .routing.Ack
+  internalServerError #2 oneof payload : .routing.InternalServerError
+}
+E941 --> E940 : packet #5 oneof message
+E941 --> E942 : protocol_handshake #3 oneof message
+E941 --> E943 : protocol_handshake_response #4 oneof message
+E944 --> E941 : protocol #1
+E945 --> E938 : internalServerError #2 oneof payload
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

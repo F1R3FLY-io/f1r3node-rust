@@ -1,0 +1,81 @@
+@startuml
+!include ../style.puml
+title catalog rholang 024
+entity "SnapshotError" as E1446 <<enum>> {
+  rholang/src/rust/interpreter/io/snapshot.rs:468
+  --
+  Io.0 : std :: io :: Error
+  RootMismatch.expected : [u8 ; 32]
+  RootMismatch.got : [u8 ; 32]
+  UnsupportedVersion.got : u8
+  UnsupportedVersion.supported : u8
+  Truncated.got : usize
+  Truncated.need : usize
+  MalformedBlob.offset : usize
+  MalformedBlob.message : String
+  MalformedManifest.line : usize
+  MalformedManifest.cause : String
+  UnsignedManifestEntry : variant
+  ManifestSignatureInvalid : variant
+}
+entity "TMP_COUNTER" as E1447 <<static>> {
+  rholang/src/rust/interpreter/io/snapshot.rs:867
+  --
+  value : AtomicU64
+}
+entity "ManifestEntry" as E1448 <<struct>> {
+  rholang/src/rust/interpreter/io/snapshot.rs:1572
+  --
+  block_number : i64
+  root : Option &#60; [u8 ; 32] &#62;
+  entries : u64
+  ts_ms : i64
+  sig : Option &#60; Vec &#60; u8 &#62; &#62;
+}
+entity "SnapshotWriter" as E1449 <<struct>> {
+  rholang/src/rust/interpreter/io/snapshot.rs:2115
+  --
+  dir : PathBuf
+  cadence : u64
+  retain : usize
+  signer_sk : Option &#60; Vec &#60; u8 &#62; &#62;
+  payload_dir : Option &#60; PathBuf &#62;
+}
+entity "SnapshotChunk" as E1450 <<struct>> {
+  rholang/src/rust/interpreter/io/snapshot_chunk.rs:107
+  --
+  index : u32
+  bytes : Vec &#60; u8 &#62;
+  hash : [u8 ; 32]
+}
+entity "MerkleProof" as E1451 <<alias>> {
+  rholang/src/rust/interpreter/io/snapshot_chunk.rs:162
+  --
+  value : merkle :: MerkleProof
+}
+entity "Kind" as E1452 <<enum>> {
+  rholang/src/rust/interpreter/io/stat.rs:25
+  --
+  File : variant
+  Directory : variant
+  Other : variant
+}
+entity "DivergenceReason" as E1453 <<enum>> {
+  rholang/src/rust/interpreter/io/verify.rs:41
+  --
+  HashMismatch.fresh : [u8 ; 32]
+  HashMismatch.cached : [u8 ; 32]
+  MissingCachedReply : variant
+}
+E1446 -[hidden]down-> E1447
+E1447 -[hidden]down-> E1448
+E1448 -[hidden]down-> E1449
+E1449 -[hidden]down-> E1450
+E1450 -[hidden]down-> E1451
+E1451 -[hidden]down-> E1452
+E1452 -[hidden]down-> E1453
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

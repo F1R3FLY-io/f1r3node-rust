@@ -1,0 +1,65 @@
+@startuml
+!include ../style.puml
+title catalog comm 013
+entity "StreamError" as E634 <<enum>> {
+  comm/src/rust/transport/stream_handler.rs:83
+  --
+  WrongNetworkId : variant
+  WrongChainId.reason : String
+  MaxSizeReached : variant
+  SenderMismatch : variant
+  NotFullMessage.streamed : String
+  Unexpected.error : String
+}
+entity "Streamed" as E635 <<struct>> {
+  comm/src/rust/transport/stream_handler.rs:150
+  --
+  header : Option &#60; Header &#62;
+  read_so_far : u64
+  circuit : Circuit
+  key : String
+}
+entity "StreamHandler" as E636 <<struct>> {
+  comm/src/rust/transport/stream_handler.rs:206
+  --
+}
+entity "ChunkProcessResult" as E637 <<enum>> {
+  comm/src/rust/transport/stream_handler.rs:534
+  --
+  Continue.0 : Streamed
+  Error.0 : StreamError
+}
+entity "STREAM_CACHE_ENQUEUES" as E638 <<static>> {
+  comm/src/rust/transport/stream_observable.rs:21
+  --
+  value : AtomicUsize
+}
+entity "Stream" as E639 <<struct>> {
+  comm/src/rust/transport/stream_observable.rs:23
+  --
+  key : String
+  sender : PeerNode
+}
+entity "StreamObservable" as E640 <<struct>> {
+  comm/src/rust/transport/stream_observable.rs:30
+  --
+  peer : PeerNode
+  cache : OutgoingPacketCache
+  subject : FlumeLimitedBuffer &#60; Stream &#62;
+}
+entity "TlsConf" as E641 <<struct>> {
+  comm/src/rust/transport/tls_conf.rs:5
+  --
+  certificate_path : PathBuf
+  key_path : PathBuf
+  custom_certificate_location : bool
+  custom_key_location : bool
+}
+E637 --> E634 : Error.0
+E637 --> E635 : Continue.0
+E640 --> E639 : subject
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

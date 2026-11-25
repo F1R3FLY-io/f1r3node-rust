@@ -1,0 +1,63 @@
+@startuml
+!include ../style.puml
+title catalog block storage 009
+entity "CACHE" as E64 <<static>> {
+  block-storage/src/rust/key_value_block_store.rs:625
+  KeyValueBlockStore::deploy_sig_cache
+  --
+  value : OnceLock &#60; Mutex &#60; DeploySigCache &#62; &#62;
+}
+entity "DeployIdentity" as E65 <<struct>> {
+  block-storage/src/rust/key_value_block_store.rs:652
+  --
+  sig : Vec &#60; u8 &#62;
+  seed : Vec &#60; u8 &#62;
+  valid_after_block_number : i64
+}
+entity "DeploySigCache" as E66 <<struct>> {
+  block-storage/src/rust/key_value_block_store.rs:661
+  --
+  entries : HashMap &#60; Vec &#60; u8 &#62; , Arc &#60; Vec &#60; DeployIdentity &#62; &#62; &#62;
+  order : VecDeque &#60; Vec &#60; u8 &#62; &#62;
+}
+entity "BlockMessageDeploySigIndex" as E67 <<struct>> {
+  block-storage/src/rust/key_value_block_store.rs:667
+  --
+  body : Option &#60; BlockDeploySigsBody &#62;
+}
+entity "BlockDeploySigsBody" as E68 <<struct>> {
+  block-storage/src/rust/key_value_block_store.rs:673
+  --
+  deploys : Vec &#60; BlockDeploySigsProcessedDeploy &#62;
+  rejected_deploys : Vec &#60; BlockDeploySigsRejectedDeploy &#62;
+}
+entity "BlockDeploySigsProcessedDeploy" as E69 <<struct>> {
+  block-storage/src/rust/key_value_block_store.rs:681
+  --
+  deploy : Option &#60; BlockDeploySigsDeploy &#62;
+}
+entity "BlockDeploySigsDeploy" as E70 <<struct>> {
+  block-storage/src/rust/key_value_block_store.rs:687
+  --
+  deployer : Vec &#60; u8 &#62;
+  timestamp : i64
+  sig : Vec &#60; u8 &#62;
+  valid_after_block_number : i64
+}
+entity "BlockDeploySigsRejectedDeploy" as E71 <<struct>> {
+  block-storage/src/rust/key_value_block_store.rs:699
+  --
+  sig : Vec &#60; u8 &#62;
+  duplicate : bool
+}
+E64 --> E66 : value
+E66 --> E65 : entries
+E67 --> E68 : body
+E68 --> E69 : deploys
+E68 --> E71 : rejected_deploys
+E69 --> E70 : deploy
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

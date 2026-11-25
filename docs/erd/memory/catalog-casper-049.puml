@@ -1,0 +1,66 @@
+@startuml
+!include ../style.puml
+title catalog casper 049
+entity "ReferenceError" as E464 <<enum>> {
+  casper/src/rust/soak_observer/reference.rs:17
+  --
+  Missing.0 : BlockHash
+  Incompatible : variant
+  Unavailable.0 : &#38; 'static str
+  Work.0 : String
+}
+entity "ReferenceOracle" as E465 <<struct>> {
+  casper/src/rust/soak_observer/reference.rs:42
+  --
+  decision : bool
+  original_bits : u32
+  total_stake : Option &#60; BigInt &#62;
+  agreeing_stake : Option &#60; BigInt &#62;
+  clique_weight : Option &#60; BigInt &#62;
+}
+entity "Reference" as E466 <<struct>> {
+  casper/src/rust/soak_observer/reference.rs:54
+  --
+  snapshot : &#38; 'a DetachedDagSnapshot
+  meter : CheckedWork
+  threshold : i64
+  floors : BTreeMap &#60; BlockHash , BlockHash &#62;
+  signatures : BTreeMap &#60; BlockHash , BTreeSet &#60; Bytes &#62; &#62;
+}
+entity "BlockStateManager" as E467 <<struct>> {
+  casper/src/rust/state/instances/block_state_manager.rs:7
+  --
+  block_dag_storage : BlockDagKeyValueStorage
+}
+entity "ProposerState" as E468 <<struct>> {
+  casper/src/rust/state/instances/proposer_state.rs:8
+  --
+  latest_propose_result : Option &#60; (ProposeResult , Option &#60; BlockMessage\n    &#62;) &#62;
+  curr_propose_result : Option &#60; oneshot :: Receiver &#60; (ProposeResult ,\n    Option &#60; BlockMessage &#62;) &#62; &#62;
+}
+entity "SynchronyRecoveryState" as E469 <<struct>> {
+  casper/src/rust/synchrony_constraint_checker.rs:22
+  --
+  last_known_hash : Vec &#60; u8 &#62;
+  first_failure_at : Option &#60; Instant &#62;
+  consecutive_failures : u32
+  bypass_count : u32
+  last_bypass_at : Option &#60; Instant &#62;
+}
+entity "SYNCHRONY_RECOVERY_STATES" as E470 <<lazy static>> {
+  casper/src/rust/synchrony_constraint_checker.rs:257
+  --
+  value : Mutex &#60; HashMap &#60; Validator , SynchronyRecoveryState &#62; &#62;
+}
+entity "BLOCKS_SINCE_START" as E471 <<static>> {
+  casper/src/rust/util/allocator.rs:10
+  glibc
+  --
+  value : AtomicU64
+}
+E470 --> E469 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

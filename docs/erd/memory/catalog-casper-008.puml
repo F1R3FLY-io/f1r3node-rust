@@ -1,0 +1,77 @@
+@startuml
+!include ../style.puml
+title catalog casper 008
+entity "Stores" as E136 <<struct>> {
+  casper/src/rust/blocks/ingest/block_ingest.rs:247
+  --
+  dag : &#38; 'a BlockDagKeyValueStorage
+  block_store : &#38; 'a KeyValueBlockStore
+}
+entity "IntakeLanes" as E137 <<struct>> {
+  casper/src/rust/blocks/ingest/block_ingest.rs:399
+  --
+  awaited : mpsc :: Receiver &#60; Delivery &#62;
+  local : mpsc :: Receiver &#60; BlockHash &#62;
+  unsolicited : mpsc :: Receiver &#60; Delivery &#62;
+}
+entity "IntakeJob" as E138 <<enum>> {
+  casper/src/rust/blocks/ingest/block_ingest.rs:405
+  --
+  Delivered.0 : Box &#60; Delivery &#62;
+  Local.0 : BlockHash
+}
+entity "Owner" as E139 <<struct>> {
+  casper/src/rust/blocks/ingest/block_ingest.rs:620
+  --
+  state : IngestState
+  view : IngestView
+  block_store : KeyValueBlockStore
+  dag : BlockDagKeyValueStorage
+  connections : ConnectionsCell
+  local : mpsc :: Sender &#60; BlockHash &#62;
+  outbound : mpsc :: Sender &#60; Outbound &#62;
+  work : mpsc :: Sender &#60; (BlockHash , Work) &#62;
+  in_validation : HashMap &#60; BlockHash , (u64 , bool) &#62;
+  width : usize
+  state_root_fetch_tx : Option &#60; mpsc :: Sender &#60; Blake2b256Hash &#62; &#62;
+}
+entity "IntegrityFailure" as E140 <<enum>> {
+  casper/src/rust/blocks/ingest/checked_block.rs:7
+  --
+  Malformed : variant
+  HashMismatch : variant
+}
+entity "CheckedBlock" as E141 <<struct>> {
+  casper/src/rust/blocks/ingest/checked_block.rs:22
+  --
+  0 : BlockMessage
+}
+entity "BodyAt" as E142 <<enum>> {
+  casper/src/rust/blocks/ingest/dependency_tracker.rs:30
+  --
+  Disk : variant
+  Pending : variant
+}
+entity "HeldMeta" as E143 <<struct>> {
+  casper/src/rust/blocks/ingest/dependency_tracker.rs:38
+  --
+  hash : BlockHash
+  sender : Validator
+  height : i64
+  deps : Vec &#60; BlockHash &#62;
+  parents : Vec &#60; BlockHash &#62;
+  justification_validators : Vec &#60; Validator &#62;
+  deferred : bool
+  body : BodyAt
+  size : usize
+  trusted : bool
+  bonded_at_anchor : bool
+  solicited : bool
+  pushed_by : Option &#60; PeerNode &#62;
+}
+E143 --> E142 : body
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

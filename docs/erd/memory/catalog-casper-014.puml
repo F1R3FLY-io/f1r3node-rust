@@ -1,0 +1,71 @@
+@startuml
+!include ../style.puml
+title catalog casper 014
+entity "HashSlots" as E184 <<alias>> {
+  casper/src/rust/blocks/ingest/receipt_verifier.rs:39
+  --
+  value : DashMap &#60; BlockHash , HashSlot &#62;
+}
+entity "HashTicket" as E185 <<struct>> {
+  casper/src/rust/blocks/ingest/receipt_verifier.rs:41
+  --
+  slots : Arc &#60; HashSlots &#62;
+  hash : BlockHash
+  lock : Arc &#60; Mutex &#60; bool &#62; &#62;
+  guard : Option &#60; OwnedMutexGuard &#60; bool &#62; &#62;
+}
+entity "PeerSlots" as E186 <<struct>> {
+  casper/src/rust/blocks/ingest/receipt_verifier.rs:61
+  --
+  generation : u64
+  users : usize
+  pending : Arc &#60; Semaphore &#62;
+  running : Arc &#60; Semaphore &#62;
+}
+entity "PeerMap" as E187 <<alias>> {
+  casper/src/rust/blocks/ingest/receipt_verifier.rs:68
+  --
+  value : DashMap &#60; Bytes , PeerSlots &#62;
+}
+entity "PeerTicket" as E188 <<struct>> {
+  casper/src/rust/blocks/ingest/receipt_verifier.rs:70
+  --
+  per_peer : Arc &#60; PeerMap &#62;
+  peer : Bytes
+  generation : u64
+  permits : Vec &#60; OwnedSemaphorePermit &#62;
+}
+entity "ActiveVerification" as E189 <<struct>> {
+  casper/src/rust/blocks/ingest/receipt_verifier.rs:91
+  --
+  0 : Arc &#60; AtomicUsize &#62;
+}
+entity "ReceiptVerifier" as E190 <<struct>> {
+  casper/src/rust/blocks/ingest/receipt_verifier.rs:105
+  --
+  pending : Arc &#60; Semaphore &#62;
+  running : Arc &#60; Semaphore &#62;
+  max_pending_per_peer : usize
+  per_peer : Arc &#60; PeerMap &#62;
+  next_generation : AtomicU64
+  active : Arc &#60; AtomicUsize &#62;
+  peak_active : Arc &#60; AtomicUsize &#62;
+  by_hash : Arc &#60; HashSlots &#62;
+}
+entity "VERIFIER" as E191 <<static>> {
+  casper/src/rust/blocks/ingest/receipt_verifier.rs:135
+  ReceiptVerifier::shared
+  --
+  value : std :: sync :: LazyLock &#60; ReceiptVerifier &#62;
+}
+E185 --> E184 : slots
+E187 --> E186 : value
+E188 --> E187 : per_peer
+E190 --> E184 : by_hash
+E190 --> E187 : per_peer
+E191 --> E190 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

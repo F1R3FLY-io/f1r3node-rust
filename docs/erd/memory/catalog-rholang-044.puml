@@ -1,0 +1,75 @@
+@startuml
+!include ../style.puml
+title catalog rholang 044
+entity "InvalidBlocks" as E1606 <<struct>> {
+  rholang/src/rust/interpreter/system_processes.rs:61
+  --
+  invalid_blocks : Arc &#60; tokio :: sync :: RwLock &#60; Par &#62; &#62;
+}
+entity "FixedChannels" as E1607 <<struct>> {
+  rholang/src/rust/interpreter/system_processes.rs:172
+  --
+}
+entity "BodyRefs" as E1608 <<struct>> {
+  rholang/src/rust/interpreter/system_processes.rs:462
+  --
+}
+entity "ProcessContext" as E1609 <<struct>> {
+  rholang/src/rust/interpreter/system_processes.rs:653
+  --
+  dispatcher : RhoDispatch
+  block_data : Arc &#60; tokio :: sync :: RwLock &#60; BlockData &#62; &#62;
+  invalid_blocks : InvalidBlocks
+  deploy_data : Arc &#60; tokio :: sync :: RwLock &#60; DeployData &#62; &#62;
+  urn_map : Arc &#60; HashMap &#60; String , Par &#62; &#62;
+  system_processes : SystemProcesses
+}
+entity "Definition" as E1610 <<struct>> {
+  rholang/src/rust/interpreter/system_processes.rs:697
+  --
+  urn : String
+  fixed_channel : Name
+  arity : Arity
+  body_ref : BodyRef
+  handler : Box &#60; dyn FnMut (ProcessContext ,) -&#62; Box &#60; dyn Fn ((Vec &#60;\n    ListParWithRandom &#62; , bool , Vec &#60; Par &#62;) ,) -&#62; Pin &#60; Box &#60; dyn Future &#60;\n    Output = Result &#60; Vec &#60; Par &#62; , InterpreterError &#62; &#62; + Send &#62; &#62; + Send +\n    Sync , &#62; + Send , &#62;
+  remainder : Remainder
+}
+entity "BlockData" as E1611 <<struct>> {
+  rholang/src/rust/interpreter/system_processes.rs:784
+  --
+  time_stamp : i64
+  block_number : i64
+  sender : PublicKey
+  seq_num : i32
+}
+entity "DeployData" as E1612 <<struct>> {
+  rholang/src/rust/interpreter/system_processes.rs:812
+  --
+  timestamp : i64
+  deployer_id : PublicKey
+  deploy_id : Vec &#60; u8 &#62;
+}
+entity "SystemProcesses" as E1613 <<struct>> {
+  rholang/src/rust/interpreter/system_processes.rs:838
+  --
+  dispatcher : RhoDispatch
+  block_data : Arc &#60; tokio :: sync :: RwLock &#60; BlockData &#62; &#62;
+  deploy_data : Arc &#60; tokio :: sync :: RwLock &#60; DeployData &#62; &#62;
+  urn_map : Arc &#60; HashMap &#60; String , Par &#62; &#62;
+  openai_service : SharedOpenAIService
+  ollama_service : SharedOllamaService
+  pretty_printer : PrettyPrinter
+  chromadb_service : SharedChromaDBService
+}
+E1609 --> E1606 : invalid_blocks
+E1609 --> E1611 : block_data
+E1609 --> E1612 : deploy_data
+E1609 --> E1613 : system_processes
+E1610 --> E1609 : handler
+E1613 --> E1611 : block_data
+E1613 --> E1612 : deploy_data
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

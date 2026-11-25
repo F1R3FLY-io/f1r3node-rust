@@ -1,0 +1,57 @@
+@startuml
+!include ../style.puml
+title catalog rholang 017
+entity "FsReadHandler" as E1390 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_read.rs:70
+  --
+}
+entity "FsReadArgs" as E1391 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_read.rs:73
+  --
+  fd : u64
+  n : u64
+}
+entity "FS_READ_ENTRY" as E1392 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_read.rs:250
+  --
+  value : FsHandlerEntry
+}
+entity "FsReadAtHandler" as E1393 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_read_at.rs:63
+  --
+}
+entity "FsReadAtArgs" as E1394 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_read_at.rs:66
+  --
+  fd : u64
+  off : u64
+  n : u64
+}
+entity "FS_READ_AT_ENTRY" as E1395 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_read_at.rs:228
+  --
+  value : FsHandlerEntry
+}
+entity "FsSeekHandler" as E1396 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_seek.rs:86
+  --
+}
+entity "FsSeekArgs" as E1397 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_seek.rs:89
+  --
+  fd : u64
+  off : i64
+  whence : libc :: c_int
+}
+E1390 -[hidden]down-> E1391
+E1391 -[hidden]down-> E1392
+E1392 -[hidden]down-> E1393
+E1393 -[hidden]down-> E1394
+E1394 -[hidden]down-> E1395
+E1395 -[hidden]down-> E1396
+E1396 -[hidden]down-> E1397
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

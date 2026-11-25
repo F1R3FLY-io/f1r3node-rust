@@ -1,0 +1,63 @@
+@startuml
+!include ../style.puml
+title catalog rholang 032
+entity "NthMethod" as E1510 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:3075
+  DebruijnInterpreter::nth_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "ToByteArrayMethod" as E1511 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:3137
+  DebruijnInterpreter::to_byte_array_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "HexToBytesMethod" as E1512 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:3181
+  DebruijnInterpreter::hex_to_bytes_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "BytesToHexMethod" as E1513 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:3228
+  DebruijnInterpreter::bytes_to_hex_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "ConcatBytesMethod" as E1514 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:3281
+  DebruijnInterpreter::concat_bytes_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "ValidUtf8PrefixLenMethod" as E1515 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:3349
+  DebruijnInterpreter::valid_utf8_prefix_len_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "DecodeUtf8Method" as E1516 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:3401
+  DebruijnInterpreter::decode_utf8_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "ToUtf8BytesMethod" as E1517 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:3444
+  DebruijnInterpreter::to_utf8_bytes_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+E1510 -[hidden]down-> E1511
+E1511 -[hidden]down-> E1512
+E1512 -[hidden]down-> E1513
+E1513 -[hidden]down-> E1514
+E1514 -[hidden]down-> E1515
+E1515 -[hidden]down-> E1516
+E1516 -[hidden]down-> E1517
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,72 @@
+@startuml
+!include ../style.puml
+title catalog casper 053
+entity "UnheldParent" as E496 <<enum>> {
+  casper/src/rust/util/proto_util.rs:304
+  --
+  Surface : variant
+  SkipSettled : variant
+}
+entity "CheckBalance" as E497 <<struct>> {
+  casper/src/rust/util/rholang/costacc/check_balance.rs:16
+  --
+  pk : PublicKey
+  rand : Blake2b512Random
+}
+entity "CloseBlockDeploy" as E498 <<struct>> {
+  casper/src/rust/util/rholang/costacc/close_block_deploy.rs:15
+  --
+  initial_rand : Blake2b512Random
+}
+entity "PreChargeDeploy" as E499 <<struct>> {
+  casper/src/rust/util/rholang/costacc/pre_charge_deploy.rs:15
+  --
+  charge_amount : num_bigint :: BigInt
+  pk : PublicKey
+  rand : Blake2b512Random
+}
+entity "RefundDeploy" as E500 <<struct>> {
+  casper/src/rust/util/rholang/costacc/refund_deploy.rs:14
+  --
+  refund_amount : num_bigint :: BigInt
+  rand : Blake2b512Random
+}
+entity "SlashDeploy" as E501 <<struct>> {
+  casper/src/rust/util/rholang/costacc/slash_deploy.rs:20
+  --
+  evidence : EquivocationEvidence
+  pk : PublicKey
+  initial_rand : Blake2b512Random
+}
+entity "SigDisposition" as E502 <<struct>> {
+  casper/src/rust/util/rholang/interpreter_util.rs:111
+  --
+  latest : (i64 , bool)
+  latest_kept_rejection : Option &#60; (i64 , BlockHash) &#62;
+  first_carrier : Option &#60; (i64 , BlockHash , Bytes) &#62;
+}
+entity "DeploysCheckpoint" as E503 <<struct>> {
+  casper/src/rust/util/rholang/interpreter_util.rs:789
+  --
+  pre_state_hash : StateHash
+  post_state_hash : StateHash
+  deploys : Vec &#60; ProcessedDeploy &#62;
+  rejected_deploys : Vec &#60; RejectedDeploy &#62;
+  system_deploys : Vec &#60; ProcessedSystemDeploy &#62;
+  bonds : Vec &#60; Bond &#62;
+  applied_from_scope : Vec &#60; Bytes &#62;
+  merge_base : Option &#60; BlockHash &#62;
+  block_hash_leaves : Vec &#60; [u8 ; 32] &#62;
+}
+E496 -[hidden]down-> E497
+E497 -[hidden]down-> E498
+E498 -[hidden]down-> E499
+E499 -[hidden]down-> E500
+E500 -[hidden]down-> E501
+E501 -[hidden]down-> E502
+E502 -[hidden]down-> E503
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

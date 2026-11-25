@@ -1,0 +1,77 @@
+@startuml
+!include ../style.puml
+title catalog models 032
+entity "F1r3flyState" as E986 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:1129
+  --
+  pre_state_hash : ByteString
+  post_state_hash : ByteString
+  bonds : Vec &#60; Bond &#62;
+  block_number : i64
+}
+entity "ProcessedDeploy" as E987 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:1166
+  --
+  deploy : Signed &#60; DeployData &#62;
+  cost : PCost
+  deploy_log : Vec &#60; Event &#62;
+  is_failed : bool
+  system_deploy_error : Option &#60; String &#62;
+}
+entity "EquivocationEvidence" as E988 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:1252
+  --
+  first : BlockCommitment
+  second : BlockCommitment
+}
+entity "SystemDeployData" as E989 <<enum>> {
+  models/src/rust/casper/protocol/casper_message.rs:1260
+  --
+  Slash.evidence : Box &#60; EquivocationEvidence &#62;
+  Slash.issuer_public_key : PublicKey
+  CloseBlockSystemDeployData : variant
+  Empty : variant
+}
+entity "ProcessedSystemDeploy" as E990 <<enum>> {
+  models/src/rust/casper/protocol/casper_message.rs:1331
+  --
+  Succeeded.event_list : Vec &#60; Event &#62;
+  Succeeded.system_deploy : SystemDeployData
+  Failed.event_list : Vec &#60; Event &#62;
+  Failed.error_msg : String
+}
+entity "DeployData" as E991 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:1413
+  --
+  term : String
+  time_stamp : i64
+  phlo_price : TokenAmount
+  phlo_limit : i64
+  valid_after_block_number : i64
+  shard_id : String
+  expiration_timestamp : Option &#60; i64 &#62;
+  parameters : Vec &#60; crate :: rust :: deploy_parameters :: DeployParameter\n    &#62;
+}
+entity "Peek" as E992 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:1582
+  --
+  channel_index : i32
+}
+entity "Event" as E993 <<enum>> {
+  models/src/rust/casper/protocol/casper_message.rs:1601
+  --
+  Produce.0 : ProduceEvent
+  Consume.0 : ConsumeEvent
+  Comm.0 : CommEvent
+}
+E987 --> E991 : deploy
+E987 --> E993 : deploy_log
+E989 --> E988 : Slash.evidence
+E990 --> E989 : Succeeded.system_deploy
+E990 --> E993 : Failed.event_list
+E990 --> E993 : Succeeded.event_list
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,65 @@
+@startuml
+!include ../style.puml
+title catalog rholang 031
+entity "DispatchHandle" as E1502 <<alias>> {
+  rholang/src/rust/interpreter/reduce.rs:163
+  --
+  value : AbortOnDrop &#60; Result &#60; DispatchType , InterpreterError &#62; &#62;
+}
+entity "DeferredState" as E1503 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:176
+  --
+  handles : VecDeque &#60; DispatchHandle &#62;
+  closed : bool
+}
+entity "DeferredDispatches" as E1504 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:182
+  --
+  state : std :: sync :: Mutex &#60; DeferredState &#62;
+}
+entity "CloseOnDrop" as E1505 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:219
+  --
+  0 : Arc &#60; DeferredDispatches &#62;
+}
+entity "DispatchFuture" as E1506 <<alias>> {
+  rholang/src/rust/interpreter/reduce.rs:251
+  --
+  value : Pin &#60; Box &#60; dyn futures :: Future &#60; Output = Result &#60;\n    DispatchType , InterpreterError &#62; &#62; + std :: marker :: Send &#62; , &#62;
+}
+entity "EvalWorkStats" as E1507 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:321
+  --
+  single_term_evaluations : u64
+  yielded_single_term_evaluations : u64
+  spawned_eval_tasks : u64
+}
+entity "DebruijnInterpreter" as E1508 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:331
+  --
+  space : RhoISpace
+  dispatcher : RhoDispatch
+  urn_map : Arc &#60; HashMap &#60; String , Par &#62; &#62;
+  merge_chs : Arc &#60; RwLock &#60; HashMap &#60; Par , MergeType &#62; &#62; &#62;
+  mergeable_tags : Arc &#60; HashMap &#60; Par , MergeType &#62; &#62;
+  cost : _cost
+  substitute : Substitute
+  single_term_evaluations : Arc &#60; AtomicU64 &#62;
+  yielded_single_term_evaluations : Arc &#60; AtomicU64 &#62;
+  spawned_eval_tasks : Arc &#60; AtomicU64 &#62;
+  filter_fs_native_urns : Arc &#60; std :: sync :: atomic :: AtomicBool &#62;
+  trapped_gprivates : Arc &#60; std :: sync :: Mutex &#60; std :: collections ::\n    HashSet &#60; Vec &#60; u8 &#62; &#62; &#62; &#62;
+}
+entity "Application" as E1509 <<alias>> {
+  rholang/src/rust/interpreter/reduce.rs:367
+  --
+  value : Option &#60; (TaggedContinuation , Vec &#60; (Par , ListParWithRandom ,\n    ListParWithRandom , bool) &#62; , bool ,) &#62;
+}
+E1503 --> E1502 : handles
+E1504 --> E1503 : state
+E1505 --> E1504 : 0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

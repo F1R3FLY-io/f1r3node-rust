@@ -1,0 +1,73 @@
+@startuml
+!include ../style.puml
+title catalog models 010
+entity "DeployFinalizationStatusQuery" as E810 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  deploySig #1 : Bytes
+}
+entity "DeployInfo" as E811 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  deployer #1 : String
+  term #2 : String
+  timestamp #3 : Int64
+  sig #4 : String
+  sigAlgorithm #5 : String
+  phloPrice #16 : String
+  phloLimit #8 : Int64
+  validAfterBlockNumber #9 : Int64
+  cost #10 : Uint64
+  errored #11 : Bool
+  systemDeployError #12 : String
+  transfers #13 : repeated .casper.TransferInfo
+  transfersAvailable #14 : Bool
+  parameters #15 : repeated .casper.DeployParameter
+}
+entity "DeployInfoWithEventData" as E812 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  deployInfo #1 : .casper.DeployInfo
+  report #2 : repeated .casper.SingleReport
+}
+entity "ExploratoryDeployQuery" as E813 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  term #1 : String
+  blockHash #2 : String
+  usePreStateHash #3 : Bool
+}
+entity "FindDeployQuery" as E814 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  deployId #1 : Bytes
+}
+entity "IsFinalizedQuery" as E815 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  hash #1 : String
+}
+entity "JustificationInfo" as E816 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  validator #1 : String
+  latestBlockHash #2 : String
+}
+entity "LastFinalizedBlockQuery" as E817 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+}
+E812 --> E811 : deployInfo #1
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

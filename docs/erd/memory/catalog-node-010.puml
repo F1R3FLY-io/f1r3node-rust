@@ -1,0 +1,83 @@
+@startuml
+!include ../style.puml
+title catalog node 010
+entity "VersionInfo" as E1130 <<struct>> {
+  node/src/rust/api/web_api.rs:1563
+  --
+  api : String
+  node : String
+}
+entity "DeployResponse" as E1131 <<struct>> {
+  node/src/rust/api/web_api.rs:1569
+  --
+  deploy_id : String
+  block_hash : String
+  block_number : i64
+  timestamp : i64
+  cost : u64
+  errored : bool
+  is_finalized : bool
+  finalization_state : String
+  rejection_count : u32
+  deployer : Option &#60; String &#62;
+  term : Option &#60; String &#62;
+  system_deploy_error : Option &#60; String &#62;
+  phlo_price : Option &#60; String &#62;
+  phlo_limit : Option &#60; i64 &#62;
+  sig_algorithm : Option &#60; String &#62;
+  valid_after_block_number : Option &#60; i64 &#62;
+  transfers : Option &#60; Vec &#60; TransferInfoSerde &#62; &#62;
+  parameters : Vec &#60; models :: rust :: deploy_parameters ::\n    DeployParameter &#62;
+}
+entity "ViewMode" as E1132 <<enum>> {
+  node/src/rust/api/web_api.rs:1618
+  --
+  Full : variant
+  Summary : variant
+}
+entity "BalanceResponse" as E1133 <<struct>> {
+  node/src/rust/api/web_api.rs:1627
+  --
+  address : String
+  balance : String
+  block_number : i64
+  block_hash : String
+}
+entity "RegistryResponse" as E1134 <<struct>> {
+  node/src/rust/api/web_api.rs:1639
+  --
+  uri : String
+  data : Vec &#60; RhoExpr &#62;
+  block_number : i64
+  block_hash : String
+}
+entity "ValidatorInfo" as E1135 <<struct>> {
+  node/src/rust/api/web_api.rs:1650
+  --
+  public_key : String
+  stake : TokenAmount
+}
+entity "ValidatorsResponse" as E1136 <<struct>> {
+  node/src/rust/api/web_api.rs:1659
+  --
+  validators : Vec &#60; ValidatorInfo &#62;
+  total_stake : BigInt
+  block_number : i64
+  block_hash : String
+}
+entity "EpochResponse" as E1137 <<struct>> {
+  node/src/rust/api/web_api.rs:1680
+  --
+  current_epoch : i64
+  epoch_length : i64
+  quarantine_length : i64
+  blocks_until_next_epoch : i64
+  last_finalized_block_number : i64
+  block_hash : String
+}
+E1136 --> E1135 : validators
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

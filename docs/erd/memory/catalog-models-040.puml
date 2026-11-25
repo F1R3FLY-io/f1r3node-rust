@@ -1,0 +1,50 @@
+@startuml
+!include ../style.puml
+title catalog models 040
+entity "VarSortMatcher" as E1050 <<struct>> {
+  models/src/rust/rholang/sorter/var_sort_matcher.rs:8
+  --
+}
+entity "SortedParHashSet" as E1051 <<struct>> {
+  models/src/rust/sorted_par_hash_set.rs:11
+  --
+  ps : HashSet &#60; Par &#62;
+  sorted_pars : Vec &#60; Par &#62;
+}
+entity "SortedParMap" as E1052 <<struct>> {
+  models/src/rust/sorted_par_map.rs:8
+  --
+  ps : HashMap &#60; Par , Par &#62;
+  sorted_list : Vec &#60; (Par , Par) &#62;
+}
+entity "StringOps" as E1053 <<struct>> {
+  models/src/rust/string_ops.rs:3
+  --
+}
+entity "OptionResult" as E1054 <<struct>> {
+  models/src/rust/utils.rs:19
+  --
+  continuation : K
+  data : A
+}
+entity "FreeMap" as E1055 <<alias>> {
+  models/src/rust/utils.rs:228
+  --
+  value : BTreeMap &#60; i32 , Par &#62;
+}
+entity "Validator" as E1056 <<alias>> {
+  models/src/rust/validator.rs:5
+  --
+  value : prost :: bytes :: Bytes
+}
+entity "ValidatorSerde" as E1057 <<struct>> {
+  models/src/rust/validator.rs:9
+  --
+  0 : Validator
+}
+E1057 --> E1056 : 0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

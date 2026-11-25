@@ -1,0 +1,81 @@
+@startuml
+!include ../style.puml
+title catalog models 005
+entity "JustificationProto" as E770 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  validator #1 : Bytes
+  latestBlockHash #2 : Bytes
+}
+entity "MerkleProofStepProto" as E771 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  sibling_hash #1 : Bytes
+  is_sibling_right #2 : Bool
+}
+entity "NoApprovedBlockAvailableProto" as E772 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  identifier #1 : String
+  nodeIdentifier #2 : String
+}
+entity "PeekProto" as E773 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  channelIndex #1 : Int32
+}
+entity "ProcessedDeployProto" as E774 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  deploy #1 : .casper.DeployDataProto
+  cost #2 : .rhoapi.PCost
+  deployLog #3 : repeated .casper.EventProto
+  errored #5 : Bool
+  systemDeployError #6 : String
+}
+entity "ProcessedSystemDeployProto" as E775 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  systemDeploy #1 : .casper.SystemDeployDataProto
+  deployLog #2 : repeated .casper.EventProto
+  errorMsg #3 : String
+}
+entity "ProduceEventProto" as E776 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  channelsHash #1 : Bytes
+  hash #2 : Bytes
+  persistent #3 : Bool
+  timesRepeated #4 : Int32
+  isDeterministic #5 : Bool
+  outputValue #6 : repeated Bytes
+  failed #7 : Bool
+}
+entity "RChainStateProto" as E777 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  preStateHash #1 : Bytes
+  postStateHash #2 : Bytes
+  bonds #3 : repeated .casper.BondProto
+  blockNumber #4 : Int64
+}
+E770 -[hidden]down-> E771
+E771 -[hidden]down-> E772
+E772 -[hidden]down-> E773
+E773 -[hidden]down-> E774
+E774 -[hidden]down-> E775
+E775 -[hidden]down-> E776
+E776 -[hidden]down-> E777
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,59 @@
+@startuml
+!include ../style.puml
+title catalog shared 010
+entity "MessageVisitor" as E1861 <<struct>> {
+  shared/src/rust/tracing_init/capture.rs:66
+  --
+  0 : String
+}
+entity "LoggingConfig" as E1862 <<struct>> {
+  shared/src/rust/tracing_init/mod.rs:20
+  --
+  filter : String
+  format : LogFormat
+  sink : LogSink
+  file : LogFileConfig
+}
+entity "LogFormat" as E1863 <<enum>> {
+  shared/src/rust/tracing_init/mod.rs:41
+  --
+  Json : variant
+  Pretty : variant
+}
+entity "LogSink" as E1864 <<enum>> {
+  shared/src/rust/tracing_init/mod.rs:49
+  --
+  Stdout : variant
+  File : variant
+  Both : variant
+}
+entity "LogFileConfig" as E1865 <<struct>> {
+  shared/src/rust/tracing_init/mod.rs:58
+  --
+  rotation : LogRotation
+  retention : usize
+  max_file_size_bytes : u64
+  max_total_size_bytes : u64
+}
+entity "LogRotation" as E1866 <<enum>> {
+  shared/src/rust/tracing_init/mod.rs:109
+  --
+  Never : variant
+  Minutely : variant
+  Hourly : variant
+  Daily : variant
+}
+entity "TracingGuards" as E1867 <<struct>> {
+  shared/src/rust/tracing_init/mod.rs:119
+  --
+  _file : Option &#60; WorkerGuard &#62;
+}
+E1862 --> E1863 : format
+E1862 --> E1864 : sink
+E1862 --> E1865 : file
+E1865 --> E1866 : rotation
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

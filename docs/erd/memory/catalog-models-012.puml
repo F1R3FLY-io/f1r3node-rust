@@ -1,0 +1,95 @@
+@startuml
+!include ../style.puml
+title catalog models 012
+entity "ReportCommProto" as E826 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  consume #1 : .casper.ReportConsumeProto
+  produces #2 : repeated .casper.ReportProduceProto
+}
+entity "ReportConsumeProto" as E827 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  channels #1 : repeated .rhoapi.Par
+  patterns #2 : repeated .rhoapi.BindPattern
+  peeks #4 : repeated .casper.PeekProto
+}
+entity "ReportPhase" as E828 <<protobuf enum>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  REPORT_PHASE_UNSPECIFIED : 0
+  REPORT_PHASE_PRECHARGE : 1
+  REPORT_PHASE_USER : 2
+  REPORT_PHASE_REFUND : 3
+}
+entity "ReportProduceProto" as E829 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  channel #1 : .rhoapi.Par
+  data #2 : .rhoapi.ListParWithRandom
+}
+entity "ReportProto" as E830 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  produce #1 oneof report : .casper.ReportProduceProto
+  consume #2 oneof report : .casper.ReportConsumeProto
+  comm #3 oneof report : .casper.ReportCommProto
+}
+entity "ReportQuery" as E831 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  hash #1 : String
+  forceReplay #2 : Bool
+}
+entity "SingleReport" as E832 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  events #1 : repeated .casper.ReportProto
+  phase #2 : .casper.ReportPhase
+}
+entity "Status" as E833 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  version #1 : .casper.VersionInfo
+  address #2 : String
+  networkId #3 : String
+  shardId #4 : String
+  peers #5 : Int32
+  nodes #6 : Int32
+  minPhloPrice #18 : String
+  peerList #8 : repeated .casper.PeerInfo
+  nativeTokenName #9 : String
+  nativeTokenSymbol #10 : String
+  nativeTokenDecimals #11 : Uint32
+  lastFinalizedBlockNumber #12 : Int64
+  isValidator #13 : Bool
+  isReadOnly #14 : Bool
+  isReady #15 : Bool
+  currentEpoch #16 : Int64
+  epochLength #17 : Int32
+  latestBlockNumber #19 oneof _latestBlockNumber : Int64
+  deployLifespan #20 oneof _deployLifespan : Int64
+  maxUserDeploysPerBlock #21 oneof _maxUserDeploysPerBlock : Uint32
+  maxParentDepth #22 oneof _maxParentDepth : Int32
+  maxPhloLimit #23 oneof _maxPhloLimit : Int64
+}
+E826 --> E827 : consume #1
+E826 --> E829 : produces #2
+E830 --> E826 : comm #3 oneof report
+E830 --> E827 : consume #2 oneof report
+E830 --> E829 : produce #1 oneof report
+E832 --> E828 : phase #2
+E832 --> E830 : events #1
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

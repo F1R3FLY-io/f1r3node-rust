@@ -1,0 +1,72 @@
+@startuml
+!include ../style.puml
+title catalog casper 052
+entity "ServiceResult" as E488 <<alias>> {
+  casper/src/rust/util/comm/mod.rs:8
+  --
+  value : std :: result :: Result &#60; T , Vec &#60; String &#62; &#62;
+}
+entity "LAST" as E489 <<static>> {
+  casper/src/rust/util/construct_deploy.rs:80
+  distinct_now_millis
+  --
+  value : AtomicI64
+}
+entity "DagOperations" as E490 <<struct>> {
+  casper/src/rust/util/dag_operations.rs:12
+  --
+}
+entity "ReverseOrderedBlockMetadata" as E491 <<struct>> {
+  casper/src/rust/util/dag_operations.rs:15
+  --
+  0 : BlockMetadata
+}
+entity "GcProgress" as E492 <<enum>> {
+  casper/src/rust/util/mergeable_channels_gc/job.rs:19
+  --
+  Yielded.deleted : usize
+  Yielded.blocks_deleted : usize
+  Complete.deleted : usize
+  Complete.blocks_deleted : usize
+}
+entity "GcSweep" as E493 <<struct>> {
+  casper/src/rust/util/mergeable_channels_gc/job.rs:31
+  --
+  phase : Phase
+  pending_len : usize
+}
+entity "Pass" as E494 <<struct>> {
+  casper/src/rust/util/mergeable_channels_gc/job.rs:45
+  --
+  dag : KeyValueDagRepresentation
+  floor : Floor
+  conf : CasperShardConf
+  target : i64
+  discovery_start : i64
+  discovery_cursor : Option &#60; Vec &#60; u8 &#62; &#62;
+  retry_cursor : Option &#60; Vec &#60; u8 &#62; &#62;
+  active_latest : HashMap &#60; Validator , BlockHash &#62;
+  restore_floor : Option &#60; i64 &#62;
+}
+entity "Phase" as E495 <<enum>> {
+  casper/src/rust/util/mergeable_channels_gc/job.rs:63
+  --
+  Idle : variant
+  Discover.0 : Pass
+  FindMinimum.pass : Pass
+  FindMinimum.cursor : Option &#60; Vec &#60; u8 &#62; &#62;
+  FindMinimum.minimum : Option &#60; i64 &#62;
+  FindMinimum.has_below_floor : bool
+  Delete.pass : Pass
+  Delete.moved_past : Option &#60; HashSet &#60; BlockHash &#62; &#62;
+  Delete.cursor : Option &#60; Vec &#60; u8 &#62; &#62;
+}
+E493 --> E495 : phase
+E495 --> E494 : Delete.pass
+E495 --> E494 : Discover.0
+E495 --> E494 : FindMinimum.pass
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

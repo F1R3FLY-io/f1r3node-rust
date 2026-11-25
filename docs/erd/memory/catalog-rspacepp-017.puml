@@ -1,0 +1,57 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 017
+entity "MatchingDataCandidate" as E1754 <<alias>> {
+  rspace++/src/rspace/space_matcher.rs:17
+  --
+  value : (ConsumeCandidate &#60; C , A &#62; , IndexedData &#60; A &#62;)
+}
+entity "StoreItems" as E1755 <<struct>> {
+  rspace++/src/rspace/state/exporters/rspace_exporter_items.rs:12
+  --
+  items : Vec &#60; (KeyHash , Value) &#62;
+  last_path : Vec &#60; (KeyHash , Option &#60; Byte &#62;) &#62;
+}
+entity "RSpaceExporterItems" as E1756 <<struct>> {
+  rspace++/src/rspace/state/exporters/rspace_exporter_items.rs:17
+  --
+}
+entity "RSpaceExporterStore" as E1757 <<struct>> {
+  rspace++/src/rspace/state/instances/rspace_exporter_store.rs:14
+  --
+}
+entity "RSpaceExporterImpl" as E1758 <<struct>> {
+  rspace++/src/rspace/state/instances/rspace_exporter_store.rs:30
+  --
+  source_history_store : Arc &#60; dyn KeyValueStore &#62;
+  source_value_store : Arc &#60; dyn KeyValueStore &#62;
+  source_roots_store : Arc &#60; dyn KeyValueStore &#62;
+}
+entity "RSpaceImporterStore" as E1759 <<struct>> {
+  rspace++/src/rspace/state/instances/rspace_importer_store.rs:13
+  --
+}
+entity "RSpaceImporterImpl" as E1760 <<struct>> {
+  rspace++/src/rspace/state/instances/rspace_importer_store.rs:29
+  --
+  history_store : Arc &#60; dyn KeyValueStore &#62;
+  value_store : Arc &#60; dyn KeyValueStore &#62;
+  roots_store : Arc &#60; dyn KeyValueStore &#62;
+}
+entity "LeafKeys" as E1761 <<alias>> {
+  rspace++/src/rspace/state/rspace_exporter.rs:17
+  --
+  value : Vec &#60; (Blake2b256Hash , ByteVector) &#62;
+}
+E1754 -[hidden]down-> E1755
+E1755 -[hidden]down-> E1756
+E1756 -[hidden]down-> E1757
+E1757 -[hidden]down-> E1758
+E1758 -[hidden]down-> E1759
+E1759 -[hidden]down-> E1760
+E1760 -[hidden]down-> E1761
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

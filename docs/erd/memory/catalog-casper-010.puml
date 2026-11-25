@@ -1,0 +1,79 @@
+@startuml
+!include ../style.puml
+title catalog casper 010
+entity "FetchAction" as E152 <<enum>> {
+  casper/src/rust/blocks/ingest/fetch_scheduler.rs:55
+  --
+  LookupLocal.0 : BlockHash
+  RequestBlock.hash : BlockHash
+  RequestBlock.peer : PeerNode
+  BroadcastHasBlockRequest.0 : BlockHash
+  FetchStateRoot.0 : Blake2b256Hash
+}
+entity "NeedFacts" as E153 <<struct>> {
+  casper/src/rust/blocks/ingest/fetch_scheduler.rs:63
+  --
+  height_hint : Option &#60; i64 &#62;
+  trusted : bool
+  vouched : bool
+}
+entity "NeedOrigin" as E154 <<enum>> {
+  casper/src/rust/blocks/ingest/fetch_scheduler.rs:85
+  --
+  Cited : variant
+  Requested : variant
+  Announced : variant
+}
+entity "Priority" as E155 <<alias>> {
+  casper/src/rust/blocks/ingest/fetch_scheduler.rs:96
+  --
+  value : (Reverse &#60; bool &#62; , i64 , u64)
+}
+entity "Stage" as E156 <<enum>> {
+  casper/src/rust/blocks/ingest/fetch_scheduler.rs:99
+  --
+  LocalLookup.issued : bool
+  Network : variant
+}
+entity "BlockNeed" as E157 <<struct>> {
+  casper/src/rust/blocks/ingest/fetch_scheduler.rs:105
+  --
+  facts : NeedFacts
+  origin : NeedOrigin
+  stage : Stage
+  candidates : VecDeque &#60; PeerNode &#62;
+  asked : Vec &#60; PeerNode &#62;
+  announced : bool
+  requery_cursor : usize
+  attempts : u32
+  next_due_ms : u64
+  first_requested_ms : Option &#60; u64 &#62;
+  last_requested_ms : Option &#60; u64 &#62;
+  pushed_by : Option &#60; PeerNode &#62;
+  seq : u64
+}
+entity "RootNeed" as E158 <<struct>> {
+  casper/src/rust/blocks/ingest/fetch_scheduler.rs:185
+  --
+  attempts : u32
+  next_due_ms : u64
+  in_flight : bool
+}
+entity "RemovedNeed" as E159 <<struct>> {
+  casper/src/rust/blocks/ingest/fetch_scheduler.rs:192
+  --
+  facts : NeedFacts
+  origin : NeedOrigin
+  pushed_by : Option &#60; PeerNode &#62;
+  first_requested_ms : Option &#60; u64 &#62;
+}
+E157 --> E153 : facts
+E157 --> E154 : origin
+E157 --> E156 : stage
+E159 --> E153 : facts
+E159 --> E154 : origin
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

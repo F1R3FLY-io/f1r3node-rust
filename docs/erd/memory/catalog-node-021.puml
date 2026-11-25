@@ -1,0 +1,72 @@
+@startuml
+!include ../style.puml
+title catalog node 021
+entity "EngineInit" as E1218 <<alias>> {
+  node/src/rust/runtime/node_runtime.rs:28
+  --
+  value : Arc &#60; dyn Fn () -&#62; Pin &#60; Box &#60; dyn Future &#60; Output = Result &#60; ()\n    , CasperError &#62; &#62; + Send &#62; &#62; + Send + Sync &#62;
+}
+entity "NamedTaskResult" as E1219 <<struct>> {
+  node/src/rust/runtime/node_runtime.rs:31
+  --
+  name : String
+  result : eyre :: Result &#60; () &#62;
+}
+entity "NodeRuntime" as E1220 <<struct>> {
+  node/src/rust/runtime/node_runtime.rs:53
+  --
+  node_conf : NodeConf
+  id : NodeIdentifier
+  observer : Option &#60; Arc &#60; casper :: rust :: soak_observer ::\n    ObserverController &#62; &#62;
+}
+entity "ServersInstances" as E1221 <<struct>> {
+  node/src/rust/runtime/servers_instances.rs:75
+  --
+  transport_server : Arc &#60; TransportServer &#62;
+  kademlia_server : GrpcServer
+  external_api_server : GrpcServer
+  internal_api_server : GrpcServer
+  transport_server_handle : JoinHandle &#60; Result &#60; () , eyre :: Error &#62; &#62;
+  kademlia_server_handle : JoinHandle &#60; Result &#60; () , tonic :: transport\n    :: Error &#62; &#62;
+  external_api_server_handle : JoinHandle &#60; Result &#60; () , tonic ::\n    transport :: Error &#62; &#62;
+  internal_api_server_handle : JoinHandle &#60; Result &#60; () , tonic ::\n    transport :: Error &#62; &#62;
+  http_server_handle : JoinHandle &#60; Result &#60; () , eyre :: Error &#62; &#62;
+  admin_http_server_handle : JoinHandle &#60; Result &#60; () , eyre :: Error &#62; &#62;
+}
+entity "ProposerQueueEntry" as E1222 <<alias>> {
+  node/src/rust/runtime/setup.rs:38
+  --
+  value : (Arc &#60; dyn Casper + Send + Sync &#62; , bool , oneshot :: Sender &#60;\n    ProposerResult &#62; , u8 ,)
+}
+entity "ObserverError" as E1223 <<enum>> {
+  node/src/rust/soak_observer.rs:9
+  --
+  UnsupportedPlatform : variant
+  Configuration : variant
+  UnsafeDirectory : variant
+  PeerIdentity : variant
+  Request : variant
+  ResourceLimit : variant
+  Io.0 : std :: io :: Error
+}
+entity "RunningObserver" as E1224 <<struct>> {
+  node/src/rust/soak_observer.rs:58
+  --
+  task : Option &#60; JoinHandle &#60; () &#62; &#62;
+}
+entity "Observer" as E1225 <<struct>> {
+  node/src/rust/soak_observer.rs:91
+  --
+}
+E1218 -[hidden]down-> E1219
+E1219 -[hidden]down-> E1220
+E1220 -[hidden]down-> E1221
+E1221 -[hidden]down-> E1222
+E1222 -[hidden]down-> E1223
+E1223 -[hidden]down-> E1224
+E1224 -[hidden]down-> E1225
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

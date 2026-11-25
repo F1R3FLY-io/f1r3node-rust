@@ -1,0 +1,14 @@
+!pragma layout smetana
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam defaultFontName SansSerif
+skinparam defaultFontSize 12
+skinparam classAttributeIconSize 0
+skinparam classBackgroundColor #F3F8FC
+skinparam classBorderColor #37556B
+skinparam ArrowColor #476274
+skinparam noteBackgroundColor #FFFBEA
+skinparam noteBorderColor #9A884D
+skinparam wrapWidth 340
+hide circle

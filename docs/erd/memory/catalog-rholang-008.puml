@@ -1,0 +1,78 @@
+@startuml
+!include ../style.puml
+title catalog rholang 008
+entity "Inner" as E1318 <<struct>> {
+  rholang/src/rust/interpreter/io/dir_handle_table.rs:270
+  --
+  table : RwLock &#60; HashMap &#60; u64 , Arc &#60; DirHandle &#62; &#62; &#62;
+  next_fd : AtomicU64
+}
+entity "FserrCode" as E1319 <<struct>> {
+  rholang/src/rust/interpreter/io/errors.rs:26
+  --
+  0 : &#38; 'static str
+}
+entity "FileHandle" as E1320 <<struct>> {
+  rholang/src/rust/interpreter/io/handle_table.rs:162
+  --
+  file : Option &#60; Arc &#60; File &#62; &#62;
+  canon_path : PathBuf
+  mode : AccessMode
+  cmode : ConsensusMode
+  position : u64
+  deploy : super :: lock :: DeployScope
+}
+entity "FileHandleTable" as E1321 <<struct>> {
+  rholang/src/rust/interpreter/io/handle_table.rs:258
+  --
+  inner : Arc &#60; Inner &#62;
+  wal : Wal
+  root_registry : RootIdentityRegistry
+  lock_registry : SharedLockRegistry
+  dir_handles : DirHandleTable
+  deploy : Arc &#60; std :: sync :: RwLock &#60; DeployState &#62; &#62;
+  payload_store : Arc &#60; std :: sync :: RwLock &#60; Option &#60; Arc &#60; dyn\n    PayloadPersistence &#62; &#62; &#62; &#62;
+  payload_source_recorder : Arc &#60; std :: sync :: RwLock &#60; Option &#60; Arc &#60;\n    dyn PayloadSourceRecorder &#62; &#62; &#62; &#62;
+}
+entity "DeployState" as E1322 <<struct>> {
+  rholang/src/rust/interpreter/io/handle_table.rs:458
+  --
+  scope : DeployScope
+  sig : Vec &#60; u8 &#62;
+}
+entity "Inner" as E1323 <<struct>> {
+  rholang/src/rust/interpreter/io/handle_table.rs:466
+  --
+  table : RwLock &#60; HashMap &#60; u64 , FileHandle &#62; &#62;
+  next_fd : AtomicU64
+}
+entity "HandlerFamily" as E1324 <<enum>> {
+  rholang/src/rust/interpreter/io/handler_trait/family.rs:23
+  --
+  Mutation : variant
+  Observation : variant
+  Stream : variant
+  Lock : variant
+  Lifecycle : variant
+}
+entity "FsHandlerEntry" as E1325 <<struct>> {
+  rholang/src/rust/interpreter/io/handler_trait/fs_handlers.rs:67
+  --
+  name : &#38; 'static str
+  arity : usize
+  verifying : bool
+  dispatch : fn (FsProcesses , (Vec &#60; ListParWithRandom &#62; , bool , Vec &#60;\n    Par &#62;) ,) -&#62; Pin &#60; Box &#60; dyn Future &#60; Output = Result &#60; Vec &#60; Par &#62; ,\n    InterpreterError &#62; &#62; + Send &#62; &#62;
+  urn_suffix : &#38; 'static str
+  fixed_channel : fn () -&#62; Name
+  body_ref : BodyRef
+  family : HandlerFamily
+}
+E1321 --> E1322 : deploy
+E1321 --> E1323 : inner
+E1323 --> E1320 : table
+E1325 --> E1324 : family
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

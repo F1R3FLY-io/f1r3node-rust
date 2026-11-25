@@ -1,0 +1,55 @@
+@startuml
+!include ../style.puml
+title catalog node 003
+entity "LspGrpcServiceImpl" as E1074 <<struct>> {
+  node/src/rust/api/lsp_grpc_service.rs:38
+  --
+}
+entity "DeployRequestLimiter" as E1075 <<struct>> {
+  node/src/rust/api/mod.rs:14
+  --
+  slots : Option &#60; Arc &#60; Semaphore &#62; &#62;
+  limit : usize
+}
+entity "DeployRequestPermit" as E1076 <<struct>> {
+  node/src/rust/api/mod.rs:20
+  --
+  _slot : Option &#60; Arc &#60; DeployRequestSlot &#62; &#62;
+}
+entity "DeployRequestSlot" as E1077 <<struct>> {
+  node/src/rust/api/mod.rs:25
+  --
+  permit : Option &#60; OwnedSemaphorePermit &#62;
+  slots : Arc &#60; Semaphore &#62;
+  limit : usize
+}
+entity "DeployIngressBusy" as E1078 <<struct>> {
+  node/src/rust/api/mod.rs:45
+  --
+}
+entity "ProposeGrpcServiceV1Impl" as E1079 <<struct>> {
+  node/src/rust/api/propose_grpc_service_v1.rs:19
+  --
+  trigger_propose_f_opt : Option &#60; Arc &#60; ProposeFunction &#62; &#62;
+  proposer_state_ref_opt : Option &#60; Arc &#60; RwLock &#60; ProposerState &#62; &#62; &#62;
+  engine_cell : Arc &#60; EngineCell &#62;
+}
+entity "ReplGrpcServiceImpl" as E1080 <<struct>> {
+  node/src/rust/api/repl_grpc_service.rs:27
+  --
+  runtime : Arc &#60; RhoRuntimeImpl &#62;
+}
+entity "BlockEventInfoSerde" as E1081 <<struct>> {
+  node/src/rust/api/serde_types/block_event_info.rs:11
+  --
+  block_info : Option &#60; LightBlockInfoSerde &#62;
+  deploys : Vec &#60; DeployInfoWithEventDataSerde &#62;
+  system_deploys : Vec &#60; SystemDeployInfoWithEventSerde &#62;
+  post_state_hash : Vec &#60; u8 &#62;
+}
+E1076 --> E1077 : _slot
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

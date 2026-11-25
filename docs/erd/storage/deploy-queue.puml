@@ -1,0 +1,49 @@
+@startuml
+!include ../style.puml
+title Deploy-queue LMDB records
+entity "records" as Records {
+  * key : raw signature bytes
+  --
+  value : bincode QueueRecord
+}
+entity QueueRecord {
+  deployer : Vec<u8>
+  payload_bytes : u64
+  valid_after : i64
+  sequence : u64
+  accepted_at_ms : i64
+  state : QueueState
+  submitted_at_height / last_sent_height : Option<i64>
+  submissions / rejection_count : u32
+  latest_block_hash : Option<Vec<u8>>
+  decided_at_height : Option<i64>
+  detail : Option<String>
+}
+entity QueueState {
+  Queued / Submitted / InBlock
+  Finalized / Failed / Expired / Rejected
+}
+entity "payloads" as Payloads {
+  * key : raw signature bytes
+  --
+  value : signed DeployDataProto protobuf
+}
+entity "meta" as Meta {
+  * key : ASCII format
+  --
+  value : u32 big-endian, currently 1
+}
+Records "1" --> "1" QueueRecord : decode
+QueueRecord "1" --> "1" QueueState
+Records "1" --> "0..1" Payloads : same signature
+Meta ..> Records : store format
+note bottom of Records
+These databases share the queue's configured directory,
+not the node's deploystorage environment.
+One transaction applies each Batch.
+Terminal records can outlive their payloads.
+end note
+legend bottom
+Sources: deploy-queue/src/store.rs and deploy-queue/src/record.rs.
+endlegend
+@enduml

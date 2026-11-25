@@ -1,0 +1,81 @@
+@startuml
+!include ../style.puml
+title catalog models 006
+entity "RejectedDeployProto" as E778 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  sig #1 : Bytes
+  duplicate #2 : Bool
+  carrier #3 : Bytes
+}
+entity "RholangMap" as E779 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  entries #1 : repeated .casper.RholangMapEntry
+}
+entity "RholangMapEntry" as E780 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  key #1 : .casper.RholangValue
+  value #2 : .casper.RholangValue
+}
+entity "RholangNil" as E781 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+}
+entity "RholangSequence" as E782 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  values #1 : repeated .casper.RholangValue
+}
+entity "RholangValue" as E783 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  bool_value #1 oneof value : Bool
+  int_value #2 oneof value : Sint64
+  string_value #3 oneof value : String
+  bytes_value #4 oneof value : Bytes
+  tuple_value #5 oneof value : .casper.RholangSequence
+  list_value #6 oneof value : .casper.RholangSequence
+  set_value #7 oneof value : .casper.RholangSequence
+  map_value #8 oneof value : .casper.RholangMap
+  nil_value #9 oneof value : .casper.RholangNil
+  uri_value #10 oneof value : String
+  big_int_value #11 oneof value : String
+}
+entity "Signature" as E784 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  publicKey #1 : Bytes
+  algorithm #2 : String
+  sig #3 : Bytes
+}
+entity "SlashSystemDeployDataProto" as E785 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  issuerPublicKey #2 : Bytes
+  first #4 : .casper.BlockCommitmentProto
+  second #5 : .casper.BlockCommitmentProto
+}
+E779 --> E780 : entries #1
+E780 --> E783 : key #1
+E780 --> E783 : value #2
+E782 --> E783 : values #1
+E783 --> E779 : map_value #8 oneof value
+E783 --> E781 : nil_value #9 oneof value
+E783 --> E782 : list_value #6 oneof value
+E783 --> E782 : set_value #7 oneof value
+E783 --> E782 : tuple_value #5 oneof value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

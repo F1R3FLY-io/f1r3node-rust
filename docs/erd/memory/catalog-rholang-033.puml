@@ -1,0 +1,63 @@
+@startuml
+!include ../style.puml
+title catalog rholang 033
+entity "UnionMethod" as E1518 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:3492
+  DebruijnInterpreter::union_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "DiffMethod" as E1519 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:3594
+  DebruijnInterpreter::diff_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "IntersectionMethod" as E1520 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:3694
+  DebruijnInterpreter::intersection_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "RestrictionMethod" as E1521 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:3769
+  DebruijnInterpreter::restriction_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "DropHeadMethod" as E1522 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:3844
+  DebruijnInterpreter::drop_head_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "RunMethod" as E1523 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:3948
+  DebruijnInterpreter::run_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "ReadZipperMethod" as E1524 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:4001
+  DebruijnInterpreter::read_zipper_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "ReadZipperAtMethod" as E1525 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:4054
+  DebruijnInterpreter::read_zipper_at_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+E1518 -[hidden]down-> E1519
+E1519 -[hidden]down-> E1520
+E1520 -[hidden]down-> E1521
+E1521 -[hidden]down-> E1522
+E1522 -[hidden]down-> E1523
+E1523 -[hidden]down-> E1524
+E1524 -[hidden]down-> E1525
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

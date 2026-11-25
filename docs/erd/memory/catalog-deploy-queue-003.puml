@@ -1,0 +1,79 @@
+@startuml
+!include ../style.puml
+title catalog deploy queue 003
+entity "EngineStopped" as E689 <<struct>> {
+  deploy-queue/src/error.rs:129
+  --
+}
+entity "NodeEvent" as E690 <<enum>> {
+  deploy-queue/src/events.rs:14
+  --
+  Block.number : i64
+  Block.hash : String
+  Block.deploys : Vec &#60; String &#62;
+  Block.creator : String
+  Created.number : i64
+  Created.hash : String
+  Created.creator : String
+  Created.deploys : Vec &#60; String &#62;
+  Created.admission : Option &#60; Admission &#62;
+  Finalised.number : i64
+  Verdicts.0 : Vec &#60; Verdict &#62;
+  Lagged.skipped : u64
+  Running : variant
+  Ignored : variant
+}
+entity "VerdictState" as E691 <<enum>> {
+  deploy-queue/src/events.rs:45
+  --
+  Finalized : variant
+  Expired : variant
+  Failed : variant
+}
+entity "Envelope" as E692 <<struct>> {
+  deploy-queue/src/events.rs:53
+  --
+  event : String
+  payload : serde_json :: Value
+}
+entity "BlockPayload" as E693 <<struct>> {
+  deploy-queue/src/events.rs:60
+  --
+  block_hash : String
+  block_number : i64
+  deploys : Vec &#60; DeployPayload &#62;
+  creator : String
+}
+entity "CreatedPayload" as E694 <<struct>> {
+  deploy-queue/src/events.rs:69
+  --
+  block_hash : String
+  block_number : i64
+  creator : String
+  deploys : Vec &#60; DeployPayload &#62;
+  deploy_admission : Option &#60; Admission &#62;
+}
+entity "Admission" as E695 <<struct>> {
+  deploy-queue/src/events.rs:79
+  --
+  cap : usize
+  cap_hit : bool
+  byte_cap_hit : bool
+  cap_source : String
+  backpressure : bool
+  finality_lag : i64
+}
+entity "DeployPayload" as E696 <<struct>> {
+  deploy-queue/src/events.rs:91
+  --
+  id : String
+}
+E690 --> E695 : Created.admission
+E693 --> E696 : deploys
+E694 --> E695 : deploy_admission
+E694 --> E696 : deploys
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

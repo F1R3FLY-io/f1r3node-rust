@@ -1,0 +1,61 @@
+@startuml
+!include ../style.puml
+title Filesystem WAL, snapshots, and payload files
+entity "manifest.jsonl" as Manifest <<file>> {
+  one ManifestEntry per line
+  v : 1
+  block_number : i64
+  root : optional snapshot root
+  entries : u64
+  ts_ms : i64
+  sig : optional signature
+}
+entity "{root_hex}.wal" as Snapshot <<file>> {
+  version : u8, currently 7
+  count : u32 big-endian
+  entries : custom binary WAL records
+  identity : Blake2b-256(snapshot bytes)
+}
+entity "WAL record" as Wal {
+  op / outcome : explicit tags
+  path : logical root ID + relative path
+  extra_path : optional logical path
+  offset / length / payload_ref / mode / uid / gid
+  other operation-specific fields
+}
+entity "{root_hex}.hashes" as Hashes <<file>> {
+  referenced payload hashes
+  retention sidecar paired with snapshot
+}
+entity "wal_payload_store/{payload_hash_hex}" as Payload <<file>> {
+  raw payload bytes
+  name : Blake2b-256(bytes)
+}
+entity "Provisioned filesystem" as Files <<files>> {
+  logical root IDs map to operator paths
+  files / directories / metadata
+  consensus-static or dynamic provisioning
+}
+entity "Snapshot chunks" as Chunks <<transfer>> {
+  4 MiB slices of snapshot bytes
+  chunk hashes / Merkle proof steps
+  not a separate LMDB table
+}
+Manifest --> Snapshot : optional root
+Snapshot "1" --> "0..*" Wal
+Snapshot --> Hashes : same root filename
+Hashes --> Payload : retained payload hashes
+Wal --> Payload : PayloadRef::Hash
+Wal --> Files : logical path application
+Chunks --> Snapshot : transfer representation
+note bottom of Snapshot
+SnapshotWriter selects the snapshot directory.
+Atomic writes use temporary files and rename.
+A snapshot can survive a failed manifest append.
+Do not serialize validator-specific host paths as wire paths.
+end note
+legend bottom
+Sources: rholang interpreter/io/snapshot.rs, wal.rs, snapshot_chunk.rs and casper engine/wal_payload_server.rs.
+Full WAL variants and field declarations are in the memory inventory.
+endlegend
+@enduml

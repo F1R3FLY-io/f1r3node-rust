@@ -1,0 +1,83 @@
+@startuml
+!include ../style.puml
+title catalog deploy queue 005
+entity "Health" as E705 <<struct>> {
+  deploy-queue/src/health.rs:36
+  --
+  span : i64
+  own_creator : Option &#60; String &#62;
+  blocks : VecDeque &#60; (i64 , bool) &#62;
+  own_blocks : VecDeque &#60; OwnBlock &#62;
+  measured : Option &#60; Measured &#62;
+  first_tip : Option &#60; i64 &#62;
+  tip : Option &#60; (i64 , Instant) &#62;
+  secs_per_height : Option &#60; f64 &#62;
+}
+entity "ValidatorView" as E706 <<struct>> {
+  deploy-queue/src/health.rs:66
+  --
+  own_blocks : usize
+  block_share : Option &#60; f64 &#62;
+  intake_per_height : f64
+  pool_target : usize
+  latest_cap : Option &#60; usize &#62;
+  latest_cap_source : Option &#60; String &#62;
+  saturated : bool
+}
+entity "ShardView" as E707 <<struct>> {
+  deploy-queue/src/health.rs:84
+  --
+  secs_per_height : Option &#60; f64 &#62;
+  backpressure : bool
+  finality_lag : Option &#60; i64 &#62;
+}
+entity "HttpState" as E708 <<struct>> {
+  deploy-queue/src/http.rs:39
+  --
+  engine : EngineHandle
+  node : NodeHttp
+  metrics : PrometheusHandle
+}
+entity "QueueDeployStatus" as E709 <<struct>> {
+  deploy-queue/src/http.rs:115
+  --
+  state : &#38; 'static str
+  rejection_count : u32
+  latest_block_hash : Option &#60; String &#62;
+  queue_state : &#38; 'static str
+  detail : Option &#60; String &#62;
+}
+entity "WatchQuery" as E710 <<struct>> {
+  deploy-queue/src/http.rs:162
+  --
+  sigs : String
+}
+entity "Args" as E711 <<struct>> {
+  deploy-queue/src/main.rs:19
+  --
+  grpc_listen : SocketAddr
+  http_listen : SocketAddr
+  node_grpc : String
+  node_http : String
+  data_dir : PathBuf
+}
+entity "NodeError" as E712 <<enum>> {
+  deploy-queue/src/node.rs:12
+  --
+  InvalidAddress.0 : String
+  Transport.0 : reqwest :: Error
+  Status.status : StatusCode
+  Status.body : String
+}
+E705 -[hidden]down-> E706
+E706 -[hidden]down-> E707
+E707 -[hidden]down-> E708
+E708 -[hidden]down-> E709
+E709 -[hidden]down-> E710
+E710 -[hidden]down-> E711
+E711 -[hidden]down-> E712
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

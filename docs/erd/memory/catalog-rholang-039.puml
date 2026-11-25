@@ -1,0 +1,74 @@
+@startuml
+!include ../style.puml
+title catalog rholang 039
+entity "Registry" as E1566 <<struct>> {
+  rholang/src/rust/interpreter/registry/registry.rs:3
+  --
+}
+entity "CRC14" as E1567 <<struct>> {
+  rholang/src/rust/interpreter/registry/registry.rs:16
+  --
+}
+entity "Version" as E1568 <<struct>> {
+  rholang/src/rust/interpreter/registry/semver.rs:11
+  --
+  major : u32
+  minor : u32
+  patch : u32
+  pre : Option &#60; String &#62;
+}
+entity "Pattern" as E1569 <<enum>> {
+  rholang/src/rust/interpreter/registry/semver.rs:22
+  --
+  Exact.0 : Version
+  PatchWild.major : u32
+  PatchWild.minor : u32
+  MinorWild.major : u32
+  MajorWild : variant
+}
+entity "SemverError" as E1570 <<enum>> {
+  rholang/src/rust/interpreter/registry/semver.rs:32
+  --
+  Empty : variant
+  WrongComponentCount : variant
+  EmptyComponent : variant
+  NotANumber.0 : String
+  EmptyPrerelease : variant
+  PrereleaseInPattern : variant
+  MidComponentWildcard : variant
+}
+entity "ParsedUrn" as E1571 <<struct>> {
+  rholang/src/rust/interpreter/registry/versioned_urn.rs:12
+  --
+  namespace : String
+  service_version : String
+  pub_key : Option &#60; String &#62;
+  project_id : Option &#60; String &#62;
+  project_version : Option &#60; String &#62;
+}
+entity "RhoRuntimeImpl" as E1572 <<struct>> {
+  rholang/src/rust/interpreter/rho_runtime.rs:265
+  --
+  reducer : Arc &#60; DebruijnInterpreter &#62;
+  cost : _cost
+  block_data_ref : Arc &#60; tokio :: sync :: RwLock &#60; BlockData &#62; &#62;
+  invalid_blocks_param : InvalidBlocks
+  deploy_data_ref : Arc &#60; tokio :: sync :: RwLock &#60; DeployData &#62; &#62;
+  merge_chs : Arc &#60; tokio :: sync :: RwLock &#60; HashMap &#60; Par , MergeType &#62;\n    &#62; &#62;
+  fs_handles : super :: io :: handle_table :: FileHandleTable
+  fs_snapshot_stack : Arc &#60; std :: sync :: Mutex &#60; Vec &#60; u64 &#62; &#62; &#62;
+  dir_fs_snapshot_stack : Arc &#60; std :: sync :: Mutex &#60; Vec &#60; u64 &#62; &#62; &#62;
+  wal_snapshot_stack : Arc &#60; std :: sync :: Mutex &#60; Vec &#60; super :: io ::\n    wal :: WalMark &#62; &#62; &#62;
+  fs_snapshot_writer : Arc &#60; tokio :: sync :: RwLock &#60; Option &#60; super ::\n    io :: snapshot :: SnapshotWriter &#62; &#62; &#62;
+}
+entity "FsNativeUrnFilterExemption" as E1573 <<struct>> {
+  rholang/src/rust/interpreter/rho_runtime.rs:738
+  --
+  flag : Arc &#60; std :: sync :: atomic :: AtomicBool &#62;
+}
+E1569 --> E1568 : Exact.0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

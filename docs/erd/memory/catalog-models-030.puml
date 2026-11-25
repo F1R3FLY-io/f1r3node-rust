@@ -1,0 +1,63 @@
+@startuml
+!include ../style.puml
+title catalog models 030
+entity "UnapprovedBlock" as E970 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:554
+  --
+  candidate : ApprovedBlockCandidate
+  timestamp : i64
+  duration : i64
+}
+entity "BlockApproval" as E971 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:583
+  --
+  candidate : ApprovedBlockCandidate
+  sig : Signature
+}
+entity "FloorCacheRequest" as E972 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:609
+  --
+  hashes : Vec &#60; ByteString &#62;
+}
+entity "FloorCacheEntry" as E973 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:629
+  --
+  block_hash : ByteString
+  floor_hash : ByteString
+  frontier_hash : ByteString
+}
+entity "FloorCacheResponse" as E974 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:638
+  --
+  entries : Vec &#60; FloorCacheEntry &#62;
+  genesis_hash : ByteString
+  genesis_block : Option &#60; BlockMessage &#62;
+}
+entity "FinalizedFloorSeed" as E975 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:685
+  --
+  floor_hash : ByteString
+  floor_number : i64
+  frontier_hash : ByteString
+  frontier_number : i64
+}
+entity "ApprovedBlock" as E976 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:718
+  --
+  candidate : ApprovedBlockCandidate
+  sigs : Vec &#60; Signature &#62;
+  floor_seed : Option &#60; FinalizedFloorSeed &#62;
+}
+entity "NoApprovedBlockAvailable" as E977 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:749
+  --
+  identifier : String
+  node_identifier : String
+}
+E974 --> E973 : entries
+E976 --> E975 : floor_seed
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,64 @@
+@startuml
+!include ../style.puml
+title catalog block storage 003
+entity "RetryPage" as E16 <<struct>> {
+  block-storage/src/rust/dag/dag_gc_store.rs:39
+  --
+  rows : Vec &#60; (BlockHash , i64) &#62;
+  next : Option &#60; Vec &#60; u8 &#62; &#62;
+}
+entity "HistoryTableSlots" as E17 <<struct>> {
+  block-storage/src/rust/dag/dag_history_index.rs:20
+  --
+  membership : usize
+  heights : usize
+  children : usize
+  sequences : usize
+  equivocations : usize
+}
+entity "MembershipRecord" as E18 <<struct>> {
+  block-storage/src/rust/dag/dag_history_index.rs:29
+  --
+  sequence : u64
+  height : i64
+  invalid : bool
+}
+entity "HistoryPage" as E19 <<struct>> {
+  block-storage/src/rust/dag/dag_history_index.rs:44
+  --
+  rows : Vec &#60; T &#62;
+  next : Option &#60; Vec &#60; u8 &#62; &#62;
+}
+entity "DagHistoryIndex" as E20 <<struct>> {
+  block-storage/src/rust/dag/dag_history_index.rs:50
+  --
+  group : Arc &#60; AtomicStoreGroup &#62;
+  slots : HistoryTableSlots
+}
+entity "HistoryQuery" as E21 <<struct>> {
+  block-storage/src/rust/dag/dag_history_index.rs:56
+  --
+  operation : &#38; 'static str
+  started : Instant
+}
+entity "DagProgress" as E22 <<struct>> {
+  block-storage/src/rust/dag/dag_persistence.rs:28
+  --
+  sequence : u64
+  max_height : Option &#60; i64 &#62;
+  lfb : Option &#60; (BlockHash , i64) &#62;
+  total : u64
+  edge_rows : u64
+}
+entity "Wire" as E23 <<alias>> {
+  block-storage/src/rust/dag/dag_persistence.rs:54
+  DagProgress::deserialize
+  --
+  value : (u64 , Option &#60; i64 &#62; , Option &#60; (BlockHashSerde , i64) &#62; , u64\n    , u64)
+}
+E20 --> E17 : slots
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

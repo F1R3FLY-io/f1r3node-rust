@@ -1,0 +1,70 @@
+@startuml
+!include ../style.puml
+title catalog block storage 010
+entity "PendingBlockLimits" as E72 <<struct>> {
+  block-storage/src/rust/pending_blocks.rs:19
+  --
+  max_blocks : usize
+  max_bytes : usize
+  max_per_sender : usize
+}
+entity "PendingInsert" as E73 <<enum>> {
+  block-storage/src/rust/pending_blocks.rs:46
+  --
+  Accepted : variant
+  SenderLimitReached : variant
+  AreaFull : variant
+  TooLarge : variant
+}
+entity "PendingClass" as E74 <<enum>> {
+  block-storage/src/rust/pending_blocks.rs:54
+  --
+  Unsolicited : variant
+  KnownSender : variant
+  Solicited : variant
+}
+entity "PendingUsage" as E75 <<struct>> {
+  block-storage/src/rust/pending_blocks.rs:63
+  --
+  limits : PendingBlockLimits
+  blocks : usize
+  bytes : usize
+  by_sender : HashMap &#60; Bytes , usize &#62;
+}
+entity "Entry" as E76 <<struct>> {
+  block-storage/src/rust/pending_blocks.rs:74
+  --
+  encoded : Bytes
+  sender : Bytes
+}
+entity "Reservation" as E77 <<struct>> {
+  block-storage/src/rust/pending_blocks.rs:79
+  --
+  sender : Bytes
+  bytes : usize
+}
+entity "Inner" as E78 <<struct>> {
+  block-storage/src/rust/pending_blocks.rs:91
+  --
+  limits : PendingBlockLimits
+  entries : HashMap &#60; BlockHash , Entry &#62;
+  per_sender : HashMap &#60; Bytes , usize &#62;
+  bytes : usize
+  reservations : HashMap &#60; BlockHash , Reservation &#62;
+  reserved_bytes : usize
+}
+entity "PendingBlocks" as E79 <<struct>> {
+  block-storage/src/rust/pending_blocks.rs:140
+  --
+  inner : Mutex &#60; Inner &#62;
+}
+E75 --> E72 : limits
+E78 --> E72 : limits
+E78 --> E76 : entries
+E78 --> E77 : reservations
+E79 --> E78 : inner
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

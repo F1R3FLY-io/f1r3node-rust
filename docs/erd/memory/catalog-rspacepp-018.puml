@@ -1,0 +1,65 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 018
+entity "RSpaceExporterInstance" as E1762 <<struct>> {
+  rspace++/src/rspace/state/rspace_exporter.rs:34
+  --
+}
+entity "StateItemsError" as E1763 <<enum>> {
+  rspace++/src/rspace/state/rspace_importer.rs:24
+  --
+  InvalidHistorySize.expected : i32
+  InvalidHistorySize.received : i32
+  HistoryHashMismatch.key : String
+  HistoryHashMismatch.decoded : String
+  Traversal.0 : RadixTreeError
+  HistoryItemsCorrupted : variant
+  DataItemsCorrupted : variant
+  InvalidDataItem.0 : String
+  LastPathMismatch : variant
+}
+entity "RSpaceImporterInstance" as E1764 <<struct>> {
+  rspace++/src/rspace/state/rspace_importer.rs:69
+  --
+}
+entity "RSpaceStateManager" as E1765 <<struct>> {
+  rspace++/src/rspace/state/rspace_state_manager.rs:11
+  --
+  exporter : Arc &#60; dyn RSpaceExporter &#62;
+  importer : Arc &#60; dyn RSpaceImporter &#62;
+}
+entity "LeafRef" as E1766 <<struct>> {
+  rspace++/src/rspace/state/state_walk.rs:15
+  --
+  node : Blake2b256Hash
+  slot : usize
+  node_kind : Option &#60; u8 &#62;
+  data : Blake2b256Hash
+}
+entity "MissingData" as E1767 <<struct>> {
+  rspace++/src/rspace/state/state_walk.rs:22
+  --
+  path : NodePath
+  kind : Option &#60; u8 &#62;
+  data : HashSet &#60; Blake2b256Hash &#62;
+}
+entity "StateWalk" as E1768 <<struct>> {
+  rspace++/src/rspace/state/state_walk.rs:29
+  --
+  importer : Arc &#60; dyn RSpaceImporter &#62;
+  visited : HashSet &#60; (Blake2b256Hash , Option &#60; u8 &#62;) &#62;
+  waiting : HashMap &#60; Blake2b256Hash , HashSet &#60; Option &#60; u8 &#62; &#62; &#62;
+  leaves_seen : HashSet &#60; (Blake2b256Hash , u8) &#62;
+  unchecked : Vec &#60; LeafRef &#62;
+}
+entity "HeldLock" as E1769 <<struct>> {
+  rspace++/src/rspace/striped_locks.rs:16
+  --
+  _guard : tokio :: sync :: OwnedMutexGuard &#60; () &#62;
+}
+E1768 --> E1766 : unchecked
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

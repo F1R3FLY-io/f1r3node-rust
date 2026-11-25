@@ -1,0 +1,51 @@
+@startuml
+!include ../style.puml
+title catalog node 018
+entity "PrometheusConfiguration" as E1194 <<struct>> {
+  node/src/rust/diagnostics/prometheus_config.rs:45
+  --
+  default_buckets : Vec &#60; f64 &#62;
+  time_buckets : Vec &#60; f64 &#62;
+  information_buckets : Vec &#60; f64 &#62;
+  custom_buckets : HashMap &#60; String , Vec &#60; f64 &#62; &#62;
+  include_environment_tags : bool
+}
+entity "NopConsoleIO" as E1195 <<struct>> {
+  node/src/rust/effects/console_io.rs:45
+  --
+}
+entity "StringsHelper" as E1196 <<struct>> {
+  node/src/rust/effects/console_io.rs:56
+  --
+  keywords : Vec &#60; String &#62;
+}
+entity "RustConsoleIO" as E1197 <<struct>> {
+  node/src/rust/effects/console_io.rs:107
+  --
+  rl : Editor &#60; StringsHelper , MemHistory &#62;
+  prompt : String
+}
+entity "GrpcReplClient" as E1198 <<struct>> {
+  node/src/rust/effects/repl_client.rs:46
+  --
+  client : ReplClient &#60; Channel &#62;
+}
+entity "JsonEncoder" as E1199 <<struct>> {
+  node/src/rust/encode/json_encoder.rs:10
+  --
+}
+entity "NotifyHeartbeatSignal" as E1200 <<struct>> {
+  node/src/rust/instances/heartbeat_proposer.rs:22
+  --
+  notify : Arc &#60; Notify &#62;
+}
+entity "HeartbeatProposer" as E1201 <<struct>> {
+  node/src/rust/instances/heartbeat_proposer.rs:32
+  --
+}
+E1197 --> E1196 : rl
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,80 @@
+@startuml
+!include ../style.puml
+title catalog node 022
+entity "SocketGuard" as E1226 <<struct>> {
+  node/src/rust/soak_observer.rs:176
+  linux
+  --
+  path : PathBuf
+  device : u64
+  inode : u64
+}
+entity "Identity" as E1227 <<struct>> {
+  node/src/rust/soak_observer.rs:196
+  linux
+  --
+  schema_version : u32
+  incarnation : String
+  pid : u32
+  process_start_ticks : u64
+  declared_source_revision : String
+  executable_sha256 : String
+  configuration_sha256 : String
+  configuration_scope : &#38; 'static str
+}
+entity "Request" as E1228 <<struct>> {
+  node/src/rust/soak_observer.rs:208
+  linux
+  --
+  schema_version : u32
+  request_id : String
+  incarnation : String
+  challenge : String
+  executable_sha256 : String
+  configuration_sha256 : String
+  approved_request_sha256 : String
+  operation : Operation
+  authority : Option &#60; casper :: rust :: soak_observer :: evaluation ::\n    AuthorityRequest &#62;
+}
+entity "Operation" as E1229 <<enum>> {
+  node/src/rust/soak_observer.rs:222
+  linux
+  --
+  Capabilities : variant
+  AuthoritySnapshot : variant
+}
+entity "Observer" as E1230 <<struct>> {
+  node/src/rust/soak_observer.rs:229
+  linux
+  --
+  listener : UnixListener
+  _socket : SocketGuard
+  config : SoakObserverConfig
+  identity : Identity
+  owner_uid : u32
+  started : Instant
+  sequence : u64
+  controller : std :: sync :: Arc &#60; casper :: rust :: soak_observer ::\n    ObserverController &#62;
+}
+entity "RNodeStateManager" as E1231 <<struct>> {
+  node/src/rust/state/instances/rnode_state_manager.rs:7
+  --
+  rspace_state_manager : RSpaceStateManager
+  block_state_manager : BlockStateManager
+}
+entity "AdminWebApiRoutes" as E1232 <<struct>> {
+  node/src/rust/web/admin_web_api_routes.rs:7
+  --
+}
+entity "EventsInfo" as E1233 <<struct>> {
+  node/src/rust/web/events_info.rs:15
+  --
+}
+E1228 --> E1229 : operation
+E1230 --> E1226 : _socket
+E1230 --> E1227 : identity
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

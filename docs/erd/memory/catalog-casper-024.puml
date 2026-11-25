@@ -1,0 +1,74 @@
+@startuml
+!include ../style.puml
+title catalog casper 024
+entity "Requests" as E264 <<struct>> {
+  casper/src/rust/engine/lfs_horizon_requester.rs:102
+  --
+  wanted : HashMap &#60; StatePartPath , Wanted &#62;
+  queue : VecDeque &#60; StatePartPath &#62;
+  in_flight : HashMap &#60; StatePartPath , PathTimer &#62;
+  done : usize
+}
+entity "ValidPage" as E265 <<struct>> {
+  casper/src/rust/engine/lfs_horizon_requester.rs:172
+  --
+  path : StatePartPath
+  wanted : Wanted
+  history_items : StoreItems
+  data_items : StoreItems
+}
+entity "HorizonSync" as E266 <<struct>> {
+  casper/src/rust/engine/lfs_horizon_requester.rs:191
+  --
+  request_ops : T
+  has_root : HasRootFn
+  state_importer : Arc &#60; dyn RSpaceImporter &#62;
+  roots : Vec &#60; Blake2b256Hash &#62;
+  walk : Arc &#60; Mutex &#60; StateWalk &#62; &#62;
+  requests : Requests
+  request_timeout : Duration
+  max_request_timeout : Duration
+}
+entity "ReqStatus" as E267 <<enum>> {
+  casper/src/rust/engine/lfs_tuple_space_requester.rs:24
+  --
+  Init : variant
+  Requested : variant
+  Received : variant
+  Done : variant
+}
+entity "StatePartPath" as E268 <<alias>> {
+  casper/src/rust/engine/lfs_tuple_space_requester.rs:36
+  --
+  value : Vec &#60; (Blake2b256Hash , Option &#60; u8 &#62;) &#62;
+}
+entity "StoreItems" as E269 <<alias>> {
+  casper/src/rust/engine/lfs_tuple_space_requester.rs:85
+  --
+  value : Vec &#60; (Blake2b256Hash , Vec &#60; u8 &#62;) &#62;
+}
+entity "ValidChunk" as E270 <<struct>> {
+  casper/src/rust/engine/lfs_tuple_space_requester.rs:87
+  --
+  history_items : StoreItems
+  data_items : StoreItems
+  complete : bool
+}
+entity "ST" as E271 <<struct>> {
+  casper/src/rust/engine/lfs_tuple_space_requester.rs:122
+  --
+  d : HashMap &#60; Key , ReqStatus &#62;
+}
+E264 --> E268 : in_flight
+E264 --> E268 : queue
+E264 --> E268 : wanted
+E265 --> E268 : path
+E266 --> E264 : requests
+E270 --> E269 : data_items
+E270 --> E269 : history_items
+E271 --> E267 : d
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

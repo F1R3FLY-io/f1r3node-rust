@@ -1,0 +1,96 @@
+@startuml
+!include ../style.puml
+title catalog casper 012
+entity "StateFetchResult" as E168 <<enum>> {
+  casper/src/rust/blocks/ingest/ingest_state.rs:132
+  --
+  Imported : variant
+  Dropped.0 : StateFetchDrop
+}
+entity "IngestInput" as E169 <<enum>> {
+  casper/src/rust/blocks/ingest/ingest_state.rs:138
+  --
+  Attached.anchor_height : i64
+  Received.0 : HeldMeta
+  Announced.hash : BlockHash
+  Announced.peer : PeerNode
+  BlockPruned.hash : BlockHash
+  BlockPruned.block_height : i64
+  BlockPruned.prune_floor : i64
+  BlockPruned.peer : PeerNode
+  Need.hash : BlockHash
+  IntakeRefused.0 : Refused
+  Misbehaved.peer : PeerNode
+  Misbehaved.strike : Strike
+  LocalMiss.hash : BlockHash
+  Inserted.hash : BlockHash
+  Outcome.hash : BlockHash
+  Outcome.outcome : WorkOutcome
+  StateFetch.root : Blake2b256Hash
+  StateFetch.result : StateFetchResult
+  Tick.connected : Vec &#60; PeerNode &#62;
+}
+entity "Effect" as E170 <<enum>> {
+  casper/src/rust/blocks/ingest/ingest_state.rs:195
+  --
+  Fetch.0 : FetchAction
+  DiscardPending.0 : BlockHash
+  Reserve.hash : BlockHash
+  Reserve.sender : Validator
+  Reserve.size : usize
+  ReleaseReservation.0 : BlockHash
+  DiscardStored.0 : BlockHash
+  Struck.peer : PeerNode
+  Struck.strike : Strike
+  Struck.outcome : StrikeOutcome
+}
+entity "Shape" as E171 <<enum>> {
+  casper/src/rust/blocks/ingest/ingest_state.rs:246
+  --
+  Fits : variant
+  Unchecked : variant
+  Invalid : variant
+}
+entity "IngestState" as E172 <<struct>> {
+  casper/src/rust/blocks/ingest/ingest_state.rs:258
+  --
+  anchor_height : Option &#60; i64 &#62;
+  max_parents : Option &#60; usize &#62;
+  reserved : HashSet &#60; BlockHash &#62;
+  tracker : DependencyTracker
+  scheduler : FetchScheduler
+  reputation : PeerReputation
+  view : IngestView
+}
+entity "IngestStep" as E173 <<enum>> {
+  casper/src/rust/blocks/ingest/ingest_step.rs:13
+  --
+  Storage : variant
+  ValidationSetup : variant
+  Validation : variant
+}
+entity "Sets" as E174 <<struct>> {
+  casper/src/rust/blocks/ingest/ingest_view.rs:9
+  --
+  started : Instant
+  held : DashSet &#60; BlockHash &#62;
+  solicited_held : DashSet &#60; BlockHash &#62;
+  cited : DashSet &#60; BlockHash &#62;
+  needed : DashSet &#60; BlockHash &#62;
+  solicited_needs : DashSet &#60; BlockHash &#62;
+  ignored_until : DashMap &#60; PeerNode , u64 &#62;
+  below_horizon_floor : AtomicI64
+}
+entity "IngestView" as E175 <<struct>> {
+  casper/src/rust/blocks/ingest/ingest_view.rs:25
+  --
+  0 : Arc &#60; Sets &#62;
+}
+E169 --> E168 : StateFetch.result
+E172 --> E175 : view
+E175 --> E174 : 0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

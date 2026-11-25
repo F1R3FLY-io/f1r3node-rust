@@ -1,0 +1,58 @@
+@startuml
+!include ../style.puml
+title catalog rholang 004
+entity "Compiler" as E1286 <<struct>> {
+  rholang/src/rust/interpreter/compiler/compiler.rs:55
+  --
+}
+entity "FreeContext" as E1287 <<struct>> {
+  rholang/src/rust/interpreter/compiler/free_context.rs:1
+  --
+  level : usize
+  typ : T
+  source_span : rholang_parser :: SourceSpan
+}
+entity "Shadowed" as E1288 <<alias>> {
+  rholang/src/rust/interpreter/compiler/free_map.rs:9
+  --
+  value : (String , rholang_parser :: SourceSpan , rholang_parser ::\n    SourceSpan ,)
+}
+entity "FreeMap" as E1289 <<struct>> {
+  rholang/src/rust/interpreter/compiler/free_map.rs:17
+  --
+  next_level : usize
+  level_bindings : Arc &#60; HashMap &#60; String , FreeContext &#60; T &#62; &#62; &#62;
+  wildcards : Arc &#60; Vec &#60; rholang_parser :: SourceSpan &#62; &#62;
+  connectives : Arc &#60; Vec &#60; (ConnectiveInstance , rholang_parser ::\n    SourceSpan) &#62; &#62;
+}
+entity "IdContextSpan" as E1290 <<alias>> {
+  rholang/src/rust/interpreter/compiler/id_context.rs:1
+  --
+  value : (String , T , rholang_parser :: SourceSpan)
+}
+entity "IdContextPos" as E1291 <<alias>> {
+  rholang/src/rust/interpreter/compiler/id_context.rs:5
+  --
+  value : (String , T , rholang_parser :: SourcePos)
+}
+entity "VarSort" as E1292 <<enum>> {
+  rholang/src/rust/interpreter/compiler/normalize.rs:15
+  --
+  ProcSort : variant
+  NameSort : variant
+}
+entity "ProcVisitInputs" as E1293 <<struct>> {
+  rholang/src/rust/interpreter/compiler/normalize.rs:21
+  --
+  par : Par
+  bound_map_chain : BoundMapChain &#60; VarSort &#62;
+  free_map : FreeMap &#60; VarSort &#62;
+}
+E1289 --> E1287 : level_bindings
+E1293 --> E1292 : bound_map_chain
+E1293 --> E1292 : free_map
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

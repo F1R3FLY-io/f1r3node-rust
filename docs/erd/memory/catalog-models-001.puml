@@ -1,0 +1,101 @@
+@startuml
+!include ../style.puml
+title catalog models 001
+entity "ApprovedBlockCandidateProto" as E738 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  block #1 : .casper.BlockMessageProto
+  requiredSigs #2 : Int32
+}
+entity "ApprovedBlockProto" as E739 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  candidate #1 : .casper.ApprovedBlockCandidateProto
+  sigs #2 : repeated .casper.Signature
+  floorSeed #3 : .casper.FinalizedFloorSeedProto
+}
+entity "ApprovedBlockRequestProto" as E740 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  identifier #1 : String
+  trimState #2 : Bool
+}
+entity "BlockApprovalProto" as E741 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  candidate #1 : .casper.ApprovedBlockCandidateProto
+  sig #2 : .casper.Signature
+}
+entity "BlockCommitmentProto" as E742 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  header #1 : .casper.HeaderProto
+  preStateHash #2 : Bytes
+  postStateHash #3 : Bytes
+  bondsRoot #4 : Bytes
+  blockNumber #5 : Int64
+  rejectedRoot #6 : Bytes
+  appliedFromScopeRoot #7 : Bytes
+  mergeBase #8 : Bytes
+  bodyExtraBytes #9 : Bytes
+  sender #10 : Bytes
+  sigAlgorithm #11 : String
+  seqNum #12 : Int32
+  shardId #13 : String
+  extraBytes #14 : Bytes
+  deploysRoot #15 : Bytes
+  sig #16 : Bytes
+  justificationsRoot #17 : Bytes
+}
+entity "BlockHashMessageProto" as E743 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  hash #1 : Bytes
+  blockCreator #2 : Bytes
+}
+entity "BlockMessageProto" as E744 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  blockHash #1 : Bytes
+  header #2 : .casper.HeaderProto
+  body #3 : .casper.BodyProto
+  justifications #4 : repeated .casper.JustificationProto
+  sender #5 : Bytes
+  seqNum #6 : Int32
+  sig #7 : Bytes
+  sigAlgorithm #8 : String
+  shardId #9 : String
+  extraBytes #10 : Bytes
+}
+entity "BlockMetadataInternal" as E745 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  blockHash #1 : Bytes
+  parents #2 : repeated Bytes
+  sender #3 : Bytes
+  justifications #4 : repeated .casper.JustificationProto
+  bonds #5 : repeated .casper.BondProto
+  blockNum #6 : Int64
+  seqNum #7 : Int32
+  directlyFinalized #9 : Bool
+  finalized #10 : Bool
+  faultToleranceValue #11 : Float
+  mergeBase #12 : Bytes
+  equivocates #13 : Bytes
+}
+E738 --> E744 : block #1
+E739 --> E738 : candidate #1
+E741 --> E738 : candidate #1
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

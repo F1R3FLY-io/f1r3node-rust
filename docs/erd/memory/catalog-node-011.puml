@@ -1,0 +1,131 @@
+@startuml
+!include ../style.puml
+title catalog node 011
+entity "DeployerIdentity" as E1138 <<enum>> {
+  node/src/rust/api/web_api.rs:1697
+  --
+  Provided : variant
+  Ephemeral : variant
+}
+entity "EstimateCostResponse" as E1139 <<struct>> {
+  node/src/rust/api/web_api.rs:1709
+  --
+  cost : u64
+  block_number : i64
+  block_hash : String
+  deployer_identity : DeployerIdentity
+}
+entity "EpochRewardsResponse" as E1140 <<struct>> {
+  node/src/rust/api/web_api.rs:1721
+  --
+  rewards : RhoExpr
+  block_number : i64
+  block_hash : String
+}
+entity "ValidatorStatusResponse" as E1141 <<struct>> {
+  node/src/rust/api/web_api.rs:1731
+  --
+  public_key : String
+  is_bonded : bool
+  stake : Option &#60; TokenAmount &#62;
+  block_number : i64
+  block_hash : String
+}
+entity "BondStatusResponse" as E1142 <<struct>> {
+  node/src/rust/api/web_api.rs:1746
+  --
+  public_key : String
+  is_bonded : bool
+}
+entity "WebApiError" as E1143 <<enum>> {
+  node/src/rust/api/web_api.rs:1757
+  --
+  BlockApiError.0 : String
+  SignatureError.0 : String
+  InvalidFormat.0 : String
+}
+entity "FileIoConfigError" as E1144 <<enum>> {
+  node/src/rust/configuration/boot_validation.rs:55
+  --
+  IsSymlink.bucket : &#38; 'static str
+  IsSymlink.logical_name : String
+  IsSymlink.path : PathBuf
+  AbsolutePrefixSymlink.bucket : &#38; 'static str
+  AbsolutePrefixSymlink.logical_name : String
+  AbsolutePrefixSymlink.path : PathBuf
+  AbsolutePrefixSymlink.prefix : PathBuf
+  AbsolutePrefixSymlink.canonical : Option &#60; PathBuf &#62;
+  HardLinked.bucket : &#38; 'static str
+  HardLinked.logical_name : String
+  HardLinked.path : PathBuf
+  HardLinked.nlink : u64
+  PathNotFound.bucket : &#38; 'static str
+  PathNotFound.logical_name : String
+  PathNotFound.path : PathBuf
+  StatFailed.bucket : &#38; 'static str
+  StatFailed.logical_name : String
+  StatFailed.path : PathBuf
+  StatFailed.error : String
+  BucketOverlapSamePath.path : PathBuf
+  BucketOverlapSamePath.bucket_a : &#38; 'static str
+  BucketOverlapSamePath.logical_name_a : String
+  BucketOverlapSamePath.bucket_b : &#38; 'static str
+  BucketOverlapSamePath.logical_name_b : String
+  BucketOverlapPrefix.outer_bucket : &#38; 'static str
+  BucketOverlapPrefix.outer_logical_name : String
+  BucketOverlapPrefix.outer_path : PathBuf
+  BucketOverlapPrefix.inner_bucket : &#38; 'static str
+  BucketOverlapPrefix.inner_logical_name : String
+  BucketOverlapPrefix.inner_path : PathBuf
+  KindMismatch.bucket : &#38; 'static str
+  KindMismatch.logical_name : String
+  KindMismatch.path : PathBuf
+  KindMismatch.declared : &#38; 'static str
+  KindMismatch.actual : &#38; 'static str
+  NonCanonicalPath.bucket : &#38; 'static str
+  NonCanonicalPath.logical_name : String
+  NonCanonicalPath.path : PathBuf
+  NonCanonicalPath.reason : &#38; 'static str
+  NotAbsolute.bucket : &#38; 'static str
+  NotAbsolute.logical_name : String
+  NotAbsolute.path : PathBuf
+  InvalidMode.bucket : &#38; 'static str
+  InvalidMode.logical_name : String
+  InvalidMode.mode : String
+  ForbiddenChars.bucket : &#38; 'static str
+  ForbiddenChars.logical_name : String
+  ForbiddenChars.field : &#38; 'static str
+  ForbiddenChars.detail : String
+  LogicalNameConflictAcrossBuckets.logical_name : String
+  LogicalNameConflictAcrossBuckets.members : Vec &#60; (&#38; 'static str ,\n    PathBuf) &#62;
+  SizeLimitExceeded.message : String
+  WalkLimitExceeded.bucket : &#38; 'static str
+  WalkLimitExceeded.logical_name : String
+  WalkLimitExceeded.path : PathBuf
+  WalkLimitExceeded.limit : usize
+  DuplicateLogicalNameAcrossSources.bucket : &#38; 'static str
+  DuplicateLogicalNameAcrossSources.logical_name : String
+  DuplicateLogicalNameAcrossSources.config_path : PathBuf
+  DuplicateLogicalNameAcrossSources.config_mode : String
+  DuplicateLogicalNameAcrossSources.cli_path : PathBuf
+  DuplicateLogicalNameAcrossSources.cli_mode : String
+  DuplicateLogicalNameInCli.bucket : &#38; 'static str
+  DuplicateLogicalNameInCli.logical_name : String
+  DuplicateLogicalNameInCli.count : usize
+  DuplicatePathAcrossSources.bucket : &#38; 'static str
+  DuplicatePathAcrossSources.path : PathBuf
+  DuplicatePathAcrossSources.config_logical_name : String
+  DuplicatePathAcrossSources.cli_logical_name : String
+}
+entity "EntryKind" as E1145 <<enum>> {
+  node/src/rust/configuration/boot_validation.rs:445
+  --
+  File : variant
+  Dir : variant
+}
+E1139 --> E1138 : deployer_identity
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

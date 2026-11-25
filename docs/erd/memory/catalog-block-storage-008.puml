@@ -1,0 +1,68 @@
+@startuml
+!include ../style.puml
+title catalog block storage 008
+entity "PreparedInsertResult" as E56 <<enum>> {
+  block-storage/src/rust/deploy/key_value_deploy_storage.rs:147
+  --
+  Inserted : variant
+  AlreadyPresent : variant
+  Changed : variant
+  SeedHeld.0 : ByteString
+  Refused.0 : PoolRefusal
+}
+entity "DeployPreparationError" as E57 <<enum>> {
+  block-storage/src/rust/deploy/key_value_deploy_storage.rs:157
+  --
+  InvalidSignature : variant
+  UnsupportedAlgorithm.0 : String
+  Serialization.0 : KvStoreError
+}
+entity "KeyValueDeployStorage" as E58 <<alias>> {
+  block-storage/src/rust/deploy/key_value_deploy_storage.rs:178
+  --
+  value : KeyValueDeployStore &#60; DeployStorageName &#62;
+}
+entity "KeyValueRejectedDeployBuffer" as E59 <<alias>> {
+  block-storage/src/rust/deploy/key_value_deploy_storage.rs:179
+  --
+  value : KeyValueDeployStore &#60; RejectedDeployBufferName &#62;
+}
+entity "BlockDecodeLimits" as E60 <<struct>> {
+  block-storage/src/rust/key_value_block_store.rs:21
+  --
+  max_compressed_bytes : usize
+  max_decompressed_bytes : usize
+  max_expansion_ratio : usize
+}
+entity "KeyValueBlockStore" as E61 <<struct>> {
+  block-storage/src/rust/key_value_block_store.rs:53
+  --
+  store : Arc &#60; dyn KeyValueStore &#62;
+  store_approved_block : Arc &#60; dyn KeyValueStore &#62;
+  approved_block_key : [u8 ; 1]
+  pending : Arc &#60; PendingBlocks &#62;
+}
+entity "BLOCK_PROTO_DECOMPRESS_BUFFER" as E62 <<static>> {
+  block-storage/src/rust/key_value_block_store.rs:62
+  thread_local
+  --
+  value : RefCell &#60; Vec &#60; u8 &#62; &#62;
+}
+entity "DEPLOY_SIG_DECOMPRESS_BUFFER" as E63 <<static>> {
+  block-storage/src/rust/key_value_block_store.rs:63
+  thread_local
+  --
+  value : RefCell &#60; Vec &#60; u8 &#62; &#62;
+}
+E56 -[hidden]down-> E57
+E57 -[hidden]down-> E58
+E58 -[hidden]down-> E59
+E59 -[hidden]down-> E60
+E60 -[hidden]down-> E61
+E61 -[hidden]down-> E62
+E62 -[hidden]down-> E63
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

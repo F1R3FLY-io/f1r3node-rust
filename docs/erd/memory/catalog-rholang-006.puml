@@ -1,0 +1,125 @@
+@startuml
+!include ../style.puml
+title catalog rholang 006
+entity "Producer" as E1302 <<alias>> {
+  rholang/src/rust/interpreter/contract_call.rs:35
+  --
+  value : Box &#60; dyn FnOnce (&#38; [Par] , &#38; Par ,) -&#62; Pin &#60; Box &#60; dyn futures\n    :: Future &#60; Output = Result &#60; Vec &#60; Par &#62; , InterpreterError &#62; &#62; + Send\n    &#62; &#62; + Send , &#62;
+}
+entity "DeployParameters" as E1303 <<struct>> {
+  rholang/src/rust/interpreter/deploy_parameters.rs:5
+  --
+  user_id : Par
+}
+entity "RholangAndScalaDispatcher" as E1304 <<struct>> {
+  rholang/src/rust/interpreter/dispatch.rs:25
+  --
+  _dispatch_table : RhoDispatchMap
+  reducer : Arc &#60; OnceLock &#60; Weak &#60; DebruijnInterpreter &#62; &#62; &#62;
+}
+entity "RhoDispatch" as E1305 <<alias>> {
+  rholang/src/rust/interpreter/dispatch.rs:31
+  --
+  value : Arc &#60; RholangAndScalaDispatcher &#62;
+}
+entity "DispatchType" as E1306 <<enum>> {
+  rholang/src/rust/interpreter/dispatch.rs:33
+  --
+  NonDeterministicCall.0 : Vec &#60; Vec &#60; u8 &#62; &#62;
+  FailedNonDeterministicCall.0 : InterpreterError
+  DeterministicCall : variant
+  Skip : variant
+}
+entity "InterpreterError" as E1307 <<enum>> {
+  rholang/src/rust/interpreter/errors.rs:7
+  --
+  RSpaceError.0 : RSpaceError
+  BugFoundError.0 : String
+  UndefinedRequiredProtobufFieldError.0 : String
+  NormalizerError.0 : String
+  SyntaxError.0 : String
+  LexerError.0 : String
+  ParserError.0 : String
+  EncodeError.0 : String
+  DecodeError.0 : String
+  UnexpectedBundleContent.0 : String
+  UnrecognizedNormalizerError.0 : String
+  OutOfPhlogistonsError : variant
+  NestingLimitExceeded.limit : usize
+  HostWorkRejected : variant
+  UserAbortError : variant
+  TopLevelWildcardsNotAllowedError.0 : String
+  TopLevelFreeVariablesNotAllowedError.0 : String
+  TopLevelLogicalConnectivesNotAllowedError.0 : String
+  SubstituteError.0 : String
+  PatternReceiveError.0 : String
+  SetupError.0 : String
+  UnrecognizedInterpreterError.0 : String
+  SortMatchError.0 : String
+  ReduceError.0 : String
+  BitmaskBitsCleared.cleared : Vec &#60; (String , u64) &#62;
+  MethodNotDefined.method : String
+  MethodNotDefined.other_type : String
+  MethodArgumentNumberMismatch.method : String
+  MethodArgumentNumberMismatch.expected : usize
+  MethodArgumentNumberMismatch.actual : usize
+  OperatorNotDefined.op : String
+  OperatorNotDefined.other_type : String
+  OperatorExpectedError.op : String
+  OperatorExpectedError.expected : String
+  OperatorExpectedError.other_type : String
+  IfConditionTypeError.actual_type : String
+  UnknownUrnError.urn : String
+  AggregateError.interpreter_errors : Vec &#60; InterpreterError &#62;
+  UnexpectedProcContext.var_name : String
+  UnexpectedProcContext.name_var_source_span : rholang_parser ::\n    SourceSpan
+  UnexpectedProcContext.process_source_span : rholang_parser :: SourceSpan
+  UnexpectedReuseOfProcContextFree.var_name : String
+  UnexpectedReuseOfProcContextFree.first_use : rholang_parser ::\n    SourceSpan
+  UnexpectedReuseOfProcContextFree.second_use : rholang_parser ::\n    SourceSpan
+  UnboundVariableRefSpan.var_name : String
+  UnboundVariableRefSpan.source_span : rholang_parser :: SourceSpan
+  UnboundVariableRefPos.var_name : String
+  UnboundVariableRefPos.source_pos : rholang_parser :: SourcePos
+  ReceiveOnSameChannelsError.source_span : rholang_parser :: SourceSpan
+  UnexpectedNameContext.var_name : String
+  UnexpectedNameContext.proc_var_source_span : rholang_parser ::\n    SourceSpan
+  UnexpectedNameContext.name_source_span : rholang_parser :: SourceSpan
+  UnexpectedReuseOfNameContextFree.var_name : String
+  UnexpectedReuseOfNameContextFree.first_use : rholang_parser ::\n    SourceSpan
+  UnexpectedReuseOfNameContextFree.second_use : rholang_parser ::\n    SourceSpan
+  OpenAIError.0 : String
+  OllamaError.0 : String
+  ChromaDBError.0 : String
+  IllegalArgumentError.0 : String
+  IoError.0 : String
+  NonDeterministicProcessFailure.cause : Box &#60; InterpreterError &#62;
+  NonDeterministicProcessFailure.output_not_produced : Vec &#60; Vec &#60; u8 &#62; &#62;
+  ProduceFailureWithOutput.cause : Box &#60; InterpreterError &#62;
+  ProduceFailureWithOutput.output_not_produced : Vec &#60; Vec &#60; u8 &#62; &#62;
+  CanNotReplayFailedNonDeterministicProcess : variant
+}
+entity "ExternalServices" as E1308 <<struct>> {
+  rholang/src/rust/interpreter/external_services.rs:18
+  --
+  openai : SharedOpenAIService
+  ollama : SharedOllamaService
+  openai_enabled : bool
+  ollama_enabled : bool
+  is_validator : bool
+  chroma : SharedChromaDBService
+}
+entity "HostWorkReport" as E1309 <<struct>> {
+  rholang/src/rust/interpreter/host_work.rs:9
+  --
+  usages : HostWorkUsages
+  rejection : Option &#60; HostWorkReservationError &#62;
+}
+E1302 --> E1307 : value
+E1305 --> E1304 : value
+E1306 --> E1307 : FailedNonDeterministicCall.0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

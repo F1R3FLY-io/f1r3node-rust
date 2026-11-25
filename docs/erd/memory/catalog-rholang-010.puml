@@ -1,0 +1,57 @@
+@startuml
+!include ../style.puml
+title catalog rholang 010
+entity "FsCloseArgs" as E1334 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/lifecycle/fs_close.rs:55
+  --
+  fd : u64
+}
+entity "FS_CLOSE_ENTRY" as E1335 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/lifecycle/fs_close.rs:130
+  --
+  value : FsHandlerEntry
+}
+entity "FsOpenHandler" as E1336 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/lifecycle/fs_open.rs:70
+  --
+}
+entity "FsOpenArgs" as E1337 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/lifecycle/fs_open.rs:73
+  --
+  root : String
+  rel : String
+  mode : String
+  cmode : ConsensusMode
+}
+entity "FS_OPEN_ENTRY" as E1338 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/lifecycle/fs_open.rs:246
+  --
+  value : FsHandlerEntry
+}
+entity "FsQuarantineHandler" as E1339 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/lifecycle/fs_quarantine.rs:84
+  --
+}
+entity "FsQuarantineArgs" as E1340 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/lifecycle/fs_quarantine.rs:88
+  --
+  root : String
+  rel : String
+}
+entity "FS_QUARANTINE_ENTRY" as E1341 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/lifecycle/fs_quarantine.rs:179
+  --
+  value : FsHandlerEntry
+}
+E1334 -[hidden]down-> E1335
+E1335 -[hidden]down-> E1336
+E1336 -[hidden]down-> E1337
+E1337 -[hidden]down-> E1338
+E1338 -[hidden]down-> E1339
+E1339 -[hidden]down-> E1340
+E1340 -[hidden]down-> E1341
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

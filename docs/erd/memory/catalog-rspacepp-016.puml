@@ -1,0 +1,62 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 016
+entity "LmdbDirStoreManager" as E1746 <<struct>> {
+  rspace++/src/rspace/shared/lmdb_dir_store_manager.rs:67
+  --
+  dir_path : PathBuf
+  db_mapping : HashMap &#60; Db , LmdbEnvConfig &#62;
+  managers_state : Arc &#60; Mutex &#60; StoreState &#62; &#62;
+}
+entity "StoreState" as E1747 <<struct>> {
+  rspace++/src/rspace/shared/lmdb_dir_store_manager.rs:73
+  --
+  envs : HashMap &#60; String , Arc &#60; Mutex &#60; Box &#60; dyn KeyValueStoreManager &#62;\n    &#62; &#62; &#62;
+}
+entity "LmdbStoreManager" as E1748 <<struct>> {
+  rspace++/src/rspace/shared/lmdb_store_manager.rs:18
+  --
+  dir_path : PathBuf
+  max_env_size : usize
+  max_dbs : u32
+  env : Arc &#60; Mutex &#60; Option &#60; Arc &#60; Env &#62; &#62; &#62; &#62;
+  dbs : Arc &#60; Mutex &#60; HashMap &#60; String , DbEnv &#62; &#62; &#62;
+}
+entity "DbEnv" as E1749 <<struct>> {
+  rspace++/src/rspace/shared/lmdb_store_manager.rs:26
+  --
+  env : Arc &#60; Env &#62;
+  db : Database &#60; SerdeBincode &#60; Vec &#60; u8 &#62; &#62; , SerdeBincode &#60; Vec &#60; u8 &#62;\n    &#62; &#62;
+}
+entity "KeyHash" as E1750 <<alias>> {
+  rspace++/src/rspace/shared/trie_exporter.rs:11
+  --
+  value : Blake2b256Hash
+}
+entity "NodePath" as E1751 <<alias>> {
+  rspace++/src/rspace/shared/trie_exporter.rs:15
+  --
+  value : Vec &#60; (KeyHash , Option &#60; Byte &#62;) &#62;
+}
+entity "Value" as E1752 <<alias>> {
+  rspace++/src/rspace/shared/trie_exporter.rs:17
+  --
+  value : Vec &#60; u8 &#62;
+}
+entity "TrieNode" as E1753 <<struct>> {
+  rspace++/src/rspace/shared/trie_exporter.rs:37
+  --
+  hash : KeyHash
+  is_leaf : bool
+  path : Vec &#60; (KeyHash , Option &#60; u8 &#62;) &#62;
+}
+E1746 --> E1747 : managers_state
+E1748 --> E1749 : dbs
+E1751 --> E1750 : value
+E1753 --> E1750 : hash
+E1753 --> E1750 : path
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

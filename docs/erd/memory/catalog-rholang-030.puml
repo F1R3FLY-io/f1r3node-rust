@@ -1,0 +1,61 @@
+@startuml
+!include ../style.puml
+title catalog rholang 030
+entity "OpenAIMockConfig" as E1494 <<struct>> {
+  rholang/src/rust/interpreter/openai_service.rs:220
+  --
+  gpt4_response : Option &#60; Result &#60; String , String &#62; &#62;
+  dalle3_response : Option &#60; Result &#60; String , String &#62; &#62;
+  tts_response : Option &#60; Result &#60; Vec &#60; u8 &#62; , String &#62; &#62;
+}
+entity "OpenAIService" as E1495 <<enum>> {
+  rholang/src/rust/interpreter/openai_service.rs:266
+  --
+  Real.0 : Arc &#60; tokio :: sync :: Mutex &#60; OpenAIClient &#62; &#62;
+  NoOp : variant
+  Mock.0 : OpenAIMockConfig
+}
+entity "SharedOpenAIService" as E1496 <<alias>> {
+  rholang/src/rust/interpreter/openai_service.rs:435
+  --
+  value : Arc &#60; tokio :: sync :: Mutex &#60; OpenAIService &#62; &#62;
+}
+entity "PrettyPrinter" as E1497 <<struct>> {
+  rholang/src/rust/interpreter/pretty_printer.rs:20
+  --
+  free_shift : i32
+  bound_shift : i32
+  news_shift_indices : Vec &#60; i32 &#62;
+  free_id : String
+  base_id : String
+  rotation : i32
+  max_var_count : i32
+  is_building_channel : bool
+}
+entity "EVALUATION_DEPTH" as E1498 <<static>> {
+  rholang/src/rust/interpreter/reduce.rs:92
+  thread_local
+  --
+  value : std :: cell :: Cell &#60; usize &#62;
+}
+entity "EvaluationDepth" as E1499 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:95
+  --
+}
+entity "StackGrowingFuture" as E1500 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:117
+  --
+  inner : F
+}
+entity "AbortOnDrop" as E1501 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:147
+  --
+  0 : JoinHandle &#60; T &#62;
+}
+E1495 --> E1494 : Mock.0
+E1496 --> E1495 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,49 @@
+@startuml
+!include ../style.puml
+title catalog rholang 043
+entity "Substitute" as E1598 <<struct>> {
+  rholang/src/rust/interpreter/substitute.rs:50
+  --
+  cost : _cost
+}
+entity "RhoSysFunction" as E1599 <<alias>> {
+  rholang/src/rust/interpreter/system_processes.rs:47
+  --
+  value : Box &#60; dyn Fn ((Vec &#60; ListParWithRandom &#62; , bool , Vec &#60; Par &#62;)\n    ,) -&#62; Pin &#60; Box &#60; dyn Future &#60; Output = Result &#60; Vec &#60; Par &#62; ,\n    InterpreterError &#62; &#62; + Send &#62; &#62; + Send + Sync , &#62;
+}
+entity "RhoDispatchMap" as E1600 <<alias>> {
+  rholang/src/rust/interpreter/system_processes.rs:54
+  --
+  value : Arc &#60; tokio :: sync :: RwLock &#60; HashMap &#60; i64 , RhoSysFunction &#62;\n    &#62; &#62;
+}
+entity "Name" as E1601 <<alias>> {
+  rholang/src/rust/interpreter/system_processes.rs:55
+  --
+  value : Par
+}
+entity "Arity" as E1602 <<alias>> {
+  rholang/src/rust/interpreter/system_processes.rs:56
+  --
+  value : i32
+}
+entity "Remainder" as E1603 <<alias>> {
+  rholang/src/rust/interpreter/system_processes.rs:57
+  --
+  value : Option &#60; Var &#62;
+}
+entity "BodyRef" as E1604 <<alias>> {
+  rholang/src/rust/interpreter/system_processes.rs:58
+  --
+  value : i64
+}
+entity "Contract" as E1605 <<alias>> {
+  rholang/src/rust/interpreter/system_processes.rs:59
+  --
+  value : dyn Fn (Vec &#60; ListParWithRandom &#62;)
+}
+E1600 --> E1599 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

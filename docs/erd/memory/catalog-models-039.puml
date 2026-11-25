@@ -1,0 +1,51 @@
+@startuml
+!include ../style.puml
+title catalog models 039
+entity "ScoreTree" as E1042 <<struct>> {
+  models/src/rust/rholang/sorter/score_tree.rs:5
+  --
+}
+entity "Tree" as E1043 <<enum>> {
+  models/src/rust/rholang/sorter/score_tree.rs:23
+  --
+  Leaf.0 : T
+  Node.0 : Vec &#60; Tree &#60; T &#62; &#62;
+}
+entity "TaggedAtom" as E1044 <<enum>> {
+  models/src/rust/rholang/sorter/score_tree.rs:29
+  --
+  IntAtom.0 : i64
+  StringAtom.0 : String
+  BytesAtom.0 : ByteString
+}
+entity "ScoreAtom" as E1045 <<struct>> {
+  models/src/rust/rholang/sorter/score_tree.rs:36
+  --
+  value : TaggedAtom
+}
+entity "ScoredTerm" as E1046 <<struct>> {
+  models/src/rust/rholang/sorter/score_tree.rs:136
+  --
+  term : T
+  score : Tree &#60; ScoreAtom &#62;
+}
+entity "Score" as E1047 <<struct>> {
+  models/src/rust/rholang/sorter/score_tree.rs:185
+  --
+}
+entity "SendSortMatcher" as E1048 <<struct>> {
+  models/src/rust/rholang/sorter/send_sort_matcher.rs:8
+  --
+}
+entity "UnforgeableSortMatcher" as E1049 <<struct>> {
+  models/src/rust/rholang/sorter/unforgeable_sort_matcher.rs:8
+  --
+}
+E1045 --> E1044 : value
+E1046 --> E1043 : score
+E1046 --> E1045 : score
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

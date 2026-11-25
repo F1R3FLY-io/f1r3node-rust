@@ -1,0 +1,101 @@
+@startuml
+!include ../style.puml
+title catalog node 004
+entity "BlockInfoSerde" as E1082 <<struct>> {
+  node/src/rust/api/serde_types/block_info.rs:14
+  --
+  block_info : LightBlockInfoSerde
+  deploys : Option &#60; Vec &#60; DeployInfoSerde &#62; &#62;
+}
+entity "MissingBlockInfoSerde" as E1083 <<struct>> {
+  node/src/rust/api/serde_types/blocks_by_heights_response.rs:19
+  --
+  hash : String
+  block_height : i64
+}
+entity "BlocksByHeightsResponseSerde" as E1084 <<struct>> {
+  node/src/rust/api/serde_types/blocks_by_heights_response.rs:36
+  --
+  blocks : Vec &#60; BlockInfoSerde &#62;
+  pruned : Vec &#60; MissingBlockInfoSerde &#62;
+  unavailable : Vec &#60; MissingBlockInfoSerde &#62;
+  prune_floor : i64
+}
+entity "BlocksByHeightsHttpResponse" as E1085 <<enum>> {
+  node/src/rust/api/serde_types/blocks_by_heights_response.rs:80
+  --
+  BareArray.0 : Vec &#60; BlockInfoSerde &#62;
+  Envelope.0 : BlocksByHeightsResponseSerde
+}
+entity "TransferInfoSerde" as E1086 <<struct>> {
+  node/src/rust/api/serde_types/deploy_info.rs:15
+  --
+  from_addr : String
+  to_addr : String
+  amount : String
+  success : bool
+  fail_reason : String
+}
+entity "DeployInfoSerde" as E1087 <<struct>> {
+  node/src/rust/api/serde_types/deploy_info.rs:51
+  --
+  deployer : String
+  term : String
+  timestamp : i64
+  sig : String
+  sig_algorithm : String
+  phlo_price : String
+  phlo_limit : i64
+  valid_after_block_number : i64
+  cost : u64
+  errored : bool
+  system_deploy_error : String
+  transfers : Option &#60; Vec &#60; TransferInfoSerde &#62; &#62;
+  parameters : Vec &#60; DeployParameter &#62;
+}
+entity "DeployInfoWithEventDataSerde" as E1088 <<struct>> {
+  node/src/rust/api/serde_types/deploy_info.rs:158
+  --
+  deploy_info : Option &#60; DeployInfoSerde &#62;
+  report : Vec &#60; SingleReportSerde &#62;
+}
+entity "LightBlockInfoSerde" as E1089 <<struct>> {
+  node/src/rust/api/serde_types/light_block_info.rs:12
+  --
+  block_hash : String
+  sender : String
+  seq_num : i64
+  sig : String
+  sig_algorithm : String
+  shard_id : String
+  extra_bytes : Vec &#60; u8 &#62;
+  version : i64
+  timestamp : i64
+  header_extra_bytes : Vec &#60; u8 &#62;
+  parents_hash_list : Vec &#60; String &#62;
+  block_number : i64
+  pre_state_hash : String
+  post_state_hash : String
+  body_extra_bytes : Vec &#60; u8 &#62;
+  bonds : Vec &#60; BondInfoJson &#62;
+  block_size : String
+  deploy_count : i32
+  fault_tolerance : f32
+  justifications : Vec &#60; JustificationInfoJson &#62;
+  rejected_deploys : Vec &#60; RejectedDeployInfoJson &#62;
+  is_finalized : bool
+}
+E1082 --> E1087 : deploys
+E1082 --> E1089 : block_info
+E1084 --> E1082 : blocks
+E1084 --> E1083 : pruned
+E1084 --> E1083 : unavailable
+E1085 --> E1082 : BareArray.0
+E1085 --> E1084 : Envelope.0
+E1087 --> E1086 : transfers
+E1088 --> E1087 : deploy_info
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

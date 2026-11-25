@@ -1,0 +1,104 @@
+@startuml
+!include ../style.puml
+title catalog casper 047
+entity "TargetResult" as E448 <<struct>> {
+  casper/src/rust/soak_observer/evaluation.rs:308
+  --
+  target : String
+  input_scope : &#38; 'static str
+  comparator : &#38; 'static str
+  threshold_numerator : i64
+  threshold_denominator : i64
+  oracle_decision : Value &#60; bool &#62;
+  oracle_witness : Value &#60; ExactOracleResult &#62;
+  original_fault_tolerance : Value &#60; u32 &#62;
+  display_projection : Value &#60; u32 &#62;
+  display_inputs : Option &#60; Value &#60; DisplayInputs &#62; &#62;
+  persisted_fault_tolerance : Value &#60; u32 &#62;
+  reference_comparison : Value &#60; OracleComparison &#62;
+}
+entity "TransactionRecord" as E449 <<struct>> {
+  casper/src/rust/soak_observer/evaluation.rs:325
+  --
+  environment : String
+  before_open : usize
+  opened : usize
+  validated : Option &#60; usize &#62;
+}
+entity "WorkReport" as E450 <<struct>> {
+  casper/src/rust/soak_observer/evaluation.rs:333
+  --
+  aggregate : WorkUsage
+  preparation : WorkUsage
+  measured : WorkUsage
+  original : Value &#60; WorkUsage &#62;
+  reference : Value &#60; WorkUsage &#62;
+  fork_choice_bounded : Value &#60; WorkUsage &#62;
+  fork_choice_reference : Value &#60; WorkUsage &#62;
+  complete : bool
+  failure : Option &#60; String &#62;
+}
+entity "AuthorityResponse" as E451 <<struct>> {
+  casper/src/rust/soak_observer/evaluation.rs:346
+  --
+  scope : &#38; 'static str
+  live_profile_qualified : bool
+  coverage : Option &#60; Coverage &#62;
+  snapshot_digest : String
+  authority_digest : String
+  authority : AuthorityInputs
+  request : AuthorityRequest
+  held_blocks : usize
+  requested_bodies : usize
+  capture_work : usize
+  capture_operations : usize
+  capture_records : usize
+  capture_bytes : usize
+  transactions : Vec &#60; TransactionRecord &#62;
+  targets : Vec &#60; TargetResult &#62;
+  floor_result : Value &#60; FloorValue &#62;
+  floor_comparison : Value &#60; FloorComparison &#62;
+  fork_choice : Value &#60; ForkChoiceObservation &#62;
+  work : WorkReport
+  events : Vec &#60; ObservationEvent &#62;
+  display_scope : Option &#60; &#38; 'static str &#62;
+}
+entity "PartialWork" as E452 <<struct>> {
+  casper/src/rust/soak_observer/evaluation.rs:432
+  --
+  aggregate : WorkUsage
+  preparation : WorkUsage
+  measured : WorkUsage
+  original : Option &#60; WorkUsage &#62;
+  reference : Option &#60; WorkUsage &#62;
+  fork_choice_bounded : Option &#60; WorkUsage &#62;
+  fork_choice_reference : Option &#60; WorkUsage &#62;
+  failure : String
+}
+entity "AuthorityFailure" as E453 <<struct>> {
+  casper/src/rust/soak_observer/evaluation.rs:444
+  --
+  reason : String
+  work : Option &#60; PartialWork &#62;
+}
+entity "EvaluationMode" as E454 <<enum>> {
+  casper/src/rust/soak_observer/fork_choice.rs:19
+  --
+  Bounded : variant
+  Reference : variant
+}
+entity "LowerBoundRule" as E455 <<enum>> {
+  casper/src/rust/soak_observer/fork_choice.rs:26
+  --
+  FinalizedFloor : variant
+  ApprovedBlock : variant
+}
+E451 --> E448 : targets
+E451 --> E449 : transactions
+E451 --> E450 : work
+E453 --> E452 : work
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

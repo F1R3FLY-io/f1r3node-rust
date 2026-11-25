@@ -1,0 +1,67 @@
+@startuml
+!include ../style.puml
+title catalog rholang 027
+entity "Indexed" as E1470 <<struct>> {
+  rholang/src/rust/interpreter/matcher/maximum_bipartite_match.rs:21
+  --
+  value : A
+  index : usize
+}
+entity "ParCount" as E1471 <<struct>> {
+  rholang/src/rust/interpreter/matcher/par_count.rs:10
+  --
+  sends : usize
+  receives : usize
+  news : usize
+  exprs : usize
+  matches : usize
+  unforgeables : usize
+  bundles : usize
+}
+entity "StepBudget" as E1472 <<struct>> {
+  rholang/src/rust/interpreter/matcher/spatial_matcher.rs:46
+  --
+  0 : Rc &#60; (Cell &#60; usize &#62; , Cell &#60; bool &#62;) &#62;
+}
+entity "SpatialMatcherContext" as E1473 <<struct>> {
+  rholang/src/rust/interpreter/matcher/spatial_matcher.rs:82
+  --
+  free_map : FreeMap
+  budget : StepBudget
+}
+entity "SizeRange" as E1474 <<struct>> {
+  rholang/src/rust/interpreter/matcher/sub_pars.rs:61
+  --
+  min : isize
+  max : isize
+}
+entity "SubsetCursor" as E1475 <<struct>> {
+  rholang/src/rust/interpreter/matcher/sub_pars.rs:67
+  --
+  len : usize
+  min : usize
+  max : usize
+  empty : bool
+  positions : VecDeque &#60; usize &#62;
+}
+entity "SubPars" as E1476 <<struct>> {
+  rholang/src/rust/interpreter/matcher/sub_pars.rs:183
+  --
+  par : Par
+  done : bool
+  cursors : [SubsetCursor ; 7]
+  started : bool
+  budget : StepBudget
+}
+entity "RholangMergingLogic" as E1477 <<struct>> {
+  rholang/src/rust/interpreter/merging/rholang_merging_logic.rs:27
+  --
+}
+E1473 --> E1472 : budget
+E1476 --> E1472 : budget
+E1476 --> E1475 : cursors
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

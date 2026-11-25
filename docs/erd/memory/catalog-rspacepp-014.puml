@@ -1,0 +1,71 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 014
+entity "RhoComm" as E1730 <<struct>> {
+  rspace++/src/rspace/reporting_transformer.rs:60
+  --
+  consume : RhoConsume
+  produces : Vec &#60; RhoProduce &#62;
+}
+entity "RhoProduce" as E1731 <<struct>> {
+  rspace++/src/rspace/reporting_transformer.rs:66
+  --
+  channel : String
+  data : String
+}
+entity "RhoConsume" as E1732 <<struct>> {
+  rspace++/src/rspace/reporting_transformer.rs:72
+  --
+  channels : String
+  patterns : String
+  continuation : String
+}
+entity "ReportingEventStringTransformer" as E1733 <<struct>> {
+  rspace++/src/rspace/reporting_transformer.rs:79
+  --
+  serialize_c : F1
+  serialize_p : F2
+  serialize_a : F3
+  serialize_k : F4
+  _phantom : std :: marker :: PhantomData &#60; (C , P , A , K) &#62;
+}
+entity "RSpaceStore" as E1734 <<struct>> {
+  rspace++/src/rspace/rspace.rs:49
+  --
+  history : Arc &#60; dyn KeyValueStore &#62;
+  roots : Arc &#60; dyn KeyValueStore &#62;
+  cold : Arc &#60; dyn KeyValueStore &#62;
+}
+entity "RSpace" as E1735 <<struct>> {
+  rspace++/src/rspace/rspace.rs:56
+  --
+  history_repository : Arc &#60; std :: sync :: RwLock &#60; Arc &#60; Box &#60; dyn\n    HistoryRepository &#60; C , P , A , K &#62; + Send + Sync + 'static &#62; &#62; &#62; &#62;
+  store : Arc &#60; arc_swap :: ArcSwap &#60; Box &#60; dyn HotStore &#60; C , P , A , K &#62;\n    &#62; &#62; &#62;
+  installs : Arc &#60; std :: sync :: Mutex &#60; HashMap &#60; Vec &#60; C &#62; , Install &#60;\n    P , K &#62; &#62; &#62; &#62;
+  event_log : Arc &#60; std :: sync :: Mutex &#60; Log &#62; &#62;
+  produce_counter : Arc &#60; Vec &#60; std :: sync :: Mutex &#60; BTreeMap &#60; Produce\n    , i32 &#62; &#62; &#62; &#62;
+  matcher : Arc &#60; Box &#60; dyn Match &#60; P , A , K &#62; &#62; &#62;
+  phase_a_locks : Arc &#60; Vec &#60; Arc &#60; tokio :: sync :: Mutex &#60; () &#62; &#62; &#62; &#62;
+  phase_b_locks : Arc &#60; Vec &#60; Arc &#60; tokio :: sync :: Mutex &#60; () &#62; &#62; &#62; &#62;
+  gc_roots : Arc &#60; GcRootRegistry &#62;
+}
+entity "LOCK_SEQUENCE" as E1736 <<static>> {
+  rspace++/src/rspace/rspace/locks.rs:15
+  --
+  value : AtomicU64
+}
+entity "RSpaceResult" as E1737 <<struct>> {
+  rspace++/src/rspace/rspace_interface.rs:18
+  --
+  channel : C
+  matched_datum : A
+  removed_datum : A
+  persistent : bool
+}
+E1730 --> E1731 : produces
+E1730 --> E1732 : consume
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

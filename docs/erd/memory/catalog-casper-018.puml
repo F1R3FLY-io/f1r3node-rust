@@ -1,0 +1,70 @@
+@startuml
+!include ../style.puml
+title catalog casper 018
+entity "ProposeReturnType" as E216 <<struct>> {
+  casper/src/rust/blocks/proposer/proposer.rs:35
+  --
+  propose_result : ProposeResult
+  propose_result_to_send : ProposerResult
+  block_message_opt : Option &#60; BlockMessage &#62;
+}
+entity "DeploySelection" as E217 <<enum>> {
+  casper/src/rust/blocks/proposer/proposer.rs:74
+  --
+  Standard : variant
+  StandardAllowEmpty : variant
+  RecoveryEmpty : variant
+}
+entity "EmptyBlocks" as E218 <<enum>> {
+  casper/src/rust/blocks/proposer/proposer.rs:89
+  --
+  Forbidden : variant
+  Allowed : variant
+  HeartbeatLane : variant
+}
+entity "ProposerResult" as E219 <<enum>> {
+  casper/src/rust/blocks/proposer/proposer.rs:135
+  --
+  Empty : variant
+  Success.0 : ProposeStatus
+  Success.1 : BlockMessage
+  Failure.0 : ProposeStatus
+  Failure.1 : i32
+  Started.0 : i32
+}
+entity "Proposer" as E220 <<struct>> {
+  casper/src/rust/blocks/proposer/proposer.rs:156
+  --
+  validator : Arc &#60; ValidatorIdentity &#62;
+  dummy_deploy_opt : Option &#60; (PrivateKey , String) &#62;
+  casper_snapshot_provider : C
+  active_validator_checker : A
+  stake_checker : S
+  height_checker : H
+  block_creator : BC
+  block_validator : BV
+  propose_effect_handler : E
+  allow_empty_blocks : bool
+}
+entity "ProductionProposer" as E221 <<alias>> {
+  casper/src/rust/blocks/proposer/proposer.rs:634
+  --
+  value : Proposer &#60; ProductionCasperSnapshotProvider ,\n    ProductionActiveValidatorChecker , ProductionStakeChecker ,\n    ProductionHeightChecker , ProductionBlockCreator ,\n    ProductionBlockValidator , ProductionProposeEffectHandler &#60; T &#62; , &#62;
+}
+entity "ProductionCasperSnapshotProvider" as E222 <<struct>> {
+  casper/src/rust/blocks/proposer/proposer.rs:684
+  --
+}
+entity "ProductionActiveValidatorChecker" as E223 <<struct>> {
+  casper/src/rust/blocks/proposer/proposer.rs:694
+  --
+}
+E216 --> E219 : propose_result_to_send
+E221 --> E220 : value
+E221 --> E222 : value
+E221 --> E223 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

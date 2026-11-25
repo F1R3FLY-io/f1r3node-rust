@@ -1,0 +1,58 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 015
+entity "ContResult" as E1738 <<struct>> {
+  rspace++/src/rspace/rspace_interface.rs:27
+  --
+  continuation : K
+  persistent : bool
+  channels : Vec &#60; C &#62;
+  patterns : Vec &#60; P &#62;
+  peek : bool
+}
+entity "MaybeProduceCandidate" as E1739 <<alias>> {
+  rspace++/src/rspace/rspace_interface.rs:36
+  --
+  value : Option &#60; ProduceCandidate &#60; C , P , A , K &#62; &#62;
+}
+entity "MaybeConsumeResult" as E1740 <<alias>> {
+  rspace++/src/rspace/rspace_interface.rs:37
+  --
+  value : Option &#60; (ContResult &#60; C , P , K &#62; , Vec &#60; RSpaceResult &#60; C , A\n    &#62; &#62;) &#62;
+}
+entity "MaybeProduceResult" as E1741 <<alias>> {
+  rspace++/src/rspace/rspace_interface.rs:74
+  --
+  value : Option &#60; (ContResult &#60; C , P , K &#62; , Vec &#60; RSpaceResult &#60; C , A\n    &#62; &#62; , Produce) &#62;
+}
+entity "ENV_CACHE" as E1742 <<static>> {
+  rspace++/src/rspace/shared/env_cache.rs:26
+  --
+  value : OnceLock &#60; StdMutex &#60; HashMap &#60; PathBuf , Arc &#60; Env &#62; &#62; &#62; &#62;
+}
+entity "InMemoryStoreManager" as E1743 <<struct>> {
+  rspace++/src/rspace/shared/in_mem_store_manager.rs:13
+  --
+  state : DashMap &#60; String , InMemoryKeyValueStore &#62;
+  environment : Arc &#60; MemoryEnvironment &#62;
+}
+entity "Db" as E1744 <<struct>> {
+  rspace++/src/rspace/shared/lmdb_dir_store_manager.rs:14
+  --
+  id : String
+  name_override : Option &#60; String &#62;
+}
+entity "LmdbEnvConfig" as E1745 <<struct>> {
+  rspace++/src/rspace/shared/lmdb_dir_store_manager.rs:37
+  --
+  name : String
+  max_env_size : usize
+  max_dbs : u32
+}
+E1740 --> E1738 : value
+E1741 --> E1738 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

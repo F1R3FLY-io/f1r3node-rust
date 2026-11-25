@@ -1,0 +1,76 @@
+@startuml
+!include ../style.puml
+title catalog node 017
+entity "OpenAIConf" as E1186 <<struct>> {
+  node/src/rust/configuration/model.rs:377
+  --
+  enabled : bool
+  api_key : String
+  validate_api_key : bool
+  validation_timeout_sec : u64
+}
+entity "Profile" as E1187 <<struct>> {
+  node/src/rust/configuration/model.rs:418
+  --
+  name : &#38; 'static str
+  data_dir : (PathBuf , &#38; 'static str)
+}
+entity "Command" as E1188 <<enum>> {
+  node/src/rust/configuration/model.rs:425
+  --
+  Run.0 : RunOptions
+  Keygen.0 : KeygenOptions
+  LastFinalizedBlock : variant
+  IsFinalized.0 : IsFinalizedOptions
+  Repl : variant
+  Eval.0 : EvalOptions
+  Deploy.0 : DeployOptions
+  ShowBlock.0 : ShowBlockOptions
+  ShowBlocks.0 : ShowBlocksOptions
+  Vdag.0 : VisualizeDagOptions
+  Mvdag : variant
+  ListenDataAtName.0 : DataAtNameOptions
+  ListenContAtName.0 : ContAtNameOptions
+  FindDeploy.0 : FindDeployOptions
+  Propose.0 : ProposeOptions
+  BondStatus.0 : BondStatusOptions
+  Status : variant
+}
+entity "BytesIn" as E1189 <<enum>> {
+  node/src/rust/configuration/model.rs:485
+  de_bytes
+  --
+  Num.0 : u32
+  Str.0 : String
+}
+entity "GLOBAL_REPORTER" as E1190 <<static>> {
+  node/src/rust/diagnostics/new_prometheus_reporter.rs:13
+  --
+  value : OnceLock &#60; Arc &#60; NewPrometheusReporter &#62; &#62;
+}
+entity "NewPrometheusReporter" as E1191 <<struct>> {
+  node/src/rust/diagnostics/new_prometheus_reporter.rs:16
+  --
+  prometheus_handle : PrometheusHandle
+  upkeep : Mutex &#60; Option &#60; UpkeepWorker &#62; &#62;
+}
+entity "PrometheusUpkeep" as E1192 <<struct>> {
+  node/src/rust/diagnostics/new_prometheus_reporter.rs:21
+  --
+  reporter : Arc &#60; NewPrometheusReporter &#62;
+}
+entity "UpkeepWorker" as E1193 <<struct>> {
+  node/src/rust/diagnostics/new_prometheus_reporter.rs:25
+  --
+  users : usize
+  stop : Sender &#60; () &#62;
+  thread : Option &#60; JoinHandle &#60; () &#62; &#62;
+}
+E1190 --> E1191 : value
+E1191 --> E1193 : upkeep
+E1192 --> E1191 : reporter
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

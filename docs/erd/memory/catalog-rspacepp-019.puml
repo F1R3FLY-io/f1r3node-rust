@@ -1,0 +1,62 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 019
+entity "ChannelLockGuard" as E1770 <<struct>> {
+  rspace++/src/rspace/striped_locks.rs:20
+  --
+  _held : Vec &#60; HeldLock &#62;
+}
+entity "Event" as E1771 <<enum>> {
+  rspace++/src/rspace/trace/event.rs:12
+  --
+  Comm.0 : COMM
+  IoEvent.0 : IOEvent
+}
+entity "IOEvent" as E1772 <<enum>> {
+  rspace++/src/rspace/trace/event.rs:18
+  --
+  Produce.0 : Produce
+  Consume.0 : Consume
+}
+entity "COMM" as E1773 <<struct>> {
+  rspace++/src/rspace/trace/event.rs:24
+  --
+  consume : Consume
+  produces : Vec &#60; Produce &#62;
+  peeks : BTreeSet &#60; i32 &#62;
+  times_repeated : BTreeMap &#60; Produce , i32 &#62;
+}
+entity "Produce" as E1774 <<struct>> {
+  rspace++/src/rspace/trace/event.rs:98
+  --
+  channel_hash : Blake2b256Hash
+  hash : Blake2b256Hash
+  persistent : bool
+  is_deterministic : bool
+  output_value : Vec &#60; Vec &#60; u8 &#62; &#62;
+  failed : bool
+}
+entity "Consume" as E1775 <<struct>> {
+  rspace++/src/rspace/trace/event.rs:176
+  --
+  channel_hashes : Vec &#60; Blake2b256Hash &#62;
+  hash : Blake2b256Hash
+  persistent : bool
+}
+entity "Log" as E1776 <<alias>> {
+  rspace++/src/rspace/trace/mod.rs:6
+  --
+  value : Vec &#60; Event &#62;
+}
+E1771 --> E1772 : IoEvent.0
+E1771 --> E1773 : Comm.0
+E1772 --> E1774 : Produce.0
+E1772 --> E1775 : Consume.0
+E1773 --> E1774 : produces
+E1773 --> E1774 : times_repeated
+E1773 --> E1775 : consume
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

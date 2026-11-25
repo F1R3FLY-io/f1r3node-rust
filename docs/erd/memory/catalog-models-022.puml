@@ -1,0 +1,67 @@
+@startuml
+!include ../style.puml
+title catalog models 022
+entity "GDeployerId" as E906 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  publicKey #1 : Bytes
+}
+entity "GFixedPoint" as E907 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  unscaled #1 : Bytes
+  scale #2 : Uint32
+}
+entity "GPrivate" as E908 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  id #1 : Bytes
+}
+entity "GSysAuthToken" as E909 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+}
+entity "GUnforgeable" as E910 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  g_private_body #1 oneof unf_instance : .rhoapi.GPrivate
+  g_deploy_id_body #2 oneof unf_instance : .rhoapi.GDeployId
+  g_deployer_id_body #3 oneof unf_instance : .rhoapi.GDeployerId
+  g_sys_auth_token_body #4 oneof unf_instance : .rhoapi.GSysAuthToken
+}
+entity "If" as E911 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  condition #1 : .rhoapi.Par
+  if_true #2 : .rhoapi.Par
+  if_false #3 : .rhoapi.Par
+  locallyFree #4 : Bytes
+  connective_used #5 : Bool
+}
+entity "KeyValuePair" as E912 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  key #1 : .rhoapi.Par
+  value #2 : .rhoapi.Par
+}
+entity "ListBindPatterns" as E913 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  patterns #1 : repeated .rhoapi.BindPattern
+}
+E910 --> E906 : g_deployer_id_body #3 oneof unf_instance
+E910 --> E908 : g_private_body #1 oneof unf_instance
+E910 --> E909 : g_sys_auth_token_body #4 oneof unf_instance
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

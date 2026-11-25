@@ -1,0 +1,58 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 009
+entity "TrieInsertBinaryJoins" as E1690 <<struct>> {
+  rspace++/src/rspace/hot_store_trie_action.rs:64
+  --
+  hash : Blake2b256Hash
+  joins : Vec &#60; Vec &#60; u8 &#62; &#62;
+}
+entity "TrieInsertBinaryConsume" as E1691 <<struct>> {
+  rspace++/src/rspace/hot_store_trie_action.rs:70
+  --
+  hash : Blake2b256Hash
+  continuations : Vec &#60; Vec &#60; u8 &#62; &#62;
+}
+entity "TrieDeleteAction" as E1692 <<enum>> {
+  rspace++/src/rspace/hot_store_trie_action.rs:76
+  --
+  TrieDeleteProduce.0 : TrieDeleteProduce
+  TrieDeleteJoins.0 : TrieDeleteJoins
+  TrieDeleteConsume.0 : TrieDeleteConsume
+}
+entity "TrieDeleteProduce" as E1693 <<struct>> {
+  rspace++/src/rspace/hot_store_trie_action.rs:83
+  --
+  hash : Blake2b256Hash
+}
+entity "TrieDeleteJoins" as E1694 <<struct>> {
+  rspace++/src/rspace/hot_store_trie_action.rs:92
+  --
+  hash : Blake2b256Hash
+}
+entity "TrieDeleteConsume" as E1695 <<struct>> {
+  rspace++/src/rspace/hot_store_trie_action.rs:101
+  --
+  hash : Blake2b256Hash
+}
+entity "Datum" as E1696 <<struct>> {
+  rspace++/src/rspace/internal.rs:15
+  --
+  a : A
+  persist : bool
+  source : Produce
+}
+entity "IndexedData" as E1697 <<alias>> {
+  rspace++/src/rspace/internal.rs:22
+  --
+  value : Vec &#60; (std :: sync :: Arc &#60; Datum &#60; A &#62; &#62; , i32) &#62;
+}
+E1692 --> E1693 : TrieDeleteProduce.0
+E1692 --> E1694 : TrieDeleteJoins.0
+E1692 --> E1695 : TrieDeleteConsume.0
+E1697 --> E1696 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

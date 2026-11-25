@@ -1,0 +1,56 @@
+@startuml
+!include ../style.puml
+title catalog node 020
+entity "ProposeQueueEntry" as E1210 <<alias>> {
+  node/src/rust/instances/proposer_instance.rs:28
+  --
+  value : (Arc &#60; dyn Casper + Send + Sync &#62; , bool , oneshot :: Sender &#60;\n    ProposerResult &#62; , u8 ,)
+}
+entity "ProposerInstance" as E1211 <<struct>> {
+  node/src/rust/instances/proposer_instance.rs:60
+  --
+  propose_requests_queue_rx : mpsc :: Receiver &#60; ProposeQueueEntry &#62;
+  propose_requests_queue_tx : mpsc :: Sender &#60; ProposeQueueEntry &#62;
+  proposer : Arc &#60; tokio :: sync :: Mutex &#60; ProductionProposer &#60; T &#62; &#62; &#62;
+  state : Arc &#60; tokio :: sync :: RwLock &#60; casper :: rust :: state ::\n    instances :: ProposerState &#62; &#62;
+  propose_queue_pending : Arc &#60; AtomicUsize &#62;
+  propose_queue_max_pending : usize
+}
+entity "ReplRuntime" as E1212 <<struct>> {
+  node/src/rust/repl.rs:10
+  --
+}
+entity "ReadParams" as E1213 <<alias>> {
+  node/src/rust/rho_trie_traverser.rs:15
+  --
+  value : (Vec &#60; Vec &#60; i32 &#62; &#62; , i32 , Par , Vec &#60; ParMap &#62;)
+}
+entity "RhoTrieTraverser" as E1214 <<struct>> {
+  node/src/rust/rho_trie_traverser.rs:17
+  --
+}
+entity "APIServers" as E1215 <<struct>> {
+  node/src/rust/runtime/api_servers.rs:21
+  --
+  repl : ReplGrpcServiceImpl
+  propose : ProposeGrpcServiceV1Impl
+  deploy : DeployGrpcServiceV1Impl
+  lsp : LspGrpcServiceImpl
+}
+entity "ProposerQueueEntry" as E1216 <<alias>> {
+  node/src/rust/runtime/node_runtime.rs:18
+  --
+  value : (Arc &#60; dyn casper :: rust :: casper :: Casper + Send + Sync &#62; ,\n    bool , tokio :: sync :: oneshot :: Sender &#60; ProposerResult &#62; , u8 ,)
+}
+entity "CasperLoop" as E1217 <<alias>> {
+  node/src/rust/runtime/node_runtime.rs:26
+  --
+  value : Arc &#60; dyn Fn () -&#62; Pin &#60; Box &#60; dyn Future &#60; Output = Result &#60; ()\n    , CasperError &#62; &#62; + Send &#62; &#62; + Send + Sync &#62;
+}
+E1211 --> E1210 : propose_requests_queue_rx
+E1211 --> E1210 : propose_requests_queue_tx
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

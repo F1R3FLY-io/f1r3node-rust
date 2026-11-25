@@ -1,0 +1,38 @@
+@startuml
+!include ../style.puml
+title catalog rholang 046
+entity "GeneratedMessage" as E1622 <<enum>> {
+  rholang/src/rust/interpreter/util/mod.rs:13
+  --
+  Send.0 : Send
+  Receive.0 : Receive
+  New.0 : New
+  Match.0 : Match
+  Bundle.0 : Bundle
+  Expr.0 : Expr
+  If.0 : If
+}
+entity "SBERTEmbeddings" as E1623 <<struct>> {
+  rholang/src/rust/interpreter/util/sbert_embeddings.rs:11
+  --
+  model : Mutex &#60; SentenceEmbeddingsModel &#62;
+}
+entity "SBERTEmbeddingsError" as E1624 <<enum>> {
+  rholang/src/rust/interpreter/util/sbert_embeddings.rs:30
+  --
+  ThreadingError.0 : String
+  ModelError.0 : RustBertError
+}
+entity "VaultAddress" as E1625 <<struct>> {
+  rholang/src/rust/interpreter/util/vault_address.rs:9
+  --
+  address : Address
+}
+E1622 -[hidden]down-> E1623
+E1623 -[hidden]down-> E1624
+E1624 -[hidden]down-> E1625
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

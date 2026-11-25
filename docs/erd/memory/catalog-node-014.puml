@@ -1,0 +1,58 @@
+@startuml
+!include ../style.puml
+title catalog node 014
+entity "ShowBlocksOptions" as E1162 <<struct>> {
+  node/src/rust/configuration/commandline/options.rs:741
+  --
+  depth : Option &#60; u32 &#62;
+}
+entity "VisualizeDagOptions" as E1163 <<struct>> {
+  node/src/rust/configuration/commandline/options.rs:749
+  --
+  depth : Option &#60; u32 &#62;
+  show_justification_lines : bool
+}
+entity "IsFinalizedOptions" as E1164 <<struct>> {
+  node/src/rust/configuration/commandline/options.rs:761
+  --
+  hash : String
+}
+entity "BondStatusOptions" as E1165 <<struct>> {
+  node/src/rust/configuration/commandline/options.rs:768
+  --
+  validator_public_key : String
+}
+entity "DataAtNameOptions" as E1166 <<struct>> {
+  node/src/rust/configuration/commandline/options.rs:775
+  --
+  type_of_name : String
+  content : String
+}
+entity "ContAtNameOptions" as E1167 <<struct>> {
+  node/src/rust/configuration/commandline/options.rs:787
+  --
+  type_of_name : String
+  content : Vec &#60; String &#62;
+}
+entity "FindDeployOptions" as E1168 <<struct>> {
+  node/src/rust/configuration/commandline/options.rs:799
+  --
+  deploy_id : String
+}
+entity "ProposeOptions" as E1169 <<struct>> {
+  node/src/rust/configuration/commandline/options.rs:807
+  --
+  print_unmatched_sends : bool
+}
+E1162 -[hidden]down-> E1163
+E1163 -[hidden]down-> E1164
+E1164 -[hidden]down-> E1165
+E1165 -[hidden]down-> E1166
+E1166 -[hidden]down-> E1167
+E1167 -[hidden]down-> E1168
+E1168 -[hidden]down-> E1169
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

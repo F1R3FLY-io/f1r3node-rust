@@ -1,0 +1,60 @@
+@startuml
+!include ../style.puml
+title catalog block storage 006
+entity "CaptureRequest" as E40 <<struct>> {
+  block-storage/src/rust/dag/soak_snapshot.rs:162
+  --
+  limits : CaptureLimits
+  bodies : &#38; 'a [BlockHash]
+}
+entity "WorkMeter" as E41 <<struct>> {
+  block-storage/src/rust/dag/soak_snapshot.rs:167
+  --
+  used : usize
+  limit : usize
+}
+entity "Wire" as E42 <<struct>> {
+  block-storage/src/rust/dag/soak_snapshot.rs:207
+  preflight_metadata
+  --
+  0 : &#38; 'a [u8]
+}
+entity "CanonicalEncoder" as E43 <<struct>> {
+  block-storage/src/rust/dag/soak_snapshot.rs:696
+  --
+  out : Vec &#60; u8 &#62;
+  max_bytes : usize
+  work : WorkMeter
+}
+entity "DeployTypedStore" as E44 <<alias>> {
+  block-storage/src/rust/deploy/deploy_record_quarantine.rs:14
+  --
+  value : KeyValueTypedStoreImpl &#60; ByteString , Signed &#60; DeployData &#62; &#62;
+}
+entity "RecordError" as E45 <<struct>> {
+  block-storage/src/rust/deploy/deploy_record_quarantine.rs:23
+  --
+  reason : &#38; 'static str
+  error : KvStoreError
+}
+entity "DamagedRecord" as E46 <<struct>> {
+  block-storage/src/rust/deploy/deploy_record_quarantine.rs:28
+  --
+  key : ByteBuffer
+  value : ByteBuffer
+  error : KvStoreError
+  reason : &#38; 'static str
+}
+entity "StoredSizes" as E47 <<struct>> {
+  block-storage/src/rust/deploy/deploy_record_quarantine.rs:35
+  --
+  sizes : HashMap &#60; ByteBuffer , u64 &#62;
+  bytes : u64
+  loaded : bool
+}
+E43 --> E41 : work
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

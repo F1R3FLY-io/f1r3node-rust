@@ -1,0 +1,76 @@
+@startuml
+!include ../style.puml
+title Durable DAG tables in the dagstorage LMDB environment
+entity "block-metadata" as Metadata {
+  * key : bincode BlockHashSerde
+  --
+  value : bincode BlockMetadata
+  parents / sender / justifications / weight_map
+  block_number / sequence_number / merge_base
+  equivocates / directly_finalized / finalized / FT
+}
+entity "dag-membership-v1" as Membership {
+  * key : raw block hash
+  --
+  value : bincode MembershipRecord
+  sequence : u64 publication order
+  height : i64
+  invalid : bool
+}
+entity "dag-height-v1" as Heights {
+  * key : ordered i64 height + block hash
+  --
+  value : bincode publication sequence
+}
+entity "dag-children-v1" as Children {
+  * key : parent hash + child hash
+  --
+  value : bincode publication sequence for 32-byte parents
+  other parents : bincode (sequence, original parent bytes)
+  nonstandard parent keys use tagged hashed prefix
+}
+entity "dag-sequence-v1" as Sequences {
+  * key : sender length + sender + ordered i32 + hash
+  --
+  value : bincode publication sequence
+}
+entity "dag-equivocations-v1" as Equivocations {
+  * key : same shape as dag-sequence-v1
+  --
+  value : bincode publication sequence
+  entries : invalid equivocating blocks only
+}
+entity "latest-messages" as Latest {
+  * key : bincode ValidatorSerde
+  --
+  value : bincode BlockHashSerde
+}
+entity "genesis-hash" as Genesis {
+  * key : bincode String genesis
+  --
+  value : bincode BlockHashSerde
+}
+entity "dag-history-state-v1 / dag.progress" as Progress {
+  * key : raw ASCII dag.progress
+  --
+  value : bincode DagProgress tuple
+  sequence / max_height / lfb / total / edge_rows
+}
+Membership --> Metadata : same block identity
+Heights --> Membership : block hash
+Children --> Membership : parent / child identities
+Sequences --> Membership : block hash
+Equivocations --> Sequences : invalid subset
+Latest --> Metadata : latest block per validator
+Genesis --> Metadata : genesis identity
+Progress --> Metadata : finalized block hash and height
+note bottom of Progress
+Publication commits metadata, history rows, latest messages,
+genesis identity, and progress in one atomic store group.
+GC state shares this environment. See finality-gc.svg.
+end note
+legend bottom
+Ordered signed integers flip the sign bit before big-endian encoding.
+Source: dag_persistence.rs, dag_history_index.rs, block_dag_key_value_storage.rs.
+endlegend
+@enduml

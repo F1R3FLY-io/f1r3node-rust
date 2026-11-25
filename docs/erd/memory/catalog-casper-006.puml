@@ -1,0 +1,92 @@
+@startuml
+!include ../style.puml
+title catalog casper 006
+entity "GraphGeneratorError" as E120 <<enum>> {
+  casper/src/rust/api/graph_generator.rs:386
+  --
+  GraphError.0 : String
+  BlockStoreError.0 : String
+  GraphzError.0 : GraphzError
+  PoisonError.0 : String
+}
+entity "VerifiableEdge" as E121 <<struct>> {
+  casper/src/rust/api/machine_verifiable_dag.rs:8
+  --
+  from : String
+  to : String
+}
+entity "MachineVerifiableDag" as E122 <<struct>> {
+  casper/src/rust/api/machine_verifiable_dag.rs:23
+  --
+}
+entity "PendingDeploysSnapshot" as E123 <<struct>> {
+  casper/src/rust/api/pending_deploys.rs:10
+  --
+  deploys : Vec &#60; (Signed &#60; DeployData &#62; , bool) &#62;
+  total_available : u32
+}
+entity "BlockStatus" as E124 <<enum>> {
+  casper/src/rust/block_status.rs:8
+  --
+  Valid.0 : ValidBlock
+  Error.0 : BlockError
+}
+entity "ValidBlock" as E125 <<enum>> {
+  casper/src/rust/block_status.rs:15
+  --
+  Valid : variant
+}
+entity "BlockError" as E126 <<enum>> {
+  casper/src/rust/block_status.rs:21
+  --
+  Processed : variant
+  CasperIsBusy : variant
+  MissingBlocks : variant
+  Undecidable.0 : BlockHash
+  AdmittedSettled : variant
+  AwaitingState.0 : rspace_plus_plus :: rspace :: hashing ::\n    blake2b256_hash :: Blake2b256Hash
+  BlockException.0 : CasperError
+  Invalid.0 : InvalidBlock
+}
+entity "InvalidBlock" as E127 <<enum>> {
+  casper/src/rust/block_status.rs:72
+  --
+  AdmissibleEquivocation : variant
+  IgnorableEquivocation : variant
+  InvalidFormat : variant
+  InvalidSignature : variant
+  InvalidSender : variant
+  InvalidVersion : variant
+  InvalidTimestamp : variant
+  DeployNotSigned : variant
+  InvalidBlockNumber : variant
+  InvalidRepeatDeploy : variant
+  InvalidParents : variant
+  InvalidJustifications : variant
+  InvalidFollows : variant
+  InvalidSequenceNumber : variant
+  InvalidShardId : variant
+  InvalidChainId : variant
+  JustificationRegression : variant
+  NeglectedEquivocation : variant
+  InvalidTransaction : variant
+  InvalidBondsCache : variant
+  InvalidBlockHash : variant
+  UnauthorizedSlashDeploy : variant
+  InvalidRejectedDeploy : variant
+  PrematureDeployRetry : variant
+  ContainsExpiredDeploy : variant
+  ContainsTimeExpiredDeploy : variant
+  ContainsFutureDeploy : variant
+  NotOfInterest : variant
+  LowDeployCost : variant
+  ExcessivePhloLimit : variant
+}
+E124 --> E125 : Valid.0
+E124 --> E126 : Error.0
+E126 --> E127 : Invalid.0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

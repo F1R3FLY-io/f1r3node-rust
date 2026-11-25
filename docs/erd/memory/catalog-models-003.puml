@@ -1,0 +1,67 @@
+@startuml
+!include ../style.puml
+title catalog models 003
+entity "DeployParameter" as E754 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  name #1 : String
+  value #2 : .casper.RholangValue
+}
+entity "EventProto" as E755 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  produce #1 oneof event_instance : .casper.ProduceEventProto
+  consume #2 oneof event_instance : .casper.ConsumeEventProto
+  comm #3 oneof event_instance : .casper.CommEventProto
+}
+entity "FinalizedFloorSeedProto" as E756 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  floorHash #1 : Bytes
+  floorNumber #2 : Int64
+  frontierHash #3 : Bytes
+  frontierNumber #4 : Int64
+}
+entity "FloorCacheEntryProto" as E757 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  blockHash #1 : Bytes
+  floorHash #2 : Bytes
+  frontierHash #3 : Bytes
+}
+entity "FloorCacheRequestProto" as E758 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  hashes #1 : repeated Bytes
+}
+entity "FloorCacheResponseProto" as E759 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  entries #1 : repeated .casper.FloorCacheEntryProto
+  genesisHash #2 : Bytes
+  genesisBlock #3 : .casper.BlockMessageProto
+}
+entity "ForkChoiceTipRequestProto" as E760 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+}
+entity "GetSnapshotChunkRequestProto" as E761 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  block_hash #1 : Bytes
+  chunk_index #2 : Uint32
+}
+E759 --> E757 : entries #1
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

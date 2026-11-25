@@ -1,0 +1,54 @@
+@startuml
+!include ../style.puml
+title catalog rholang 018
+entity "FS_SEEK_ENTRY" as E1398 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_seek.rs:263
+  --
+  value : FsHandlerEntry
+}
+entity "FsSizeHandler" as E1399 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_size.rs:56
+  --
+}
+entity "FsSizeArgs" as E1400 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_size.rs:59
+  --
+  fd : u64
+}
+entity "FS_SIZE_ENTRY" as E1401 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_size.rs:183
+  --
+  value : FsHandlerEntry
+}
+entity "FsStatHandler" as E1402 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_stat.rs:70
+  --
+}
+entity "FsStatArgs" as E1403 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_stat.rs:73
+  --
+  root : String
+  rel : String
+  cmode : ConsensusMode
+}
+entity "FS_STAT_ENTRY" as E1404 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_stat.rs:245
+  --
+  value : FsHandlerEntry
+}
+entity "FsTellHandler" as E1405 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_tell.rs:72
+  --
+}
+E1398 -[hidden]down-> E1399
+E1399 -[hidden]down-> E1400
+E1400 -[hidden]down-> E1401
+E1401 -[hidden]down-> E1402
+E1402 -[hidden]down-> E1403
+E1403 -[hidden]down-> E1404
+E1404 -[hidden]down-> E1405
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

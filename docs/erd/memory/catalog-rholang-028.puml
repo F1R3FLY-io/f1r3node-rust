@@ -1,0 +1,61 @@
+@startuml
+!include ../style.puml
+title catalog rholang 028
+entity "DeployMergeableData" as E1478 <<struct>> {
+  rholang/src/rust/interpreter/merging/rholang_merging_logic.rs:295
+  --
+  channels : Vec &#60; NumberChannel &#62;
+}
+entity "NumberChannel" as E1479 <<struct>> {
+  rholang/src/rust/interpreter/merging/rholang_merging_logic.rs:300
+  --
+  hash : Blake2b256Hash
+  diff : BigInt
+  merge_type : MergeType
+}
+entity "DepthProbe" as E1480 <<struct>> {
+  rholang/src/rust/interpreter/nesting.rs:26
+  --
+  depth : usize
+  limit : usize
+}
+entity "TooDeep" as E1481 <<struct>> {
+  rholang/src/rust/interpreter/nesting.rs:31
+  --
+}
+entity "Compound" as E1482 <<struct>> {
+  rholang/src/rust/interpreter/nesting.rs:60
+  --
+  probe : &#38; 'p mut DepthProbe
+  entered_par : bool
+}
+entity "OllamaConfig" as E1483 <<struct>> {
+  rholang/src/rust/interpreter/ollama_service.rs:14
+  --
+  enabled : bool
+  base_url : String
+  model : String
+  timeout_sec : u64
+  validate_connection : bool
+}
+entity "ChatMessage" as E1484 <<struct>> {
+  rholang/src/rust/interpreter/ollama_service.rs:78
+  --
+  role : String
+  content : String
+}
+entity "ChatRequest" as E1485 <<struct>> {
+  rholang/src/rust/interpreter/ollama_service.rs:84
+  --
+  model : String
+  messages : Vec &#60; ChatMessage &#62;
+  stream : bool
+}
+E1478 --> E1479 : channels
+E1482 --> E1480 : probe
+E1485 --> E1484 : messages
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,66 @@
+@startuml
+!include ../style.puml
+title catalog rholang 038
+entity "ToBigIntMethod" as E1558 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:6840
+  DebruijnInterpreter::to_bigint_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "SliceMethod" as E1559 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:6885
+  DebruijnInterpreter::slice_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "TakeMethod" as E1560 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:6979
+  DebruijnInterpreter::take_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "ToListMethod" as E1561 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:7037
+  DebruijnInterpreter::to_list_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "ToSetMethod" as E1562 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:7150
+  DebruijnInterpreter::to_set_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "ToMapMethod" as E1563 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:7242
+  DebruijnInterpreter::to_map_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "ToStringMethod" as E1564 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:7343
+  DebruijnInterpreter::to_string_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "SizedIntOp" as E1565 <<enum>> {
+  rholang/src/rust/interpreter/reduce.rs:7777
+  --
+  Add : variant
+  Sub : variant
+  Mul : variant
+  Div : variant
+  Mod : variant
+}
+E1558 -[hidden]down-> E1559
+E1559 -[hidden]down-> E1560
+E1560 -[hidden]down-> E1561
+E1561 -[hidden]down-> E1562
+E1562 -[hidden]down-> E1563
+E1563 -[hidden]down-> E1564
+E1564 -[hidden]down-> E1565
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

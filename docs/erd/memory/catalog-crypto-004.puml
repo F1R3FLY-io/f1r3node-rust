@@ -1,0 +1,35 @@
+@startuml
+!include ../style.puml
+title catalog crypto 004
+entity "CertificateError" as E669 <<enum>> {
+  crypto/src/rust/util/certificate_helper.rs:17
+  --
+  InvalidPublicKey.0 : String
+  InvalidPrivateKey.0 : String
+  CertificateGeneration.0 : String
+  CertificateParsing.0 : String
+  SignatureEncoding.0 : String
+  Io.0 : std :: io :: Error
+  X509.0 : x509_certificate :: X509CertificateError
+  RcgenError.0 : rcgen :: Error
+}
+entity "CertificateHelper" as E670 <<struct>> {
+  crypto/src/rust/util/certificate_helper.rs:38
+  --
+}
+entity "CertificatePrinter" as E671 <<struct>> {
+  crypto/src/rust/util/certificate_helper.rs:418
+  --
+}
+entity "KeyUtil" as E672 <<struct>> {
+  crypto/src/rust/util/key_util.rs:10
+  --
+}
+E669 -[hidden]down-> E670
+E670 -[hidden]down-> E671
+E671 -[hidden]down-> E672
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

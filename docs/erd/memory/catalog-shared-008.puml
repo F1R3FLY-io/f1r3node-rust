@@ -1,0 +1,71 @@
+@startuml
+!include ../style.puml
+title catalog shared 008
+entity "LmdbStoreWrite" as E1845 <<alias>> {
+  shared/src/rust/store/lmdb_key_value_store.rs:219
+  --
+  value : (&#38; 'a LmdbKeyValueStore , &#38; 'a Vec &#60; (ByteBuffer , ByteBuffer)\n    &#62;)
+}
+entity "Records" as E1846 <<alias>> {
+  shared/src/rust/store/memory_key_value_store.rs:9
+  --
+  value : BTreeMap &#60; Vec &#60; u8 &#62; , Vec &#60; u8 &#62; &#62;
+}
+entity "MemoryState" as E1847 <<struct>> {
+  shared/src/rust/store/memory_key_value_store.rs:11
+  --
+  tables : BTreeMap &#60; u64 , Records &#62;
+  next_table : u64
+}
+entity "MemoryEnvironment" as E1848 <<struct>> {
+  shared/src/rust/store/memory_key_value_store.rs:17
+  --
+  state : RwLock &#60; MemoryState &#62;
+}
+entity "MemoryKeyValueStore" as E1849 <<struct>> {
+  shared/src/rust/store/memory_key_value_store.rs:39
+  --
+  environment : Arc &#60; MemoryEnvironment &#62;
+  table : u64
+}
+entity "ReadLimits" as E1850 <<struct>> {
+  shared/src/rust/store/soak_snapshot.rs:15
+  --
+  max_value_bytes : usize
+  max_total_bytes : usize
+  max_records : usize
+  max_operations : usize
+}
+entity "SnapshotError" as E1851 <<enum>> {
+  shared/src/rust/store/soak_snapshot.rs:49
+  --
+  InvalidLimits.0 : String
+  Unsupported.0 : String
+  LimitExceeded.kind : &#38; 'static str
+  LimitExceeded.limit : usize
+  LimitExceeded.observed : usize
+  EnvironmentChanged.environment : String
+  EnvironmentChanged.opened : usize
+  EnvironmentChanged.observed : usize
+  ReadFailed.0 : String
+  Malformed.0 : String
+  LockTimeout.0 : Duration
+  Incomplete.0 : String
+  CounterOverflow.0 : &#38; 'static str
+}
+entity "TransactionIdentity" as E1852 <<struct>> {
+  shared/src/rust/store/soak_snapshot.rs:79
+  --
+  environment : String
+  last_txn_id_before_open : usize
+  txn_id : usize
+  last_txn_id_after_validation : Option &#60; usize &#62;
+}
+E1847 --> E1846 : tables
+E1848 --> E1847 : state
+E1849 --> E1848 : environment
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

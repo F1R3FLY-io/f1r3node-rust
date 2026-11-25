@@ -1,0 +1,56 @@
+@startuml
+!include ../style.puml
+title catalog rholang 012
+entity "FS_RELEASE_ALL_FOR_HOLDER_ENTRY" as E1350 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/lock/fs_release_all_for_holder.rs:114
+  --
+  value : FsHandlerEntry
+}
+entity "FsReleaseLockHandler" as E1351 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/lock/fs_release_lock.rs:57
+  --
+}
+entity "FsReleaseLockArgs" as E1352 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/lock/fs_release_lock.rs:60
+  --
+  lock_id : u64
+  holder : Par
+}
+entity "FS_RELEASE_LOCK_ENTRY" as E1353 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/lock/fs_release_lock.rs:134
+  --
+  value : FsHandlerEntry
+}
+entity "FsChmodHandler" as E1354 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_chmod.rs:88
+  --
+}
+entity "FsChmodArgs" as E1355 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_chmod.rs:91
+  --
+  root : String
+  rel : String
+  bits : u32
+  cmode : ConsensusMode
+}
+entity "FS_CHMOD_ENTRY" as E1356 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_chmod.rs:315
+  --
+  value : FsHandlerEntry
+}
+entity "FsChownHandler" as E1357 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_chown.rs:83
+  --
+}
+E1350 -[hidden]down-> E1351
+E1351 -[hidden]down-> E1352
+E1352 -[hidden]down-> E1353
+E1353 -[hidden]down-> E1354
+E1354 -[hidden]down-> E1355
+E1355 -[hidden]down-> E1356
+E1356 -[hidden]down-> E1357
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

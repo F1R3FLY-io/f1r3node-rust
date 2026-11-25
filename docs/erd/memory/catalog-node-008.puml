@@ -1,0 +1,62 @@
+@startuml
+!include ../style.puml
+title catalog node 008
+entity "RhoUnforg" as E1114 <<enum>> {
+  node/src/rust/api/web_api.rs:1358
+  --
+  UnforgPrivate.data : String
+  UnforgDeploy.data : String
+  UnforgDeployer.data : String
+  UnforgSysAuthToken : variant
+}
+entity "ExploreDeployRequest" as E1115 <<struct>> {
+  node/src/rust/api/web_api.rs:1368
+  --
+  term : String
+  block_hash : String
+  use_pre_state_hash : bool
+}
+entity "SimpleExploreDeployRequest" as E1116 <<struct>> {
+  node/src/rust/api/web_api.rs:1377
+  --
+  term : String
+}
+entity "EstimateCostRequest" as E1117 <<struct>> {
+  node/src/rust/api/web_api.rs:1384
+  --
+  term : String
+  deployer : Option &#60; String &#62;
+}
+entity "DataAtNameRequest" as E1118 <<struct>> {
+  node/src/rust/api/web_api.rs:1396
+  --
+  name : RhoUnforg
+  depth : i32
+}
+entity "DataAtNameByBlockHashRequest" as E1119 <<struct>> {
+  node/src/rust/api/web_api.rs:1405
+  --
+  name : RhoUnforg
+  block_hash : String
+  use_pre_state_hash : bool
+}
+entity "DataAtNameResponse" as E1120 <<struct>> {
+  node/src/rust/api/web_api.rs:1414
+  --
+  exprs : Vec &#60; RhoExprWithBlock &#62;
+  length : i32
+}
+entity "RhoExprWithBlock" as E1121 <<struct>> {
+  node/src/rust/api/web_api.rs:1420
+  --
+  expr : RhoExpr
+  block : LightBlockInfoSerde
+}
+E1118 --> E1114 : name
+E1119 --> E1114 : name
+E1120 --> E1121 : exprs
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

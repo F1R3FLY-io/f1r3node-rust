@@ -1,0 +1,74 @@
+@startuml
+!include ../style.puml
+title catalog casper 013
+entity "OfInterestVerdict" as E176 <<enum>> {
+  casper/src/rust/blocks/ingest/intake_worker.rs:20
+  --
+  Fresh : variant
+  AlreadyProcessed : variant
+  WrongShard : variant
+  WrongVersion : variant
+  OldUnsolicited : variant
+}
+entity "SenderAuthorization" as E177 <<enum>> {
+  casper/src/rust/blocks/ingest/intake_worker.rs:50
+  --
+  Authorized : variant
+  Unauthorized : variant
+  Unknown : variant
+}
+entity "Intake" as E178 <<struct>> {
+  casper/src/rust/blocks/ingest/intake_worker.rs:60
+  --
+  block_store : KeyValueBlockStore
+  dag : BlockDagKeyValueStorage
+  view : IngestView
+  approved_block : BlockMessage
+}
+entity "Strike" as E179 <<enum>> {
+  casper/src/rust/blocks/ingest/peer_reputation.rs:15
+  --
+  UnauthorizedSender : variant
+  Malformed : variant
+  HashMismatch : variant
+  InvalidSender : variant
+}
+entity "StrikeOutcome" as E180 <<enum>> {
+  casper/src/rust/blocks/ingest/peer_reputation.rs:34
+  --
+  Counted : variant
+  Ignored.until_ms : u64
+}
+entity "PeerReputation" as E181 <<struct>> {
+  casper/src/rust/blocks/ingest/peer_reputation.rs:40
+  --
+  view : IngestView
+  strikes : HashMap &#60; PeerNode , VecDeque &#60; u64 &#62; &#62;
+  ignored_until : HashMap &#60; PeerNode , u64 &#62;
+}
+entity "ReceiptRefusal" as E182 <<enum>> {
+  casper/src/rust/blocks/ingest/receipt_verifier.rs:22
+  --
+  Invalid.0 : IntegrityFailure
+  Overloaded : variant
+  AlreadyKnown : variant
+  KnownCheck.0 : CasperError
+}
+entity "HashSlot" as E183 <<struct>> {
+  casper/src/rust/blocks/ingest/receipt_verifier.rs:33
+  --
+  users : usize
+  lock : Arc &#60; Mutex &#60; bool &#62; &#62;
+}
+E176 -[hidden]down-> E177
+E177 -[hidden]down-> E178
+E178 -[hidden]down-> E179
+E179 -[hidden]down-> E180
+E180 -[hidden]down-> E181
+E181 -[hidden]down-> E182
+E182 -[hidden]down-> E183
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

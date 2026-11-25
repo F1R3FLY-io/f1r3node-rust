@@ -1,0 +1,61 @@
+@startuml
+!include ../style.puml
+title catalog casper 002
+entity "BlocksByHeightsResponse" as E88 <<struct>> {
+  casper/src/rust/api/block_api.rs:261
+  --
+  served : Vec &#60; T &#62;
+  pruned : Vec &#60; MissingBlockEntry &#62;
+  unavailable : Vec &#60; MissingBlockEntry &#62;
+  prune_floor : i64
+}
+entity "InvalidHashError" as E89 <<struct>> {
+  casper/src/rust/api/block_api.rs:287
+  --
+  0 : String
+}
+entity "ExploratoryDeployReadOnlyError" as E90 <<struct>> {
+  casper/src/rust/api/block_api.rs:296
+  --
+}
+entity "ExploratoryDeployBusyError" as E91 <<struct>> {
+  casper/src/rust/api/block_api.rs:310
+  --
+  retry_after_secs : u64
+}
+entity "ExploratoryDeployTimeoutError" as E92 <<struct>> {
+  casper/src/rust/api/block_api.rs:330
+  --
+  timeout_ms : u64
+}
+entity "ExploratoryDeployRejection" as E93 <<enum>> {
+  casper/src/rust/api/block_api.rs:339
+  --
+  Busy.retry_after_secs : u64
+  Timeout.timeout_ms : u64
+}
+entity "ExploratoryDeployOutcome" as E94 <<enum>> {
+  casper/src/rust/api/block_api.rs:371
+  --
+  Failed : variant
+  Completed : variant
+  TimedOut : variant
+}
+entity "ExploratoryDeployMetrics" as E95 <<struct>> {
+  casper/src/rust/api/block_api.rs:378
+  --
+  started : Instant
+  outcome : Arc &#60; AtomicU8 &#62;
+}
+E88 -[hidden]down-> E89
+E89 -[hidden]down-> E90
+E90 -[hidden]down-> E91
+E91 -[hidden]down-> E92
+E92 -[hidden]down-> E93
+E93 -[hidden]down-> E94
+E94 -[hidden]down-> E95
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

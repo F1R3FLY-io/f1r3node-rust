@@ -1,0 +1,72 @@
+@startuml
+!include ../style.puml
+title catalog models 013
+entity "SystemDeployInfoWithEventData" as E834 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  systemDeploy #1 : .casper.SystemDeployDataProto
+  report #2 : repeated .casper.SingleReport
+}
+entity "TransferInfo" as E835 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  fromAddr #1 : String
+  toAddr #2 : String
+  success #4 : Bool
+  failReason #5 : String
+  amountRaw #6 : String
+}
+entity "VersionInfo" as E836 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  api #1 : String
+  node #2 : String
+}
+entity "VisualizeDagQuery" as E837 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  depth #1 : Int32
+  showJustificationLines #2 : Bool
+  startBlockNumber #3 : Int32
+}
+entity "WaitingContinuationInfo" as E838 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  postBlockPatterns #1 : repeated .rhoapi.BindPattern
+  postBlockContinuation #2 : .rhoapi.Par
+}
+entity "BlockInfoResponse" as E839 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  blockInfo #2 oneof message : .casper.LightBlockInfo
+  pruned #3 oneof message : .casper.v1.BlockPrunedInfo
+  unavailable #4 oneof message : .casper.v1.BlockUnavailableInfo
+}
+entity "BlockPrunedInfo" as E840 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  hash #1 : Bytes
+  block_height #2 : Int64
+  prune_floor #3 : Int64
+}
+entity "BlockResponse" as E841 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  blockInfo #2 oneof message : .casper.BlockInfo
+}
+E839 --> E840 : pruned #3 oneof message
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

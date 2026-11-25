@@ -1,0 +1,66 @@
+@startuml
+!include ../style.puml
+title catalog comm 001
+entity "Lookup" as E538 <<protobuf>> {
+  comm/src/main/protobuf/coop/rchain/comm/protocol/kademlia.proto
+  .coop.rchain.comm.discovery
+  --
+  id #1 : Bytes
+  sender #2 : .coop.rchain.comm.discovery.Node
+  networkId #3 : String
+}
+entity "LookupResponse" as E539 <<protobuf>> {
+  comm/src/main/protobuf/coop/rchain/comm/protocol/kademlia.proto
+  .coop.rchain.comm.discovery
+  --
+  nodes #1 : repeated .coop.rchain.comm.discovery.Node
+  networkId #2 : String
+}
+entity "Node" as E540 <<protobuf>> {
+  comm/src/main/protobuf/coop/rchain/comm/protocol/kademlia.proto
+  .coop.rchain.comm.discovery
+  --
+  id #1 : Bytes
+  host #2 : Bytes
+  tcp_port #3 : Uint32
+  udp_port #4 : Uint32
+}
+entity "Ping" as E541 <<protobuf>> {
+  comm/src/main/protobuf/coop/rchain/comm/protocol/kademlia.proto
+  .coop.rchain.comm.discovery
+  --
+  sender #1 : .coop.rchain.comm.discovery.Node
+  networkId #2 : String
+}
+entity "Pong" as E542 <<protobuf>> {
+  comm/src/main/protobuf/coop/rchain/comm/protocol/kademlia.proto
+  .coop.rchain.comm.discovery
+  --
+  networkId #1 : String
+}
+entity "GrpcKademliaRPC" as E543 <<struct>> {
+  comm/src/rust/discovery/grpc_kademlia_rpc.rs:22
+  --
+  network_id : String
+  timeout : Duration
+  allow_private_addresses : bool
+  local_peer : PeerNode
+}
+entity "PingHandler" as E544 <<alias>> {
+  comm/src/rust/discovery/grpc_kademlia_rpc_server.rs:17
+  --
+  value : Box &#60; dyn Fn (PeerNode) -&#62; Pin &#60; Box &#60; dyn Future &#60; Output = ()\n    &#62; + Send &#62; &#62; + Send + Sync &#62;
+}
+entity "LookupHandler" as E545 <<alias>> {
+  comm/src/rust/discovery/grpc_kademlia_rpc_server.rs:21
+  --
+  value : Box &#60; dyn Fn (PeerNode , Vec &#60; u8 &#62;) -&#62; Pin &#60; Box &#60; dyn Future &#60;\n    Output = Vec &#60; PeerNode &#62; &#62; + Send &#62; &#62; + Send + Sync , &#62;
+}
+E538 --> E540 : sender #2
+E539 --> E540 : nodes #1
+E541 --> E540 : sender #1
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

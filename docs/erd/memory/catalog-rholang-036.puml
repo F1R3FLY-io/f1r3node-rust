@@ -1,0 +1,63 @@
+@startuml
+!include ../style.puml
+title catalog rholang 036
+entity "AscendOneMethod" as E1542 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:5662
+  DebruijnInterpreter::ascend_one_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "AscendMethod" as E1543 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:5715
+  DebruijnInterpreter::ascend_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "ChildCountMethod" as E1544 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:5791
+  DebruijnInterpreter::child_count_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "DescendFirstMethod" as E1545 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:5892
+  DebruijnInterpreter::descend_first_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "DescendIndexedBranchMethod" as E1546 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:5977
+  DebruijnInterpreter::descend_indexed_branch_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "ToNextSiblingMethod" as E1547 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:6085
+  DebruijnInterpreter::to_next_sibling_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "ToPrevSiblingMethod" as E1548 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:6184
+  DebruijnInterpreter::to_prev_sibling_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "AddMethod" as E1549 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:6285
+  DebruijnInterpreter::add_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+E1542 -[hidden]down-> E1543
+E1543 -[hidden]down-> E1544
+E1544 -[hidden]down-> E1545
+E1545 -[hidden]down-> E1546
+E1546 -[hidden]down-> E1547
+E1547 -[hidden]down-> E1548
+E1548 -[hidden]down-> E1549
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

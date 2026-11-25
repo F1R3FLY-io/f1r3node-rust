@@ -1,0 +1,198 @@
+@startuml
+!include ../style.puml
+title catalog node 013
+entity "VecNameConverter" as E1154 <<struct>> {
+  node/src/rust/configuration/commandline/converters.rs:83
+  --
+}
+entity "Options" as E1155 <<struct>> {
+  node/src/rust/configuration/commandline/options.rs:51
+  --
+  grpc_host : String
+  grpc_port : Option &#60; u16 &#62;
+  grpc_max_recv_message_size : u32
+  profile : Option &#60; String &#62;
+  log_level : Option &#60; String &#62;
+  log_format : Option &#60; String &#62;
+  log_sink : Option &#60; String &#62;
+  subcommand : Option &#60; OptionsSubCommand &#62;
+}
+entity "OptionsSubCommand" as E1156 <<enum>> {
+  node/src/rust/configuration/commandline/options.rs:99
+  --
+  Run.0 : RunOptions
+  Eval.0 : EvalOptions
+  Repl : variant
+  Deploy.phlo_limit : i64
+  Deploy.phlo_price : TokenAmount
+  Deploy.valid_after_block : i64
+  Deploy.private_key : Option &#60; PrivateKey &#62;
+  Deploy.private_key_path : Option &#60; PathBuf &#62;
+  Deploy.location : String
+  Deploy.shard_id : String
+  FindDeploy.id : Vec &#60; u8 &#62;
+  Propose.0 : ProposeOptions
+  ShowBlock.hash : String
+  ShowBlocks.depth : i32
+  VisualizeDag.depth : i32
+  VisualizeDag.show_justification_lines : bool
+  MachineVerifiableDag : variant
+  Keygen.path : PathBuf
+  LastFinalizedBlock : variant
+  IsFinalized.hash : String
+  BondStatus.public_key : PublicKey
+  ContAtName.names : Vec &#60; Name &#62;
+  Status : variant
+}
+entity "RunOptions" as E1157 <<struct>> {
+  node/src/rust/configuration/commandline/options.rs:148
+  --
+  soak_observer : Option &#60; crate :: rust :: configuration :: model ::\n    SoakObserverConfig &#62;
+  config_file : Option &#60; PathBuf &#62;
+  thread_pool_size : Option &#60; u32 &#62;
+  standalone : bool
+  bootstrap : Option &#60; String &#62;
+  network_id : Option &#60; String &#62;
+  autopropose : bool
+  no_upnp : bool
+  dynamic_ip : bool
+  autogen_shard_size : Option &#60; u32 &#62;
+  disable_lfs : bool
+  host : Option &#60; String &#62;
+  use_random_ports : bool
+  allow_private_addresses : bool
+  disable_state_exporter : bool
+  network_timeout : Option &#60; Duration &#62;
+  discovery_port : Option &#60; u16 &#62;
+  discovery_lookup_interval : Option &#60; Duration &#62;
+  discovery_cleanup_interval : Option &#60; Duration &#62;
+  discovery_init_wait_loop_interval : Option &#60; Duration &#62;
+  discovery_heartbeat_batch_size : Option &#60; u32 &#62;
+  discovery_heartbeat_failure_threshold : Option &#60; u32 &#62;
+  protocol_port : Option &#60; u16 &#62;
+  protocol_grpc_max_recv_message_size : Option &#60; u32 &#62;
+  protocol_grpc_max_recv_stream_message_size : Option &#60; u32 &#62;
+  protocol_grpc_stream_chunk_size : Option &#60; u32 &#62;
+  protocol_max_connections : Option &#60; u32 &#62;
+  protocol_max_message_consumers : Option &#60; u32 &#62;
+  tls_key_path : Option &#60; PathBuf &#62;
+  tls_certificate_path : Option &#60; PathBuf &#62;
+  api_host : Option &#60; String &#62;
+  api_port_grpc_external : Option &#60; u16 &#62;
+  api_port_grpc_internal : Option &#60; u16 &#62;
+  api_grpc_max_recv_message_size : Option &#60; u32 &#62;
+  api_port_http : Option &#60; u16 &#62;
+  api_port_admin_http : Option &#60; u16 &#62;
+  api_max_blocks_limit : Option &#60; u32 &#62;
+  api_enable_reporting : bool
+  api_exploratory_deploy_max_concurrent : Option &#60; usize &#62;
+  api_exploratory_deploy_phlo_limit : Option &#60; i64 &#62;
+  api_exploratory_deploy_execution_timeout : Option &#60; Duration &#62;
+  api_keep_alive_time : Option &#60; Duration &#62;
+  api_keep_alive_timeout : Option &#60; Duration &#62;
+  api_tcp_keepalive_time : Option &#60; Duration &#62;
+  api_request_timeout : Option &#60; Duration &#62;
+  api_max_connection_age : Option &#60; Duration &#62;
+  api_max_connection_age_grace : Option &#60; Duration &#62;
+  data_dir : Option &#60; PathBuf &#62;
+  shard_name : Option &#60; String &#62;
+  fault_tolerance_threshold : Option &#60; f32 &#62;
+  validator_public_key : Option &#60; String &#62;
+  validator_private_key : Option &#60; String &#62;
+  validator_private_key_path : Option &#60; PathBuf &#62;
+  casper_loop_interval : Option &#60; Duration &#62;
+  finalization_rate : Option &#60; i32 &#62;
+  max_number_of_parents : Option &#60; i32 &#62;
+  max_parent_depth : Option &#60; i32 &#62;
+  fork_choice_stale_threshold : Option &#60; Duration &#62;
+  fork_choice_check_if_stale_interval : Option &#60; Duration &#62;
+  synchrony_constraint_threshold : Option &#60; f32 &#62;
+  synchrony_finalized_baseline_enabled : Option &#60; bool &#62;
+  synchrony_finalized_baseline_max_distance : Option &#60; u64 &#62;
+  height_constraint_threshold : Option &#60; i64 &#62;
+  max_user_deploys_per_block : Option &#60; u32 &#62;
+  frrd_max_peer_queue_size : Option &#60; u32 &#62;
+  frrd_give_up_after_skipped : Option &#60; u32 &#62;
+  frrd_drop_peer_after_retries : Option &#60; u32 &#62;
+  bonds_file : Option &#60; String &#62;
+  wallets_file : Option &#60; String &#62;
+  bond_minimum : Option &#60; TokenAmount &#62;
+  genesis_block_number : Option &#60; i64 &#62;
+  bond_maximum : Option &#60; TokenAmount &#62;
+  epoch_length : Option &#60; i32 &#62;
+  quarantine_length : Option &#60; i32 &#62;
+  number_of_active_validators : Option &#60; u32 &#62;
+  native_token_name : Option &#60; String &#62;
+  native_token_symbol : Option &#60; String &#62;
+  native_token_decimals : Option &#60; u32 &#62;
+  required_signatures : Option &#60; i32 &#62;
+  approve_interval : Option &#60; Duration &#62;
+  approve_duration : Option &#60; Duration &#62;
+  genesis_validator : bool
+  prometheus : bool
+  influxdb : bool
+  influxdb_udp : bool
+  zipkin : bool
+  sigar : bool
+  deploy_timestamp : Option &#60; u64 &#62;
+  dev_mode : bool
+  deployer_private_key : Option &#60; String &#62;
+  min_phlo_price : Option &#60; TokenAmount &#62;
+  max_phlo_limit : Option &#60; i64 &#62;
+  ceremony_master_mode : bool
+  enable_mergeable_channel_gc : bool
+  disable_mergeable_channel_gc : bool
+  enable_block_store_gc : bool
+  disable_block_store_gc : bool
+  heartbeat_enabled : bool
+  heartbeat_disabled : bool
+  heartbeat_check_interval : Option &#60; Duration &#62;
+  heartbeat_max_lfb_age : Option &#60; Duration &#62;
+  heartbeat_self_propose_cooldown : Option &#60; Duration &#62;
+  heartbeat_stale_recovery_min_interval : Option &#60; Duration &#62;
+  heartbeat_deploy_finalization_grace : Option &#60; Duration &#62;
+  heartbeat_advanced_frontier_chase_max_lag : Option &#60; i64 &#62;
+  heartbeat_advanced_pending_deploy_max_lag : Option &#60; i64 &#62;
+  heartbeat_advanced_deploy_recovery_max_lag : Option &#60; i64 &#62;
+  heartbeat_advanced_empty_frontier_max_unfinalized_blocks : Option &#60; i64\n    &#62;
+  oracle_static_files : Vec &#60; CliStaticFileArg &#62;
+  oracle_static_dirs : Vec &#60; CliStaticDirArg &#62;
+  consensus_static_files : Vec &#60; CliStaticFileArg &#62;
+  consensus_static_dirs : Vec &#60; CliStaticDirArg &#62;
+}
+entity "KeygenOptions" as E1158 <<struct>> {
+  node/src/rust/configuration/commandline/options.rs:679
+  --
+  location : PathBuf
+}
+entity "EvalOptions" as E1159 <<struct>> {
+  node/src/rust/configuration/commandline/options.rs:687
+  --
+  file_names : Vec &#60; String &#62;
+  print_unmatched_sends_only : bool
+  language : String
+}
+entity "DeployOptions" as E1160 <<struct>> {
+  node/src/rust/configuration/commandline/options.rs:702
+  --
+  phlo_limit : u64
+  phlo_price : TokenAmount
+  valid_after_block_number : Option &#60; u64 &#62;
+  private_key : Option &#60; String &#62;
+  private_key_path : Option &#60; PathBuf &#62;
+  shard_id : String
+  location : String
+}
+entity "ShowBlockOptions" as E1161 <<struct>> {
+  node/src/rust/configuration/commandline/options.rs:734
+  --
+  hash : String
+}
+E1155 --> E1156 : subcommand
+E1156 --> E1157 : Run.0
+E1156 --> E1159 : Eval.0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

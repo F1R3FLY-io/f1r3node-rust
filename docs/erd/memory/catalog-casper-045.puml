@@ -1,0 +1,89 @@
+@startuml
+!include ../style.puml
+title catalog casper 045
+entity "Coverage" as E432 <<struct>> {
+  casper/src/rust/soak_observer.rs:135
+  --
+  incarnation : String
+  instance_id : u64
+  installation : u64
+  attachment_elapsed_ns : u64
+  attempted_sequence : u64
+  lost : u64
+  complete : bool
+  active : bool
+  live_scope : &#38; 'static str
+}
+entity "Installed" as E433 <<struct>> {
+  casper/src/rust/soak_observer.rs:248
+  --
+  binding : ObserverBinding
+  endpoint : Arc &#60; CaptureEndpoint &#62;
+  attached_ns : u64
+}
+entity "ControllerState" as E434 <<struct>> {
+  casper/src/rust/soak_observer.rs:254
+  --
+  installation : u64
+  current : Option &#60; Installed &#62;
+  status : &#38; 'static str
+}
+entity "ObserverController" as E435 <<struct>> {
+  casper/src/rust/soak_observer.rs:260
+  --
+  incarnation : String
+  started : Instant
+  state : Mutex &#60; ControllerState &#62;
+  sender : mpsc :: Sender &#60; ObservationEvent &#62;
+  receiver : Mutex &#60; mpsc :: Receiver &#60; ObservationEvent &#62; &#62;
+  closed : Arc &#60; AtomicBool &#62;
+  busy : AtomicBool
+}
+entity "BusyGuard" as E436 <<struct>> {
+  casper/src/rust/soak_observer.rs:375
+  ObserverController::authority_snapshot
+  --
+  0 : &#38; 'a AtomicBool
+}
+entity "DisplayInputs" as E437 <<struct>> {
+  casper/src/rust/soak_observer/display.rs:14
+  --
+  base_source : &#38; 'static str
+  base_bits : u32
+  initial_fault_bits : u32
+  equivocating_weight : String
+  total_weight : String
+  matched_records : usize
+  distinct_equivocators : usize
+  finalized_set_member : bool
+  metadata_finalized : bool
+}
+entity "CaptureOptions" as E438 <<struct>> {
+  casper/src/rust/soak_observer/evaluation.rs:35
+  --
+  max_value_bytes : usize
+  max_total_bytes : usize
+  max_records : usize
+  max_operations : usize
+  max_compressed_bytes : usize
+  max_decompressed_bytes : usize
+  max_expansion_ratio : usize
+  max_blocks : usize
+  max_validators : usize
+  max_edges : usize
+  max_work : usize
+  lock_wait_ms : u64
+}
+entity "FloorSelection" as E439 <<enum>> {
+  casper/src/rust/soak_observer/evaluation.rs:101
+  --
+  View : variant
+  Block.hash : String
+}
+E434 --> E433 : current
+E435 --> E434 : state
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

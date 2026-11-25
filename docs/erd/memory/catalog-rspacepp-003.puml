@@ -1,0 +1,59 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 003
+entity "StagedHistory" as E1642 <<alias>> {
+  rspace++/src/rspace/history/history.rs:10
+  --
+  value : (Box &#60; dyn History &#62; , Vec &#60; (Vec &#60; u8 &#62; , Vec &#60; u8 &#62;) &#62;)
+}
+entity "HistoryInstances" as E1643 <<struct>> {
+  rspace++/src/rspace/history/history.rs:25
+  --
+}
+entity "KeyPath" as E1644 <<alias>> {
+  rspace++/src/rspace/history/history_action.rs:7
+  --
+  value : Vec &#60; Byte &#62;
+}
+entity "HistoryAction" as E1645 <<enum>> {
+  rspace++/src/rspace/history/history_action.rs:9
+  --
+  Insert.0 : InsertAction
+  Delete.0 : DeleteAction
+}
+entity "InsertAction" as E1646 <<struct>> {
+  rspace++/src/rspace/history/history_action.rs:19
+  --
+  key : KeyPath
+  hash : Blake2b256Hash
+}
+entity "DeleteAction" as E1647 <<struct>> {
+  rspace++/src/rspace/history/history_action.rs:29
+  --
+  key : KeyPath
+}
+entity "HistoryPruneResult" as E1648 <<struct>> {
+  rspace++/src/rspace/history/history_repository.rs:102
+  --
+  marked : usize
+  swept : usize
+  pins_initial : usize
+  pins_evicted : usize
+  pins_mid_pass_added : usize
+  marked_from_pins : usize
+  batches : usize
+}
+entity "HistoryRepositoryInstances" as E1649 <<struct>> {
+  rspace++/src/rspace/history/history_repository.rs:128
+  --
+  _marker : PhantomData &#60; (C , P , A , K) &#62;
+}
+E1645 --> E1646 : Insert.0
+E1645 --> E1647 : Delete.0
+E1646 --> E1644 : key
+E1647 --> E1644 : key
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

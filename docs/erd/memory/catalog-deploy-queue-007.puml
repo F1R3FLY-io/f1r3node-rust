@@ -1,0 +1,74 @@
+@startuml
+!include ../style.puml
+title catalog deploy queue 007
+entity "QueueState" as E721 <<enum>> {
+  deploy-queue/src/record.rs:9
+  --
+  Queued : variant
+  Submitted : variant
+  InBlock : variant
+  Finalized : variant
+  Failed : variant
+  Expired : variant
+  Rejected : variant
+}
+entity "QueueRecord" as E722 <<struct>> {
+  deploy-queue/src/record.rs:61
+  --
+  deployer : Vec &#60; u8 &#62;
+  payload_bytes : u64
+  valid_after : i64
+  sequence : u64
+  accepted_at_ms : i64
+  state : QueueState
+  submitted_at_height : Option &#60; i64 &#62;
+  last_sent_height : Option &#60; i64 &#62;
+  submissions : u32
+  rejection_count : u32
+  latest_block_hash : Option &#60; Vec &#60; u8 &#62; &#62;
+  decided_at_height : Option &#60; i64 &#62;
+  detail : Option &#60; String &#62;
+}
+entity "DeployView" as E723 <<struct>> {
+  deploy-queue/src/record.rs:131
+  --
+  state : QueueState
+  rejection_count : u32
+  latest_block_hash : Option &#60; Vec &#60; u8 &#62; &#62;
+  detail : Option &#60; String &#62;
+}
+entity "StoreError" as E724 <<enum>> {
+  deploy-queue/src/store.rs:21
+  --
+  Kv.0 : KvStoreError
+  Heed.0 : heed :: Error
+  Io.0 : std :: io :: Error
+  Encode.0 : bincode :: Error
+  Corrupt.sig : String
+  Corrupt.reason : String
+  Format.dir : String
+  Format.found : String
+  Format.expected : u32
+}
+entity "QueueStore" as E725 <<struct>> {
+  deploy-queue/src/store.rs:44
+  --
+  kv : LmdbKeyValueStore
+  payloads : LmdbKeyValueStore
+}
+entity "Batch" as E726 <<struct>> {
+  deploy-queue/src/store.rs:53
+  --
+  records : Vec &#60; (&#38; 'a Sig , &#38; 'a QueueRecord) &#62;
+  payloads : Vec &#60; (&#38; 'a Sig , &#38; 'a [u8]) &#62;
+  removed_records : &#38; 'a [Sig]
+  removed_payloads : &#38; 'a [Sig]
+}
+E722 --> E721 : state
+E723 --> E721 : state
+E726 --> E722 : records
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

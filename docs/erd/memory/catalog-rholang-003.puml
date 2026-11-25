@@ -1,0 +1,56 @@
+@startuml
+!include ../style.puml
+title catalog rholang 003
+entity "ChromaDBService" as E1278 <<enum>> {
+  rholang/src/rust/interpreter/chromadb_service.rs:224
+  --
+  Real.0 : ChromaDBClient
+  NoOp : variant
+}
+entity "SharedChromaDBService" as E1279 <<alias>> {
+  rholang/src/rust/interpreter/chromadb_service.rs:532
+  --
+  value : Arc &#60; ChromaDBService &#62;
+}
+entity "ChromaDBService" as E1280 <<enum>> {
+  rholang/src/rust/interpreter/chromadb_service_stub.rs:3
+  --
+  NoOp : variant
+}
+entity "SharedChromaDBService" as E1281 <<alias>> {
+  rholang/src/rust/interpreter/chromadb_service_stub.rs:11
+  --
+  value : Arc &#60; ChromaDBService &#62;
+}
+entity "BoundContext" as E1282 <<struct>> {
+  rholang/src/rust/interpreter/compiler/bound_context.rs:1
+  --
+  index : usize
+  typ : T
+  source_span : rholang_parser :: SourceSpan
+}
+entity "BoundMap" as E1283 <<struct>> {
+  rholang/src/rust/interpreter/compiler/bound_map.rs:7
+  --
+  next_index : usize
+  index_bindings : Arc &#60; HashMap &#60; String , BoundContext &#60; T &#62; &#62; &#62;
+}
+entity "BoundMapChain" as E1284 <<struct>> {
+  rholang/src/rust/interpreter/compiler/bound_map_chain.rs:6
+  --
+  chain : Vec &#60; BoundMap &#60; T &#62; &#62;
+}
+entity "FLOAT_RE" as E1285 <<lazy static>> {
+  rholang/src/rust/interpreter/compiler/compiler.rs:20
+  --
+  value : Regex
+}
+E1279 --> E1278 : value
+E1281 --> E1280 : value
+E1283 --> E1282 : index_bindings
+E1284 --> E1283 : chain
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,75 @@
+@startuml
+!include ../style.puml
+title catalog models 008
+entity "DeployTransition" as E794 <<protobuf>> {
+  models/src/main/protobuf/DeployQueueV1.proto
+  .deployqueue.v1
+  --
+  deploySig #1 : Bytes
+  state #2 : String
+  queueState #3 : String
+  rejectionCount #4 : Uint32
+  latestBlockHash #5 oneof _latestBlockHash : Bytes
+  detail #6 : String
+}
+entity "WatchDeploysQuery" as E795 <<protobuf>> {
+  models/src/main/protobuf/DeployQueueV1.proto
+  .deployqueue.v1
+  --
+  deploySigs #1 : repeated Bytes
+}
+entity "BlockEventInfo" as E796 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  blockInfo #1 : .casper.LightBlockInfo
+  deploys #2 : repeated .casper.DeployInfoWithEventData
+  systemDeploys #3 : repeated .casper.SystemDeployInfoWithEventData
+  postStateHash #4 : Bytes
+}
+entity "BlockInfo" as E797 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  blockInfo #1 : .casper.LightBlockInfo
+  deploys #2 : repeated .casper.DeployInfo
+}
+entity "BlockQuery" as E798 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  hash #1 : String
+}
+entity "BlocksQuery" as E799 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  depth #1 : Int32
+}
+entity "BlocksQueryByHeight" as E800 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  startBlockNumber #1 : Int64
+  endBlockNumber #2 : Int64
+  include_missing #3 : Bool
+}
+entity "BondInfo" as E801 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  validator #1 : String
+  stake #3 : String
+}
+E794 -[hidden]down-> E795
+E795 -[hidden]down-> E796
+E796 -[hidden]down-> E797
+E797 -[hidden]down-> E798
+E798 -[hidden]down-> E799
+E799 -[hidden]down-> E800
+E800 -[hidden]down-> E801
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

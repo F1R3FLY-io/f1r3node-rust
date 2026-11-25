@@ -1,0 +1,63 @@
+@startuml
+!include ../style.puml
+title catalog rholang 035
+entity "RemoveBranchesMethod" as E1534 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:4907
+  DebruijnInterpreter::remove_branches_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "GraftMethod" as E1535 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:5008
+  DebruijnInterpreter::graft_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "JoinIntoMethod" as E1536 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:5116
+  DebruijnInterpreter::join_into_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "AtPathMethod" as E1537 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:5282
+  DebruijnInterpreter::at_path_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "PathExistsMethod" as E1538 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:5375
+  DebruijnInterpreter::path_exists_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "CreatePathMethod" as E1539 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:5450
+  DebruijnInterpreter::create_path_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "PrunePathMethod" as E1540 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:5524
+  DebruijnInterpreter::prune_path_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "ResetMethod" as E1541 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:5614
+  DebruijnInterpreter::reset_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+E1534 -[hidden]down-> E1535
+E1535 -[hidden]down-> E1536
+E1536 -[hidden]down-> E1537
+E1537 -[hidden]down-> E1538
+E1538 -[hidden]down-> E1539
+E1539 -[hidden]down-> E1540
+E1540 -[hidden]down-> E1541
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

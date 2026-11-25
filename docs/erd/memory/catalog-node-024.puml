@@ -1,0 +1,59 @@
+@startuml
+!include ../style.puml
+title catalog node 024
+entity "AppJson" as E1242 <<struct>> {
+  node/src/rust/web/shared_handlers.rs:191
+  --
+  0 : T
+}
+entity "DeployJson" as E1243 <<struct>> {
+  node/src/rust/web/shared_handlers.rs:194
+  --
+  0 : DeployRequest
+  1 : DeployRequestPermit
+}
+entity "AppPath" as E1244 <<struct>> {
+  node/src/rust/web/shared_handlers.rs:240
+  --
+  0 : T
+}
+entity "AppQuery" as E1245 <<struct>> {
+  node/src/rust/web/shared_handlers.rs:265
+  --
+  0 : T
+}
+entity "StatusInfo" as E1246 <<struct>> {
+  node/src/rust/web/status_info.rs:9
+  --
+}
+entity "Transaction" as E1247 <<struct>> {
+  node/src/rust/web/transaction.rs:6
+  --
+  from_addr : String
+  to_addr : String
+  amount : BigInt
+  ret_unforgeable : Par
+  fail_reason : Option &#60; String &#62;
+}
+entity "TransactionType" as E1248 <<enum>> {
+  node/src/rust/web/transaction.rs:19
+  --
+  PreCharge.deploy_id : String
+  UserDeploy.deploy_id : String
+  Refund.deploy_id : String
+  CloseBlock.block_hash : String
+  SlashingDeploy.block_hash : String
+}
+entity "TransactionInfo" as E1249 <<struct>> {
+  node/src/rust/web/transaction.rs:35
+  --
+  transaction : Transaction
+  transaction_type : TransactionType
+}
+E1249 --> E1247 : transaction
+E1249 --> E1248 : transaction_type
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

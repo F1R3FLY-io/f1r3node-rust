@@ -1,0 +1,71 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 006
+entity "RootRepository" as E1666 <<struct>> {
+  rspace++/src/rspace/history/root_repository.rs:7
+  --
+  roots_store : Box &#60; dyn RootsStore &#62;
+}
+entity "RootsStoreInstances" as E1667 <<struct>> {
+  rspace++/src/rspace/history/roots_store.rs:37
+  --
+}
+entity "RootsStoreInstance" as E1668 <<struct>> {
+  rspace++/src/rspace/history/roots_store.rs:41
+  RootsStoreInstances::roots_store
+  --
+  store : Arc &#60; dyn KeyValueStore &#62;
+}
+entity "ShardedMap" as E1669 <<struct>> {
+  rspace++/src/rspace/hot_store.rs:91
+  --
+  shards : Box &#60; [std :: sync :: RwLock &#60; imbl :: HashMap &#60; K , V &#62; &#62; ;\n    NUM_SHARDS] &#62;
+}
+entity "HotStoreState" as E1670 <<struct>> {
+  rspace++/src/rspace/hot_store.rs:235
+  --
+  continuations : Box &#60; [imbl :: HashMap &#60; Vec &#60; C &#62; , Vec &#60; Arc &#60;\n    WaitingContinuation &#60; P , K &#62; &#62; &#62; &#62; ; NUM_SHARDS] &#62;
+  installed_continuations : Box &#60; [imbl :: HashMap &#60; Vec &#60; C &#62; , Arc &#60;\n    WaitingContinuation &#60; P , K &#62; &#62; &#62; ; NUM_SHARDS] &#62;
+  data : Box &#60; [imbl :: HashMap &#60; C , Vec &#60; Arc &#60; Datum &#60; A &#62; &#62; &#62; &#62; ;\n    NUM_SHARDS] &#62;
+  joins : Box &#60; [imbl :: HashMap &#60; C , Vec &#60; Vec &#60; C &#62; &#62; &#62; ; NUM_SHARDS] &#62;
+  installed_joins : Box &#60; [imbl :: HashMap &#60; C , Vec &#60; Vec &#60; C &#62; &#62; &#62; ;\n    NUM_SHARDS] &#62;
+}
+entity "InMemHotStore" as E1671 <<struct>> {
+  rspace++/src/rspace/hot_store.rs:401
+  --
+  data : ShardedMap &#60; C , Vec &#60; Arc &#60; Datum &#60; A &#62; &#62; &#62; &#62;
+  continuations : ShardedMap &#60; Vec &#60; C &#62; , Vec &#60; Arc &#60; WaitingContinuation\n    &#60; P , K &#62; &#62; &#62; &#62;
+  installed_continuations : ShardedMap &#60; Vec &#60; C &#62; , Arc &#60;\n    WaitingContinuation &#60; P , K &#62; &#62; &#62;
+  joins : ShardedMap &#60; C , Vec &#60; Vec &#60; C &#62; &#62; &#62;
+  installed_joins : ShardedMap &#60; C , Vec &#60; Vec &#60; C &#62; &#62; &#62;
+  history_cache_continuations : DashMap &#60; Vec &#60; C &#62; , Vec &#60; Arc &#60;\n    WaitingContinuation &#60; P , K &#62; &#62; &#62; &#62;
+  history_cache_datums : DashMap &#60; C , Vec &#60; Arc &#60; Datum &#60; A &#62; &#62; &#62; &#62;
+  history_cache_joins : DashMap &#60; C , Vec &#60; Vec &#60; C &#62; &#62; &#62;
+  history_cache_cont_items : AtomicUsize
+  history_cache_data_items : AtomicUsize
+  history_cache_joins_items : AtomicUsize
+  checkpoint_lock : std :: sync :: Mutex &#60; () &#62;
+  history_reader_base : Box &#60; dyn HistoryReaderBase &#60; C , P , A , K &#62; &#62;
+}
+entity "LAST_EMIT_AT_MS" as E1672 <<static>> {
+  rspace++/src/rspace/hot_store.rs:1004
+  InMemHotStore &#60; C , P , A , K &#62;::update_hot_store_state_metrics
+  --
+  value : AtomicU64
+}
+entity "LAST_EMIT_AT_MS" as E1673 <<static>> {
+  rspace++/src/rspace/hot_store.rs:1039
+  InMemHotStore &#60; C , P , A , K &#62;::update_history_cache_metrics
+  --
+  value : AtomicU64
+}
+E1671 --> E1669 : continuations
+E1671 --> E1669 : data
+E1671 --> E1669 : installed_continuations
+E1671 --> E1669 : installed_joins
+E1671 --> E1669 : joins
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

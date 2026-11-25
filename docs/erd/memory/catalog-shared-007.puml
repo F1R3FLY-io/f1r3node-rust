@@ -1,0 +1,69 @@
+@startuml
+!include ../style.puml
+title catalog shared 007
+entity "AtomicTransaction" as E1837 <<struct>> {
+  shared/src/rust/store/atomic_store.rs:35
+  --
+  inner : TransactionInner &#60; 'a &#62;
+}
+entity "TransactionInner" as E1838 <<enum>> {
+  shared/src/rust/store/atomic_store.rs:39
+  --
+  Lmdb.txn : RwTxn &#60; 'a &#62;
+  Lmdb.databases : &#38; 'a [LmdbDatabase]
+  Memory.state : &#38; 'a MemoryState
+  Memory.tables : &#38; 'a [u64]
+  Memory.changes : Changes
+}
+entity "StorePage" as E1839 <<struct>> {
+  shared/src/rust/store/key_value_store.rs:6
+  --
+  rows : Vec &#60; (ByteBuffer , ByteBuffer) &#62;
+  next : Option &#60; ByteBuffer &#62;
+}
+entity "MissingBlockContext" as E1840 <<struct>> {
+  shared/src/rust/store/key_value_store.rs:175
+  --
+  accessor : &#38; 'static str
+  backtrace : Option &#60; std :: sync :: Arc &#60; std :: backtrace :: Backtrace\n    &#62; &#62;
+}
+entity "KvStoreError" as E1841 <<enum>> {
+  shared/src/rust/store/key_value_store.rs:222
+  --
+  KeyNotFound.0 : String
+  IoError.0 : String
+  SerializationError.0 : String
+  InvalidArgument.0 : String
+  LockError.0 : String
+  LastFinalizedBlockUninitialized : variant
+  MissingBlock.hash : prost :: bytes :: Bytes
+  MissingBlock.context : MissingBlockContext
+}
+entity "KeyValueTypedStoreImpl" as E1842 <<struct>> {
+  shared/src/rust/store/key_value_typed_store_impl.rs:12
+  --
+  store : Arc &#60; dyn KeyValueStore &#62;
+  phantom_data : PhantomData &#60; (K , V) &#62;
+  value_encoder : fn (&#38; V) -&#62; Result &#60; BitVector , KvStoreError &#62;
+  value_decoder : fn (&#38; BitVector) -&#62; Result &#60; V , KvStoreError &#62;
+}
+entity "LmdbKeyValueStore" as E1843 <<struct>> {
+  shared/src/rust/store/lmdb_key_value_store.rs:23
+  --
+  env : Arc &#60; Env &#62;
+  db : Database &#60; SerdeBincode &#60; ByteBuffer &#62; , SerdeBincode &#60; ByteBuffer\n    &#62; &#62;
+}
+entity "StoreWrite" as E1844 <<alias>> {
+  shared/src/rust/store/lmdb_key_value_store.rs:216
+  --
+  value : (&#38; 'a dyn KeyValueStore , Vec &#60; (ByteBuffer , ByteBuffer) &#62;)
+}
+E1837 --> E1838 : inner
+E1841 --> E1840 : MissingBlock.context
+E1842 --> E1841 : value_decoder
+E1842 --> E1841 : value_encoder
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

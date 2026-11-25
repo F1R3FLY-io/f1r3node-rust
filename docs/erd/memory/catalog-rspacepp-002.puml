@@ -1,0 +1,55 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 002
+entity "GcRootHandle" as E1634 <<struct>> {
+  rspace++/src/rspace/gc_roots.rs:97
+  --
+  registry : Weak &#60; GcRootRegistry &#62;
+  key : Vec &#60; u8 &#62;
+  released : bool
+}
+entity "Blake2b256Hash" as E1635 <<struct>> {
+  rspace++/src/rspace/hashing/blake2b256_hash.rs:16
+  --
+  0 : Vec &#60; u8 &#62;
+}
+entity "KvCheckpointWriter" as E1636 <<struct>> {
+  rspace++/src/rspace/history/checkpoint_writer.rs:18
+  --
+  history : Arc &#60; dyn KeyValueStore &#62;
+  roots : Arc &#60; dyn KeyValueStore &#62;
+}
+entity "ColdStoreInstances" as E1637 <<struct>> {
+  rspace++/src/rspace/history/cold_store.rs:7
+  --
+}
+entity "PersistedData" as E1638 <<enum>> {
+  rspace++/src/rspace/history/cold_store.rs:18
+  --
+  Joins.0 : JoinsLeaf
+  Data.0 : DataLeaf
+  Continuations.0 : ContinuationsLeaf
+}
+entity "JoinsLeaf" as E1639 <<struct>> {
+  rspace++/src/rspace/history/cold_store.rs:25
+  --
+  bytes : Vec &#60; u8 &#62;
+}
+entity "DataLeaf" as E1640 <<struct>> {
+  rspace++/src/rspace/history/cold_store.rs:30
+  --
+  bytes : Vec &#60; u8 &#62;
+}
+entity "ContinuationsLeaf" as E1641 <<struct>> {
+  rspace++/src/rspace/history/cold_store.rs:35
+  --
+  bytes : Vec &#60; u8 &#62;
+}
+E1638 --> E1639 : Joins.0
+E1638 --> E1640 : Data.0
+E1638 --> E1641 : Continuations.0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

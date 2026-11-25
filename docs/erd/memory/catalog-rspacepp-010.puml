@@ -1,0 +1,63 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 010
+entity "WaitingContinuation" as E1698 <<struct>> {
+  rspace++/src/rspace/internal.rs:37
+  --
+  patterns : Vec &#60; P &#62;
+  continuation : K
+  persist : bool
+  peeks : BTreeSet &#60; i32 &#62;
+  source : Consume
+}
+entity "ConsumeCandidate" as E1699 <<struct>> {
+  rspace++/src/rspace/internal.rs:69
+  --
+  channel : C
+  datum : Datum &#60; A &#62;
+  removed_datum : A
+  datum_index : i32
+}
+entity "ProduceCandidate" as E1700 <<struct>> {
+  rspace++/src/rspace/internal.rs:77
+  --
+  channels : Vec &#60; C &#62;
+  continuation : WaitingContinuation &#60; P , K &#62;
+  continuation_index : i32
+  data_candidates : Vec &#60; ConsumeCandidate &#60; C , A &#62; &#62;
+}
+entity "Row" as E1701 <<struct>> {
+  rspace++/src/rspace/internal.rs:86
+  --
+  data : Vec &#60; Datum &#60; A &#62; &#62;
+  wks : Vec &#60; WaitingContinuation &#60; P , K &#62; &#62;
+}
+entity "Install" as E1702 <<struct>> {
+  rspace++/src/rspace/internal.rs:92
+  --
+  patterns : Vec &#60; P &#62;
+  continuation : K
+}
+entity "MultisetMultiMap" as E1703 <<struct>> {
+  rspace++/src/rspace/internal.rs:98
+  --
+  map : DashMap &#60; K , Counter &#60; V &#62; &#62;
+}
+entity "BasicLogger" as E1704 <<struct>> {
+  rspace++/src/rspace/logging.rs:41
+  --
+}
+entity "ChannelChange" as E1705 <<struct>> {
+  rspace++/src/rspace/merger/channel_change.rs:3
+  --
+  added : Vec &#60; A &#62;
+  removed : Vec &#60; A &#62;
+}
+E1700 --> E1698 : continuation
+E1700 --> E1699 : data_candidates
+E1701 --> E1698 : wks
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

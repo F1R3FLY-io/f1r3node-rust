@@ -1,0 +1,117 @@
+@startuml
+!include ../style.puml
+title catalog models 021
+entity "EPlusPlus" as E898 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p1 #1 : .rhoapi.Par
+  p2 #2 : .rhoapi.Par
+}
+entity "ESet" as E899 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  ps #1 : repeated .rhoapi.Par
+  locallyFree #3 : Bytes
+  connective_used #4 : Bool
+  remainder #5 : .rhoapi.Var
+}
+entity "ETuple" as E900 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  ps #1 : repeated .rhoapi.Par
+  locallyFree #3 : Bytes
+  connective_used #4 : Bool
+}
+entity "EVar" as E901 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  v #1 : .rhoapi.Var
+}
+entity "EZipper" as E902 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  pathmap #1 : .rhoapi.EPathMap
+  current_path #2 : repeated Bytes
+  is_write_zipper #3 : Bool
+  locallyFree #4 : Bytes
+  connective_used #5 : Bool
+}
+entity "Expr" as E903 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  g_bool #1 oneof expr_instance : Bool
+  g_int #2 oneof expr_instance : Sint64
+  g_string #3 oneof expr_instance : String
+  g_uri #4 oneof expr_instance : String
+  g_byte_array #25 oneof expr_instance : Bytes
+  e_not_body #5 oneof expr_instance : .rhoapi.ENot
+  e_neg_body #6 oneof expr_instance : .rhoapi.ENeg
+  e_mult_body #7 oneof expr_instance : .rhoapi.EMult
+  e_div_body #8 oneof expr_instance : .rhoapi.EDiv
+  e_plus_body #9 oneof expr_instance : .rhoapi.EPlus
+  e_minus_body #10 oneof expr_instance : .rhoapi.EMinus
+  e_lt_body #11 oneof expr_instance : .rhoapi.ELt
+  e_lte_body #12 oneof expr_instance : .rhoapi.ELte
+  e_gt_body #13 oneof expr_instance : .rhoapi.EGt
+  e_gte_body #14 oneof expr_instance : .rhoapi.EGte
+  e_eq_body #15 oneof expr_instance : .rhoapi.EEq
+  e_neq_body #16 oneof expr_instance : .rhoapi.ENeq
+  e_and_body #17 oneof expr_instance : .rhoapi.EAnd
+  e_or_body #18 oneof expr_instance : .rhoapi.EOr
+  e_var_body #19 oneof expr_instance : .rhoapi.EVar
+  e_list_body #20 oneof expr_instance : .rhoapi.EList
+  e_tuple_body #21 oneof expr_instance : .rhoapi.ETuple
+  e_set_body #22 oneof expr_instance : .rhoapi.ESet
+  e_map_body #23 oneof expr_instance : .rhoapi.EMap
+  e_method_body #24 oneof expr_instance : .rhoapi.EMethod
+  e_pathmap_body #32 oneof expr_instance : .rhoapi.EPathMap
+  e_zipper_body #33 oneof expr_instance : .rhoapi.EZipper
+  e_matches_body #27 oneof expr_instance : .rhoapi.EMatches
+  e_percent_percent_body #28 oneof expr_instance : .rhoapi.EPercentPercent
+  e_plus_plus_body #29 oneof expr_instance : .rhoapi.EPlusPlus
+  e_minus_minus_body #30 oneof expr_instance : .rhoapi.EMinusMinus
+  e_mod_body #31 oneof expr_instance : .rhoapi.EMod
+  g_double #34 oneof expr_instance : Fixed64
+  g_big_int #35 oneof expr_instance : Bytes
+  g_big_rat #36 oneof expr_instance : .rhoapi.GBigRational
+  g_fixed_point #37 oneof expr_instance : .rhoapi.GFixedPoint
+  g_uint64 #38 oneof expr_instance : Uint64
+  g_float32 #39 oneof expr_instance : Fixed32
+  g_int32 #40 oneof expr_instance : Int32
+  g_uint32 #41 oneof expr_instance : Uint32
+  g_uint16 #42 oneof expr_instance : Uint32
+  g_uint8 #43 oneof expr_instance : Uint32
+  e_lambda_body #44 oneof expr_instance : .rhoapi.ELambda
+  e_app_body #45 oneof expr_instance : .rhoapi.EApp
+  e_pi_body #46 oneof expr_instance : .rhoapi.EPi
+}
+entity "GBigRational" as E904 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  numerator #1 : Bytes
+  denominator #2 : Bytes
+}
+entity "GDeployId" as E905 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  sig #1 : Bytes
+}
+E903 --> E898 : e_plus_plus_body #29 oneof expr_instance
+E903 --> E899 : e_set_body #22 oneof expr_instance
+E903 --> E900 : e_tuple_body #21 oneof expr_instance
+E903 --> E901 : e_var_body #19 oneof expr_instance
+E903 --> E902 : e_zipper_body #33 oneof expr_instance
+E903 --> E904 : g_big_rat #36 oneof expr_instance
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

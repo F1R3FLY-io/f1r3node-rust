@@ -1,0 +1,68 @@
+@startuml
+!include ../style.puml
+title catalog comm 002
+entity "GrpcKademliaRPCServer" as E546 <<struct>> {
+  comm/src/rust/discovery/grpc_kademlia_rpc_server.rs:26
+  --
+  network_id : String
+  ping_handler : PingHandler
+  lookup_handler : LookupHandler
+}
+entity "KademliaNodeDiscovery" as E547 <<struct>> {
+  comm/src/rust/discovery/kademlia_node_discovery.rs:16
+  --
+  node_id : NodeIdentifier
+  store : Arc &#60; KademliaStore &#60; T &#62; &#62;
+  rpc : Arc &#60; T &#62;
+}
+entity "Suppression" as E548 <<struct>> {
+  comm/src/rust/discovery/kademlia_store.rs:19
+  --
+  endpoint : Endpoint
+  until : Instant
+  probed_at : Option &#60; Instant &#62;
+}
+entity "KademliaStore" as E549 <<struct>> {
+  comm/src/rust/discovery/kademlia_store.rs:25
+  --
+  table : PeerTable &#60; T &#62;
+  rpc : Arc &#60; T &#62;
+  suppressed : Mutex &#60; HashMap &#60; Bytes , Suppression &#62; &#62;
+}
+entity "KnownPeers" as E550 <<struct>> {
+  comm/src/rust/discovery/known_peers.rs:12
+  --
+  path : PathBuf
+  peers : Vec &#60; PeerNode &#62;
+}
+entity "DLUT" as E551 <<static>> {
+  comm/src/rust/discovery/peer_table.rs:13
+  --
+  value : [u8 ; 256]
+}
+entity "PeerTableEntry" as E552 <<struct>> {
+  comm/src/rust/discovery/peer_table.rs:30
+  --
+  entry : PeerNode
+  pinging : bool
+  key : Bytes
+}
+entity "PeerTable" as E553 <<struct>> {
+  comm/src/rust/discovery/peer_table.rs:48
+  --
+  local_key : Bytes
+  k : u32
+  alpha : u32
+  kademlia_rpc : Arc &#60; T &#62;
+  width : usize
+  table : Vec &#60; Arc &#60; Mutex &#60; Vec &#60; PeerTableEntry &#62; &#62; &#62; &#62;
+}
+E547 --> E549 : store
+E549 --> E548 : suppressed
+E549 --> E553 : table
+E553 --> E552 : table
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

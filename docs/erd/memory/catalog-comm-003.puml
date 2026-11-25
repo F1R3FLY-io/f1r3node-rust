@@ -1,0 +1,86 @@
+@startuml
+!include ../style.puml
+title catalog comm 003
+entity "CommError" as E554 <<enum>> {
+  comm/src/rust/errors.rs:5
+  --
+  UnknownCommError.0 : String
+  DatagramSizeError.0 : usize
+  DatagramFramingError.0 : String
+  DatagramException.0 : String
+  HeaderNotAvailable : variant
+  ProtocolException.0 : String
+  UnknownProtocolError.0 : String
+  PublicKeyNotAvailable.0 : String
+  ParseError.0 : String
+  EncryptionHandshakeIncorrectlySigned : variant
+  BootstrapNotProvided : variant
+  PeerNodeNotFound.0 : String
+  PeerUnavailable.0 : String
+  WrongNetwork.0 : String
+  WrongNetwork.1 : String
+  WrongChainId.0 : String
+  WrongChainId.1 : String
+  MessageToLarge.0 : String
+  MalformedMessage.0 : String
+  CouldNotConnectToBootstrap : variant
+  InternalCommunicationError.0 : String
+  DnsResolutionFailed.0 : String
+  DnsResolutionFailed.1 : String
+  TimeOut : variant
+  UpstreamNotAvailable : variant
+  UnexpectedMessage.0 : String
+  SenderNotAvailable : variant
+  PongNotReceivedForPing.0 : String
+  UnableToStorePacket.0 : String
+  UnableToStorePacket.1 : String
+  UnableToRestorePacket.0 : String
+  UnableToRestorePacket.1 : String
+  ConfigError.0 : String
+  CasperError.0 : String
+}
+entity "NOPPacketHandler" as E555 <<struct>> {
+  comm/src/rust/p2p/packet_handler.rs:15
+  --
+}
+entity "PartialFunctionPacketHandler" as E556 <<struct>> {
+  comm/src/rust/p2p/packet_handler.rs:29
+  --
+  handler_fn : F
+}
+entity "NodeIdentifier" as E557 <<struct>> {
+  comm/src/rust/peer_node.rs:15
+  --
+  key : Bytes
+}
+entity "Endpoint" as E558 <<struct>> {
+  comm/src/rust/peer_node.rs:50
+  --
+  host : String
+  tcp_port : u32
+  udp_port : u32
+}
+entity "PeerNode" as E559 <<struct>> {
+  comm/src/rust/peer_node.rs:67
+  --
+  id : NodeIdentifier
+  endpoint : Endpoint
+}
+entity "ChainIdCell" as E560 <<struct>> {
+  comm/src/rust/rp/chain_id.rs:38
+  --
+  inner : Arc &#60; OnceLock &#60; Bytes &#62; &#62;
+}
+entity "Connection" as E561 <<alias>> {
+  comm/src/rust/rp/connect.rs:21
+  --
+  value : PeerNode
+}
+E559 --> E557 : id
+E559 --> E558 : endpoint
+E561 --> E559 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,60 @@
+@startuml
+!include ../style.puml
+title catalog casper 036
+entity "Validator" as E360 <<struct>> {
+  casper/src/rust/genesis/contracts/validator.rs:6
+  --
+  pk : PublicKey
+  stake : TokenAmount
+}
+entity "Vault" as E361 <<struct>> {
+  casper/src/rust/genesis/contracts/vault.rs:6
+  --
+  vault_address : VaultAddress
+  initial_balance : TokenAmount
+}
+entity "VaultsGenerator" as E362 <<struct>> {
+  casper/src/rust/genesis/contracts/vaults_generator.rs:7
+  --
+  supply : TokenAmount
+  code : String
+}
+entity "Genesis" as E363 <<struct>> {
+  casper/src/rust/genesis/genesis.rs:24
+  --
+  shard_id : String
+  timestamp : i64
+  block_number : i64
+  proof_of_stake : ProofOfStake
+  vaults : Vec &#60; Vault &#62;
+  supply : TokenAmount
+  version : i64
+  native_token_name : String
+  native_token_symbol : String
+  native_token_decimals : u32
+  fs_bundle : Vec &#60; super :: contracts :: fs_genesis :: BundleEntry &#62;
+  consensus_fs_snapshot_cadence : Option &#60; u64 &#62;
+}
+entity "HeartbeatSignalRef" as E364 <<alias>> {
+  casper/src/rust/heartbeat_signal.rs:12
+  --
+  value : Arc &#60; OnceLock &#60; Arc &#60; dyn HeartbeatSignal &#62; &#62; &#62;
+}
+entity "RhoLoggerContract" as E365 <<struct>> {
+  casper/src/rust/helper/rho_logger_contract.rs:10
+  --
+}
+entity "IsAssert" as E366 <<struct>> {
+  casper/src/rust/helper/test_result_collector.rs:14
+  --
+}
+entity "IsComparison" as E367 <<struct>> {
+  casper/src/rust/helper/test_result_collector.rs:41
+  --
+}
+E363 --> E361 : vaults
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

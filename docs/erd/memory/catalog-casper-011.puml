@@ -1,0 +1,80 @@
+@startuml
+!include ../style.puml
+title catalog casper 011
+entity "FetchScheduler" as E160 <<struct>> {
+  casper/src/rust/blocks/ingest/fetch_scheduler.rs:202
+  --
+  view : IngestView
+  blocks : HashMap &#60; BlockHash , BlockNeed &#62;
+  uncited : BTreeMap &#60; u64 , BlockHash &#62;
+  roots : HashMap &#60; Blake2b256Hash , RootNeed &#62;
+  next_seq : u64
+}
+entity "EvictReason" as E161 <<enum>> {
+  casper/src/rust/blocks/ingest/ingest_state.rs:28
+  --
+  PendingArea : variant
+  SenderShare : variant
+  RoomForRequested : variant
+  DiskBound : variant
+  GiveUp : variant
+}
+entity "DropReason" as E162 <<enum>> {
+  casper/src/rust/blocks/ingest/ingest_state.rs:55
+  --
+  Invalid : variant
+  TooLarge : variant
+  StateUnavailable : variant
+  BelowPruneHorizon : variant
+}
+entity "PendingRefusal" as E163 <<enum>> {
+  casper/src/rust/blocks/ingest/ingest_state.rs:80
+  --
+  AreaFull : variant
+  SenderLimitReached : variant
+  TooLarge : variant
+}
+entity "Refusal" as E164 <<enum>> {
+  casper/src/rust/blocks/ingest/ingest_state.rs:87
+  --
+  NotOfInterest : variant
+  Unauthorized : variant
+  Pending.0 : PendingRefusal
+}
+entity "Refused" as E165 <<struct>> {
+  casper/src/rust/blocks/ingest/ingest_state.rs:94
+  --
+  hash : BlockHash
+  from : Option &#60; PeerNode &#62;
+  unsolicited : bool
+  size : usize
+  sender : Validator
+  height : i64
+  reason : Refusal
+}
+entity "WorkOutcome" as E166 <<enum>> {
+  casper/src/rust/blocks/ingest/ingest_state.rs:107
+  --
+  Settled : variant
+  Rejected.invalid_sender : bool
+  AwaitingBlock.0 : BlockHash
+  AwaitingState.0 : Blake2b256Hash
+  NotSettledHistory : variant
+  Failed : variant
+}
+entity "StateFetchDrop" as E167 <<enum>> {
+  casper/src/rust/blocks/ingest/ingest_state.rs:123
+  --
+  QueueFull : variant
+  BudgetExhausted : variant
+  PeerLacksRoot : variant
+  Unverified : variant
+  Deadline : variant
+}
+E164 --> E163 : Pending.0
+E165 --> E164 : reason
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,78 @@
+@startuml
+!include ../style.puml
+title catalog casper 004
+entity "ProposeRefusal" as E104 <<enum>> {
+  casper/src/rust/api/block_api.rs:539
+  --
+  NotBonded : variant
+  NotEnoughNewBlocks : variant
+  TooFarAheadOfLastFinalized : variant
+  HistoryIncomplete : variant
+  MissingBlock : variant
+  FloorDistanceHold : variant
+}
+entity "ProposeRefusedError" as E105 <<struct>> {
+  casper/src/rust/api/block_api.rs:573
+  --
+  refusal : ProposeRefusal
+  message : String
+}
+entity "ReportQueueMetricGuard" as E106 <<struct>> {
+  casper/src/rust/api/block_report_api.rs:31
+  --
+}
+entity "ReportPermit" as E107 <<enum>> {
+  casper/src/rust/api/block_report_api.rs:81
+  --
+  RejectIfHeld : variant
+  Wait : variant
+}
+entity "BlockReportError" as E108 <<enum>> {
+  casper/src/rust/api/block_report_api.rs:91
+  --
+  CasperNotInitialized : variant
+  ReadOnlyRequired : variant
+  BlockNotFound.0 : BlockHash
+  StateUnavailable.0 : BlockHash
+  ExcessivePhloLimit.block : BlockHash
+  ExcessivePhloLimit.cap : i64
+  Busy : variant
+  ReplayFailed.0 : String
+  PostStateMismatch.block : String
+  PostStateMismatch.computed : String
+  PostStateMismatch.recorded : String
+  BlockInfoError.0 : String
+  StoreError.0 : String
+  SemaphoreError.0 : String
+}
+entity "ApiErr" as E109 <<alias>> {
+  casper/src/rust/api/block_report_api.rs:124
+  --
+  value : Result &#60; T , BlockReportError &#62;
+}
+entity "BlockReportAPI" as E110 <<struct>> {
+  casper/src/rust/api/block_report_api.rs:126
+  --
+  reporting_casper : Arc &#60; dyn ReportingCasper &#62;
+  report_store : ReportStore
+  engine_cell : EngineCell
+  block_store : KeyValueBlockStore
+  oracle : CliqueOracleImpl
+  block_report_semaphore : Arc &#60; Semaphore &#62;
+  report_transformer : Arc &#60; ReportingProtoTransformer &#62;
+  dev_mode : bool
+  report_cache_retention : u32
+  report_prune_cursor : Arc &#60; std :: sync :: Mutex &#60; i64 &#62; &#62;
+}
+entity "ApiErr" as E111 <<alias>> {
+  casper/src/rust/api/deploy_finalization_status.rs:10
+  --
+  value : eyre :: Result &#60; T &#62;
+}
+E105 --> E104 : refusal
+E109 --> E108 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

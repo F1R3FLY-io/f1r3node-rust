@@ -1,0 +1,57 @@
+@startuml
+!include ../style.puml
+title catalog rholang 016
+entity "FsEntriesArgs" as E1382 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_entries.rs:95
+  --
+  root : String
+  rel : String
+  cmode : ConsensusMode
+}
+entity "FS_ENTRIES_ENTRY" as E1383 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_entries.rs:337
+  --
+  value : FsHandlerEntry
+}
+entity "FsExistsHandler" as E1384 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_exists.rs:74
+  --
+}
+entity "FsExistsArgs" as E1385 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_exists.rs:77
+  --
+  root : String
+  rel : String
+  cmode : ConsensusMode
+}
+entity "FS_EXISTS_ENTRY" as E1386 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_exists.rs:255
+  --
+  value : FsHandlerEntry
+}
+entity "FsFlushHandler" as E1387 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_flush.rs:72
+  --
+}
+entity "FsFlushArgs" as E1388 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_flush.rs:75
+  --
+  fd : u64
+}
+entity "FS_FLUSH_ENTRY" as E1389 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_flush.rs:154
+  --
+  value : FsHandlerEntry
+}
+E1382 -[hidden]down-> E1383
+E1383 -[hidden]down-> E1384
+E1384 -[hidden]down-> E1385
+E1385 -[hidden]down-> E1386
+E1386 -[hidden]down-> E1387
+E1387 -[hidden]down-> E1388
+E1388 -[hidden]down-> E1389
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

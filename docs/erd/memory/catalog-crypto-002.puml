@@ -1,0 +1,61 @@
+@startuml
+!include ../style.puml
+title catalog crypto 002
+entity "PublicKey" as E653 <<struct>> {
+  crypto/src/rust/public_key.rs:8
+  --
+  bytes : prost :: bytes :: Bytes
+}
+entity "Ed25519" as E654 <<struct>> {
+  crypto/src/rust/signatures/ed25519.rs:9
+  --
+}
+entity "FrostSecp256k1" as E655 <<struct>> {
+  crypto/src/rust/signatures/frost_secp256k1.rs:15
+  --
+}
+entity "FrostParticipantId" as E656 <<struct>> {
+  crypto/src/rust/signatures/frost_secp256k1.rs:58
+  --
+  0 : u16
+}
+entity "FrostParticipantShare" as E657 <<struct>> {
+  crypto/src/rust/signatures/frost_secp256k1.rs:61
+  --
+  participant_id : FrostParticipantId
+  private_share : PrivateKey
+  public_share : PublicKey
+}
+entity "FrostNonceCommitment" as E658 <<struct>> {
+  crypto/src/rust/signatures/frost_secp256k1.rs:68
+  --
+  participant_id : FrostParticipantId
+  commitment : [u8 ; 32]
+}
+entity "FrostSigningSession" as E659 <<struct>> {
+  crypto/src/rust/signatures/frost_secp256k1.rs:74
+  --
+  session_id : [u8 ; 32]
+  threshold : usize
+  participants : Vec &#60; FrostParticipantId &#62;
+  message_hash : [u8 ; 32]
+  commitments : HashMap &#60; FrostParticipantId , FrostNonceCommitment &#62;
+}
+entity "FrostPartialSignature" as E660 <<struct>> {
+  crypto/src/rust/signatures/frost_secp256k1.rs:83
+  --
+  participant_id : FrostParticipantId
+  session_id : [u8 ; 32]
+  bytes : [u8 ; 32]
+}
+E657 --> E656 : participant_id
+E658 --> E656 : participant_id
+E659 --> E656 : commitments
+E659 --> E656 : participants
+E659 --> E658 : commitments
+E660 --> E656 : participant_id
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

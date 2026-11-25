@@ -1,0 +1,78 @@
+@startuml
+!include ../style.puml
+title Consensus and resident DAG relationships
+entity CasperSnapshot {
+  last_finalized_block : BlockHash
+  parents : Vec<BlockMessage>
+  justifications : HashSet<Justification>
+  deploys_in_scope : set<signature>
+  rejected_in_scope : set<signature>
+  seeds_in_scope : map<seed, signatures>
+  max_seq_nums : map<validator, u64>
+  chain_id : BlockHash
+}
+entity OnChainCasperState {
+  shard_conf : CasperShardConf
+  bonds_map : map<validator, BigInt>
+  active_validators : Vec<Validator>
+}
+entity KeyValueDagRepresentation {
+  resident indices : shared persistent collections
+  latest messages : validator -> block hash
+  captured publication sequence : u64
+  last finalized block : BlockHash
+  historical queries : durable index handles
+}
+entity BlockDagKeyValueStorage {
+  global_lock : RwLock
+  block_metadata_index : BlockMetadataStore
+  persistence : optional DagPersistence
+  lifecycle : DeployLifecycleTables
+  carrier_index : CarrierIndex
+  floor_index / frontier_index : typed stores
+}
+entity BlockMetadataStore {
+  metadata : resident block records
+  block numbers / main parents / self justifications
+  children / finality status : resident indices
+  hot_window : height band
+}
+entity BlockMetadata {
+  block_hash : Bytes
+  parents : Vec<Bytes>
+  sender : Bytes
+  justifications : Vec<Justification>
+  weight_map : map<validator, TokenAmount>
+  block_number : i64
+  sequence_number : i32
+  equivocates : Option<Bytes>
+  directly_finalized / finalized : bool
+  fault_tolerance_value : f32
+  merge_base : Bytes
+}
+entity PendingBlocks {
+  blocks : admitted bodies awaiting authorization
+  limits : block count / bytes / sender count
+}
+entity KeyValueBlockStore {
+  store : blocks database handle
+  store_approved_block : approved block handle
+  pending : Arc<PendingBlocks>
+}
+CasperSnapshot "1" --> "1" OnChainCasperState : on_chain_state
+CasperSnapshot "1" --> "1" KeyValueDagRepresentation : dag
+BlockDagKeyValueStorage --> KeyValueDagRepresentation : publishes a view
+BlockDagKeyValueStorage "1" --> "1" BlockMetadataStore
+BlockMetadataStore "1" --> "0..*" BlockMetadata : resident band
+KeyValueDagRepresentation --> BlockMetadata : resident or cold lookup
+KeyValueBlockStore "1" --> "1" PendingBlocks
+note bottom of BlockMetadataStore
+Eviction removes resident indices, not durable history.
+A captured view limits later insertions by publication sequence.
+Mutable finality metadata is not a historical snapshot.
+end note
+legend bottom
+Conceptual view. Selected fields only. Full declarations are in inventory.md.
+Sources: casper.rs, block_dag_key_value_storage.rs, block_metadata_store.rs, pending_blocks.rs.
+endlegend
+@enduml

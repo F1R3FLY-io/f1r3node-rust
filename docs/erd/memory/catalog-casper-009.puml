@@ -1,0 +1,80 @@
+@startuml
+!include ../style.puml
+title catalog casper 009
+entity "Work" as E144 <<enum>> {
+  casper/src/rust/blocks/ingest/dependency_tracker.rs:65
+  --
+  Validate : variant
+  AdmitSettled : variant
+}
+entity "Stage" as E145 <<enum>> {
+  casper/src/rust/blocks/ingest/dependency_tracker.rs:71
+  --
+  Waiting : variant
+  Ready : variant
+  Working : variant
+}
+entity "Held" as E146 <<struct>> {
+  casper/src/rust/blocks/ingest/dependency_tracker.rs:78
+  --
+  meta : HeldMeta
+  work : Work
+  stage : Stage
+  missing : HashSet &#60; BlockHash &#62;
+  awaiting_root : Option &#60; Blake2b256Hash &#62;
+  retry_at_ms : Option &#60; u64 &#62;
+  seq : u64
+  vouch : Vouch
+}
+entity "Vouch" as E147 <<enum>> {
+  casper/src/rust/blocks/ingest/dependency_tracker.rs:90
+  --
+  Unvouched : variant
+  DuringValidation : variant
+  Declined : variant
+}
+entity "Departure" as E148 <<struct>> {
+  casper/src/rust/blocks/ingest/dependency_tracker.rs:106
+  --
+  removed : Vec &#60; HeldMeta &#62;
+  released : Vec &#60; BlockHash &#62;
+  unwaited : Vec &#60; BlockHash &#62;
+  unawaited_roots : Vec &#60; Blake2b256Hash &#62;
+}
+entity "FailureVerdict" as E149 <<enum>> {
+  casper/src/rust/blocks/ingest/dependency_tracker.rs:119
+  --
+  Retry : variant
+  GiveUp : variant
+}
+entity "VictimClass" as E150 <<enum>> {
+  casper/src/rust/blocks/ingest/dependency_tracker.rs:125
+  --
+  Unsolicited : variant
+  Solicited : variant
+}
+entity "DependencyTracker" as E151 <<struct>> {
+  casper/src/rust/blocks/ingest/dependency_tracker.rs:132
+  --
+  view : IngestView
+  held : HashMap &#60; BlockHash , Held &#62;
+  waiters : HashMap &#60; BlockHash , HashSet &#60; BlockHash &#62; &#62;
+  citations : HashMap &#60; BlockHash , usize &#62;
+  root_waiters : HashMap &#60; Blake2b256Hash , HashSet &#60; BlockHash &#62; &#62;
+  ready : BTreeSet &#60; (i64 , u64 , BlockHash) &#62;
+  cooling : BTreeSet &#60; (u64 , BlockHash) &#62;
+  failures : HashMap &#60; BlockHash , u32 &#62;
+  quarantined_until : HashMap &#60; BlockHash , u64 &#62;
+  disk_entries : usize
+  disk_by_sender : HashMap &#60; Validator , usize &#62;
+  next_seq : u64
+}
+E146 --> E144 : work
+E146 --> E145 : stage
+E146 --> E147 : vouch
+E151 --> E146 : held
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

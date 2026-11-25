@@ -1,0 +1,75 @@
+@startuml
+!include ../style.puml
+title catalog casper 039
+entity "BlockProcessing" as E384 <<alias>> {
+  casper/src/rust/mod.rs:49
+  --
+  value : Either &#60; BlockError , A &#62;
+}
+entity "ValidBlockProcessing" as E385 <<alias>> {
+  casper/src/rust/mod.rs:51
+  --
+  value : BlockProcessing &#60; ValidBlock &#62;
+}
+entity "ProposeFunction" as E386 <<alias>> {
+  casper/src/rust/mod.rs:54
+  --
+  value : dyn Fn (Arc &#60; dyn MultiParentCasper + Send + Sync &#62; , bool ,) -&#62;\n    Pin &#60; Box &#60; dyn Future &#60; Output = Result &#60; ProposerResult , CasperError\n    &#62; &#62; + Send &#62; &#62; + Send + Sync
+}
+entity "PacketParseResult" as E387 <<enum>> {
+  casper/src/rust/protocol/mod.rs:19
+  --
+  Success.0 : T
+  Failure.0 : String
+  IllegalPacket.0 : String
+}
+entity "CasperMessageProto" as E388 <<enum>> {
+  casper/src/rust/protocol/mod.rs:60
+  --
+  BlockHashMessage.0 : BlockHashMessageProto
+  BlockMessage.0 : BlockMessageProto
+  ApprovedBlock.0 : ApprovedBlockProto
+  ApprovedBlockRequest.0 : ApprovedBlockRequestProto
+  BlockRequest.0 : BlockRequestProto
+  BlockPrunedResponse.0 : BlockPrunedResponseProto
+  HasBlock.0 : HasBlockProto
+  HasBlockRequest.0 : HasBlockRequestProto
+  ForkChoiceTipRequest.0 : ForkChoiceTipRequestProto
+  BlockApproval.0 : BlockApprovalProto
+  UnapprovedBlock.0 : UnapprovedBlockProto
+  NoApprovedBlockAvailable.0 : NoApprovedBlockAvailableProto
+  StoreItemsMessageRequest.0 : StoreItemsMessageRequestProto
+  StoreItemsMessage.0 : StoreItemsMessageProto
+  FloorCacheRequest.0 : FloorCacheRequestProto
+  FloorCacheResponse.0 : FloorCacheResponseProto
+  GetSnapshotChunkRequest.0 : GetSnapshotChunkRequestProto
+  SnapshotChunkResponse.0 : SnapshotChunkResponseProto
+  HasSnapshotRequest.0 : HasSnapshotRequestProto
+  HasSnapshot.0 : HasSnapshotProto
+  GetWalPayloadRequest.0 : GetWalPayloadRequestProto
+  WalPayloadResponse.0 : WalPayloadResponseProto
+  HasWalPayloadRequest.0 : HasWalPayloadRequestProto
+  HasWalPayload.0 : HasWalPayloadProto
+}
+entity "ReportStore" as E389 <<alias>> {
+  casper/src/rust/report_store.rs:15
+  --
+  value : CompressedBlockEventInfoStore
+}
+entity "CompressedBlockEventInfoStore" as E390 <<struct>> {
+  casper/src/rust/report_store.rs:22
+  --
+  store : Arc &#60; dyn KeyValueStore &#62;
+}
+entity "DeployReportEvents" as E391 <<alias>> {
+  casper/src/rust/reporting_casper.rs:19
+  --
+  value : Vec &#60; ReportBatch &#60; Par , BindPattern , ListParWithRandom ,\n    TaggedContinuation &#62; &#62;
+}
+E385 --> E384 : value
+E389 --> E390 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,155 @@
+@startuml
+!include ../style.puml
+title catalog node 007
+entity "ReportPhaseSerde" as E1106 <<enum>> {
+  node/src/rust/api/serde_types/system_deploy_info.rs:435
+  --
+  Unspecified : variant
+  Precharge : variant
+  User : variant
+  Refund : variant
+}
+entity "SingleReportSerde" as E1107 <<struct>> {
+  node/src/rust/api/serde_types/system_deploy_info.rs:486
+  --
+  events : Vec &#60; ReportProtoSerde &#62;
+  phase : ReportPhaseSerde
+}
+entity "SystemDeployInfoWithEventSerde" as E1108 <<struct>> {
+  node/src/rust/api/serde_types/system_deploy_info.rs:515
+  --
+  system_deploy : Option &#60; SystemDeployDataSerde &#62;
+  report : Vec &#60; SingleReportSerde &#62;
+}
+entity "DeployFinalizationStatusJson" as E1109 <<struct>> {
+  node/src/rust/api/web_api.rs:197
+  --
+  state : String
+  rejection_count : u32
+  latest_block_hash : Option &#60; String &#62;
+}
+entity "PendingDeployJson" as E1110 <<struct>> {
+  node/src/rust/api/web_api.rs:208
+  --
+  term : String
+  timestamp : i64
+  phlo_price : String
+  phlo_limit : i64
+  valid_after_block_number : i64
+  shard_id : String
+  deployer : String
+  sig : String
+  sig_algorithm : String
+  expiration_timestamp : Option &#60; i64 &#62;
+  is_rejected : bool
+}
+entity "PendingDeploysJson" as E1111 <<struct>> {
+  node/src/rust/api/web_api.rs:236
+  --
+  deploys : Vec &#60; PendingDeployJson &#62;
+  total_available : u32
+}
+entity "WebApiImpl" as E1112 <<struct>> {
+  node/src/rust/api/web_api.rs:259
+  --
+  api_max_blocks_limit : i32
+  dev_mode : bool
+  network_id : String
+  shard_id : String
+  min_phlo_price : TokenAmount
+  native_token_name : String
+  native_token_symbol : String
+  native_token_decimals : u32
+  has_validator_key : bool
+  is_node_read_only : bool
+  engine_cell : Arc &#60; EngineCell &#62;
+  block_report_api : BlockReportAPI
+  transfer_unforgeable : models :: rhoapi :: Par
+  rp_conf_cell : comm :: rust :: rp :: rp_conf :: RPConfCell
+  connections_cell : ConnectionsCell
+  node_discovery : Arc &#60; dyn NodeDiscovery + Send + Sync &#62;
+  trigger_propose_f : Option &#60; Arc &#60; ProposeFunction &#62; &#62;
+  epoch_length : i32
+  quarantine_length : i32
+  is_ready : Arc &#60; AtomicBool &#62;
+}
+entity "RhoExpr" as E1113 <<enum>> {
+  node/src/rust/api/web_api.rs:1164
+  --
+  ExprPar.data : Vec &#60; RhoExpr &#62;
+  ExprTuple.data : Vec &#60; RhoExpr &#62;
+  ExprList.data : Vec &#60; RhoExpr &#62;
+  ExprSet.data : Vec &#60; RhoExpr &#62;
+  ExprMap.data : HashMap &#60; String , RhoExpr &#62;
+  ExprBool.data : bool
+  ExprInt.data : i64
+  ExprUint64.data : u64
+  ExprInt32.data : i32
+  ExprUint32.data : u32
+  ExprUint16.data : u32
+  ExprUint8.data : u32
+  ExprString.data : String
+  ExprUri.data : String
+  ExprBytes.data : String
+  ExprFloat.data : f64
+  ExprFloat32.data : f32
+  ExprBigInt.data : String
+  ExprBigRat.numerator : String
+  ExprBigRat.denominator : String
+  ExprFixedPoint.value : String
+  ExprFixedPoint.scale : u32
+  ExprUnforg.data : RhoUnforg
+  ExprBundle.data : Box &#60; RhoExpr &#62;
+  ExprBundle.read : bool
+  ExprBundle.write : bool
+  ExprNot.data : Box &#60; RhoExpr &#62;
+  ExprNeg.data : Box &#60; RhoExpr &#62;
+  ExprPlus.left : Box &#60; RhoExpr &#62;
+  ExprPlus.right : Box &#60; RhoExpr &#62;
+  ExprMinus.left : Box &#60; RhoExpr &#62;
+  ExprMinus.right : Box &#60; RhoExpr &#62;
+  ExprMult.left : Box &#60; RhoExpr &#62;
+  ExprMult.right : Box &#60; RhoExpr &#62;
+  ExprDiv.left : Box &#60; RhoExpr &#62;
+  ExprDiv.right : Box &#60; RhoExpr &#62;
+  ExprMod.left : Box &#60; RhoExpr &#62;
+  ExprMod.right : Box &#60; RhoExpr &#62;
+  ExprLt.left : Box &#60; RhoExpr &#62;
+  ExprLt.right : Box &#60; RhoExpr &#62;
+  ExprLte.left : Box &#60; RhoExpr &#62;
+  ExprLte.right : Box &#60; RhoExpr &#62;
+  ExprGt.left : Box &#60; RhoExpr &#62;
+  ExprGt.right : Box &#60; RhoExpr &#62;
+  ExprGte.left : Box &#60; RhoExpr &#62;
+  ExprGte.right : Box &#60; RhoExpr &#62;
+  ExprEq.left : Box &#60; RhoExpr &#62;
+  ExprEq.right : Box &#60; RhoExpr &#62;
+  ExprNeq.left : Box &#60; RhoExpr &#62;
+  ExprNeq.right : Box &#60; RhoExpr &#62;
+  ExprAnd.left : Box &#60; RhoExpr &#62;
+  ExprAnd.right : Box &#60; RhoExpr &#62;
+  ExprOr.left : Box &#60; RhoExpr &#62;
+  ExprOr.right : Box &#60; RhoExpr &#62;
+  ExprConcat.left : Box &#60; RhoExpr &#62;
+  ExprConcat.right : Box &#60; RhoExpr &#62;
+  ExprInterpolate.left : Box &#60; RhoExpr &#62;
+  ExprInterpolate.right : Box &#60; RhoExpr &#62;
+  ExprDiff.left : Box &#60; RhoExpr &#62;
+  ExprDiff.right : Box &#60; RhoExpr &#62;
+  ExprMatches.target : Box &#60; RhoExpr &#62;
+  ExprMatches.pattern : Box &#60; RhoExpr &#62;
+  ExprMethod.target : Box &#60; RhoExpr &#62;
+  ExprMethod.name : String
+  ExprMethod.args : Vec &#60; RhoExpr &#62;
+  ExprVar.index : i32
+  ExprSysAuthToken : variant
+  ExprUnknown.type_name : String
+}
+E1107 --> E1106 : phase
+E1108 --> E1107 : report
+E1111 --> E1110 : deploys
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

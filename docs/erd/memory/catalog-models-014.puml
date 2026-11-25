@@ -1,0 +1,67 @@
+@startuml
+!include ../style.puml
+title catalog models 014
+entity "BlockUnavailableInfo" as E842 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  hash #1 : Bytes
+  block_height #2 : Int64
+  prune_floor #3 : Int64
+}
+entity "BondStatusResponse" as E843 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  isBonded #2 oneof message : Bool
+}
+entity "ContinuationAtNamePayload" as E844 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  blockResults #1 : repeated .casper.ContinuationsWithBlockInfo
+  length #2 : Int32
+}
+entity "ContinuationAtNameResponse" as E845 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  payload #2 oneof message : .casper.v1.ContinuationAtNamePayload
+}
+entity "DeployFinalizationStatusResponse" as E846 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  status #2 oneof message : .casper.DeployFinalizationStatusInfo
+}
+entity "DeployResponse" as E847 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  result #2 oneof message : String
+}
+entity "EventInfoResponse" as E848 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  result #2 oneof message : .casper.BlockEventInfo
+}
+entity "ExploratoryDeployResponse" as E849 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  result #2 oneof message : .casper.DataWithBlockInfo
+  cost #3 : Uint64
+}
+E845 --> E844 : payload #2 oneof message
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

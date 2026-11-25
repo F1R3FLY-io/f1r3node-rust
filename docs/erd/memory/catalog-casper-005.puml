@@ -1,0 +1,59 @@
+@startuml
+!include ../style.puml
+title catalog casper 005
+entity "DeployFinalizationCorruption" as E112 <<struct>> {
+  casper/src/rust/api/deploy_finalization_status.rs:13
+  --
+  sig : Bytes
+  block_hash : BlockHash
+}
+entity "DeployFinalizationState" as E113 <<enum>> {
+  casper/src/rust/api/deploy_finalization_status.rs:39
+  --
+  Finalized : variant
+  Failed : variant
+  Pending : variant
+  Expired : variant
+}
+entity "DeployFinalizationStatus" as E114 <<struct>> {
+  casper/src/rust/api/deploy_finalization_status.rs:73
+  --
+  state : DeployFinalizationState
+  rejection_count : u32
+  latest_block_hash : Option &#60; BlockHash &#62;
+}
+entity "ValidatorBlock" as E115 <<struct>> {
+  casper/src/rust/api/graph_generator.rs:13
+  --
+  block_hash : String
+  parents : Vec &#60; String &#62;
+  justifications : Vec &#60; String &#62;
+}
+entity "GraphConfig" as E116 <<struct>> {
+  casper/src/rust/api/graph_generator.rs:20
+  --
+  show_justification_lines : bool
+}
+entity "ValidatorsBlocks" as E117 <<alias>> {
+  casper/src/rust/api/graph_generator.rs:26
+  --
+  value : HashMap &#60; i64 , Vec &#60; ValidatorBlock &#62; &#62;
+}
+entity "DagInfo" as E118 <<struct>> {
+  casper/src/rust/api/graph_generator.rs:28
+  --
+  validators : HashMap &#60; String , ValidatorsBlocks &#62;
+  timeseries : Vec &#60; i64 &#62;
+}
+entity "GraphzGenerator" as E119 <<struct>> {
+  casper/src/rust/api/graph_generator.rs:43
+  --
+}
+E114 --> E113 : state
+E117 --> E115 : value
+E118 --> E117 : validators
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

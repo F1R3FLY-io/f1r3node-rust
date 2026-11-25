@@ -1,0 +1,91 @@
+@startuml
+!include ../style.puml
+title catalog casper 048
+entity "LowerBound" as E456 <<struct>> {
+  casper/src/rust/soak_observer/fork_choice.rs:42
+  --
+  hash : String
+  block_number : i64
+  rule : LowerBoundRule
+}
+entity "LatestMessageCounts" as E457 <<struct>> {
+  casper/src/rust/soak_observer/fork_choice.rs:49
+  --
+  captured : usize
+  invalid : usize
+  not_held : usize
+  not_own_testimony : usize
+  used : usize
+}
+entity "ForkChoiceResult" as E458 <<struct>> {
+  casper/src/rust/soak_observer/fork_choice.rs:58
+  --
+  mode : EvaluationMode
+  lower_bound : LowerBound
+  common_ancestor : String
+  head : String
+  tips : Vec &#60; String &#62;
+  tip_scores : Vec &#60; BigInt &#62;
+  score_count : usize
+  score_digest : String
+  visited_blocks : u64
+  examined_edges : u64
+}
+entity "ForkChoiceComparison" as E459 <<struct>> {
+  casper/src/rust/soak_observer/fork_choice.rs:73
+  --
+  algorithm : &#38; 'static str
+  head_matches : bool
+  tips_match : bool
+  bounds_differ : bool
+}
+entity "ForkChoiceObservation" as E460 <<struct>> {
+  casper/src/rust/soak_observer/fork_choice.rs:81
+  --
+  input_digest : String
+  inputs : ForkChoiceInputs
+  latest_messages : LatestMessageCounts
+  bounded : Value &#60; ForkChoiceResult &#62;
+  reference : Value &#60; ForkChoiceResult &#62;
+  comparison : Value &#60; ForkChoiceComparison &#62;
+}
+entity "ReferenceControl" as E461 <<enum>> {
+  casper/src/rust/soak_observer/fork_choice.rs:91
+  --
+  None : variant
+  RankTipsByOwnScore : variant
+  CreditAllParents : variant
+  ReverseTieOrder : variant
+  KeepInvalidMessages : variant
+  KeepForeignMessages : variant
+  BoundAt.0 : BlockHash
+}
+entity "ReferenceForkChoice" as E462 <<struct>> {
+  casper/src/rust/soak_observer/fork_choice.rs:164
+  --
+  snapshot : &#38; 'a DetachedDagSnapshot
+  meter : &#38; 'a CheckedWork
+  inputs : &#38; 'a ForkChoiceInputs
+  authority : &#38; 'a AuthorityInputs
+  visited : HashSet &#60; BlockHash &#62;
+  examined_edges : u64
+  control : ReferenceControl
+}
+entity "Ranked" as E463 <<struct>> {
+  casper/src/rust/soak_observer/fork_choice.rs:174
+  --
+  ancestor : BlockHash
+  tips : Vec &#60; BlockHash &#62;
+  scores : HashMap &#60; BlockHash , BigInt &#62;
+}
+E458 --> E456 : lower_bound
+E460 --> E457 : latest_messages
+E460 --> E458 : bounded
+E460 --> E458 : reference
+E460 --> E459 : comparison
+E462 --> E461 : control
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

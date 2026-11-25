@@ -1,0 +1,56 @@
+@startuml
+!include ../style.puml
+title catalog comm 005
+entity "NodeDiscoveryStub" as E570 <<struct>> {
+  comm/src/rust/test_instances.rs:21
+  --
+  nodes : Vec &#60; PeerNode &#62;
+}
+entity "Request" as E571 <<struct>> {
+  comm/src/rust/test_instances.rs:61
+  --
+  peer : PeerNode
+  msg : Protocol
+}
+entity "Responses" as E572 <<alias>> {
+  comm/src/rust/test_instances.rs:67
+  --
+  value : Box &#60; dyn Fn (&#38; PeerNode , &#38; Protocol) -&#62; Result &#60; () ,\n    CommError &#62; + Send + Sync &#62;
+}
+entity "TransportLayerStub" as E573 <<struct>> {
+  comm/src/rust/test_instances.rs:69
+  --
+  reqresp : Arc &#60; Mutex &#60; Option &#60; Arc &#60; Responses &#62; &#62; &#62; &#62;
+  requests : Arc &#60; Mutex &#60; Vec &#60; Request &#62; &#62; &#62;
+}
+entity "LogicalTime" as E574 <<struct>> {
+  comm/src/rust/test_instances.rs:180
+  --
+  clock : AtomicI64
+}
+entity "LogStub" as E575 <<struct>> {
+  comm/src/rust/test_instances.rs:202
+  --
+  debugs : Arc &#60; Mutex &#60; Vec &#60; String &#62; &#62; &#62;
+  infos : Arc &#60; Mutex &#60; Vec &#60; String &#62; &#62; &#62;
+  warns : Arc &#60; Mutex &#60; Vec &#60; String &#62; &#62; &#62;
+  errors : Arc &#60; Mutex &#60; Vec &#60; String &#62; &#62; &#62;
+}
+entity "Chunker" as E576 <<struct>> {
+  comm/src/rust/transport/chunker.rs:11
+  --
+}
+entity "CommunicationResponse" as E577 <<enum>> {
+  comm/src/rust/transport/communication_response.rs:7
+  --
+  HandledWithMessage.pm : Protocol
+  HandledWitoutMessage : variant
+  NotHandled.error : CommError
+}
+E573 --> E571 : requests
+E573 --> E572 : reqresp
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

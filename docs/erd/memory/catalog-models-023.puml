@@ -1,0 +1,98 @@
+@startuml
+!include ../style.puml
+title catalog models 023
+entity "ListParWithRandom" as E914 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  pars #1 : repeated .rhoapi.Par
+  randomState #2 : Bytes
+}
+entity "Match" as E915 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  target #1 : .rhoapi.Par
+  cases #2 : repeated .rhoapi.MatchCase
+  locallyFree #4 : Bytes
+  connective_used #5 : Bool
+}
+entity "MatchCase" as E916 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  pattern #1 : .rhoapi.Par
+  source #2 : .rhoapi.Par
+  freeCount #3 : Int32
+  guard #4 : .rhoapi.Par
+}
+entity "New" as E917 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  bindCount #1 : Sint32
+  p #2 : .rhoapi.Par
+  uri #3 : repeated String
+  injections #4 : repeated .rhoapi.New.InjectionsEntry
+  locallyFree #5 : Bytes
+}
+entity "PCost" as E918 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  cost #1 : Uint64
+}
+entity "Par" as E919 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  sends #1 : repeated .rhoapi.Send
+  receives #2 : repeated .rhoapi.Receive
+  news #4 : repeated .rhoapi.New
+  exprs #5 : repeated .rhoapi.Expr
+  matches #6 : repeated .rhoapi.Match
+  unforgeables #7 : repeated .rhoapi.GUnforgeable
+  bundles #11 : repeated .rhoapi.Bundle
+  connectives #8 : repeated .rhoapi.Connective
+  conditionals #12 : repeated .rhoapi.If
+  locallyFree #9 : Bytes
+  connective_used #10 : Bool
+}
+entity "ParWithRandom" as E920 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  body #1 : .rhoapi.Par
+  randomState #2 : Bytes
+}
+entity "Receive" as E921 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  binds #1 : repeated .rhoapi.ReceiveBind
+  body #2 : .rhoapi.Par
+  persistent #3 : Bool
+  peek #4 : Bool
+  bindCount #5 : Int32
+  locallyFree #6 : Bytes
+  connective_used #7 : Bool
+  condition #8 : .rhoapi.Par
+}
+E914 --> E919 : pars #1
+E915 --> E916 : cases #2
+E915 --> E919 : target #1
+E916 --> E919 : guard #4
+E916 --> E919 : pattern #1
+E916 --> E919 : source #2
+E917 --> E919 : p #2
+E919 --> E915 : matches #6
+E919 --> E917 : news #4
+E919 --> E921 : receives #2
+E920 --> E919 : body #1
+E921 --> E919 : body #2
+E921 --> E919 : condition #8
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

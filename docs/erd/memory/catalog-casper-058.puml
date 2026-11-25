@@ -1,0 +1,20 @@
+@startuml
+!include ../style.puml
+title catalog casper 058
+entity "Validate" as E536 <<struct>> {
+  casper/src/rust/validate.rs:91
+  --
+}
+entity "ValidatorIdentity" as E537 <<struct>> {
+  casper/src/rust/validator_identity.rs:12
+  --
+  public_key : PublicKey
+  private_key : PrivateKey
+  signature_algorithm : String
+}
+E536 -[hidden]down-> E537
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

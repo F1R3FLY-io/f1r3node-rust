@@ -1,0 +1,56 @@
+@startuml
+!include ../style.puml
+title Block bodies, approval, and reporting
+entity "blockstorage / blocks" as Blocks <<LMDB>> {
+  * key : raw block hash bytes
+  --
+  value : varint length + LZ4 compressed protobuf
+  decoded : BlockMessageProto
+}
+entity BlockMessageProto <<protobuf>> {
+  blockHash / sender / sig / seqNum / shardId
+  header : HeaderProto
+  body : BodyProto
+  justifications : repeated JustificationProto
+}
+entity BodyProto <<protobuf>> {
+  state : RChainStateProto
+  deploys : repeated ProcessedDeployProto
+  rejectedDeploys : repeated RejectedDeployProto
+  systemDeploys : repeated ProcessedSystemDeployProto
+  mergeBase : bytes
+}
+entity "dagstorage / blocks-approved" as Approved <<LMDB>> {
+  * key : byte [42]
+  --
+  value : ApprovedBlockProto bytes
+}
+entity ApprovedBlockProto <<protobuf>> {
+  candidate : ApprovedBlockCandidateProto
+  sigs : repeated Signature
+}
+entity "reporting / reporting-cache" as Reports <<LMDB>> {
+  * key : raw block hash
+  --
+  value : compressed BlockEventInfo protobuf
+  contents : deploy / system-deploy execution traces
+}
+entity "transaction / transaction" as Transaction <<registered>> {
+  database mapping exists
+  no production open / writer found in this revision
+  no active record schema asserted
+}
+Blocks "1" --> "1" BlockMessageProto : decode
+BlockMessageProto "1" --> "1" BodyProto
+Approved "1" --> "1" ApprovedBlockProto : decode
+ApprovedBlockProto --> BlockMessageProto : candidate.block
+Reports --> Blocks : logical block hash
+note bottom of Blocks
+Retention can remove a body while its DAG metadata remains.
+The reporting database is a cache, not consensus authority.
+end note
+legend bottom
+Paths are relative to the node data directory. Arrows are logical references, not enforced foreign keys.
+Sources: key_value_block_store.rs, report_store.rs, rnode_key_value_store_manager.rs, CasperMessage.proto.
+endlegend
+@enduml

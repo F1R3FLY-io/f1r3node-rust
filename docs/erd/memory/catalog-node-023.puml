@@ -1,0 +1,64 @@
+@startuml
+!include ../style.puml
+title catalog node 023
+entity "ReportingRoutes" as E1234 <<struct>> {
+  node/src/rust/web/reporting_routes.rs:15
+  --
+}
+entity "ReportResponse" as E1235 <<enum>> {
+  node/src/rust/web/reporting_routes.rs:17
+  --
+  BlockTracesReport.report : Value
+  BlockReportError.error_message : String
+}
+entity "TraceQuery" as E1236 <<struct>> {
+  node/src/rust/web/reporting_routes.rs:29
+  --
+  block_hash : String
+  force_replay : Option &#60; bool &#62;
+}
+entity "ReportingHttpRoutes" as E1237 <<alias>> {
+  node/src/rust/web/reporting_routes.rs:37
+  --
+  value : Router &#60; AppState &#62;
+}
+entity "Routes" as E1238 <<struct>> {
+  node/src/rust/web/routes.rs:20
+  --
+}
+entity "AppState" as E1239 <<struct>> {
+  node/src/rust/web/shared_handlers.rs:40
+  --
+  deploy_limiter : DeployRequestLimiter
+  admin_web_api : Arc &#60; dyn AdminWebApi + Send + Sync + 'static &#62;
+  web_api : Arc &#60; dyn WebApi + Send + Sync + 'static &#62;
+  block_report_api : Arc &#60; BlockReportAPI &#62;
+  rp_conf_cell : comm :: rust :: rp :: rp_conf :: RPConfCell
+  connections_cell : Arc &#60; ConnectionsCell &#62;
+  node_discovery : Arc &#60; dyn NodeDiscovery + Send + Sync + 'static &#62;
+  event_stream : Arc &#60; EventStream &#62;
+  startup_events : StartupBuffer
+}
+entity "ApiErrorResponse" as E1240 <<struct>> {
+  node/src/rust/web/shared_handlers.rs:83
+  --
+  error : String
+  message : String
+}
+entity "AppError" as E1241 <<struct>> {
+  node/src/rust/web/shared_handlers.rs:141
+  --
+  0 : eyre :: Error
+}
+E1234 -[hidden]down-> E1235
+E1235 -[hidden]down-> E1236
+E1236 -[hidden]down-> E1237
+E1237 -[hidden]down-> E1238
+E1238 -[hidden]down-> E1239
+E1239 -[hidden]down-> E1240
+E1240 -[hidden]down-> E1241
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

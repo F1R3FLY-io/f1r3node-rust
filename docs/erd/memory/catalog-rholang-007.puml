@@ -1,0 +1,61 @@
+@startuml
+!include ../style.puml
+title catalog rholang 007
+entity "HostWorkBudgetState" as E1310 <<struct>> {
+  rholang/src/rust/interpreter/host_work.rs:15
+  --
+  limits : HostWorkLimits
+  usage : [AtomicU64 ; HOST_WORK_DIMENSION_COUNT]
+  rejected : AtomicBool
+  rejection : OnceLock &#60; HostWorkReservationError &#62;
+}
+entity "HostWorkBudget" as E1311 <<struct>> {
+  rholang/src/rust/interpreter/host_work.rs:22
+  --
+  state : Arc &#60; HostWorkBudgetState &#62;
+}
+entity "EvaluateResult" as E1312 <<struct>> {
+  rholang/src/rust/interpreter/interpreter.rs:26
+  --
+  cost : Cost
+  errors : Vec &#60; InterpreterError &#62;
+  mergeable : HashMap &#60; Par , MergeType &#62;
+}
+entity "InterpreterImpl" as E1313 <<struct>> {
+  rholang/src/rust/interpreter/interpreter.rs:45
+  --
+  c : _cost
+  merge_chs : Arc &#60; RwLock &#60; HashMap &#60; Par , MergeType &#62; &#62; &#62;
+}
+entity "ConsensusFoldEntry" as E1314 <<struct>> {
+  rholang/src/rust/interpreter/io/consensus_fingerprint.rs:129
+  --
+  order : u32
+  name : &#38; 'static str
+  encode : fn (&#38; mut Vec &#60; u8 &#62;)
+}
+entity "DirIter" as E1315 <<struct>> {
+  rholang/src/rust/interpreter/io/dir_handle_table.rs:58
+  --
+  dirp : * mut libc :: DIR
+}
+entity "DirHandle" as E1316 <<struct>> {
+  rholang/src/rust/interpreter/io/dir_handle_table.rs:200
+  --
+  iter : Mutex &#60; Option &#60; DirIter &#62; &#62;
+  canon_path : PathBuf
+  cmode : ConsensusMode
+  deploy : DeployScope
+}
+entity "DirHandleTable" as E1317 <<struct>> {
+  rholang/src/rust/interpreter/io/dir_handle_table.rs:264
+  --
+  inner : Arc &#60; Inner &#62;
+}
+E1311 --> E1310 : state
+E1316 --> E1315 : iter
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

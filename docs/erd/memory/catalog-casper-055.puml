@@ -1,0 +1,66 @@
+@startuml
+!include ../style.puml
+title catalog casper 055
+entity "ReplayCacheState" as E512 <<struct>> {
+  casper/src/rust/util/rholang/replay_cache.rs:189
+  --
+  map : IndexMap &#60; ReplayCacheKey , ReplayCacheEntry &#62;
+  retained_bytes : usize
+}
+entity "InMemoryReplayCache" as E513 <<struct>> {
+  casper/src/rust/util/rholang/replay_cache.rs:201
+  --
+  state : Mutex &#60; ReplayCacheState &#62;
+  max_entries : usize
+  max_bytes : usize
+}
+entity "ReplayFailure" as E514 <<enum>> {
+  casper/src/rust/util/rholang/replay_failure.rs:3
+  --
+  InternalError.msg : String
+  ReplayStatusMismatch.initial_failed : bool
+  ReplayStatusMismatch.replay_failed : bool
+  UnusedCOMMEvent.msg : String
+  ReplayCostMismatch.initial_cost : u64
+  ReplayCostMismatch.replay_cost : u64
+  SystemDeployErrorMismatch.play_error : String
+  SystemDeployErrorMismatch.replay_error : String
+}
+entity "MergeableStore" as E515 <<alias>> {
+  casper/src/rust/util/rholang/runtime_manager.rs:60
+  --
+  value : KeyValueTypedStoreImpl &#60; ByteVector , Vec &#60; DeployMergeableData\n    &#62; &#62;
+}
+entity "MergeableKey" as E516 <<struct>> {
+  casper/src/rust/util/rholang/runtime_manager.rs:62
+  --
+  state_hash : StateHashSerde
+  creator : prost :: bytes :: Bytes
+  seq_num : i32
+}
+entity "ExploratoryDeployConfig" as E517 <<struct>> {
+  casper/src/rust/util/rholang/runtime_manager.rs:70
+  --
+  max_concurrent : usize
+  phlo_limit : i64
+  execution_timeout : Duration
+}
+entity "ReplayLock" as E518 <<struct>> {
+  casper/src/rust/util/rholang/runtime_manager.rs:154
+  --
+  semaphore : Arc &#60; Semaphore &#62;
+  consensus_waiters : std :: sync :: atomic :: AtomicUsize
+  changed : Arc &#60; tokio :: sync :: Notify &#62;
+}
+entity "ReplayPermit" as E519 <<struct>> {
+  casper/src/rust/util/rholang/runtime_manager.rs:160
+  --
+  permit : Option &#60; OwnedSemaphorePermit &#62;
+  changed : Arc &#60; tokio :: sync :: Notify &#62;
+}
+E513 --> E512 : state
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

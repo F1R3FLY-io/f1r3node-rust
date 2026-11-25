@@ -1,0 +1,61 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 007
+entity "HotStoreInstances" as E1674 <<struct>> {
+  rspace++/src/rspace/hot_store.rs:1135
+  --
+}
+entity "HotStoreAction" as E1675 <<enum>> {
+  rspace++/src/rspace/hot_store_action.rs:5
+  --
+  Insert.0 : InsertAction &#60; C , P , A , K &#62;
+  Delete.0 : DeleteAction &#60; C &#62;
+}
+entity "InsertAction" as E1676 <<enum>> {
+  rspace++/src/rspace/hot_store_action.rs:11
+  --
+  InsertData.0 : InsertData &#60; C , A &#62;
+  InsertJoins.0 : InsertJoins &#60; C &#62;
+  InsertContinuations.0 : InsertContinuations &#60; C , P , K &#62;
+}
+entity "InsertData" as E1677 <<struct>> {
+  rspace++/src/rspace/hot_store_action.rs:18
+  --
+  channel : C
+  data : Vec &#60; Datum &#60; A &#62; &#62;
+}
+entity "InsertJoins" as E1678 <<struct>> {
+  rspace++/src/rspace/hot_store_action.rs:24
+  --
+  channel : C
+  joins : Vec &#60; Vec &#60; C &#62; &#62;
+}
+entity "InsertContinuations" as E1679 <<struct>> {
+  rspace++/src/rspace/hot_store_action.rs:30
+  --
+  channels : Vec &#60; C &#62;
+  continuations : Vec &#60; WaitingContinuation &#60; P , K &#62; &#62;
+}
+entity "DeleteAction" as E1680 <<enum>> {
+  rspace++/src/rspace/hot_store_action.rs:36
+  --
+  DeleteData.0 : DeleteData &#60; C &#62;
+  DeleteJoins.0 : DeleteJoins &#60; C &#62;
+  DeleteContinuations.0 : DeleteContinuations &#60; C &#62;
+}
+entity "DeleteData" as E1681 <<struct>> {
+  rspace++/src/rspace/hot_store_action.rs:43
+  --
+  channel : C
+}
+E1675 --> E1676 : Insert.0
+E1675 --> E1680 : Delete.0
+E1676 --> E1677 : InsertData.0
+E1676 --> E1678 : InsertJoins.0
+E1676 --> E1679 : InsertContinuations.0
+E1680 --> E1681 : DeleteData.0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

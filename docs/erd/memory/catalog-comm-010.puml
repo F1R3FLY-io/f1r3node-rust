@@ -1,0 +1,67 @@
+@startuml
+!include ../style.puml
+title catalog comm 010
+entity "Cancelable" as E610 <<struct>> {
+  comm/src/rust/transport/grpc_transport_server.rs:29
+  --
+  task : JoinHandle &#60; () &#62;
+  shutdown : oneshot :: Sender &#60; () &#62;
+}
+entity "DispatchFn" as E611 <<alias>> {
+  comm/src/rust/transport/grpc_transport_server.rs:54
+  --
+  value : Arc &#60; dyn Fn (Protocol ,) -&#62; Pin &#60; Box &#60; dyn Future &#60; Output =\n    Result &#60; CommunicationResponse , CommError &#62; &#62; + Send &#62; &#62; + Send + Sync\n    , &#62;
+}
+entity "HandleStreamedFn" as E612 <<alias>> {
+  comm/src/rust/transport/grpc_transport_server.rs:64
+  --
+  value : Arc &#60; dyn Fn (Blob) -&#62; Pin &#60; Box &#60; dyn Future &#60; Output = Result\n    &#60; () , CommError &#62; &#62; + Send &#62; &#62; + Send + Sync &#62;
+}
+entity "GrpcTransportServer" as E613 <<struct>> {
+  comm/src/rust/transport/grpc_transport_server.rs:82
+  --
+  local_peer : RPConf
+  network_id : String
+  bind : TransportBind
+  cert : String
+  key : String
+  max_message_size : i32
+  max_stream_message_size : u64
+  parallelism : usize
+  cache : StreamCache
+}
+entity "TransportServer" as E614 <<struct>> {
+  comm/src/rust/transport/grpc_transport_server.rs:176
+  --
+  server : GrpcTransportServer
+  server_handle : Arc &#60; Mutex &#60; Option &#60; Cancelable &#62; &#62; &#62;
+  is_running : Arc &#60; AtomicBool &#62;
+}
+entity "SIGNATURE_ALGORITHMS" as E615 <<static>> {
+  comm/src/rust/transport/hostname_trust_manager_factory.rs:13
+  --
+  value : LazyLock &#60; WebPkiSupportedAlgorithms &#62;
+}
+entity "CertificateValidationError" as E616 <<enum>> {
+  comm/src/rust/transport/hostname_trust_manager_factory.rs:35
+  --
+  ValidationFailed.0 : String
+  NotAllowedMethod : variant
+  NoHandshakeSession : variant
+  WrongAlgorithm : variant
+  AddressHostnameMismatch : variant
+  NoEndpointIdentification : variant
+  UnknownIdentificationAlgorithm.0 : String
+  ParsingError.0 : String
+}
+entity "HostnameTrustManagerFactory" as E617 <<struct>> {
+  comm/src/rust/transport/hostname_trust_manager_factory.rs:69
+  --
+}
+E614 --> E610 : server_handle
+E614 --> E613 : server
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

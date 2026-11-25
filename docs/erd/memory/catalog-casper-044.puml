@@ -1,0 +1,84 @@
+@startuml
+!include ../style.puml
+title catalog casper 044
+entity "ForkChoiceInputs" as E424 <<struct>> {
+  casper/src/rust/soak_observer.rs:33
+  --
+  max_number_of_parents : i32
+  approved_block_number : i64
+  latest_message_depth : i64
+}
+entity "CaptureEndpoint" as E425 <<struct>> {
+  casper/src/rust/soak_observer.rs:40
+  --
+  dag : BlockDagKeyValueStorage
+  blocks : KeyValueBlockStore
+  authority : AuthorityInputs
+  fork_choice : ForkChoiceInputs
+}
+entity "AttachmentError" as E426 <<enum>> {
+  casper/src/rust/soak_observer.rs:79
+  --
+  Unsupported : variant
+  AlreadyAttached : variant
+}
+entity "EventKind" as E427 <<enum>> {
+  casper/src/rust/soak_observer.rs:86
+  --
+  LiveDerivation : variant
+  EffectAttempt : variant
+  EffectReturn : variant
+  DetachedDerivation : variant
+  PersistedObservation : variant
+}
+entity "FloorOutcome" as E428 <<enum>> {
+  casper/src/rust/soak_observer.rs:96
+  --
+  Advance : variant
+  NoAdvance : variant
+  ContainmentHold : variant
+  AbsenceHold : variant
+  IncompatibilityHold : variant
+  Failed : variant
+}
+entity "ObservationEvent" as E429 <<struct>> {
+  casper/src/rust/soak_observer.rs:107
+  --
+  installation : u64
+  sequence : u64
+  elapsed_ns : u64
+  kind : EventKind
+  operation : Option &#60; u64 &#62;
+  outcome : Option &#60; FloorOutcome &#62;
+  hash : Option &#60; [u8 ; 32] &#62;
+  height : Option &#60; i64 &#62;
+  success : Option &#60; bool &#62;
+  snapshot_digest : Option &#60; [u8 ; 32] &#62;
+}
+entity "Interval" as E430 <<struct>> {
+  casper/src/rust/soak_observer.rs:121
+  --
+  installation : u64
+  started : Instant
+  active : AtomicBool
+  sequence : AtomicU64
+  operations : AtomicU64
+  lost : AtomicU64
+  overflow : AtomicBool
+  sender : mpsc :: Sender &#60; ObservationEvent &#62;
+}
+entity "ObserverBinding" as E431 <<struct>> {
+  casper/src/rust/soak_observer.rs:132
+  --
+  0 : Arc &#60; Interval &#62;
+}
+E425 --> E424 : fork_choice
+E429 --> E427 : kind
+E429 --> E428 : outcome
+E430 --> E429 : sender
+E431 --> E430 : 0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

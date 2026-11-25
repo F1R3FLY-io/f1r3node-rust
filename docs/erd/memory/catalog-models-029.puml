@@ -1,0 +1,59 @@
+@startuml
+!include ../style.puml
+title catalog models 029
+entity "HasSnapshotRequest" as E962 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:342
+  --
+  block_hash : ByteString
+}
+entity "HasSnapshot" as E963 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:366
+  --
+  block_hash : ByteString
+  merkle_root : ByteString
+  chunk_count : u32
+}
+entity "GetWalPayloadRequest" as E964 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:400
+  --
+  payload_hash : ByteString
+}
+entity "WalPayloadResponse" as E965 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:424
+  --
+  payload_hash : ByteString
+  payload_bytes : ByteString
+}
+entity "HasWalPayloadRequest" as E966 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:464
+  --
+  payload_hash : ByteString
+}
+entity "HasWalPayload" as E967 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:488
+  --
+  payload_hash : ByteString
+  payload_size : u32
+}
+entity "ForkChoiceTipRequest" as E968 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:521
+  --
+}
+entity "ApprovedBlockCandidate" as E969 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:528
+  --
+  block : BlockMessage
+  required_sigs : i32
+}
+E962 -[hidden]down-> E963
+E963 -[hidden]down-> E964
+E964 -[hidden]down-> E965
+E965 -[hidden]down-> E966
+E966 -[hidden]down-> E967
+E967 -[hidden]down-> E968
+E968 -[hidden]down-> E969
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

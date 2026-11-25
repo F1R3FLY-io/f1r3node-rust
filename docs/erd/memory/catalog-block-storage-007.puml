@@ -1,0 +1,62 @@
+@startuml
+!include ../style.puml
+title catalog block storage 007
+entity "DeployRecordQuarantine" as E48 <<struct>> {
+  block-storage/src/rust/deploy/deploy_record_quarantine.rs:83
+  --
+  store_name : &#38; 'static str
+  quarantine : Arc &#60; dyn KeyValueStore &#62;
+  sizes : Arc &#60; Mutex &#60; StoredSizes &#62; &#62;
+}
+entity "DeployPoolLimits" as E49 <<struct>> {
+  block-storage/src/rust/deploy/key_value_deploy_storage.rs:28
+  --
+  max_records : usize
+  max_bytes : u64
+}
+entity "PoolRefusal" as E50 <<enum>> {
+  block-storage/src/rust/deploy/key_value_deploy_storage.rs:52
+  --
+  TooLarge.record_bytes : u64
+  TooLarge.limit : u64
+  Full.resource : &#38; 'static str
+  Full.required : u64
+  Full.limit : u64
+}
+entity "DeployStorageName" as E51 <<struct>> {
+  block-storage/src/rust/deploy/key_value_deploy_storage.rs:96
+  --
+}
+entity "RejectedDeployBufferName" as E52 <<struct>> {
+  block-storage/src/rust/deploy/key_value_deploy_storage.rs:105
+  --
+}
+entity "KeyValueDeployStore" as E53 <<struct>> {
+  block-storage/src/rust/deploy/key_value_deploy_storage.rs:115
+  --
+  store : KeyValueTypedStoreImpl &#60; ByteString , Signed &#60; DeployData &#62; &#62;
+  quarantine : DeployRecordQuarantine
+  seeds : Arc &#60; dyn KeyValueStore &#62;
+  _name : PhantomData &#60; N &#62;
+}
+entity "PreparedDeploy" as E54 <<struct>> {
+  block-storage/src/rust/deploy/key_value_deploy_storage.rs:130
+  --
+  key : BitVector
+  value : BitVector
+  sig : ByteString
+  seed : ByteString
+}
+entity "DeployRecordSnapshot" as E55 <<struct>> {
+  block-storage/src/rust/deploy/key_value_deploy_storage.rs:137
+  --
+  key : BitVector
+  value : Option &#60; BitVector &#62;
+  verified : bool
+}
+E53 --> E48 : quarantine
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,67 @@
+@startuml
+!include ../style.puml
+title catalog casper 033
+entity "StateLineage" as E336 <<enum>> {
+  casper/src/rust/finality/floor.rs:109
+  --
+  Meet.0 : BlockHash
+  Disconnected : variant
+}
+entity "FloorOfView" as E337 <<enum>> {
+  casper/src/rust/finality/floor.rs:384
+  --
+  Advance.0 : Floor
+  NoAdvance : variant
+  ContainmentHold.derived : Floor
+  AbsenceHold.missing : BlockHash
+  IncompatibilityHold.detail : String
+}
+entity "WitnessMemo" as E338 <<struct>> {
+  casper/src/rust/finality/floor.rs:1310
+  --
+  verdicts : HashMap &#60; BlockHash , bool &#62;
+  committees : HashMap &#60; BlockHash , HashMap &#60; Validator , num_bigint ::\n    BigInt &#62; &#62;
+  evaluations : u64
+}
+entity "CanonicalDispositions" as E339 <<alias>> {
+  casper/src/rust/finality/floor_context.rs:36
+  --
+  value : Arc &#60; HashMap &#60; Bytes , crate :: rust :: util :: rholang ::\n    interpreter_util :: SigDisposition &#62; &#62;
+}
+entity "RetryGateBasis" as E340 <<enum>> {
+  casper/src/rust/finality/floor_context.rs:42
+  --
+  Open : variant
+  NoDisposition : variant
+  NoKeptRejection : variant
+  RecordAboveFloor.0 : BlockHash
+}
+entity "FloorContext" as E341 <<struct>> {
+  casper/src/rust/finality/floor_context.rs:54
+  --
+  floor : Floor
+  floor_state : StateHash
+  settled_floors : Vec &#60; Floor &#62;
+  frontier : Floor
+  parents : Vec &#60; BlockHash &#62;
+  dispositions : parking_lot :: Mutex &#60; HashMap &#60; i64 ,\n    CanonicalDispositions &#62; &#62;
+  effect_memo : parking_lot :: Mutex &#60; HashMap &#60; Bytes , bool &#62; &#62;
+}
+entity "BundleEntryKind" as E342 <<enum>> {
+  casper/src/rust/genesis/contracts/fs_genesis.rs:129
+  --
+  File : variant
+  Dir : variant
+}
+entity "BundleConsensusMode" as E343 <<enum>> {
+  casper/src/rust/genesis/contracts/fs_genesis.rs:138
+  --
+  Oracular : variant
+  Consensus : variant
+}
+E341 --> E339 : dispositions
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

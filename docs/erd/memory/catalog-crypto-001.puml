@@ -1,0 +1,55 @@
+@startuml
+!include ../style.puml
+title catalog crypto 001
+entity "Blake2b256" as E645 <<struct>> {
+  crypto/src/rust/hash/blake2b256.rs:7
+  --
+}
+entity "Blake2b512Block" as E646 <<struct>> {
+  crypto/src/rust/hash/blake2b512_block.rs:3
+  --
+  chain_value : Vec &#60; i64 &#62;
+  t0 : i64
+  t1 : i64
+}
+entity "Blake2b512Random" as E647 <<struct>> {
+  crypto/src/rust/hash/blake2b512_random.rs:6
+  --
+  digest : Blake2b512Block
+  last_block : Vec &#60; i8 &#62;
+  path_view : Vec &#60; u8 &#62;
+  count_view : Vec &#60; u64 &#62;
+  hash_array : [i8 ; 64]
+  position : i64
+  path_position : usize
+}
+entity "Keccak256" as E648 <<struct>> {
+  crypto/src/rust/hash/keccak256.rs:4
+  --
+}
+entity "MerkleParams" as E649 <<struct>> {
+  crypto/src/rust/hash/merkle.rs:39
+  --
+  interior_domain : u8
+}
+entity "MerkleProof" as E650 <<struct>> {
+  crypto/src/rust/hash/merkle.rs:53
+  --
+  index : u32
+  siblings : Vec &#60; ([u8 ; 32] , bool) &#62;
+}
+entity "Sha256Hasher" as E651 <<struct>> {
+  crypto/src/rust/hash/sha_256.rs:3
+  --
+}
+entity "PrivateKey" as E652 <<struct>> {
+  crypto/src/rust/private_key.rs:6
+  --
+  bytes : prost :: bytes :: Bytes
+}
+E647 --> E646 : digest
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

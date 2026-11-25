@@ -1,0 +1,76 @@
+@startuml
+!include ../style.puml
+title catalog casper 007
+entity "SharedCasper" as E128 <<alias>> {
+  casper/src/rust/blocks/ingest/block_ingest.rs:61
+  --
+  value : Arc &#60; dyn MultiParentCasper + Send + Sync &#62;
+}
+entity "Delivery" as E129 <<struct>> {
+  casper/src/rust/blocks/ingest/block_ingest.rs:63
+  --
+  block : CheckedBlock
+  from : PeerNode
+}
+entity "Outbound" as E130 <<enum>> {
+  casper/src/rust/blocks/ingest/block_ingest.rs:69
+  --
+  Request.hash : BlockHash
+  Request.peer : PeerNode
+  Broadcast.0 : BlockHash
+}
+entity "Attached" as E131 <<struct>> {
+  casper/src/rust/blocks/ingest/block_ingest.rs:74
+  --
+  casper : SharedCasper
+  intake : Arc &#60; Intake &#62;
+}
+entity "AttachedSlot" as E132 <<alias>> {
+  casper/src/rust/blocks/ingest/block_ingest.rs:82
+  --
+  value : Arc &#60; RwLock &#60; Option &#60; Attached &#62; &#62; &#62;
+}
+entity "IngestHandle" as E133 <<struct>> {
+  casper/src/rust/blocks/ingest/block_ingest.rs:84
+  --
+  view : IngestView
+  awaited : mpsc :: Sender &#60; Delivery &#62;
+  unsolicited : mpsc :: Sender &#60; Delivery &#62;
+  inputs : mpsc :: Sender &#60; IngestInput &#62;
+  attached : AttachedSlot
+  block_store : KeyValueBlockStore
+  dag : BlockDagKeyValueStorage
+}
+entity "IngestPorts" as E134 <<struct>> {
+  casper/src/rust/blocks/ingest/block_ingest.rs:96
+  --
+  awaited : mpsc :: Receiver &#60; Delivery &#62;
+  unsolicited : mpsc :: Receiver &#60; Delivery &#62;
+  inputs : mpsc :: Receiver &#60; IngestInput &#62;
+  inserted : mpsc :: UnboundedReceiver &#60; BlockHash &#62;
+}
+entity "IngestSetup" as E135 <<struct>> {
+  casper/src/rust/blocks/ingest/block_ingest.rs:233
+  --
+  block_store : KeyValueBlockStore
+  dag : BlockDagKeyValueStorage
+  transport : Arc &#60; T &#62;
+  connections : ConnectionsCell
+  conf : RPConf
+  validation_width : usize
+  max_number_of_parents : i32
+  state_root_fetch_tx : Option &#60; mpsc :: Sender &#60; Blake2b256Hash &#62; &#62;
+  state_root_results : Option &#60; mpsc :: UnboundedReceiver &#60;\n    (Blake2b256Hash , StateFetchResult) &#62; &#62;
+}
+E131 --> E128 : casper
+E132 --> E131 : value
+E133 --> E129 : awaited
+E133 --> E129 : unsolicited
+E133 --> E132 : attached
+E134 --> E129 : awaited
+E134 --> E129 : unsolicited
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

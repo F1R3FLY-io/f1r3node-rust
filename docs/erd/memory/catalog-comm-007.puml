@@ -1,0 +1,57 @@
+@startuml
+!include ../style.puml
+title catalog comm 007
+entity "ConnectionCloser" as E586 <<struct>> {
+  comm/src/rust/transport/f1r3fly_server.rs:398
+  --
+  0 : Arc &#60; ConnectionCloserState &#62;
+}
+entity "ConnectionCloserState" as E587 <<struct>> {
+  comm/src/rust/transport/f1r3fly_server.rs:401
+  --
+  closed : AtomicBool
+  waker : AtomicWaker
+}
+entity "F1r3flyTlsConnector" as E588 <<struct>> {
+  comm/src/rust/transport/f1r3fly_tls_connector.rs:18
+  --
+  connector : TlsConnector
+  network_id : String
+}
+entity "F1r3flyTlsAcceptor" as E589 <<struct>> {
+  comm/src/rust/transport/f1r3fly_tls_connector.rs:138
+  --
+  acceptor : TlsAcceptor
+  network_id : String
+}
+entity "F1r3flyTlsBuilder" as E590 <<struct>> {
+  comm/src/rust/transport/f1r3fly_tls_connector.rs:225
+  --
+  network_id : String
+  cert_pem : String
+  key_pem : String
+}
+entity "F1r3flyClientTlsTransport" as E591 <<struct>> {
+  comm/src/rust/transport/f1r3fly_tls_transport.rs:27
+  --
+  inner : ClientTlsStream &#60; S &#62;
+  remote_addr : Option &#60; SocketAddr &#62;
+}
+entity "F1r3flyServerTlsTransport" as E592 <<struct>> {
+  comm/src/rust/transport/f1r3fly_tls_transport.rs:65
+  --
+  inner : ServerTlsStream &#60; S &#62;
+  remote_addr : Option &#60; SocketAddr &#62;
+}
+entity "F1r3flyClientTlsConnection" as E593 <<alias>> {
+  comm/src/rust/transport/f1r3fly_tls_transport.rs:335
+  --
+  value : F1r3flyClientTlsTransport &#60; tokio :: net :: TcpStream &#62;
+}
+E586 --> E587 : 0
+E593 --> E591 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

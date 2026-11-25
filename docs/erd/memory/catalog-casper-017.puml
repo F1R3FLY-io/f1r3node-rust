@@ -1,0 +1,67 @@
+@startuml
+!include ../style.puml
+title catalog casper 017
+entity "ProposeID" as E208 <<alias>> {
+  casper/src/rust/blocks/proposer/propose_result.rs:12
+  --
+  value : Uuid
+}
+entity "ProposeResult" as E209 <<struct>> {
+  casper/src/rust/blocks/proposer/propose_result.rs:15
+  --
+  propose_status : ProposeStatus
+}
+entity "ProposeStatus" as E210 <<enum>> {
+  casper/src/rust/blocks/proposer/propose_result.rs:21
+  --
+  Success.0 : ProposeSuccess
+  Failure.0 : ProposeFailure
+}
+entity "ProposeSuccess" as E211 <<struct>> {
+  casper/src/rust/blocks/proposer/propose_result.rs:28
+  --
+  result : ValidBlock
+}
+entity "ProposeFailure" as E212 <<enum>> {
+  casper/src/rust/blocks/proposer/propose_result.rs:34
+  --
+  NoNewDeploys : variant
+  InternalDeployError : variant
+  BugError : variant
+  MissingBlock.0 : Bytes
+  FloorDistanceHold : variant
+  CheckConstraintsFailure.0 : CheckProposeConstraintsFailure
+}
+entity "CheckProposeConstraintsResult" as E213 <<enum>> {
+  casper/src/rust/blocks/proposer/propose_result.rs:52
+  --
+  Success : variant
+  Failure.0 : CheckProposeConstraintsFailure
+}
+entity "CheckProposeConstraintsFailure" as E214 <<enum>> {
+  casper/src/rust/blocks/proposer/propose_result.rs:59
+  --
+  NotBonded : variant
+  NotEnoughNewBlocks : variant
+  TooFarAheadOfLastFinalized : variant
+  HistoryIncomplete : variant
+}
+entity "BlockCreatorResult" as E215 <<enum>> {
+  casper/src/rust/blocks/proposer/propose_result.rs:71
+  --
+  NoNewDeploys : variant
+  Created.0 : BlockMessage
+  Created.1 : Bytes
+  Created.2 : Bytes
+  Created.3 : Option &#60; DeployAdmission &#62;
+}
+E209 --> E210 : propose_status
+E210 --> E211 : Success.0
+E210 --> E212 : Failure.0
+E212 --> E214 : CheckConstraintsFailure.0
+E213 --> E214 : Failure.0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

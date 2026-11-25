@@ -1,0 +1,58 @@
+@startuml
+!include ../style.puml
+title catalog rholang 002
+entity "NoopMetering" as E1270 <<struct>> {
+  rholang/src/rust/interpreter/accounting/noop.rs:103
+  --
+}
+entity "MetadataValue" as E1271 <<enum>> {
+  rholang/src/rust/interpreter/chromadb_service.rs:18
+  --
+  String.0 : String
+  Number.0 : i64
+  Boolean.0 : bool
+}
+entity "Metadata" as E1272 <<struct>> {
+  rholang/src/rust/interpreter/chromadb_service.rs:26
+  --
+  0 : HashMap &#60; String , MetadataValue &#62;
+}
+entity "M" as E1273 <<alias>> {
+  rholang/src/rust/interpreter/chromadb_service.rs:76
+  MetadataValue::into
+  --
+  value : chroma :: types :: MetadataValue
+}
+entity "M" as E1274 <<alias>> {
+  rholang/src/rust/interpreter/chromadb_service.rs:95
+  MetadataValue::try_from
+  --
+  value : chroma :: types :: MetadataValue
+}
+entity "CollectionEntry" as E1275 <<struct>> {
+  rholang/src/rust/interpreter/chromadb_service.rs:121
+  --
+  document : String
+  metadata : Option &#60; Metadata &#62;
+}
+entity "CollectionEntries" as E1276 <<struct>> {
+  rholang/src/rust/interpreter/chromadb_service.rs:153
+  --
+  0 : HashMap &#60; String , CollectionEntry &#62;
+}
+entity "ChromaDBClient" as E1277 <<struct>> {
+  rholang/src/rust/interpreter/chromadb_service.rs:176
+  --
+  client : ChromaHttpClient
+  embedding_f : SBERTEmbeddings
+}
+E1272 --> E1271 : 0
+E1273 --> E1271 : value
+E1274 --> E1271 : value
+E1275 --> E1272 : metadata
+E1276 --> E1275 : 0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

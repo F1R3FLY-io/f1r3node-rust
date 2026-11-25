@@ -1,0 +1,83 @@
+@startuml
+!include ../style.puml
+title catalog models 017
+entity "BindPattern" as E866 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  patterns #1 : repeated .rhoapi.Par
+  remainder #2 : .rhoapi.Var
+  freeCount #3 : Int32
+}
+entity "Bundle" as E867 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  body #1 : .rhoapi.Par
+  writeFlag #2 : Bool
+  readFlag #3 : Bool
+}
+entity "ConnFixedPointBody" as E868 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  scale #1 : .rhoapi.Par
+}
+entity "Connective" as E869 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  conn_and_body #1 oneof connective_instance : .rhoapi.ConnectiveBody
+  conn_or_body #2 oneof connective_instance : .rhoapi.ConnectiveBody
+  conn_not_body #3 oneof connective_instance : .rhoapi.Par
+  var_ref_body #4 oneof connective_instance : .rhoapi.VarRef
+  conn_bool #5 oneof connective_instance : Bool
+  conn_int #6 oneof connective_instance : Bool
+  conn_string #7 oneof connective_instance : Bool
+  conn_uri #8 oneof connective_instance : Bool
+  conn_byte_array #9 oneof connective_instance : Bool
+  conn_int32 #10 oneof connective_instance : Bool
+  conn_uint64 #11 oneof connective_instance : Bool
+  conn_uint32 #12 oneof connective_instance : Bool
+  conn_uint16 #13 oneof connective_instance : Bool
+  conn_uint8 #14 oneof connective_instance : Bool
+  conn_float64 #15 oneof connective_instance : Bool
+  conn_float32 #16 oneof connective_instance : Bool
+  conn_big_int #17 oneof connective_instance : Bool
+  conn_big_rat #18 oneof connective_instance : Bool
+  conn_fixed_point_body #19 oneof connective_instance :\n    .rhoapi.ConnFixedPointBody
+  conn_type #20 oneof connective_instance : Bool
+}
+entity "ConnectiveBody" as E870 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  ps #1 : repeated .rhoapi.Par
+}
+entity "DeployId" as E871 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  sig #1 : Bytes
+}
+entity "DeployerId" as E872 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  publicKey #1 : Bytes
+}
+entity "EAnd" as E873 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p1 #1 : .rhoapi.Par
+  p2 #2 : .rhoapi.Par
+}
+E869 --> E868 : conn_fixed_point_body #19 oneof connective_instance
+E869 --> E870 : conn_and_body #1 oneof connective_instance
+E869 --> E870 : conn_or_body #2 oneof connective_instance
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

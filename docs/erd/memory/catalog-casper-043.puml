@@ -1,0 +1,68 @@
+@startuml
+!include ../style.puml
+title catalog casper 043
+entity "V" as E416 <<alias>> {
+  casper/src/rust/safety/clique_oracle.rs:33
+  --
+  value : Validator
+}
+entity "WeightMap" as E417 <<alias>> {
+  casper/src/rust/safety/clique_oracle.rs:34
+  --
+  value : HashMap &#60; V , BigInt &#62;
+}
+entity "FtThreshold" as E418 <<struct>> {
+  casper/src/rust/safety/clique_oracle.rs:45
+  --
+  num : i64
+  den : i64
+}
+entity "CliqueOracleRunCache" as E419 <<struct>> {
+  casper/src/rust/safety/clique_oracle.rs:102
+  --
+  latest_justifications_cache : BTreeMap &#60; V , BTreeMap &#60; V , M &#62; &#62;
+  self_justification_cache : BTreeMap &#60; M , Option &#60; M &#62; &#62;
+  ancestor_cache : BTreeMap &#60; (M , M) , bool &#62;
+  yield_check_interval : usize
+  yield_timeslice : Duration
+  max_self_justification_cache_entries : usize
+  max_ancestor_cache_entries : usize
+}
+entity "CliqueOracleImpl" as E420 <<struct>> {
+  casper/src/rust/safety_oracle.rs:49
+  --
+}
+entity "SlashAuthError" as E421 <<enum>> {
+  casper/src/rust/slashing_authorization.rs:26
+  --
+  IssuerMismatch.block_hash : String
+  IssuerMismatch.issuer : String
+  IssuerMismatch.sender : String
+  NotAnEquivocation.reason : &#38; 'static str
+  NothingToSlash.validator : String
+  DuplicateTarget.validator : String
+}
+entity "AuthorizedSlashCandidate" as E422 <<struct>> {
+  casper/src/rust/slashing_authorization.rs:42
+  --
+  offender : Validator
+  evidence : EquivocationEvidence
+}
+entity "AuthorityInputs" as E423 <<struct>> {
+  casper/src/rust/soak_observer.rs:22
+  --
+  fault_tolerance_threshold_ppm : i64
+  max_parent_depth : i32
+  deploy_lifespan : i64
+  min_phlo_price : shared :: rust :: token_amount :: TokenAmount
+  max_phlo_limit : i64
+  approved_block_hash : String
+  approved_post_state_hash : String
+}
+E417 --> E416 : value
+E419 --> E416 : latest_justifications_cache
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

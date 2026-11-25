@@ -1,0 +1,106 @@
+@startuml
+!include ../style.puml
+title catalog casper 021
+entity "SignatureWrapper" as E240 <<struct>> {
+  casper/src/rust/engine/approve_block_protocol.rs:33
+  --
+  0 : ProtoSignature
+}
+entity "ApproveBlockProtocolFactory" as E241 <<struct>> {
+  casper/src/rust/engine/approve_block_protocol.rs:54
+  --
+}
+entity "ApproveBlockProtocolImpl" as E242 <<struct>> {
+  casper/src/rust/engine/approve_block_protocol.rs:208
+  --
+  required_sigs : i32
+  start : u64
+  duration : Duration
+  interval : Duration
+  sigs : Arc &#60; Mutex &#60; HashSet &#60; SignatureWrapper &#62; &#62; &#62;
+  last_approved_block : Arc &#60; Mutex &#60; Option &#60; ApprovedBlock &#62; &#62; &#62;
+  event_log : Option &#60; F1r3flyEvents &#62;
+  transport : Arc &#60; T &#62;
+  connections_cell : Option &#60; Arc &#60; ConnectionsCell &#62; &#62;
+  conf : Option &#60; Arc &#60; RPConf &#62; &#62;
+  trusted_validators : HashSet &#60; bytes :: Bytes &#62;
+  candidate : ApprovedBlockCandidate
+  candidate_hash : String
+  sig_data : Vec &#60; u8 &#62;
+}
+entity "BlockApproverProtocol" as E243 <<struct>> {
+  casper/src/rust/engine/block_approver_protocol.rs:26
+  --
+  validator_id : ValidatorIdentity
+  deploy_timestamp : i64
+  vaults : Vec &#60; Vault &#62;
+  bonds_bytes : HashMap &#60; Bytes , TokenAmount &#62;
+  minimum_bond : TokenAmount
+  maximum_bond : TokenAmount
+  epoch_length : i32
+  quarantine_length : i32
+  number_of_active_validators : u32
+  fault_tolerance_threshold_ppm : i64
+  max_parent_depth : i32
+  deploy_lifespan : i64
+  min_phlo_price : TokenAmount
+  max_phlo_limit : i64
+  required_sigs : i32
+  pos_multi_sig_public_keys : Vec &#60; String &#62;
+  pos_multi_sig_quorum : u32
+  native_token_name : String
+  native_token_symbol : String
+  native_token_decimals : u32
+  fs_bundle : Vec &#60; crate :: rust :: genesis :: contracts :: fs_genesis ::\n    BundleEntry &#62;
+  consensus_fs_snapshot_cadence : Option &#60; u64 &#62;
+  transport : Arc &#60; T &#62;
+  conf : Arc &#60; RPConf &#62;
+}
+entity "CasperLaunchImpl" as E244 <<struct>> {
+  casper/src/rust/engine/casper_launch.rs:46
+  --
+  transport_layer : Arc &#60; T &#62;
+  rp_conf_ask : RPConf
+  connections_cell : ConnectionsCell
+  last_approved_block : Arc &#60; Mutex &#60; Option &#60; ApprovedBlock &#62; &#62; &#62;
+  event_publisher : F1r3flyEvents
+  engine_cell : Arc &#60; EngineCell &#62;
+  block_store : KeyValueBlockStore
+  block_dag_storage : BlockDagKeyValueStorage
+  deploy_storage : KeyValueDeployStorage
+  rejected_deploy_buffer : Arc &#60; Mutex &#60; KeyValueRejectedDeployBuffer &#62; &#62;
+  rspace_state_manager : RSpaceStateManager
+  runtime_manager : Arc &#60; RuntimeManager &#62;
+  estimator : Estimator
+  casper_shard_conf : CasperShardConf
+  ingest : IngestHandle
+  conf : CasperConf
+  trim_state : bool
+  disable_state_exporter : bool
+  heartbeat_signal_ref : crate :: rust :: heartbeat_signal ::\n    HeartbeatSignalRef
+  fs_bundle : Vec &#60; crate :: rust :: genesis :: contracts :: fs_genesis ::\n    BundleEntry &#62;
+  state_items_tx : Option &#60; tokio :: sync :: mpsc :: Sender &#60; models ::\n    rust :: casper :: protocol :: casper_message :: StoreItemsMessage , &#62; ,\n    &#62;
+}
+entity "NoopEngine" as E245 <<struct>> {
+  casper/src/rust/engine/engine.rs:103
+  noop
+  --
+}
+entity "EngineCell" as E246 <<struct>> {
+  casper/src/rust/engine/engine_cell.rs:7
+  --
+  inner : Arc &#60; RwLock &#60; Arc &#60; dyn Engine &#62; &#62; &#62;
+  observer : Option &#60; Arc &#60; crate :: rust :: soak_observer ::\n    ObserverController &#62; &#62;
+}
+entity "EngineWithCasper" as E247 <<struct>> {
+  casper/src/rust/engine/engine_with_casper.rs:14
+  --
+  casper : Arc &#60; M &#62;
+}
+E242 --> E240 : sigs
+E244 --> E246 : engine_cell
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

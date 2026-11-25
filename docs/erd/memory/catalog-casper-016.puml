@@ -1,0 +1,73 @@
+@startuml
+!include ../style.puml
+title catalog casper 016
+entity "DeployInclusionStaleness" as E200 <<struct>> {
+  casper/src/rust/blocks/proposer/block_creator.rs:117
+  --
+  stale : bool
+  block_or_time_stale : bool
+  signature_stale : bool
+  missing_deploy_metadata : bool
+}
+entity "OrdinaryCapSource" as E201 <<enum>> {
+  casper/src/rust/blocks/proposer/block_creator.rs:125
+  --
+  Normal : variant
+  Base : variant
+  Backlog : variant
+  SoftBacklog : variant
+  SoftStalled : variant
+  Stale : variant
+  Hard : variant
+}
+entity "FreshAdmissionFallback" as E202 <<struct>> {
+  casper/src/rust/blocks/proposer/block_creator.rs:163
+  --
+  allowed : bool
+  cap : usize
+  backpressure : bool
+  source : OrdinaryCapSource
+}
+entity "DeploySelection" as E203 <<struct>> {
+  casper/src/rust/blocks/proposer/block_creator.rs:171
+  --
+  deploys : HashSet &#60; Signed &#60; DeployData &#62; &#62;
+  strategy : &#38; 'static str
+  selected_bytes : usize
+  deferred_bytes : usize
+  count_capped : bool
+  byte_capped : bool
+}
+entity "FinalityLagStats" as E204 <<struct>> {
+  casper/src/rust/blocks/proposer/block_creator.rs:181
+  --
+  dag_tip : i64
+  last_finalized_block : i64
+  lag : i64
+  stalled : bool
+}
+entity "FinalityProgress" as E205 <<struct>> {
+  casper/src/rust/blocks/proposer/block_creator.rs:218
+  --
+  last_finalized_block : Option &#60; i64 &#62;
+  unadvanced_proposals : u32
+}
+entity "ProposalShape" as E206 <<enum>> {
+  casper/src/rust/blocks/proposer/block_creator.rs:573
+  --
+  AsSnapshot.0 : Option &#60; FloorContext &#62;
+  Witness.snapshot : CasperSnapshot
+  Witness.floor_ctx : FloorContext
+}
+entity "UnfinalizedConeBounds" as E207 <<struct>> {
+  casper/src/rust/blocks/proposer/block_creator.rs:1668
+  --
+  last_finalized_block_number : Option &#60; i64 &#62;
+  earliest_block_number : i64
+}
+E202 --> E201 : source
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

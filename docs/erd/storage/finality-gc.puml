@@ -1,0 +1,74 @@
+@startuml
+!include ../style.puml
+title Finality caches, durable progress, and mergeable-channel records
+entity "floor-index" as Floor {
+  * key : bincode BlockHashSerde
+  --
+  value : bincode BlockHashSerde
+  meaning : derived floor for this block
+}
+entity "frontier-index" as Frontier {
+  * key : bincode BlockHashSerde
+  --
+  value : bincode BlockHashSerde
+  meaning : finalized frontier for this block
+}
+entity "block-metadata" as Metadata {
+  * block_hash
+  --
+  parents / finalized flags / fault tolerance
+}
+entity "dag-history-state-v1" as State {
+  * raw ASCII key
+  --
+  dag.progress : DagProgress
+  gc.discovery : DiscoveryState
+  gc.retry-cursor : optional cursor bytes
+  gc.effective-anchor : height
+  gc.restore-floor : height
+  values use bincode
+}
+entity DiscoveryState {
+  claimed_ceiling : Option<i64>
+  completed_ceiling : Option<i64>
+  cursor : Option<Vec<u8>>
+}
+entity "dag-gc-retry-v1" as Retry {
+  * key : raw block hash
+  --
+  value : bincode i64 height
+  meaning : GC candidate retained for retry
+}
+entity "mergeable-channel-cache" as Mergeable {
+  * key : typed ByteVector containing encoded MergeableKey
+  --
+  value : bincode Vec<DeployMergeableData>
+}
+entity MergeableKey {
+  state_hash : StateHashSerde
+  creator : bytes
+  seq_num : i32
+}
+entity DeployMergeableData {
+  channels : Vec<NumberChannel>
+}
+entity NumberChannel {
+  hash : Blake2b256Hash
+  diff : BigInt
+  merge_type : MergeType
+}
+Floor --> Metadata : block and floor identities
+Frontier --> Metadata : block and frontier identities
+State --> DiscoveryState : gc.discovery
+Retry --> Metadata : deletion candidate
+Mergeable --> MergeableKey : key payload
+Mergeable "1" --> "0..*" DeployMergeableData : value elements
+DeployMergeableData "1" --> "0..*" NumberChannel
+note bottom of Retry
+All databases on this page are in dagstorage.
+GC preserves needed merge state. A retry row is not proof of deletion.
+end note
+legend bottom
+Sources: dag_gc_store.rs, dag_persistence.rs, runtime_manager.rs, block_dag_key_value_storage.rs.
+endlegend
+@enduml

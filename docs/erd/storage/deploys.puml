@@ -1,0 +1,55 @@
+@startuml
+!include ../style.puml
+title Deploy pool, rejected buffer, seed claims, and quarantine
+entity "deploy_storage" as Pool <<deploystorage>> {
+  * key : raw deploy signature
+  --
+  value : checked deploy record v2
+}
+entity "rejected_deploy_buffer" as Rejected <<deploystorage>> {
+  * key : raw deploy signature
+  --
+  value : checked deploy record v2
+}
+entity "Checked deploy record" as Record {
+  magic : F1R3DEP + byte 02
+  fingerprint : Blake2b-256(payload), 32 bytes
+  payload : signed DeployDataProto protobuf
+}
+entity "deploy_storage_seeds" as Seeds <<deploystorage>> {
+  * key : name seed bytes
+  --
+  value : signature of the seed holder
+}
+entity "rejected_deploy_buffer_seeds" as RejectedSeeds <<deploystorage>> {
+  * key : name seed bytes
+  --
+  value : signature of the seed holder
+}
+entity "deploy_storage_quarantine" as Quarantine <<deploystorage>> {
+  * key : original deploy key
+  --
+  value : original bytes without alteration
+}
+entity "rejected_deploy_buffer_quarantine" as RejectedQuarantine <<deploystorage>> {
+  * key : original deploy key
+  --
+  value : original bytes without alteration
+}
+Pool "1" --> "1" Record : decode
+Rejected "1" --> "1" Record : decode
+Seeds --> Pool : holder signature
+RejectedSeeds --> Rejected : holder signature
+Pool ..> Quarantine : preserve invalid bytes
+Rejected ..> RejectedQuarantine : preserve invalid bytes
+note bottom of Quarantine
+Quarantine writes precede conditional removal from the live store.
+Both copies can exist after an interruption.
+Seed claims can require repair after a crash.
+These links are not database foreign-key constraints.
+end note
+legend bottom
+Source: key_value_deploy_storage.rs, deploy_codec.rs, deploy_record_quarantine.rs.
+The fingerprint detects corruption. Signature verification occurs at the checked write boundary.
+endlegend
+@enduml

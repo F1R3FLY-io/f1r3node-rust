@@ -1,0 +1,72 @@
+@startuml
+!include ../style.puml
+title catalog comm 008
+entity "F1r3flyServerTlsConnection" as E594 <<alias>> {
+  comm/src/rust/transport/f1r3fly_tls_transport.rs:337
+  --
+  value : F1r3flyServerTlsTransport &#60; tokio :: net :: TcpStream &#62;
+}
+entity "F1r3flyTlsTransportError" as E595 <<enum>> {
+  comm/src/rust/transport/f1r3fly_tls_transport.rs:339
+  --
+  HandshakeFailed.0 : rustls :: Error
+  Io.0 : io :: Error
+  InvalidPeerAddress.0 : String
+  CertificateVerificationFailed.0 : String
+  ConfigError.0 : String
+}
+entity "GrpcTransport" as E596 <<struct>> {
+  comm/src/rust/transport/grpc_transport.rs:53
+  --
+}
+entity "BufferedGrpcStreamChannel" as E597 <<struct>> {
+  comm/src/rust/transport/grpc_transport_client.rs:28
+  --
+  grpc_transport : Channel
+  transport_client : Arc &#60; tokio :: sync :: Mutex &#60; TransportLayerClient &#60;\n    InterceptedService &#60; Channel , SslSessionClientInterceptor &#62; &#62; , &#62; , &#62;
+  buffer : Arc &#60; StreamObservable &#62;
+  buffer_subscriber : tokio :: task :: JoinHandle &#60; () &#62;
+  max_message_size : i32
+}
+entity "GrpcTransportClient" as E598 <<struct>> {
+  comm/src/rust/transport/grpc_transport_client.rs:79
+  --
+  network_id : String
+  chain_id : ChainIdCell
+  cert : String
+  key : String
+  max_message_size : i32
+  packet_chunk_size : i32
+  client_queue_size : i32
+  channels_map : Arc &#60; Mutex &#60; HashMap &#60; PeerNode , Arc &#60; OnceCell &#60; Arc &#60;\n    BufferedGrpcStreamChannel &#62; &#62; &#62; &#62; &#62; &#62;
+  dns_failures : Arc &#60; Mutex &#60; HashMap &#60; NodeIdentifier , String &#62; &#62; &#62;
+  default_send_timeout : Duration
+  cache : OutgoingPacketCache
+}
+entity "StreamAttempt" as E599 <<struct>> {
+  comm/src/rust/transport/grpc_transport_client.rs:109
+  --
+  packet_size : usize
+  timeout : Duration
+  outcome : StreamOutcome
+}
+entity "StreamOutcome" as E600 <<enum>> {
+  comm/src/rust/transport/grpc_transport_client.rs:115
+  --
+  Sent : variant
+  Failed.0 : CommError
+  TimedOut : variant
+}
+entity "ChannelStage" as E601 <<enum>> {
+  comm/src/rust/transport/grpc_transport_client.rs:121
+  --
+  Connect : variant
+  Request : variant
+}
+E598 --> E597 : channels_map
+E599 --> E600 : outcome
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

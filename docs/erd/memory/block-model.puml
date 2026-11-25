@@ -1,0 +1,74 @@
+@startuml
+!include ../style.puml
+title Block and deploy domain model
+entity BlockMessage {
+  block_hash : Bytes
+  header : Header
+  body : Body
+  justifications : Vec<Justification>
+  sender / sig / sig_algorithm
+  seq_num : i32
+  shard_id : String
+}
+entity Header {
+  parents_hash_list : Vec<BlockHash>
+  timestamp : i64
+  version : i64
+  extra_bytes : Bytes
+}
+entity Body {
+  state : F1r3flyState
+  deploys : Vec<ProcessedDeploy>
+  rejected_deploys : Vec<RejectedDeploy>
+  system_deploys : Vec<ProcessedSystemDeploy>
+  merge_base : Bytes
+}
+entity F1r3flyState {
+  pre_state_hash / post_state_hash : Bytes
+  bonds : Vec<Bond>
+  block_number : i64
+}
+entity Bond {
+  validator : Bytes
+  stake : TokenAmount
+}
+entity ProcessedDeploy {
+  deploy : Signed<DeployData>
+  cost : PCost
+  deploy_log : Vec<Event>
+  is_failed : bool
+  system_deploy_error : Option<String>
+}
+entity "Signed<DeployData>" as SignedDeploy {
+  data : DeployData
+  pk : PublicKey
+  sig : Bytes
+  sig_algorithm : Box<dyn SignaturesAlg>
+}
+entity DeployData {
+  term : String
+  time_stamp : i64
+  phlo_price : TokenAmount
+  phlo_limit : i64
+  valid_after_block_number : i64
+  shard_id : String
+}
+entity Justification {
+  validator : Bytes
+  latest_block_hash : Bytes
+}
+BlockMessage "1" --> "1" Header
+BlockMessage "1" --> "1" Body
+BlockMessage "1" --> "0..*" Justification
+Header "1" --> "0..*" BlockMessage : parent hashes
+Body "1" --> "1" F1r3flyState
+F1r3flyState "1" --> "0..*" Bond
+Body "1" --> "0..*" ProcessedDeploy
+ProcessedDeploy "1" --> "1" SignedDeploy
+SignedDeploy "1" --> "1" DeployData
+legend bottom
+Selected fields. Hash references can outlive a stored block body.
+Sources: models/src/rust/casper/protocol/casper_message.rs and crypto/src/rust/signatures/signed.rs.
+Domain structs and protobuf messages have separate entries in inventory.md.
+endlegend
+@enduml

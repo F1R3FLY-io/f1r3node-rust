@@ -1,0 +1,76 @@
+@startuml
+!include ../style.puml
+title catalog rholang 021
+entity "LockMode" as E1422 <<enum>> {
+  rholang/src/rust/interpreter/io/lock.rs:279
+  --
+  Read : variant
+  Write : variant
+}
+entity "LockError" as E1423 <<enum>> {
+  rholang/src/rust/interpreter/io/lock.rs:382
+  --
+  Busy : variant
+  Closed : variant
+  BadArg : variant
+  QuotaExceeded : variant
+  Cancelled : variant
+  Deadlock : variant
+}
+entity "RangeEntry" as E1424 <<struct>> {
+  rholang/src/rust/interpreter/io/lock.rs:427
+  --
+  id : LockId
+  offset : u64
+  length : u64
+  mode : LockMode
+  holder : HolderId
+  deploy : DeployScope
+}
+entity "SequentialEntry" as E1425 <<struct>> {
+  rholang/src/rust/interpreter/io/lock.rs:462
+  --
+  id : LockId
+  holder : HolderId
+  deploy : DeployScope
+}
+entity "FileLockState" as E1426 <<struct>> {
+  rholang/src/rust/interpreter/io/lock.rs:471
+  --
+  ranges : Vec &#60; RangeEntry &#62;
+  sequential_holder : Option &#60; SequentialEntry &#62;
+  waiters : VecDeque &#60; Waiter &#62;
+}
+entity "WaitPolicy" as E1427 <<enum>> {
+  rholang/src/rust/interpreter/io/lock.rs:516
+  --
+  Fail : variant
+  Wait : variant
+}
+entity "AcquireOutcome" as E1428 <<enum>> {
+  rholang/src/rust/interpreter/io/lock.rs:533
+  --
+  Immediate.0 : LockId
+  Parked.lock_id : LockId
+  Parked.admit : oneshot :: Receiver &#60; Result &#60; LockId , LockError &#62; &#62;
+}
+entity "Waiter" as E1429 <<struct>> {
+  rholang/src/rust/interpreter/io/lock.rs:570
+  --
+  lock_id : LockId
+  kind : WaitKind
+  holder : HolderId
+  deploy : DeployScope
+  admit : oneshot :: Sender &#60; Result &#60; LockId , LockError &#62; &#62;
+}
+E1424 --> E1422 : mode
+E1426 --> E1424 : ranges
+E1426 --> E1425 : sequential_holder
+E1426 --> E1429 : waiters
+E1428 --> E1423 : Parked.admit
+E1429 --> E1423 : admit
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

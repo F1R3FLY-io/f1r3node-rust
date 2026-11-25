@@ -1,0 +1,74 @@
+@startuml
+!include ../style.puml
+title catalog graphz 001
+entity "StringSerializer" as E727 <<struct>> {
+  graphz/src/rust/graphz.rs:15
+  --
+  buffer : Arc &#60; Mutex &#60; String &#62; &#62;
+}
+entity "ListSerializer" as E728 <<struct>> {
+  graphz/src/rust/graphz.rs:43
+  --
+  lines : Arc &#60; std :: sync :: Mutex &#60; Vec &#60; String &#62; &#62; &#62;
+  sender : Option &#60; tokio :: sync :: oneshot :: Sender &#60; Vec &#60; String &#62; &#62;\n    &#62;
+}
+entity "FileSerializer" as E729 <<struct>> {
+  graphz/src/rust/graphz.rs:79
+  --
+  file : Arc &#60; Mutex &#60; File &#62; &#62;
+}
+entity "GraphType" as E730 <<enum>> {
+  graphz/src/rust/graphz.rs:107
+  --
+  Graph : variant
+  DiGraph : variant
+}
+entity "GraphShape" as E731 <<enum>> {
+  graphz/src/rust/graphz.rs:113
+  --
+  Circle : variant
+  DoubleCircle : variant
+  Box : variant
+  PlainText : variant
+  Msquare : variant
+  Record : variant
+}
+entity "GraphRank" as E732 <<enum>> {
+  graphz/src/rust/graphz.rs:123
+  --
+  Same : variant
+  Min : variant
+  Source : variant
+  Max : variant
+  Sink : variant
+}
+entity "GraphRankDir" as E733 <<enum>> {
+  graphz/src/rust/graphz.rs:132
+  --
+  TB : variant
+  BT : variant
+  LR : variant
+  RL : variant
+}
+entity "GraphStyle" as E734 <<enum>> {
+  graphz/src/rust/graphz.rs:140
+  --
+  Solid : variant
+  Bold : variant
+  Filled : variant
+  Invis : variant
+  Dotted : variant
+  Dashed : variant
+}
+E727 -[hidden]down-> E728
+E728 -[hidden]down-> E729
+E729 -[hidden]down-> E730
+E730 -[hidden]down-> E731
+E731 -[hidden]down-> E732
+E732 -[hidden]down-> E733
+E733 -[hidden]down-> E734
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

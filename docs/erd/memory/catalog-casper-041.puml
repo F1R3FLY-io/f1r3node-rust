@@ -1,0 +1,56 @@
+@startuml
+!include ../style.puml
+title catalog casper 041
+entity "ReplayRuntimeOps" as E400 <<struct>> {
+  casper/src/rust/rholang/replay_runtime.rs:50
+  --
+  runtime_ops : RuntimeOps
+}
+entity "EXPLORATORY_KEY_PAIR" as E401 <<static>> {
+  casper/src/rust/rholang/runtime.rs:79
+  --
+  value : OnceLock &#60; (PrivateKey , PublicKey) &#62;
+}
+entity "ConsensusParameters" as E402 <<struct>> {
+  casper/src/rust/rholang/runtime.rs:89
+  --
+  max_parent_depth : i32
+  deploy_lifespan : i64
+  min_phlo_price : TokenAmount
+  epoch_length : i32
+  max_phlo_limit : i64
+}
+entity "RuntimeOps" as E403 <<struct>> {
+  casper/src/rust/rholang/runtime.rs:99
+  --
+  runtime : RhoRuntimeImpl
+}
+entity "FsNativeFilterGuard" as E404 <<struct>> {
+  casper/src/rust/rholang/runtime.rs:107
+  --
+  flag : std :: sync :: Arc &#60; std :: sync :: atomic :: AtomicBool &#62;
+  prev : bool
+}
+entity "SysEvalResult" as E405 <<alias>> {
+  casper/src/rust/rholang/runtime.rs:145
+  --
+  value : (Either &#60; SystemDeployUserError , S :: Result &#62; ,\n    EvaluateResult)
+}
+entity "QUERY" as E406 <<static>> {
+  casper/src/rust/rholang/runtime.rs:1588
+  RuntimeOps::fault_tolerance_ppm_query_par
+  --
+  value : OnceLock &#60; Par &#62;
+}
+entity "QUERY" as E407 <<static>> {
+  casper/src/rust/rholang/runtime.rs:1708
+  RuntimeOps::consensus_parameters_query_par
+  --
+  value : OnceLock &#60; Par &#62;
+}
+E400 --> E403 : runtime_ops
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

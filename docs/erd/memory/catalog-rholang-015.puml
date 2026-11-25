@@ -1,0 +1,55 @@
+@startuml
+!include ../style.puml
+title catalog rholang 015
+entity "FS_TRUNCATE_ENTRY" as E1374 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_truncate.rs:223
+  --
+  value : FsHandlerEntry
+}
+entity "FsWriteHandler" as E1375 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_write.rs:86
+  --
+}
+entity "FsWriteArgs" as E1376 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_write.rs:89
+  --
+  fd : u64
+  bytes : Vec &#60; u8 &#62;
+}
+entity "FS_WRITE_ENTRY" as E1377 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_write.rs:246
+  --
+  value : FsHandlerEntry
+}
+entity "FsWriteAtHandler" as E1378 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_write_at.rs:53
+  --
+}
+entity "FsWriteAtArgs" as E1379 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_write_at.rs:56
+  --
+  fd : u64
+  off : u64
+  bytes : Vec &#60; u8 &#62;
+}
+entity "FS_WRITE_AT_ENTRY" as E1380 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_write_at.rs:204
+  --
+  value : FsHandlerEntry
+}
+entity "FsEntriesHandler" as E1381 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_entries.rs:92
+  --
+}
+E1374 -[hidden]down-> E1375
+E1375 -[hidden]down-> E1376
+E1376 -[hidden]down-> E1377
+E1377 -[hidden]down-> E1378
+E1378 -[hidden]down-> E1379
+E1379 -[hidden]down-> E1380
+E1380 -[hidden]down-> E1381
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

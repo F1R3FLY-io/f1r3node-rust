@@ -1,0 +1,64 @@
+@startuml
+!include ../style.puml
+title catalog node 006
+entity "SlashSystemDeployDataSerde" as E1098 <<struct>> {
+  node/src/rust/api/serde_types/system_deploy_info.rs:209
+  --
+  issuer_public_key : Vec &#60; u8 &#62;
+  first : BlockCommitmentSerde
+  second : BlockCommitmentSerde
+}
+entity "CloseBlockSystemDeployDataSerde" as E1099 <<struct>> {
+  node/src/rust/api/serde_types/system_deploy_info.rs:245
+  --
+}
+entity "SystemDeployDataSerde" as E1100 <<enum>> {
+  node/src/rust/api/serde_types/system_deploy_info.rs:256
+  --
+  SlashSystemDeploy.0 : SlashSystemDeployDataSerde
+  CloseBlockSystemDeploy.0 : CloseBlockSystemDeployDataSerde
+}
+entity "PeekProtoSerde" as E1101 <<struct>> {
+  node/src/rust/api/serde_types/system_deploy_info.rs:296
+  --
+  channel_index : i32
+}
+entity "ReportProduceSerde" as E1102 <<struct>> {
+  node/src/rust/api/serde_types/system_deploy_info.rs:318
+  --
+  channel : Option &#60; Par &#62;
+  data : Option &#60; ListParWithRandom &#62;
+}
+entity "ReportConsumeSerde" as E1103 <<struct>> {
+  node/src/rust/api/serde_types/system_deploy_info.rs:342
+  --
+  channels : Vec &#60; Par &#62;
+  patterns : Vec &#60; BindPattern &#62;
+  peeks : Vec &#60; PeekProtoSerde &#62;
+}
+entity "ReportCommSerde" as E1104 <<struct>> {
+  node/src/rust/api/serde_types/system_deploy_info.rs:369
+  --
+  consume : Option &#60; ReportConsumeSerde &#62;
+  produces : Vec &#60; ReportProduceSerde &#62;
+}
+entity "ReportProtoSerde" as E1105 <<enum>> {
+  node/src/rust/api/serde_types/system_deploy_info.rs:393
+  --
+  Produce.0 : ReportProduceSerde
+  Consume.0 : ReportConsumeSerde
+  Comm.0 : ReportCommSerde
+}
+E1100 --> E1098 : SlashSystemDeploy.0
+E1100 --> E1099 : CloseBlockSystemDeploy.0
+E1103 --> E1101 : peeks
+E1104 --> E1102 : produces
+E1104 --> E1103 : consume
+E1105 --> E1102 : Produce.0
+E1105 --> E1103 : Consume.0
+E1105 --> E1104 : Comm.0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

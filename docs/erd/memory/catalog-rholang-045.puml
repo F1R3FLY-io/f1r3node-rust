@@ -1,0 +1,73 @@
+@startuml
+!include ../style.puml
+title catalog rholang 045
+entity "IsAssert" as E1614 <<struct>> {
+  rholang/src/rust/interpreter/system_processes.rs:2379
+  --
+}
+entity "IsComparison" as E1615 <<struct>> {
+  rholang/src/rust/interpreter/system_processes.rs:2406
+  --
+}
+entity "IsSetFinished" as E1616 <<struct>> {
+  rholang/src/rust/interpreter/system_processes.rs:2426
+  --
+}
+entity "RhoTestAssertion" as E1617 <<enum>> {
+  rholang/src/rust/interpreter/system_processes.rs:2439
+  --
+  RhoAssertTrue.test_name : String
+  RhoAssertTrue.is_success : bool
+  RhoAssertTrue.clue : String
+  RhoAssertEquals.test_name : String
+  RhoAssertEquals.expected : Par
+  RhoAssertEquals.actual : Par
+  RhoAssertEquals.clue : String
+  RhoAssertNotEquals.test_name : String
+  RhoAssertNotEquals.unexpected : Par
+  RhoAssertNotEquals.actual : Par
+  RhoAssertNotEquals.clue : String
+}
+entity "Context" as E1618 <<struct>> {
+  rholang/src/rust/interpreter/typechecker/mod.rs:19
+  --
+  bindings : Vec &#60; Par &#62;
+}
+entity "TypeError" as E1619 <<enum>> {
+  rholang/src/rust/interpreter/typechecker/mod.rs:56
+  --
+  Unsupported.0 : String
+  NotWellFormed.0 : String
+  Mismatch.expected : Box &#60; Par &#62;
+  Mismatch.actual : Box &#60; Par &#62;
+  ArityMismatch.expected : i32
+  ArityMismatch.actual : i32
+  UnboundVar.0 : i32
+  AppOfNonFunction.0 : Box &#60; Par &#62;
+}
+entity "Address" as E1620 <<struct>> {
+  rholang/src/rust/interpreter/util/address_tools.rs:10
+  --
+  prefix : Vec &#60; u8 &#62;
+  key_hash : Vec &#60; u8 &#62;
+  checksum : Vec &#60; u8 &#62;
+}
+entity "AddressTools" as E1621 <<struct>> {
+  rholang/src/rust/interpreter/util/address_tools.rs:25
+  --
+  prefix : Vec &#60; u8 &#62;
+  key_length : usize
+  checksum_length : usize
+}
+E1614 -[hidden]down-> E1615
+E1615 -[hidden]down-> E1616
+E1616 -[hidden]down-> E1617
+E1617 -[hidden]down-> E1618
+E1618 -[hidden]down-> E1619
+E1619 -[hidden]down-> E1620
+E1620 -[hidden]down-> E1621
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

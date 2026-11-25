@@ -1,0 +1,84 @@
+@startuml
+!include ../style.puml
+title catalog rholang 026
+entity "ResolvedWalPath" as E1462 <<struct>> {
+  rholang/src/rust/interpreter/io/wal_applier.rs:123
+  --
+  root : PathBuf
+  rel : PathBuf
+  expected_root_id : Option &#60; (u64 , u64) &#62;
+}
+entity "ApplierError" as E1463 <<enum>> {
+  rholang/src/rust/interpreter/io/wal_applier.rs:156
+  --
+  MissingSidecarEntry.entry_index : usize
+  MissingSidecarEntry.hash_hex : String
+  UnsupportedPayloadRef.entry_index : usize
+  MissingPayloadRef.entry_index : usize
+  MissingPayloadRef.op : WalOp
+  MissingOffset.entry_index : usize
+  MissingOffset.op : WalOp
+  MissingModeBits.entry_index : usize
+  MissingOwner.entry_index : usize
+  MissingExtraPath.entry_index : usize
+  MissingExtraPath.op : WalOp
+  PathContainsNull.entry_index : usize
+  PathOutsideAllowedRoots.entry_index : usize
+  PathOutsideAllowedRoots.path : PathBuf
+  NssResolutionFailed.name : String
+  NssResolutionFailed.errno : i32
+  NssNotFound.name : String
+  IoFailure.entry_index : usize
+  IoFailure.op : WalOp
+  IoFailure.path : PathBuf
+  IoFailure.message : String
+  ChownFailed.entry_index : usize
+  ChownFailed.path : PathBuf
+  ChownFailed.errno : i32
+  SafeDescendFailed.entry_index : usize
+  SafeDescendFailed.root : PathBuf
+  SafeDescendFailed.rel : PathBuf
+  SafeDescendFailed.reason : String
+}
+entity "FdGuard" as E1464 <<struct>> {
+  rholang/src/rust/interpreter/io/wal_applier.rs:506
+  copy_at
+  --
+  0 : libc :: c_int
+}
+entity "Pattern" as E1465 <<enum>> {
+  rholang/src/rust/interpreter/matcher/list_match.rs:6
+  --
+  Term.0 : T
+  Remainder.0 : i32
+}
+entity "Matcher" as E1466 <<struct>> {
+  rholang/src/rust/interpreter/matcher/match.rs:14
+  --
+}
+entity "MaximumBipartiteMatch" as E1467 <<struct>> {
+  rholang/src/rust/interpreter/matcher/maximum_bipartite_match.rs:7
+  --
+  match_function : Box &#60; dyn FnMut (P , T) -&#62; Option &#60; R &#62; &#62;
+  matches : BTreeMap &#60; Candidate &#60; T &#62; , (Pattern &#60; P , T &#62; , R) &#62;
+  seen_targets : BTreeSet &#60; Candidate &#60; T &#62; &#62;
+}
+entity "Pattern" as E1468 <<alias>> {
+  rholang/src/rust/interpreter/matcher/maximum_bipartite_match.rs:18
+  --
+  value : (P , Vec &#60; Candidate &#60; T &#62; &#62;)
+}
+entity "Candidate" as E1469 <<alias>> {
+  rholang/src/rust/interpreter/matcher/maximum_bipartite_match.rs:19
+  --
+  value : Indexed &#60; T &#62;
+}
+E1467 --> E1468 : matches
+E1467 --> E1469 : matches
+E1467 --> E1469 : seen_targets
+E1468 --> E1469 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

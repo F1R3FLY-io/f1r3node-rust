@@ -1,0 +1,59 @@
+@startuml
+!include ../style.puml
+title catalog deploy queue 004
+entity "Verdict" as E697 <<struct>> {
+  deploy-queue/src/events.rs:96
+  --
+  deploy_id : String
+  state : VerdictState
+  rejection_count : u32
+  block_hash : Option &#60; String &#62;
+}
+entity "VerdictsPayload" as E698 <<struct>> {
+  deploy-queue/src/events.rs:105
+  --
+  verdicts : Vec &#60; Verdict &#62;
+}
+entity "LagPayload" as E699 <<struct>> {
+  deploy-queue/src/events.rs:110
+  --
+  skipped : u64
+}
+entity "NotAValidator" as E700 <<struct>> {
+  deploy-queue/src/events.rs:158
+  --
+  0 : String
+}
+entity "LinkError" as E701 <<enum>> {
+  deploy-queue/src/events.rs:163
+  --
+  WebSocket.0 : tokio_tungstenite :: tungstenite :: Error
+  Status.0 : String
+  NotAValidator.0 : NotAValidator
+  EngineStopped : variant
+}
+entity "QueueGrpc" as E702 <<struct>> {
+  deploy-queue/src/grpc.rs:38
+  --
+  engine : EngineHandle
+  node : DeployServiceClient &#60; Channel &#62;
+}
+entity "OwnBlock" as E703 <<struct>> {
+  deploy-queue/src/health.rs:18
+  --
+  number : i64
+  could_take : Option &#60; usize &#62;
+}
+entity "Measured" as E704 <<struct>> {
+  deploy-queue/src/health.rs:27
+  --
+  admission : Admission
+  saturated : bool
+}
+E698 --> E697 : verdicts
+E701 --> E700 : NotAValidator.0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,73 @@
+@startuml
+!include ../style.puml
+title catalog casper 037
+entity "IsSetFinished" as E368 <<struct>> {
+  casper/src/rust/helper/test_result_collector.rs:61
+  --
+}
+entity "RhoTestAssertion" as E369 <<enum>> {
+  casper/src/rust/helper/test_result_collector.rs:74
+  --
+  RhoAssertTrue.test_name : String
+  RhoAssertTrue.is_success : bool
+  RhoAssertTrue.clue : String
+  RhoAssertEquals.test_name : String
+  RhoAssertEquals.expected : Par
+  RhoAssertEquals.actual : Par
+  RhoAssertEquals.clue : String
+  RhoAssertNotEquals.test_name : String
+  RhoAssertNotEquals.unexpected : Par
+  RhoAssertNotEquals.actual : Par
+  RhoAssertNotEquals.clue : String
+}
+entity "TestResult" as E370 <<struct>> {
+  casper/src/rust/helper/test_result_collector.rs:127
+  --
+  assertions : HashMap &#60; String , HashMap &#60; i64 , Vec &#60; RhoTestAssertion &#62;\n    &#62; &#62;
+  has_finished : bool
+}
+entity "TestResultCollector" as E371 <<struct>> {
+  casper/src/rust/helper/test_result_collector.rs:178
+  --
+  result : Mutex &#60; TestResult &#62;
+}
+entity "BlockIndex" as E372 <<struct>> {
+  casper/src/rust/merging/block_index.rs:19
+  --
+  block_hash : BlockHash
+  deploy_chains : Vec &#60; DeployChainIndex &#62;
+}
+entity "Branch" as E373 <<alias>> {
+  casper/src/rust/merging/conflict_set_merger.rs:21
+  --
+  value : Arc &#60; HashableSet &#60; R &#62; &#62;
+}
+entity "ResolvedConflicts" as E374 <<struct>> {
+  casper/src/rust/merging/conflict_set_merger.rs:81
+  --
+  to_merge : Vec &#60; HashableSet &#60; R &#62; &#62;
+  rejected : HashableSet &#60; R &#62;
+  late_set_size : usize
+  actual_set_size : usize
+  branches_count : usize
+  rejected_as_dependents_count : usize
+  optimal_rejection_count : usize
+  conflict_map_conflicts_count : usize
+  rejection_options_count : usize
+  branches_time : Duration
+  conflicts_map_time : Duration
+  rejection_options_time : Duration
+}
+entity "OrderDependenceGuard" as E375 <<struct>> {
+  casper/src/rust/merging/conflict_set_merger.rs:383
+  --
+  added : HashMap &#60; Blake2b256Hash , HashMap &#60; Vec &#60; u8 &#62; , Contributors &#60;\n    S &#62; &#62; &#62;
+  removed : HashMap &#60; Blake2b256Hash , HashMap &#60; Vec &#60; u8 &#62; , Contributors\n    &#60; S &#62; &#62; &#62;
+}
+E370 --> E369 : assertions
+E371 --> E370 : result
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

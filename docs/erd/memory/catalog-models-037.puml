@@ -1,0 +1,54 @@
+@startuml
+!include ../style.puml
+title catalog models 037
+entity "PathMapCrateTypeMapper" as E1026 <<struct>> {
+  models/src/rust/pathmap_crate_type_mapper.rs:6
+  --
+}
+entity "RholangPathMap" as E1027 <<alias>> {
+  models/src/rust/pathmap_integration.rs:7
+  --
+  value : PathMap &#60; Par &#62;
+}
+entity "PathMapCreationResult" as E1028 <<struct>> {
+  models/src/rust/pathmap_integration.rs:99
+  --
+  map : RholangPathMap
+  connective_used : bool
+  locally_free : Vec &#60; u8 &#62;
+}
+entity "RholangReadZipper" as E1029 <<struct>> {
+  models/src/rust/pathmap_zipper.rs:11
+  --
+  zipper : ReadZipperUntracked &#60; 'a , 'path , Par &#62;
+  connective_used : bool
+  locally_free : Vec &#60; u8 &#62;
+}
+entity "RholangWriteZipper" as E1030 <<struct>> {
+  models/src/rust/pathmap_zipper.rs:97
+  --
+  zipper : WriteZipperUntracked &#60; 'a , 'path , Par &#62;
+  connective_used : bool
+  locally_free : Vec &#60; u8 &#62;
+}
+entity "RholangZipperHead" as E1031 <<struct>> {
+  models/src/rust/pathmap_zipper.rs:202
+  --
+  zipper_head : ZipperHead &#60; 'a , 'a , Par &#62;
+  connective_used : bool
+  locally_free : Vec &#60; u8 &#62;
+}
+entity "GPrivateBuilder" as E1032 <<struct>> {
+  models/src/rust/rholang/implicits.rs:27
+  --
+}
+entity "BundleSortMatcher" as E1033 <<struct>> {
+  models/src/rust/rholang/sorter/bundle_sort_matcher.rs:8
+  --
+}
+E1028 --> E1027 : map
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

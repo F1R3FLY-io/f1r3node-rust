@@ -1,0 +1,58 @@
+@startuml
+!include ../style.puml
+title catalog crypto 003
+entity "FrostAggregateSignature" as E661 <<struct>> {
+  crypto/src/rust/signatures/frost_secp256k1.rs:90
+  --
+  session_id : [u8 ; 32]
+  signature : Vec &#60; u8 &#62;
+  sig_algorithm : String
+}
+entity "MockFrostSecp256k1Coordinator" as E662 <<struct>> {
+  crypto/src/rust/signatures/frost_secp256k1.rs:120
+  --
+  aggregate_private_key : PrivateKey
+  aggregate_public_key : PublicKey
+  shares : HashMap &#60; FrostParticipantId , FrostParticipantShare &#62;
+}
+entity "SchnorrSecp256k1" as E663 <<struct>> {
+  crypto/src/rust/signatures/schnorr_secp256k1.rs:18
+  --
+}
+entity "Secp256k1" as E664 <<struct>> {
+  crypto/src/rust/signatures/secp256k1.rs:17
+  --
+}
+entity "Secp256k1Eth" as E665 <<struct>> {
+  crypto/src/rust/signatures/secp256k1_eth.rs:9
+  --
+}
+entity "SignaturesAlgVisitor" as E666 <<struct>> {
+  crypto/src/rust/signatures/signatures_alg.rs:59
+  Box &#60; dyn SignaturesAlg &#62;::deserialize
+  --
+}
+entity "SignaturesAlgFactory" as E667 <<struct>> {
+  crypto/src/rust/signatures/signatures_alg.rs:79
+  --
+}
+entity "Signed" as E668 <<struct>> {
+  crypto/src/rust/signatures/signed.rs:18
+  --
+  data : A
+  pk : PublicKey
+  sig : prost :: bytes :: Bytes
+  sig_algorithm : Box &#60; dyn SignaturesAlg &#62;
+}
+E661 -[hidden]down-> E662
+E662 -[hidden]down-> E663
+E663 -[hidden]down-> E664
+E664 -[hidden]down-> E665
+E665 -[hidden]down-> E666
+E666 -[hidden]down-> E667
+E667 -[hidden]down-> E668
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

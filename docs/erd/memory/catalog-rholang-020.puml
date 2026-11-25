@@ -1,0 +1,56 @@
+@startuml
+!include ../style.puml
+title catalog rholang 020
+entity "FsEntriesStreamOpenHandler" as E1414 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/stream/fs_entries_stream_open.rs:81
+  --
+}
+entity "FsEntriesStreamOpenArgs" as E1415 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/stream/fs_entries_stream_open.rs:84
+  --
+  root : String
+  rel : String
+  cmode : ConsensusMode
+}
+entity "FS_ENTRIES_STREAM_OPEN_ENTRY" as E1416 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/stream/fs_entries_stream_open.rs:318
+  --
+  value : FsHandlerEntry
+}
+entity "DevInode" as E1417 <<alias>> {
+  rholang/src/rust/interpreter/io/lock.rs:48
+  --
+  value : (u64 , u64)
+}
+entity "DeployScope" as E1418 <<alias>> {
+  rholang/src/rust/interpreter/io/lock.rs:63
+  --
+  value : [u8 ; 32]
+}
+entity "LockId" as E1419 <<struct>> {
+  rholang/src/rust/interpreter/io/lock.rs:76
+  --
+  0 : u64
+}
+entity "LockIdOutOfRange" as E1420 <<struct>> {
+  rholang/src/rust/interpreter/io/lock.rs:114
+  --
+  attempted : u64
+}
+entity "HolderId" as E1421 <<struct>> {
+  rholang/src/rust/interpreter/io/lock.rs:172
+  --
+  bytes : [u8 ; 32]
+}
+E1414 -[hidden]down-> E1415
+E1415 -[hidden]down-> E1416
+E1416 -[hidden]down-> E1417
+E1417 -[hidden]down-> E1418
+E1418 -[hidden]down-> E1419
+E1419 -[hidden]down-> E1420
+E1420 -[hidden]down-> E1421
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

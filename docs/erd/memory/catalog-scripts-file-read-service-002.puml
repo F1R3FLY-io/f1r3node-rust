@@ -1,0 +1,34 @@
+@startuml
+!include ../style.puml
+title catalog scripts file read service 002
+entity "SkipReason" as E1785 <<enum>> {
+  scripts/file-read-service/src/index.rs:44
+  --
+  ConsensusMode : variant
+}
+entity "FileReadIndex" as E1786 <<struct>> {
+  scripts/file-read-service/src/index.rs:52
+  --
+  oracular : HashMap &#60; String , Entry &#62;
+  skip : HashMap &#60; String , SkipReason &#62;
+}
+entity "Lookup" as E1787 <<enum>> {
+  scripts/file-read-service/src/index.rs:98
+  --
+  Found.0 : &#38; 'a Entry
+  Skipped.0 : &#38; 'a SkipReason
+  NotFound : variant
+}
+entity "Cli" as E1788 <<struct>> {
+  scripts/file-read-service/src/main.rs:59
+  --
+  config : PathBuf
+  bind : SocketAddr
+}
+E1786 --> E1785 : skip
+E1787 --> E1785 : Skipped.0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,88 @@
+@startuml
+!include ../style.puml
+title catalog block storage 005
+entity "Availability" as E32 <<enum>> {
+  block-storage/src/rust/dag/soak_snapshot.rs:79
+  --
+  Present.0 : T
+  Absent : variant
+}
+entity "BlockBody" as E33 <<enum>> {
+  block-storage/src/rust/dag/soak_snapshot.rs:85
+  --
+  Held.0 : Vec &#60; u8 &#62;
+  NotHeld : variant
+}
+entity "DetachedBlock" as E34 <<struct>> {
+  block-storage/src/rust/dag/soak_snapshot.rs:91
+  --
+  metadata : BlockMetadata
+  floor : Availability &#60; BlockHash &#62;
+  frontier : Availability &#60; BlockHash &#62;
+}
+entity "Coverage" as E35 <<struct>> {
+  block-storage/src/rust/dag/soak_snapshot.rs:98
+  --
+  held_blocks : usize
+  complete_held_dag : bool
+  requested_bodies : usize
+}
+entity "CapturePhase" as E36 <<enum>> {
+  block-storage/src/rust/dag/soak_snapshot.rs:105
+  --
+  GuardsHeld : variant
+  StateCopied : variant
+  RowsRead : variant
+  Validated : variant
+  GuardsReleased : variant
+}
+entity "SnapshotData" as E37 <<struct>> {
+  block-storage/src/rust/dag/soak_snapshot.rs:114
+  --
+  schema_version : u32
+  scope : &#38; 'static str
+  limits : CaptureLimits
+  coverage : Coverage
+  insertion_generation : u64
+  view_sequence : u64
+  transactions : Vec &#60; TransactionIdentity &#62;
+  usage : ReadUsage
+  work : usize
+  dag_set : BTreeSet &#60; BlockHash &#62;
+  child_map : BTreeMap &#60; BlockHash , BTreeSet &#60; BlockHash &#62; &#62;
+  height_map : BTreeMap &#60; i64 , BTreeSet &#60; BlockHash &#62; &#62;
+  block_number_map : BTreeMap &#60; BlockHash , i64 &#62;
+  main_parent_map : BTreeMap &#60; BlockHash , BlockHash &#62;
+  self_justification_map : BTreeMap &#60; BlockHash , BlockHash &#62;
+  last_finalized_block : Option &#60; (BlockHash , i64) &#62;
+  finalized_block_set : BTreeSet &#60; BlockHash &#62;
+  latest_messages : BTreeMap &#60; Validator , BlockHash &#62;
+  invalid_blocks : BTreeMap &#60; BlockHash , BlockMetadata &#62;
+  blocks : BTreeMap &#60; BlockHash , DetachedBlock &#62;
+  bodies : BTreeMap &#60; BlockHash , BlockBody &#62;
+}
+entity "DetachedDagSnapshot" as E38 <<struct>> {
+  block-storage/src/rust/dag/soak_snapshot.rs:139
+  --
+  data : SnapshotData
+  canonical : Vec &#60; u8 &#62;
+  digest : [u8 ; 32]
+}
+entity "ScratchView" as E39 <<struct>> {
+  block-storage/src/rust/dag/soak_snapshot.rs:152
+  --
+  representation : KeyValueDagRepresentation
+  blocks : KeyValueBlockStore
+  excluded_stores : &#38; 'static [&#38; 'static str]
+}
+E34 --> E32 : floor
+E34 --> E32 : frontier
+E37 --> E33 : bodies
+E37 --> E34 : blocks
+E37 --> E35 : coverage
+E38 --> E37 : data
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,63 @@
+@startuml
+!include ../style.puml
+title catalog rholang 022
+entity "WaitKind" as E1430 <<enum>> {
+  rholang/src/rust/interpreter/io/lock.rs:594
+  --
+  Range.offset : u64
+  Range.length : u64
+  Range.mode : LockMode
+  Sequential : variant
+}
+entity "LockRegistry" as E1431 <<struct>> {
+  rholang/src/rust/interpreter/io/lock.rs:608
+  --
+  inner : Arc &#60; RwLock &#60; HashMap &#60; DevInode , FileLockState &#62; &#62; &#62;
+  next_lock_id : Arc &#60; AtomicU64 &#62;
+}
+entity "SharedLockRegistry" as E1432 <<struct>> {
+  rholang/src/rust/interpreter/io/lock.rs:1677
+  --
+  slot : Arc &#60; RwLock &#60; LockRegistry &#62; &#62;
+}
+entity "ConsensusMode" as E1433 <<enum>> {
+  rholang/src/rust/interpreter/io/mod.rs:29
+  --
+  Oracular : variant
+  Consensus : variant
+}
+entity "AccessMode" as E1434 <<enum>> {
+  rholang/src/rust/interpreter/io/mode.rs:19
+  --
+  Read : variant
+  Write : variant
+  ReadWrite : variant
+}
+entity "ExistPolicy" as E1435 <<enum>> {
+  rholang/src/rust/interpreter/io/mode.rs:26
+  --
+  Require : variant
+  RequireAbsent : variant
+  CreateOrTruncate : variant
+  CreateOrAppend : variant
+}
+entity "OpenIntent" as E1436 <<struct>> {
+  rholang/src/rust/interpreter/io/mode.rs:41
+  --
+  mode : AccessMode
+  policy : ExistPolicy
+}
+entity "DescendOutcome" as E1437 <<enum>> {
+  rholang/src/rust/interpreter/io/path/descend.rs:164
+  --
+  Leaf.0 : SafeParent
+  RootSelf.0 : OwnedFd
+}
+E1432 --> E1431 : slot
+E1436 --> E1434 : mode
+E1436 --> E1435 : policy
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

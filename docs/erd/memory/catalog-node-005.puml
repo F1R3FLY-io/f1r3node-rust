@@ -1,0 +1,74 @@
+@startuml
+!include ../style.puml
+title catalog node 005
+entity "BondInfoJson" as E1090 <<struct>> {
+  node/src/rust/api/serde_types/light_block_info.rs:55
+  --
+  validator : String
+  stake : String
+}
+entity "JustificationInfoJson" as E1091 <<struct>> {
+  node/src/rust/api/serde_types/light_block_info.rs:62
+  --
+  validator : String
+  latest_block_hash : String
+}
+entity "RejectedDeployInfoJson" as E1092 <<struct>> {
+  node/src/rust/api/serde_types/light_block_info.rs:70
+  --
+  sig : String
+}
+entity "BondInfoSerde" as E1093 <<struct>> {
+  node/src/rust/api/serde_types/system_deploy_info.rs:19
+  --
+  validator : String
+  stake : String
+}
+entity "JustificationInfoSerde" as E1094 <<struct>> {
+  node/src/rust/api/serde_types/system_deploy_info.rs:43
+  --
+  validator : String
+  latest_block_hash : String
+}
+entity "RejectedDeployInfoSerde" as E1095 <<struct>> {
+  node/src/rust/api/serde_types/system_deploy_info.rs:68
+  --
+  sig : String
+}
+entity "HeaderSerde" as E1096 <<struct>> {
+  node/src/rust/api/serde_types/system_deploy_info.rs:81
+  --
+  parents_hash_list : Vec &#60; Vec &#60; u8 &#62; &#62;
+  timestamp : i64
+  version : i64
+  extra_bytes : Vec &#60; u8 &#62;
+  chain_id : Vec &#60; u8 &#62;
+}
+entity "BlockCommitmentSerde" as E1097 <<struct>> {
+  node/src/rust/api/serde_types/system_deploy_info.rs:117
+  --
+  block_hash : Vec &#60; u8 &#62;
+  header : HeaderSerde
+  pre_state_hash : Vec &#60; u8 &#62;
+  post_state_hash : Vec &#60; u8 &#62;
+  bonds_root : Vec &#60; u8 &#62;
+  justifications_root : Vec &#60; u8 &#62;
+  block_number : i64
+  rejected_root : Vec &#60; u8 &#62;
+  applied_from_scope_root : Vec &#60; u8 &#62;
+  merge_base : Vec &#60; u8 &#62;
+  body_extra_bytes : Vec &#60; u8 &#62;
+  sender : Vec &#60; u8 &#62;
+  sig_algorithm : String
+  seq_num : i32
+  shard_id : String
+  extra_bytes : Vec &#60; u8 &#62;
+  deploys_root : Vec &#60; u8 &#62;
+  sig : Vec &#60; u8 &#62;
+}
+E1097 --> E1096 : header
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

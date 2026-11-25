@@ -1,0 +1,21 @@
+[package]
+name = "erd-catalog"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "erd-catalog"
+path = "generate.rs"
+
+[dependencies]
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
+quote = "1"
+proc-macro2 = { version = "1", features = ["span-locations"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+prost = "0.14"
+prost-types = "0.14"
+regex = "1"

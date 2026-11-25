@@ -1,0 +1,67 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 004
+entity "HistoryRepositoryImpl" as E1650 <<struct>> {
+  rspace++/src/rspace/history/history_repository_impl.rs:51
+  --
+  current_history : Arc &#60; Mutex &#60; Box &#60; dyn History &#62; &#62; &#62;
+  roots_repository : Arc &#60; Mutex &#60; RootRepository &#62; &#62;
+  checkpoint_writer : Arc &#60; dyn CheckpointWriter &#62;
+  leaf_store : Arc &#60; dyn KeyValueStore &#62;
+  history_kv_store : Arc &#60; dyn KeyValueStore &#62;
+  rspace_exporter : Arc &#60; dyn RSpaceExporter &#62;
+  rspace_importer : Arc &#60; dyn RSpaceImporter &#62;
+  prune_guard : Arc &#60; PruneGuard &#62;
+  _marker : PhantomData &#60; (C , P , A , K) &#62;
+}
+entity "ColdAction" as E1651 <<alias>> {
+  rspace++/src/rspace/history/history_repository_impl.rs:73
+  --
+  value : (Blake2b256Hash , Option &#60; PersistedData &#62;)
+}
+entity "TimedGuard" as E1652 <<struct>> {
+  rspace++/src/rspace/history/history_repository_impl.rs:80
+  --
+  guard : Option &#60; MutexGuard &#60; 'a , T &#62; &#62;
+  acquired : Instant
+  site : &#38; 'static LockSiteMetrics
+}
+entity "RadixHistory" as E1653 <<struct>> {
+  rspace++/src/rspace/history/instances/radix_history.rs:16
+  --
+  root_hash : Blake2b256Hash
+  root_node : Node
+  imple : RadixTreeImpl
+  store : Arc &#60; dyn KeyValueStore &#62;
+}
+entity "RSpaceHistoryReaderImpl" as E1654 <<struct>> {
+  rspace++/src/rspace/history/instances/rspace_history_reader_impl.rs:24
+  --
+  target_history : Arc &#60; Box &#60; dyn History &#62; &#62;
+  leaf_store : Arc &#60; dyn KeyValueStore &#62;
+  _marker : PhantomData &#60; (C , P , A , K) &#62;
+}
+entity "HistoryReaderBaseImpl" as E1655 <<struct>> {
+  rspace++/src/rspace/history/instances/rspace_history_reader_impl.rs:206
+  RSpaceHistoryReaderImpl &#60; C , P , A , K &#62;::base
+  --
+  outer : Arc &#60; RSpaceHistoryReaderImpl &#60; C , P , A , K &#62; &#62;
+}
+entity "Either" as E1656 <<enum>> {
+  rspace++/src/rspace/history/mod.rs:15
+  --
+  Left.0 : L
+  Right.0 : R
+}
+entity "Pinned" as E1657 <<struct>> {
+  rspace++/src/rspace/history/prune_guard.rs:70
+  --
+  order : VecDeque &#60; Blake2b256Hash &#62;
+  generations : HashMap &#60; Blake2b256Hash , u64 &#62;
+}
+E1655 --> E1654 : outer
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

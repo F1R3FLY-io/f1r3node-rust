@@ -1,0 +1,95 @@
+@startuml
+!include ../style.puml
+title catalog node 016
+entity "PeersDiscovery" as E1178 <<struct>> {
+  node/src/rust/configuration/model.rs:134
+  --
+  host : Option &#60; String &#62;
+  port : u16
+  lookup_interval : Duration
+  cleanup_interval : Duration
+  heartbeat_batch_size : u32
+  heartbeat_failure_threshold : u32
+  init_wait_loop_interval : Duration
+}
+entity "ApiServer" as E1179 <<struct>> {
+  node/src/rust/configuration/model.rs:156
+  --
+  host : String
+  port_grpc_external : u16
+  port_grpc_internal : u16
+  grpc_max_recv_message_size : u32
+  port_http : u16
+  port_admin_http : u16
+  http_max_body_bytes : u32
+  deploy_max_inflight : Option &#60; usize &#62;
+  max_blocks_limit : u32
+  enable_reporting : bool
+  report_cache_retention_blocks : u32
+  exploratory_deploy_max_concurrent : usize
+  exploratory_deploy_phlo_limit : i64
+  exploratory_deploy_execution_timeout : Duration
+  keep_alive_time : Duration
+  keep_alive_timeout : Duration
+  tcp_keepalive_time : Duration
+  request_timeout : Duration
+  max_connection_age : Duration
+  max_connection_age_grace : Duration
+}
+entity "Storage" as E1180 <<struct>> {
+  node/src/rust/configuration/model.rs:216
+  --
+  data_dir : PathBuf
+  file_io_provisioning : super :: file_io_provisioning ::\n    FileIoProvisioning
+  cli_oracle_static_files : Vec &#60; CliStaticFileArg &#62;
+  cli_oracle_static_dirs : Vec &#60; CliStaticDirArg &#62;
+  cli_consensus_static_files : Vec &#60; CliStaticFileArg &#62;
+  cli_consensus_static_dirs : Vec &#60; CliStaticDirArg &#62;
+}
+entity "TlsConf" as E1181 <<struct>> {
+  node/src/rust/configuration/model.rs:255
+  --
+  certificate_path : PathBuf
+  key_path : PathBuf
+  custom_certificate_location : bool
+  custom_key_location : bool
+}
+entity "Metrics" as E1182 <<struct>> {
+  node/src/rust/configuration/model.rs:279
+  --
+  prometheus : bool
+  influxdb : bool
+  influxdb_udp : bool
+  zipkin : bool
+  sigar : bool
+  tick_interval : Duration
+  influxdb_endpoint : InfluxDbEndpoint
+}
+entity "Repr" as E1183 <<enum>> {
+  node/src/rust/configuration/model.rs:321
+  duration_secs::deserialize
+  --
+  Secs.0 : u64
+  Text.0 : String
+}
+entity "InfluxDbEndpoint" as E1184 <<struct>> {
+  node/src/rust/configuration/model.rs:351
+  --
+  hostname : String
+  port : u16
+  database : String
+  protocol : String
+  user : Option &#60; String &#62;
+  password : Option &#60; String &#62;
+}
+entity "DevConf" as E1185 <<struct>> {
+  node/src/rust/configuration/model.rs:371
+  --
+  deployer_private_key : Option &#60; String &#62;
+}
+E1182 --> E1184 : influxdb_endpoint
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

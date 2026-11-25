@@ -1,0 +1,83 @@
+@startuml
+!include ../style.puml
+title catalog casper 019
+entity "ProductionStakeChecker" as E224 <<struct>> {
+  casper/src/rust/blocks/proposer/proposer.rs:709
+  --
+  validator : Arc &#60; ValidatorIdentity &#62;
+}
+entity "ProductionHeightChecker" as E225 <<struct>> {
+  casper/src/rust/blocks/proposer/proposer.rs:726
+  --
+  validator : Arc &#60; ValidatorIdentity &#62;
+}
+entity "ProductionBlockCreator" as E226 <<struct>> {
+  casper/src/rust/blocks/proposer/proposer.rs:743
+  --
+  deploy_storage : Arc &#60; KeyValueDeployStorage &#62;
+  rejected_deploy_buffer : Arc &#60; Mutex &#60; KeyValueRejectedDeployBuffer &#62; &#62;
+  runtime_manager : RuntimeManager
+  block_store : KeyValueBlockStore
+  finality_progress : block_creator :: FinalityProgress
+}
+entity "ProductionBlockValidator" as E227 <<struct>> {
+  casper/src/rust/blocks/proposer/proposer.rs:795
+  --
+}
+entity "ProductionProposeEffectHandler" as E228 <<struct>> {
+  casper/src/rust/blocks/proposer/proposer.rs:807
+  --
+  block_store : KeyValueBlockStore
+  transport : Arc &#60; T &#62;
+  connections_cell : ConnectionsCell
+  conf : RPConf
+  event_publisher : F1r3flyEvents
+}
+entity "DeployError" as E229 <<enum>> {
+  casper/src/rust/casper.rs:51
+  --
+  ParsingError.0 : String
+  MissingUser : variant
+  UnknownSignatureAlgorithm.0 : String
+  SignatureVerificationFailed : variant
+  DuplicateDeploy.0 : DeployId
+  SeedReuse.0 : DeployId
+  InvalidFreshness : variant
+  PhloLimitAboveCap.phlo_limit : i64
+  PhloLimitAboveCap.max_phlo_limit : i64
+  RecordTooLarge.record_bytes : u64
+  RecordTooLarge.limit : u64
+  PoolBusy.resource : &#38; 'static str
+  PoolBusy.required : u64
+  PoolBusy.limit : u64
+  AdmissionBusy : variant
+}
+entity "CasperSnapshot" as E230 <<struct>> {
+  casper/src/rust/casper.rs:480
+  --
+  dag : KeyValueDagRepresentation
+  last_finalized_block : BlockHash
+  parents : Vec &#60; BlockMessage &#62;
+  justifications : HashSet &#60; Justification &#62;
+  invalid_blocks : HashMap &#60; BlockHash , Validator &#62;
+  deploys_in_scope : Arc &#60; DashSet &#60; Bytes &#62; &#62;
+  rejected_in_scope : Arc &#60; DashSet &#60; Bytes &#62; &#62;
+  seeds_in_scope : Arc &#60; DashMap &#60; Vec &#60; u8 &#62; , Vec &#60; Bytes &#62; &#62; &#62;
+  max_block_num : i64
+  max_seq_nums : HashMap &#60; Validator , u64 &#62;
+  on_chain_state : OnChainCasperState
+  chain_id : BlockHash
+}
+entity "OnChainCasperState" as E231 <<struct>> {
+  casper/src/rust/casper.rs:550
+  --
+  shard_conf : CasperShardConf
+  bonds_map : HashMap &#60; Validator , BigInt &#62;
+  active_validators : Vec &#60; Validator &#62;
+}
+E230 --> E231 : on_chain_state
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

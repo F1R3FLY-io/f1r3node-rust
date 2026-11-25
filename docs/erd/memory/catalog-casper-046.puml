@@ -1,0 +1,82 @@
+@startuml
+!include ../style.puml
+title catalog casper 046
+entity "ForkChoiceSelection" as E440 <<struct>> {
+  casper/src/rust/soak_observer/evaluation.rs:108
+  --
+  reference : bool
+}
+entity "AuthorityRequest" as E441 <<struct>> {
+  casper/src/rust/soak_observer/evaluation.rs:114
+  --
+  capture : CaptureOptions
+  evaluation : WorkLimits
+  targets : Vec &#60; String &#62;
+  body_hashes : Vec &#60; String &#62;
+  floor : Option &#60; FloorSelection &#62;
+  original : bool
+  reference : bool
+  strict : bool
+  fork_choice : Option &#60; ForkChoiceSelection &#62;
+  display : Option &#60; DisplaySelection &#62;
+}
+entity "DisplaySelection" as E442 <<struct>> {
+  casper/src/rust/soak_observer/evaluation.rs:135
+  --
+}
+entity "RequestDigestInput" as E443 <<struct>> {
+  casper/src/rust/soak_observer/evaluation.rs:145
+  --
+  capture : &#38; 'a CaptureOptions
+  evaluation : &#38; 'a WorkLimits
+  targets : &#38; 'a [String]
+  body_hashes : &#38; 'a [String]
+  floor : &#38; 'a Option &#60; FloorSelection &#62;
+  original : bool
+  reference : bool
+  strict : bool
+}
+entity "Value" as E444 <<enum>> {
+  casper/src/rust/soak_observer/evaluation.rs:205
+  --
+  Available.input_digest : String
+  Available.value : T
+  Unavailable.input_digest : Option &#60; String &#62;
+  Unavailable.reason : String
+  Failed.input_digest : Option &#60; String &#62;
+  Failed.reason : String
+  NotRequested : variant
+}
+entity "FloorValue" as E445 <<struct>> {
+  casper/src/rust/soak_observer/evaluation.rs:246
+  --
+  outcome : FloorOutcome
+  hash : Option &#60; String &#62;
+  block_number : Option &#60; i64 &#62;
+}
+entity "OracleComparison" as E446 <<struct>> {
+  casper/src/rust/soak_observer/evaluation.rs:291
+  --
+  algorithm : &#38; 'static str
+  decision_matches : bool
+  original_matches : Option &#60; bool &#62;
+  measured_decision : bool
+  reference : super :: reference :: ReferenceOracle
+}
+entity "FloorComparison" as E447 <<struct>> {
+  casper/src/rust/soak_observer/evaluation.rs:300
+  --
+  algorithm : &#38; 'static str
+  matches : bool
+  measured : FloorValue
+  reference : FloorValue
+}
+E441 --> E440 : fork_choice
+E441 --> E442 : display
+E447 --> E445 : measured
+E447 --> E445 : reference
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

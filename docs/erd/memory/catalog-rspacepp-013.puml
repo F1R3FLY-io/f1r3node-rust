@@ -1,0 +1,69 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 013
+entity "ReportingProduce" as E1722 <<struct>> {
+  rspace++/src/rspace/reporting_rspace.rs:52
+  --
+  channel : C
+  data : A
+}
+entity "ReportingConsume" as E1723 <<struct>> {
+  rspace++/src/rspace/reporting_rspace.rs:62
+  --
+  channels : Vec &#60; C &#62;
+  patterns : Vec &#60; P &#62;
+  continuation : K
+  peeks : Vec &#60; i32 &#62;
+}
+entity "ReportingComm" as E1724 <<struct>> {
+  rspace++/src/rspace/reporting_rspace.rs:75
+  --
+  consume : ReportingConsume &#60; C , P , K &#62;
+  produces : Vec &#60; ReportingProduce &#60; C , A &#62; &#62;
+}
+entity "ReportPhase" as E1725 <<enum>> {
+  rspace++/src/rspace/reporting_rspace.rs:87
+  --
+  Unspecified : variant
+  Precharge : variant
+  User : variant
+  Refund : variant
+}
+entity "ReportBatch" as E1726 <<struct>> {
+  rspace++/src/rspace/reporting_rspace.rs:96
+  --
+  phase : ReportPhase
+  events : Vec &#60; ReportingEvent &#60; C , P , A , K &#62; &#62;
+}
+entity "ReportingRspace" as E1727 <<struct>> {
+  rspace++/src/rspace/reporting_rspace.rs:108
+  --
+  replay_rspace : ReplayRSpace &#60; C , P , A , K &#62;
+  report : Arc &#60; Mutex &#60; Vec &#60; ReportBatch &#60; C , P , A , K &#62; &#62; &#62; &#62;
+  soft_report : Arc &#60; Mutex &#60; Vec &#60; ReportingEvent &#60; C , P , A , K &#62; &#62; &#62; &#62;
+  current_phase : Arc &#60; Mutex &#60; ReportPhase &#62; &#62;
+}
+entity "ReportingLogger" as E1728 <<struct>> {
+  rspace++/src/rspace/reporting_rspace.rs:450
+  --
+  report : Arc &#60; Mutex &#60; Vec &#60; ReportBatch &#60; C , P , A , K &#62; &#62; &#62; &#62;
+  soft_report : Arc &#60; Mutex &#60; Vec &#60; ReportingEvent &#60; C , P , A , K &#62; &#62; &#62; &#62;
+}
+entity "RhoEvent" as E1729 <<enum>> {
+  rspace++/src/rspace/reporting_transformer.rs:53
+  --
+  RhoComm.0 : RhoComm
+  RhoProduce.0 : RhoProduce
+  RhoConsume.0 : RhoConsume
+}
+E1724 --> E1722 : produces
+E1724 --> E1723 : consume
+E1726 --> E1725 : phase
+E1727 --> E1725 : current_phase
+E1727 --> E1726 : report
+E1728 --> E1726 : report
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

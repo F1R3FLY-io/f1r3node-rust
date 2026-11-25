@@ -1,0 +1,78 @@
+@startuml
+!include ../style.puml
+title catalog models 007
+entity "SnapshotChunkResponseProto" as E786 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  block_hash #1 : Bytes
+  chunk_index #2 : Uint32
+  chunk_bytes #3 : Bytes
+  chunk_hash #4 : Bytes
+  merkle_root #5 : Bytes
+  chunk_count #6 : Uint32
+  merkle_proof #7 : repeated .casper.MerkleProofStepProto
+}
+entity "StoreItemProto" as E787 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  key #1 : Bytes
+  value #2 : Bytes
+}
+entity "StoreItemsMessageProto" as E788 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  startPath #1 : repeated .casper.StoreNodeKeyProto
+  lastPath #2 : repeated .casper.StoreNodeKeyProto
+  historyItems #3 : repeated .casper.StoreItemProto
+  dataItems #4 : repeated .casper.StoreItemProto
+}
+entity "StoreItemsMessageRequestProto" as E789 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  startPath #1 : repeated .casper.StoreNodeKeyProto
+  skip #2 : Int32
+  take #3 : Int32
+}
+entity "StoreNodeKeyProto" as E790 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  hash #1 : Bytes
+  index #2 : Int32
+}
+entity "SystemDeployDataProto" as E791 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  slashSystemDeploy #1 oneof systemDeploy :\n    .casper.SlashSystemDeployDataProto
+  closeBlockSystemDeploy #2 oneof systemDeploy :\n    .casper.CloseBlockSystemDeployDataProto
+}
+entity "UnapprovedBlockProto" as E792 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  candidate #1 : .casper.ApprovedBlockCandidateProto
+  timestamp #2 : Int64
+  duration #3 : Int64
+}
+entity "WalPayloadResponseProto" as E793 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  payload_hash #1 : Bytes
+  payload_bytes #2 : Bytes
+}
+E788 --> E787 : dataItems #4
+E788 --> E787 : historyItems #3
+E788 --> E790 : lastPath #2
+E788 --> E790 : startPath #1
+E789 --> E790 : startPath #1
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

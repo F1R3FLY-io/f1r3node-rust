@@ -1,0 +1,61 @@
+@startuml
+!include ../style.puml
+title Deploy lifecycle and carrier indices in dagstorage
+entity "deploy-lifecycle-events" as Events {
+  * key : bincode signature ByteString
+  --
+  value : LifecycleEvents
+  valid_after : Option<i64>
+  events : Vec<LifecycleEvent>
+}
+entity LifecycleEvent {
+  height : i64
+  block_hash : ByteString
+  kind : Included { is_failed } OR Rejected { duplicate }
+}
+entity "deploy-lifecycle-terminal" as Terminal {
+  * key : bincode signature ByteString
+  --
+  value : TerminalRecord
+  state : Finalized OR Expired OR Failed
+  rejection_count : u32
+  latest_height : i64
+  latest_block_hash : ByteString
+}
+entity "carrier-index" as Carriers {
+  * key : bincode signature ByteString
+  --
+  value : Vec<CarrierEntry>
+  entry : height, block_hash
+}
+entity "carrier-index-seeds" as SeedCarriers {
+  * key : bincode seed ByteString
+  --
+  value : Vec<SeedCarrierEntry>
+  entry : height, block_hash, signature
+}
+entity "carrier-index-meta" as Meta {
+  * key : bincode String
+  --
+  value : bincode i64
+  keys : watermark / seed-watermark
+  keys : last-prune / prune-cutoff
+}
+entity "block-metadata" as Blocks {
+  * block_hash
+  --
+  block_number / validity / finality
+}
+Events "1" --> "0..*" LifecycleEvent
+LifecycleEvent --> Blocks : body projection
+Terminal --> Blocks : frozen latest appearance
+Carriers --> Blocks : all recorded carriers
+SeedCarriers --> Carriers : deploy signature
+Meta ..> Carriers : bounds complete coverage
+Meta ..> SeedCarriers : bounds complete coverage
+Events ..> Terminal : terminal write prunes open events
+legend bottom
+Values use bincode. Terminal verdicts are write-once. Carrier rows have separate height-based retention.
+Source: deploy_lifecycle_types.rs and carrier_index.rs. References are logical, not enforced foreign keys.
+endlegend
+@enduml

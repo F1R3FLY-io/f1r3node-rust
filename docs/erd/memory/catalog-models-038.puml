@@ -1,0 +1,47 @@
+@startuml
+!include ../style.puml
+title catalog models 038
+entity "ConnectiveSortMatcher" as E1034 <<struct>> {
+  models/src/rust/rholang/sorter/connective_sort_matcher.rs:9
+  --
+}
+entity "ExprSortMatcher" as E1035 <<struct>> {
+  models/src/rust/rholang/sorter/expr_sort_matcher.rs:18
+  --
+}
+entity "IfSortMatcher" as E1036 <<struct>> {
+  models/src/rust/rholang/sorter/if_sort_matcher.rs:7
+  --
+}
+entity "MatchSortMatcher" as E1037 <<struct>> {
+  models/src/rust/rholang/sorter/match_sort_matcher.rs:9
+  --
+}
+entity "NewSortMatcher" as E1038 <<struct>> {
+  models/src/rust/rholang/sorter/new_sort_matcher.rs:9
+  --
+}
+entity "Ordering" as E1039 <<struct>> {
+  models/src/rust/rholang/sorter/ordering.rs:12
+  --
+}
+entity "ParSortMatcher" as E1040 <<struct>> {
+  models/src/rust/rholang/sorter/par_sort_matcher.rs:19
+  --
+}
+entity "ReceiveSortMatcher" as E1041 <<struct>> {
+  models/src/rust/rholang/sorter/receive_sort_matcher.rs:9
+  --
+}
+E1034 -[hidden]down-> E1035
+E1035 -[hidden]down-> E1036
+E1036 -[hidden]down-> E1037
+E1037 -[hidden]down-> E1038
+E1038 -[hidden]down-> E1039
+E1039 -[hidden]down-> E1040
+E1040 -[hidden]down-> E1041
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

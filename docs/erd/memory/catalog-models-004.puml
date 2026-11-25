@@ -1,0 +1,70 @@
+@startuml
+!include ../style.puml
+title catalog models 004
+entity "GetWalPayloadRequestProto" as E762 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  payload_hash #1 : Bytes
+}
+entity "HasBlockProto" as E763 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  hash #1 : Bytes
+}
+entity "HasBlockRequestProto" as E764 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  hash #1 : Bytes
+}
+entity "HasSnapshotProto" as E765 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  block_hash #1 : Bytes
+  merkle_root #2 : Bytes
+  chunk_count #3 : Uint32
+}
+entity "HasSnapshotRequestProto" as E766 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  block_hash #1 : Bytes
+}
+entity "HasWalPayloadProto" as E767 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  payload_hash #1 : Bytes
+  payload_size #2 : Uint32
+}
+entity "HasWalPayloadRequestProto" as E768 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  payload_hash #1 : Bytes
+}
+entity "HeaderProto" as E769 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  parentsHashList #1 : repeated Bytes
+  timestamp #5 : Int64
+  version #6 : Int64
+  extraBytes #7 : Bytes
+  chainId #8 : Bytes
+}
+E762 -[hidden]down-> E763
+E763 -[hidden]down-> E764
+E764 -[hidden]down-> E765
+E765 -[hidden]down-> E766
+E766 -[hidden]down-> E767
+E767 -[hidden]down-> E768
+E768 -[hidden]down-> E769
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

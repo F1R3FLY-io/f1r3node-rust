@@ -1,0 +1,79 @@
+@startuml
+!include ../style.puml
+title catalog shared 001
+entity "WorkKind" as E1789 <<enum>> {
+  shared/src/rust/dag/observation_work.rs:9
+  --
+  Traversal : variant
+  Metadata : variant
+  Oracle : variant
+  Clique : variant
+  Signature : variant
+  Allocation : variant
+}
+entity "WorkLimits" as E1790 <<struct>> {
+  shared/src/rust/dag/observation_work.rs:19
+  --
+  operations : u64
+  allocated_bytes : u64
+  clique_expansions : u64
+  recursion_depth : usize
+}
+entity "WorkUsage" as E1791 <<struct>> {
+  shared/src/rust/dag/observation_work.rs:41
+  --
+  traversal : u64
+  metadata : u64
+  oracle : u64
+  clique : u64
+  signature : u64
+  allocation : u64
+  operations : u64
+  allocated_bytes : u64
+  clique_expansions : u64
+  maximum_depth : usize
+}
+entity "NoopWork" as E1792 <<struct>> {
+  shared/src/rust/dag/observation_work.rs:86
+  --
+}
+entity "BudgetState" as E1793 <<struct>> {
+  shared/src/rust/dag/observation_work.rs:101
+  --
+  total : WorkUsage
+  paths : [WorkUsage ; WORK_PATHS]
+  failure : Option &#60; String &#62;
+}
+entity "Budget" as E1794 <<struct>> {
+  shared/src/rust/dag/observation_work.rs:107
+  --
+  limits : WorkLimits
+  deadline : Instant
+  cancelled : Arc &#60; AtomicBool &#62;
+  metadata_bytes : u64
+  body_bytes : u64
+  state : Mutex &#60; BudgetState &#62;
+}
+entity "CheckedWork" as E1795 <<struct>> {
+  shared/src/rust/dag/observation_work.rs:116
+  --
+  budget : Arc &#60; Budget &#62;
+  path : usize
+}
+entity "GrpcServer" as E1796 <<struct>> {
+  shared/src/rust/grpc/grpc_server.rs:54
+  --
+  server_future : Option &#60; tokio :: task :: JoinHandle &#60; Result &#60; () ,\n    tonic :: transport :: Error &#62; &#62; &#62;
+  port : u16
+  shutdown_tx : Option &#60; tokio :: sync :: oneshot :: Sender &#60; () &#62; &#62;
+}
+E1793 --> E1791 : paths
+E1793 --> E1791 : total
+E1794 --> E1790 : limits
+E1794 --> E1793 : state
+E1795 --> E1794 : budget
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,116 @@
+@startuml
+!include ../style.puml
+title catalog casper 022
+entity "GenesisCeremonyMaster" as E248 <<struct>> {
+  casper/src/rust/engine/genesis_ceremony_master.rs:36
+  --
+  approve_protocol : Arc &#60; ApproveBlockProtocolImpl &#60; T &#62; &#62;
+  transport_layer : Arc &#60; T &#62;
+  rp_conf_ask : RPConf
+}
+entity "GenesisValidator" as E249 <<struct>> {
+  casper/src/rust/engine/genesis_validator.rs:40
+  --
+  ingest : IngestHandle
+  casper_shard_conf : CasperShardConf
+  validator_id : ValidatorIdentity
+  block_approver : BlockApproverProtocol &#60; T &#62;
+  transport_layer : Arc &#60; T &#62;
+  rp_conf_ask : RPConf
+  connections_cell : ConnectionsCell
+  last_approved_block : Arc &#60; Mutex &#60; Option &#60; ApprovedBlock &#62; &#62; &#62;
+  event_publisher : F1r3flyEvents
+  engine_cell : Arc &#60; EngineCell &#62;
+  block_store : KeyValueBlockStore
+  block_dag_storage : BlockDagKeyValueStorage
+  deploy_storage : KeyValueDeployStorage
+  rejected_deploy_buffer : Arc &#60; Mutex &#60; KeyValueRejectedDeployBuffer &#62; &#62;
+  rspace_state_manager : RSpaceStateManager
+  runtime_manager : Arc &#60; RuntimeManager &#62;
+  estimator : Estimator
+  seen_candidates : Arc &#60; Mutex &#60; SeenCandidates &#62; &#62;
+  approved_block_pull_last : Arc &#60; Mutex &#60; Option &#60; std :: time :: Instant\n    &#62; &#62; &#62;
+  heartbeat_signal_ref : crate :: rust :: heartbeat_signal ::\n    HeartbeatSignalRef
+  state_items_tx : Option &#60; tokio :: sync :: mpsc :: Sender &#60; models ::\n    rust :: casper :: protocol :: casper_message :: StoreItemsMessage , &#62; ,\n    &#62;
+}
+entity "SeenCandidates" as E250 <<struct>> {
+  casper/src/rust/engine/genesis_validator.rs:77
+  --
+  set : HashSet &#60; BlockHash &#62;
+  fifo : VecDeque &#60; BlockHash &#62;
+  max_entries : usize
+}
+entity "Initializing" as E251 <<struct>> {
+  casper/src/rust/engine/initializing.rs:98
+  --
+  transport_layer : T
+  rp_conf_ask : RPConf
+  connections_cell : ConnectionsCell
+  last_approved_block : Arc &#60; Mutex &#60; Option &#60; ApprovedBlock &#62; &#62; &#62;
+  block_store : KeyValueBlockStore
+  block_dag_storage : BlockDagKeyValueStorage
+  deploy_storage : KeyValueDeployStorage
+  rejected_deploy_buffer : Arc &#60; Mutex &#60; KeyValueRejectedDeployBuffer &#62; &#62;
+  rspace_state_manager : RSpaceStateManager
+  ingest : IngestHandle
+  casper_shard_conf : CasperShardConf
+  validator_id : Option &#60; ValidatorIdentity &#62;
+  the_init : Arc &#60; dyn Fn () -&#62; Pin &#60; Box &#60; dyn Future &#60; Output = Result &#60;\n    () , CasperError &#62; &#62; + Send &#62; &#62; + Send + Sync , &#62;
+  block_message_rx : Arc &#60; Mutex &#60; Option &#60; mpsc :: Receiver &#60;\n    BlockMessage &#62; &#62; &#62; &#62;
+  tuple_space_rx : Arc &#60; Mutex &#60; Option &#60; mpsc :: Receiver &#60;\n    StoreItemsMessage &#62; &#62; &#62; &#62;
+  block_message_tx : Arc &#60; Mutex &#60; Option &#60; mpsc :: Sender &#60; BlockMessage\n    &#62; &#62; &#62; &#62;
+  tuple_space_tx : Arc &#60; Mutex &#60; Option &#60; mpsc :: Sender &#60;\n    StoreItemsMessage &#62; &#62; &#62; &#62;
+  block_message_queue_pending : Arc &#60; AtomicUsize &#62;
+  tuple_space_queue_pending : Arc &#60; AtomicUsize &#62;
+  trim_state : bool
+  disable_state_exporter : bool
+  start_requester : Arc &#60; Mutex &#60; bool &#62; &#62;
+  init_started_at : Arc &#60; Mutex &#60; Option &#60; Instant &#62; &#62; &#62;
+  no_approved_block_retries : Arc &#60; Mutex &#60; u64 &#62; &#62;
+  restore_failures : Arc &#60; Mutex &#60; u64 &#62; &#62;
+  event_publisher : F1r3flyEvents
+  engine_cell : Arc &#60; EngineCell &#62;
+  runtime_manager : Arc &#60; RuntimeManager &#62;
+  estimator : Arc &#60; Mutex &#60; Option &#60; Estimator &#62; &#62; &#62;
+  heartbeat_signal_ref : crate :: rust :: heartbeat_signal ::\n    HeartbeatSignalRef
+  state_items_tx : Option &#60; mpsc :: Sender &#60; StoreItemsMessage &#62; &#62;
+  floor_cache_tx : Arc &#60; Mutex &#60; Option &#60; mpsc :: Sender &#60;\n    FloorCacheResponse &#62; &#62; &#62; &#62;
+  floor_cache_rx : Arc &#60; Mutex &#60; Option &#60; mpsc :: Receiver &#60;\n    FloorCacheResponse &#62; &#62; &#62; &#62;
+  block_pruned_tx : Arc &#60; Mutex &#60; Option &#60; mpsc :: Sender &#60;\n    BlockPrunedResponse &#62; &#62; &#62; &#62;
+  block_pruned_rx : Arc &#60; Mutex &#60; Option &#60; mpsc :: Receiver &#60;\n    BlockPrunedResponse &#62; &#62; &#62; &#62;
+  stored_approved_block : Arc &#60; Mutex &#60; Option &#60; ApprovedBlock &#62; &#62; &#62;
+}
+entity "BlockRequesterWrapper" as E252 <<struct>> {
+  casper/src/rust/engine/initializing.rs:2037
+  --
+  transport_layer : &#38; 'a T
+  connections_cell : &#38; 'a ConnectionsCell
+  rp_conf_ask : &#38; 'a RPConf
+  block_store : KeyValueBlockStore
+  validate_block_fn : Box &#60; dyn Fn (&#38; BlockMessage) -&#62; bool + Send + Sync\n    + 'a &#62;
+}
+entity "TupleSpaceRequester" as E253 <<struct>> {
+  casper/src/rust/engine/initializing.rs:2064
+  --
+  transport_layer : &#38; 'a T
+  rp_conf_ask : &#38; 'a RPConf
+}
+entity "HorizonRequester" as E254 <<struct>> {
+  casper/src/rust/engine/initializing.rs:2102
+  --
+  transport_layer : &#38; 'a T
+  rp_conf_ask : &#38; 'a RPConf
+}
+entity "ReqStatus" as E255 <<enum>> {
+  casper/src/rust/engine/lfs_block_requester.rs:48
+  --
+  Init : variant
+  Requested : variant
+  Received : variant
+}
+E249 --> E250 : seen_candidates
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

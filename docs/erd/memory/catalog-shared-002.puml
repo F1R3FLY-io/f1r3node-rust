@@ -1,0 +1,60 @@
+@startuml
+!include ../style.puml
+title catalog shared 002
+entity "HashableSet" as E1797 <<struct>> {
+  shared/src/rust/hashable_set.rs:6
+  --
+  0 : HashSet &#60; T &#62;
+}
+entity "MetricsSemaphore" as E1798 <<struct>> {
+  shared/src/rust/metrics_semaphore.rs:12
+  --
+  semaphore : Arc &#60; Semaphore &#62;
+  source : &#38; 'static str
+  queue_count : Arc &#60; AtomicI64 &#62;
+  permit_count : Arc &#60; AtomicI64 &#62;
+}
+entity "MetricsSemaphorePermit" as E1799 <<struct>> {
+  shared/src/rust/metrics_semaphore.rs:114
+  --
+  _permit : OwnedSemaphorePermit
+  permit_count : Arc &#60; AtomicI64 &#62;
+  source : &#38; 'static str
+}
+entity "ByteVector" as E1800 <<alias>> {
+  shared/src/rust/mod.rs:15
+  --
+  value : Vec &#60; u8 &#62;
+}
+entity "ByteBuffer" as E1801 <<alias>> {
+  shared/src/rust/mod.rs:16
+  --
+  value : Vec &#60; u8 &#62;
+}
+entity "Byte" as E1802 <<alias>> {
+  shared/src/rust/mod.rs:17
+  --
+  value : u8
+}
+entity "ByteString" as E1803 <<alias>> {
+  shared/src/rust/mod.rs:18
+  --
+  value : Vec &#60; u8 &#62;
+}
+entity "BitSet" as E1804 <<alias>> {
+  shared/src/rust/mod.rs:19
+  --
+  value : Vec &#60; u8 &#62;
+}
+E1797 -[hidden]down-> E1798
+E1798 -[hidden]down-> E1799
+E1799 -[hidden]down-> E1800
+E1800 -[hidden]down-> E1801
+E1801 -[hidden]down-> E1802
+E1802 -[hidden]down-> E1803
+E1803 -[hidden]down-> E1804
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,67 @@
+@startuml
+!include ../style.puml
+title catalog models 016
+entity "RhoDataResponse" as E858 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  payload #2 oneof message : .casper.v1.RhoDataPayload
+}
+entity "StatusResponse" as E859 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  status #2 oneof message : .casper.Status
+}
+entity "VisualizeBlocksResponse" as E860 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  content #2 oneof message : String
+}
+entity "PrintUnmatchedSendsQuery" as E861 <<protobuf>> {
+  models/src/main/protobuf/ProposeServiceCommon.proto
+  .casper
+  --
+  printUnmatchedSends #1 : Bool
+}
+entity "ProposeQuery" as E862 <<protobuf>> {
+  models/src/main/protobuf/ProposeServiceCommon.proto
+  .casper
+  --
+  isAsync #1 : Bool
+}
+entity "ProposeResultQuery" as E863 <<protobuf>> {
+  models/src/main/protobuf/ProposeServiceCommon.proto
+  .casper
+  --
+}
+entity "ProposeResponse" as E864 <<protobuf>> {
+  models/src/main/protobuf/ProposeServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  result #2 oneof message : String
+}
+entity "ProposeResultResponse" as E865 <<protobuf>> {
+  models/src/main/protobuf/ProposeServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  result #2 oneof message : String
+}
+E858 -[hidden]down-> E859
+E859 -[hidden]down-> E860
+E860 -[hidden]down-> E861
+E861 -[hidden]down-> E862
+E862 -[hidden]down-> E863
+E863 -[hidden]down-> E864
+E864 -[hidden]down-> E865
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

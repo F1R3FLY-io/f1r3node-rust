@@ -1,0 +1,47 @@
+@startuml
+!include ../style.puml
+title catalog rholang 041
+entity "RhoBoolean" as E1582 <<struct>> {
+  rholang/src/rust/interpreter/rho_type.rs:69
+  --
+}
+entity "RhoNumber" as E1583 <<struct>> {
+  rholang/src/rust/interpreter/rho_type.rs:93
+  --
+}
+entity "RhoBigInt" as E1584 <<struct>> {
+  rholang/src/rust/interpreter/rho_type.rs:134
+  --
+}
+entity "RhoTuple2" as E1585 <<struct>> {
+  rholang/src/rust/interpreter/rho_type.rs:157
+  --
+}
+entity "RhoList" as E1586 <<struct>> {
+  rholang/src/rust/interpreter/rho_type.rs:187
+  --
+}
+entity "RhoMap" as E1587 <<struct>> {
+  rholang/src/rust/interpreter/rho_type.rs:214
+  --
+}
+entity "RhoUri" as E1588 <<struct>> {
+  rholang/src/rust/interpreter/rho_type.rs:238
+  --
+}
+entity "RhoDeployerId" as E1589 <<struct>> {
+  rholang/src/rust/interpreter/rho_type.rs:260
+  --
+}
+E1582 -[hidden]down-> E1583
+E1583 -[hidden]down-> E1584
+E1584 -[hidden]down-> E1585
+E1585 -[hidden]down-> E1586
+E1586 -[hidden]down-> E1587
+E1587 -[hidden]down-> E1588
+E1588 -[hidden]down-> E1589
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

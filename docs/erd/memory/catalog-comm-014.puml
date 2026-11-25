@@ -1,0 +1,28 @@
+@startuml
+!include ../style.puml
+title catalog comm 014
+entity "Blob" as E642 <<struct>> {
+  comm/src/rust/transport/transport_layer.rs:26
+  --
+  sender : PeerNode
+  packet : Packet
+}
+entity "IPV4_PATTERN" as E643 <<static>> {
+  comm/src/rust/upnp.rs:20
+  --
+  value : LazyLock &#60; Regex &#62;
+}
+entity "UPnPDevices" as E644 <<struct>> {
+  comm/src/rust/upnp.rs:79
+  --
+  all : HashMap &#60; IpAddr , Arc &#60; Gateway &#60; Tokio &#62; &#62; &#62;
+  gateways : Vec &#60; Arc &#60; Gateway &#60; Tokio &#62; &#62; &#62;
+  valid_gateway : Option &#60; Arc &#60; Gateway &#60; Tokio &#62; &#62; &#62;
+}
+E642 -[hidden]down-> E643
+E643 -[hidden]down-> E644
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

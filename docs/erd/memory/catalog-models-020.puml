@@ -1,0 +1,74 @@
+@startuml
+!include ../style.puml
+title catalog models 020
+entity "ENeg" as E890 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p #1 : .rhoapi.Par
+}
+entity "ENeq" as E891 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p1 #1 : .rhoapi.Par
+  p2 #2 : .rhoapi.Par
+}
+entity "ENot" as E892 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p #1 : .rhoapi.Par
+}
+entity "EOr" as E893 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p1 #1 : .rhoapi.Par
+  p2 #2 : .rhoapi.Par
+}
+entity "EPathMap" as E894 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  ps #1 : repeated .rhoapi.Par
+  locallyFree #3 : Bytes
+  connective_used #4 : Bool
+  remainder #5 : .rhoapi.Var
+}
+entity "EPercentPercent" as E895 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p1 #1 : .rhoapi.Par
+  p2 #2 : .rhoapi.Par
+}
+entity "EPi" as E896 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  bindCount #1 : Sint32
+  paramTypes #2 : repeated .rhoapi.Par
+  codomain #3 : .rhoapi.Par
+  locallyFree #4 : Bytes
+  connective_used #5 : Bool
+}
+entity "EPlus" as E897 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p1 #1 : .rhoapi.Par
+  p2 #2 : .rhoapi.Par
+}
+E890 -[hidden]down-> E891
+E891 -[hidden]down-> E892
+E892 -[hidden]down-> E893
+E893 -[hidden]down-> E894
+E894 -[hidden]down-> E895
+E895 -[hidden]down-> E896
+E896 -[hidden]down-> E897
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

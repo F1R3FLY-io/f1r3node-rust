@@ -1,0 +1,56 @@
+@startuml
+!include ../style.puml
+title catalog casper 040
+entity "DeployReportResult" as E392 <<struct>> {
+  casper/src/rust/reporting_casper.rs:22
+  --
+  processed_deploy : ProcessedDeploy
+  events : DeployReportEvents
+}
+entity "SystemDeployReportResult" as E393 <<struct>> {
+  casper/src/rust/reporting_casper.rs:29
+  --
+  processed_system_deploy : SystemDeployData
+  events : DeployReportEvents
+}
+entity "ReplayResult" as E394 <<struct>> {
+  casper/src/rust/reporting_casper.rs:36
+  --
+  deploy_report_result : Vec &#60; DeployReportResult &#62;
+  system_deploy_report_result : Vec &#60; SystemDeployReportResult &#62;
+  post_state_hash : ByteString
+}
+entity "RhoReportingRspace" as E395 <<alias>> {
+  casper/src/rust/reporting_casper.rs:44
+  --
+  value : ReportingRspace &#60; Par , BindPattern , ListParWithRandom ,\n    TaggedContinuation &#62;
+}
+entity "NoopReportingCasper" as E396 <<struct>> {
+  casper/src/rust/reporting_casper.rs:55
+  --
+}
+entity "RhoReporterCasper" as E397 <<struct>> {
+  casper/src/rust/reporting_casper.rs:73
+  --
+  rspace_store : RSpaceStore
+  replay_lock : Arc &#60; crate :: rust :: util :: rholang :: runtime_manager\n    :: ReplayLock &#62;
+  external_services : rholang :: rust :: interpreter :: external_services\n    :: ExternalServices
+}
+entity "ReportingRuntime" as E398 <<struct>> {
+  casper/src/rust/reporting_casper.rs:272
+  --
+  runtime : rholang :: rust :: interpreter :: rho_runtime ::\n    RhoRuntimeImpl
+  space : RhoReportingRspace
+}
+entity "ReportingProtoTransformer" as E399 <<struct>> {
+  casper/src/rust/reporting_proto_transformer.rs:34
+  --
+}
+E394 --> E392 : deploy_report_result
+E394 --> E393 : system_deploy_report_result
+E398 --> E395 : space
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

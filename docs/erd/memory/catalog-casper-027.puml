@@ -1,0 +1,78 @@
+@startuml
+!include ../style.puml
+title catalog casper 027
+entity "PendingRoot" as E288 <<struct>> {
+  casper/src/rust/engine/runtime_state_requester.rs:61
+  --
+  started : Instant
+  outstanding : HashSet &#60; StatePartPath &#62;
+  chunks_imported : usize
+  sent_at : Instant
+  resend_after : Duration
+}
+entity "Core" as E289 <<struct>> {
+  casper/src/rust/engine/runtime_state_requester.rs:70
+  --
+  pending : HashMap &#60; Blake2b256Hash , PendingRoot &#62;
+  queued : VecDeque &#60; Blake2b256Hash &#62;
+  path_to_root : HashMap &#60; StatePartPath , Blake2b256Hash &#62;
+  fetched_total : u64
+  importer : Arc &#60; dyn RSpaceImporter &#62;
+  has_root : HasRootFn
+  outcomes : Vec &#60; (Blake2b256Hash , StateFetchResult) &#62;
+}
+entity "BootstrapChunkSender" as E290 <<struct>> {
+  casper/src/rust/engine/runtime_state_requester.rs:332
+  --
+  transport : Arc &#60; T &#62;
+  rp_conf : RPConf
+}
+entity "StateRequesterHandles" as E291 <<struct>> {
+  casper/src/rust/engine/runtime_state_requester.rs:358
+  --
+  fetch_tx : mpsc :: Sender &#60; Blake2b256Hash &#62;
+  items_tx : mpsc :: Sender &#60; StoreItemsMessage &#62;
+  results : mpsc :: UnboundedReceiver &#60; (Blake2b256Hash ,\n    StateFetchResult) &#62;
+}
+entity "ChunkRequestState" as E292 <<struct>> {
+  casper/src/rust/engine/snapshot_chunk_retriever.rs:44
+  --
+  chunk_index : u32
+  last_request_ms : u64
+  initial_request_ms : u64
+  peers_tried : Vec &#60; Vec &#60; u8 &#62; &#62;
+  retry_count : u32
+  bytes : Option &#60; Vec &#60; u8 &#62; &#62;
+}
+entity "SnapshotTarget" as E293 <<struct>> {
+  casper/src/rust/engine/snapshot_chunk_retriever.rs:102
+  --
+  block_hash : Vec &#60; u8 &#62;
+  merkle_root : [u8 ; 32]
+  chunk_count : u32
+}
+entity "AdmitOutcome" as E294 <<enum>> {
+  casper/src/rust/engine/snapshot_chunk_retriever.rs:114
+  --
+  ChunkAccepted : variant
+  UnknownRequest : variant
+  WrongTarget : variant
+  MerkleRootMismatch : variant
+  ChunkHashMismatch : variant
+  MerkleProofInvalid : variant
+  ChunkCountMismatch : variant
+}
+entity "SnapshotChunkRetriever" as E295 <<struct>> {
+  casper/src/rust/engine/snapshot_chunk_retriever.rs:145
+  --
+  target : SnapshotTarget
+  chunks : Arc &#60; RwLock &#60; HashMap &#60; u32 , ChunkRequestState &#62; &#62; &#62;
+}
+E289 --> E288 : pending
+E295 --> E292 : chunks
+E295 --> E293 : target
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

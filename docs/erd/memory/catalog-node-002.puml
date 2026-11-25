@@ -1,0 +1,82 @@
+@startuml
+!include ../style.puml
+title catalog node 002
+entity "EvalRequest" as E1066 <<protobuf>> {
+  node/src/main/protobuf/repl.proto
+  .repl
+  --
+  program #1 : String
+  printUnmatchedSendsOnly #2 : Bool
+  language #3 : String
+}
+entity "ReplResponse" as E1067 <<protobuf>> {
+  node/src/main/protobuf/repl.proto
+  .repl
+  --
+  output #1 : String
+}
+entity "AdminWebApiImpl" as E1068 <<struct>> {
+  node/src/rust/api/admin_web_api.rs:23
+  --
+  trigger_propose_f_opt : Option &#60; Arc &#60; ProposeFunction &#62; &#62;
+  proposer_state_ref_opt : Option &#60; Arc &#60; RwLock &#60; ProposerState &#62; &#62; &#62;
+  engine_cell : Arc &#60; EngineCell &#62;
+}
+entity "DeployGrpcServiceV1Impl" as E1069 <<struct>> {
+  node/src/rust/api/deploy_grpc_service_v1.rs:120
+  --
+  deploy_limiter : DeployRequestLimiter
+  api_max_blocks_limit : i32
+  trigger_propose_f : Option &#60; Arc &#60; ProposeFunction &#62; &#62;
+  dev_mode : bool
+  network_id : String
+  shard_id : String
+  min_phlo_price : shared :: rust :: token_amount :: TokenAmount
+  native_token_name : String
+  native_token_symbol : String
+  native_token_decimals : u32
+  has_validator_key : bool
+  is_node_read_only : bool
+  engine_cell : EngineCell
+  block_report_api : BlockReportAPI
+  transfer_unforgeable : models :: rhoapi :: Par
+  key_value_block_store : KeyValueBlockStore
+  rp_conf_cell : comm :: rust :: rp :: rp_conf :: RPConfCell
+  connections_cell : ConnectionsCell
+  node_discovery : Arc &#60; dyn NodeDiscovery + Send + Sync &#62;
+  epoch_length : i32
+  is_ready : Arc &#60; AtomicBool &#62;
+}
+entity "DeployIngressService" as E1070 <<struct>> {
+  node/src/rust/api/grpc_package.rs:14
+  --
+  inner : S
+  limiter : DeployRequestLimiter
+}
+entity "RE_TOP_LEVEL_FREE_VARS" as E1071 <<static>> {
+  node/src/rust/api/lsp_grpc_service.rs:26
+  --
+  value : LazyLock &#60; Regex &#62;
+}
+entity "RE_TOP_LEVEL_WILDCARDS" as E1072 <<static>> {
+  node/src/rust/api/lsp_grpc_service.rs:29
+  --
+  value : LazyLock &#60; Regex &#62;
+}
+entity "RE_TOP_LEVEL_CONNECTIVES" as E1073 <<static>> {
+  node/src/rust/api/lsp_grpc_service.rs:33
+  --
+  value : LazyLock &#60; Regex &#62;
+}
+E1066 -[hidden]down-> E1067
+E1067 -[hidden]down-> E1068
+E1068 -[hidden]down-> E1069
+E1069 -[hidden]down-> E1070
+E1070 -[hidden]down-> E1071
+E1071 -[hidden]down-> E1072
+E1072 -[hidden]down-> E1073
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

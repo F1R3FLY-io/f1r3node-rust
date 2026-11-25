@@ -1,0 +1,89 @@
+@startuml
+!include ../style.puml
+title catalog models 028
+entity "CasperMessage" as E954 <<enum>> {
+  models/src/rust/casper/protocol/casper_message.rs:21
+  --
+  BlockHashMessage.0 : BlockHashMessage
+  BlockMessage.0 : BlockMessage
+  ApprovedBlockCandidate.0 : ApprovedBlockCandidate
+  ApprovedBlock.0 : ApprovedBlock
+  ApprovedBlockRequest.0 : ApprovedBlockRequest
+  BlockApproval.0 : BlockApproval
+  BlockRequest.0 : BlockRequest
+  BlockPrunedResponse.0 : BlockPrunedResponse
+  ForkChoiceTipRequest.0 : ForkChoiceTipRequest
+  HasBlock.0 : HasBlock
+  HasBlockRequest.0 : HasBlockRequest
+  NoApprovedBlockAvailable.0 : NoApprovedBlockAvailable
+  UnapprovedBlock.0 : UnapprovedBlock
+  StoreItemsMessageRequest.0 : StoreItemsMessageRequest
+  StoreItemsMessage.0 : StoreItemsMessage
+  FloorCacheRequest.0 : FloorCacheRequest
+  FloorCacheResponse.0 : FloorCacheResponse
+  GetSnapshotChunkRequest.0 : GetSnapshotChunkRequest
+  SnapshotChunkResponse.0 : SnapshotChunkResponse
+  HasSnapshotRequest.0 : HasSnapshotRequest
+  HasSnapshot.0 : HasSnapshot
+  GetWalPayloadRequest.0 : GetWalPayloadRequest
+  WalPayloadResponse.0 : WalPayloadResponse
+  HasWalPayloadRequest.0 : HasWalPayloadRequest
+  HasWalPayload.0 : HasWalPayload
+}
+entity "HasBlockRequest" as E955 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:176
+  --
+  hash : ByteString
+}
+entity "HasBlock" as E956 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:187
+  --
+  hash : ByteString
+}
+entity "BlockRequest" as E957 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:198
+  --
+  hash : ByteString
+}
+entity "BlockPrunedResponse" as E958 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:209
+  --
+  hash : ByteString
+  block_height : i64
+  prune_floor : i64
+}
+entity "MerkleProofStep" as E959 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:248
+  --
+  sibling_hash : ByteString
+  is_sibling_right : bool
+}
+entity "GetSnapshotChunkRequest" as E960 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:275
+  --
+  block_hash : ByteString
+  chunk_index : u32
+}
+entity "SnapshotChunkResponse" as E961 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:297
+  --
+  block_hash : ByteString
+  chunk_index : u32
+  chunk_bytes : ByteString
+  chunk_hash : ByteString
+  merkle_root : ByteString
+  chunk_count : u32
+  merkle_proof : Vec &#60; MerkleProofStep &#62;
+}
+E954 --> E955 : HasBlockRequest.0
+E954 --> E956 : HasBlock.0
+E954 --> E957 : BlockRequest.0
+E954 --> E958 : BlockPrunedResponse.0
+E954 --> E960 : GetSnapshotChunkRequest.0
+E954 --> E961 : SnapshotChunkResponse.0
+E961 --> E959 : merkle_proof
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

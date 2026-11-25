@@ -1,0 +1,91 @@
+@startuml
+!include ../style.puml
+title catalog deploy queue 001
+entity "Transition" as E673 <<struct>> {
+  deploy-queue/src/engine.rs:42
+  --
+  sig : Sig
+  view : DeployView
+}
+entity "WatchStart" as E674 <<struct>> {
+  deploy-queue/src/engine.rs:49
+  --
+  current : Vec &#60; (Sig , Option &#60; DeployView &#62;) &#62;
+  updates : broadcast :: Receiver &#60; Transition &#62;
+}
+entity "QueueSnapshot" as E675 <<struct>> {
+  deploy-queue/src/engine.rs:56
+  --
+  connected : bool
+  tip : Option &#60; i64 &#62;
+  last_finalized : Option &#60; i64 &#62;
+  release_open : bool
+  finality_hold : Option &#60; FinalityHold &#62;
+  ready : usize
+  waiting : usize
+  closed : usize
+  submitted : usize
+  in_block : usize
+  finalized : usize
+  failed : usize
+  expired : usize
+  rejected : usize
+  held : usize
+  payload_bytes : u64
+  validator : Option &#60; ValidatorView &#62;
+  shard : Option &#60; ShardView &#62;
+}
+entity "FinalityHold" as E676 <<struct>> {
+  deploy-queue/src/engine.rs:79
+  --
+  lag : i64
+}
+entity "Command" as E677 <<enum>> {
+  deploy-queue/src/engine.rs:91
+  --
+  Intake.deploy : Signed &#60; DeployData &#62;
+  Intake.reply : oneshot :: Sender &#60; Result &#60; Sig , IntakeError &#62; &#62;
+  Status.sig : Sig
+  Status.reply : oneshot :: Sender &#60; Option &#60; DeployView &#62; &#62;
+  Watch.sigs : Vec &#60; Sig &#62;
+  Watch.reply : oneshot :: Sender &#60; WatchStart &#62;
+  Snapshot.reply : oneshot :: Sender &#60; QueueSnapshot &#62;
+  Connected.0 : ChainSnapshot
+  Disconnected : variant
+  Node.0 : NodeEvent
+  Submitted.sig : Sig
+  Submitted.outcome : SubmitOutcome
+  Resynced.sig : Sig
+  Resynced.result : Result &#60; NodeDeployStatus , NodeError &#62;
+  ClosedChecked.sig : Sig
+  ClosedChecked.result : Result &#60; NodeDeployStatus , NodeError &#62;
+}
+entity "EngineHandle" as E678 <<struct>> {
+  deploy-queue/src/engine.rs:124
+  --
+  commands : mpsc :: Sender &#60; Command &#62;
+}
+entity "UnplacedPending" as E679 <<enum>> {
+  deploy-queue/src/engine.rs:163
+  --
+  KeepWaiting : variant
+  Expire : variant
+}
+entity "IndexKeys" as E680 <<struct>> {
+  deploy-queue/src/engine.rs:174
+  --
+  released : Option &#60; (i64 , u64) &#62;
+  resend : Option &#60; (i64 , u64) &#62;
+  decided : Option &#60; (i64 , u64) &#62;
+  holder : Option &#60; Vec &#60; u8 &#62; &#62;
+}
+E674 --> E673 : updates
+E675 --> E676 : finality_hold
+E677 --> E674 : Watch.reply
+E677 --> E675 : Snapshot.reply
+E678 --> E677 : commands
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

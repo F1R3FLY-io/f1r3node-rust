@@ -1,0 +1,63 @@
+@startuml
+!include ../style.puml
+title catalog rholang 037
+entity "DeleteMethod" as E1550 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:6347
+  DebruijnInterpreter::delete_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "ContainsMethod" as E1551 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:6423
+  DebruijnInterpreter::contains_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "GetMethod" as E1552 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:6484
+  DebruijnInterpreter::get_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "GetOrElseMethod" as E1553 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:6538
+  DebruijnInterpreter::get_or_else_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "SetMethod" as E1554 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:6597
+  DebruijnInterpreter::set_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "KeysMethod" as E1555 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:6657
+  DebruijnInterpreter::keys_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "SizeMethod" as E1556 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:6728
+  DebruijnInterpreter::size_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "LengthMethod" as E1557 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:6786
+  DebruijnInterpreter::length_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+E1550 -[hidden]down-> E1551
+E1551 -[hidden]down-> E1552
+E1552 -[hidden]down-> E1553
+E1553 -[hidden]down-> E1554
+E1554 -[hidden]down-> E1555
+E1555 -[hidden]down-> E1556
+E1556 -[hidden]down-> E1557
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

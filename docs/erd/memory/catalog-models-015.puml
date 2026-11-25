@@ -1,0 +1,66 @@
+@startuml
+!include ../style.puml
+title catalog models 015
+entity "FindDeployResponse" as E850 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  blockInfo #2 oneof message : .casper.LightBlockInfo
+  finalizationState #3 : .casper.DeployFinalizationStateProto
+  rejectionCount #4 : Uint32
+}
+entity "IsFinalizedResponse" as E851 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  isFinalized #2 oneof message : Bool
+}
+entity "LastFinalizedBlockResponse" as E852 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  blockInfo #2 oneof message : .casper.BlockInfo
+}
+entity "MachineVerifyResponse" as E853 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  content #2 oneof message : String
+}
+entity "PendingDeploysResponse" as E854 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  payload #2 oneof message : .casper.PendingDeploysResponsePayload
+}
+entity "PrivateNamePreviewPayload" as E855 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  ids #1 : repeated Bytes
+}
+entity "PrivateNamePreviewResponse" as E856 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  error #1 oneof message : .servicemodelapi.ServiceError
+  payload #2 oneof message : .casper.v1.PrivateNamePreviewPayload
+}
+entity "RhoDataPayload" as E857 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceV1.proto
+  .casper.v1
+  --
+  par #1 : repeated .rhoapi.Par
+  block #2 : .casper.LightBlockInfo
+}
+E856 --> E855 : payload #2 oneof message
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

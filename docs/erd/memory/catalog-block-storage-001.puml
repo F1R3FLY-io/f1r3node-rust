@@ -1,0 +1,100 @@
+@startuml
+!include ../style.puml
+title catalog block storage 001
+entity "DeployId" as E0 <<alias>> {
+  block-storage/src/rust/dag/block_dag_key_value_storage.rs:64
+  --
+  value : shared :: rust :: ByteString
+}
+entity "DagResidentCounts" as E1 <<struct>> {
+  block-storage/src/rust/dag/block_dag_key_value_storage.rs:66
+  --
+  blocks : usize
+  child_keys : usize
+  heights : usize
+  finalized : usize
+}
+entity "InsertMode" as E2 <<enum>> {
+  block-storage/src/rust/dag/block_dag_key_value_storage.rs:73
+  --
+  Normal : variant
+  Equivocation.sibling : BlockHash
+  Approved : variant
+  SettledHistory : variant
+}
+entity "KeyValueDagRepresentation" as E3 <<struct>> {
+  block-storage/src/rust/dag/block_dag_key_value_storage.rs:102
+  --
+  history : Option &#60; Arc &#60; DagHistoryIndex &#62; &#62;
+  view_sequence : u64
+  view_max_height : Option &#60; i64 &#62;
+  pruning_cutoff : i64
+  dag_set : imbl :: HashSet &#60; BlockHash &#62;
+  latest_messages_map : imbl :: HashMap &#60; Validator , BlockHash &#62;
+  child_map : imbl :: HashMap &#60; BlockHash , imbl :: HashSet &#60; BlockHash &#62;\n    &#62;
+  height_map : imbl :: OrdMap &#60; i64 , imbl :: HashSet &#60; BlockHash &#62; &#62;
+  block_number_map : imbl :: HashMap &#60; BlockHash , i64 &#62;
+  main_parent_map : imbl :: HashMap &#60; BlockHash , BlockHash &#62;
+  self_justification_map : imbl :: HashMap &#60; BlockHash , BlockHash &#62;
+  last_finalized_block_hash : BlockHash
+  finalized_blocks_set : imbl :: HashSet &#60; BlockHash &#62;
+  block_metadata_index : Arc &#60; PlRwLock &#60; BlockMetadataStore &#62; &#62;
+  floor_index : KeyValueTypedStoreImpl &#60; BlockHashSerde , BlockHashSerde &#62;
+  frontier_index : KeyValueTypedStoreImpl &#60; BlockHashSerde ,\n    BlockHashSerde &#62;
+  lifecycle : Arc &#60; PlRwLock &#60; DeployLifecycleTables &#62; &#62;
+  carrier_index : Arc &#60; PlRwLock &#60; CarrierIndex &#62; &#62;
+}
+entity "BlockDagKeyValueStorage" as E4 <<struct>> {
+  block-storage/src/rust/dag/block_dag_key_value_storage.rs:1333
+  --
+  persistence : Option &#60; Arc &#60; DagPersistence &#62; &#62;
+  global_lock : Arc &#60; PlRwLock &#60; () &#62; &#62;
+  latest_messages_index : KeyValueTypedStoreImpl &#60; ValidatorSerde ,\n    BlockHashSerde &#62;
+  block_metadata_index : Arc &#60; PlRwLock &#60; BlockMetadataStore &#62; &#62;
+  floor_index : KeyValueTypedStoreImpl &#60; BlockHashSerde , BlockHashSerde &#62;
+  frontier_index : KeyValueTypedStoreImpl &#60; BlockHashSerde ,\n    BlockHashSerde &#62;
+  lifecycle : Arc &#60; PlRwLock &#60; DeployLifecycleTables &#62; &#62;
+  carrier_index : Arc &#60; PlRwLock &#60; CarrierIndex &#62; &#62;
+  dag_generation : Arc &#60; AtomicU64 &#62;
+  ft_lower_bound : Arc &#60; AtomicU32 &#62;
+  genesis_hash_index : KeyValueTypedStoreImpl &#60; String , BlockHashSerde &#62;
+  insert_observer : Arc &#60; OnceLock &#60; mpsc :: UnboundedSender &#60; BlockHash &#62;\n    &#62; &#62;
+}
+entity "SoakCaptureAccess" as E5 <<struct>> {
+  block-storage/src/rust/dag/block_dag_key_value_storage.rs:2469
+  --
+  _global : parking_lot :: RwLockReadGuard &#60; 'a , () &#62;
+  metadata : parking_lot :: RwLockReadGuard &#60; 'a , BlockMetadataStore &#62;
+  storage : &#38; 'a BlockDagKeyValueStorage
+}
+entity "DagStateCopy" as E6 <<struct>> {
+  block-storage/src/rust/dag/block_metadata_store.rs:22
+  --
+  sequence : u64
+  max_height : Option &#60; i64 &#62;
+  dag_set : imbl :: HashSet &#60; BlockHash &#62;
+  child_map : imbl :: HashMap &#60; BlockHash , imbl :: HashSet &#60; BlockHash &#62;\n    &#62;
+  height_map : imbl :: OrdMap &#60; i64 , imbl :: HashSet &#60; BlockHash &#62; &#62;
+  block_number_map : imbl :: HashMap &#60; BlockHash , i64 &#62;
+  main_parent_map : imbl :: HashMap &#60; BlockHash , BlockHash &#62;
+  self_justification_map : imbl :: HashMap &#60; BlockHash , BlockHash &#62;
+  last_finalized_block : Option &#60; (BlockHash , i64) &#62;
+  finalized_block_set : imbl :: HashSet &#60; BlockHash &#62;
+}
+entity "BlockMetadataStore" as E7 <<struct>> {
+  block-storage/src/rust/dag/block_metadata_store.rs:35
+  --
+  store : KeyValueTypedStoreImpl &#60; BlockHashSerde , BlockMetadata &#62;
+  dag_state : Arc &#60; RwLock &#60; DagState &#62; &#62;
+  persistence : Option &#60; Arc &#60; DagPersistence &#62; &#62;
+  hot_window : i64
+}
+E3 --> E7 : block_metadata_index
+E4 --> E7 : block_metadata_index
+E5 --> E4 : storage
+E5 --> E7 : metadata
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

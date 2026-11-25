@@ -1,0 +1,72 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 012
+entity "ConsumeAndJoinActions" as E1714 <<struct>> {
+  rspace++/src/rspace/merger/state_change_merger.rs:30
+  --
+  consume_action : HotStoreTrieAction &#60; C , P , A , K &#62;
+  join_action : Option &#60; JoinActionKind &#62;
+}
+entity "LockSiteMetrics" as E1715 <<struct>> {
+  rspace++/src/rspace/metrics_constants.rs:124
+  --
+  wait_ns : &#38; 'static str
+  hold_ns : &#38; 'static str
+  calls : &#38; 'static str
+}
+entity "PathSegment" as E1716 <<alias>> {
+  rspace++/src/rspace/operation_context.rs:6
+  --
+  value : (u64 , u64)
+}
+entity "PathNode" as E1717 <<struct>> {
+  rspace++/src/rspace/operation_context.rs:8
+  --
+  parent : Option &#60; Arc &#60; PathNode &#62; &#62;
+  ancestors : Vec &#60; Arc &#60; PathNode &#62; &#62;
+  segment : Option &#60; PathSegment &#62;
+  depth : usize
+}
+entity "CausalPath" as E1718 <<struct>> {
+  rspace++/src/rspace/operation_context.rs:15
+  --
+  tail : Arc &#60; PathNode &#62;
+}
+entity "OperationOrder" as E1719 <<struct>> {
+  rspace++/src/rspace/operation_context.rs:152
+  --
+  session : [u8 ; 32]
+  path : CausalPath
+}
+entity "ReplayRSpace" as E1720 <<struct>> {
+  rspace++/src/rspace/replay_rspace.rs:45
+  --
+  history_repository : Arc &#60; std :: sync :: RwLock &#60; Arc &#60; Box &#60; dyn\n    HistoryRepository &#60; C , P , A , K &#62; + Send + Sync + 'static &#62; &#62; &#62; &#62;
+  store : Arc &#60; std :: sync :: RwLock &#60; Arc &#60; Box &#60; dyn HotStore &#60; C , P ,\n    A , K &#62; &#62; &#62; &#62; &#62;
+  installs : Arc &#60; Mutex &#60; HashMap &#60; Vec &#60; C &#62; , Install &#60; P , K &#62; &#62; &#62; &#62;
+  event_log : Arc &#60; Mutex &#60; Log &#62; &#62;
+  produce_counter : Arc &#60; Mutex &#60; BTreeMap &#60; Produce , i32 &#62; &#62; &#62;
+  matcher : Arc &#60; Box &#60; dyn Match &#60; P , A , K &#62; &#62; &#62;
+  replay_data : Arc &#60; Mutex &#60; MultisetMultiMap &#60; IOEvent , Arc &#60; COMM &#62; &#62;\n    &#62; &#62;
+  consume_replay_index : Arc &#60; Mutex &#60; HashMap &#60; Blake2b256Hash , HashMap\n    &#60; Blake2b256Hash , Vec &#60; Arc &#60; COMM &#62; &#62; &#62; &#62; &#62; &#62;
+  logger : Arc &#60; Mutex &#60; Box &#60; dyn RSpaceLogger &#60; C , P , A , K &#62; &#62; &#62; &#62;
+  replay_waiting_continuations_estimate : Arc &#60; AtomicI64 &#62;
+  phase_a_locks : Arc &#60; Vec &#60; Arc &#60; tokio :: sync :: Mutex &#60; () &#62; &#62; &#62; &#62;
+  phase_b_locks : Arc &#60; Vec &#60; Arc &#60; tokio :: sync :: Mutex &#60; () &#62; &#62; &#62; &#62;
+  gc_roots : Arc &#60; GcRootRegistry &#62;
+}
+entity "ReportingEvent" as E1721 <<enum>> {
+  rspace++/src/rspace/reporting_rspace.rs:24
+  --
+  ReportingProduce.0 : ReportingProduce &#60; C , A &#62;
+  ReportingConsume.0 : ReportingConsume &#60; C , P , K &#62;
+  ReportingComm.0 : ReportingComm &#60; C , P , A , K &#62;
+}
+E1717 --> E1716 : segment
+E1718 --> E1717 : tail
+E1719 --> E1718 : path
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

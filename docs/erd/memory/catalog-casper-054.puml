@@ -1,0 +1,66 @@
+@startuml
+!include ../style.puml
+title catalog casper 054
+entity "Hex" as E504 <<struct>> {
+  casper/src/rust/util/rholang/registry_sig_gen.rs:17
+  --
+  0 : Vec &#60; u8 &#62;
+}
+entity "Contract" as E505 <<struct>> {
+  casper/src/rust/util/rholang/registry_sig_gen.rs:31
+  --
+  var_name : String
+}
+entity "InsertSigned" as E506 <<struct>> {
+  casper/src/rust/util/rholang/registry_sig_gen.rs:36
+  --
+  pk : Hex
+  nonce : i64
+  contract : Contract
+  sig : Hex
+}
+entity "Derivation" as E507 <<struct>> {
+  casper/src/rust/util/rholang/registry_sig_gen.rs:81
+  --
+  sk : Hex
+  timestamp : i64
+  to_sign : Par
+  result : InsertSigned
+  uri : String
+}
+entity "Args" as E508 <<struct>> {
+  casper/src/rust/util/rholang/registry_sig_gen.rs:132
+  --
+  key_pair : (PrivateKey , PublicKey)
+  timestamp : i64
+  contract_name : String
+}
+entity "RegistrySigGen" as E509 <<struct>> {
+  casper/src/rust/util/rholang/registry_sig_gen.rs:189
+  --
+}
+entity "ReplayCacheKey" as E510 <<struct>> {
+  casper/src/rust/util/rholang/replay_cache.rs:9
+  --
+  parent_state : StateHash
+  sender_pk : Vec &#60; u8 &#62;
+  seq_num : i64
+  payload_hash : Vec &#60; u8 &#62;
+}
+entity "ReplayCacheEntry" as E511 <<struct>> {
+  casper/src/rust/util/rholang/replay_cache.rs:57
+  --
+  event_log : Arc &#60; Vec &#60; Event &#62; &#62;
+  post_state : StateHash
+  retained_bytes : usize
+}
+E506 --> E504 : pk
+E506 --> E504 : sig
+E506 --> E505 : contract
+E507 --> E504 : sk
+E507 --> E506 : result
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

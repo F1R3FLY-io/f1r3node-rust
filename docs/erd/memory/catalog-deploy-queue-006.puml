@@ -1,0 +1,75 @@
+@startuml
+!include ../style.puml
+title catalog deploy queue 006
+entity "ShardValues" as E713 <<struct>> {
+  deploy-queue/src/node.rs:22
+  --
+  shard_id : String
+  min_phlo_price : TokenAmount
+  deploy_lifespan : i64
+  max_user_deploys_per_block : u32
+  max_parent_depth : i32
+  max_phlo_limit : i64
+}
+entity "ChainSnapshot" as E714 <<struct>> {
+  deploy-queue/src/node.rs:33
+  --
+  shard : ShardValues
+  tip : i64
+  lfb : i64
+}
+entity "NodeStatus" as E715 <<struct>> {
+  deploy-queue/src/node.rs:43
+  --
+  shard_id : String
+  min_phlo_price : TokenAmount
+  last_finalized_block_number : i64
+  latest_block_number : Option &#60; i64 &#62;
+  deploy_lifespan : Option &#60; i64 &#62;
+  max_user_deploys_per_block : Option &#60; u32 &#62;
+  max_parent_depth : Option &#60; i32 &#62;
+  max_phlo_limit : Option &#60; i64 &#62;
+  is_validator : bool
+  is_read_only : bool
+}
+entity "NodeDeployStatus" as E716 <<struct>> {
+  deploy-queue/src/node.rs:148
+  --
+  state : String
+  rejection_count : u32
+  latest_block_hash : Option &#60; String &#62;
+}
+entity "ApiError" as E717 <<struct>> {
+  deploy-queue/src/node.rs:156
+  --
+  error : String
+  message : String
+}
+entity "SubmitOutcome" as E718 <<enum>> {
+  deploy-queue/src/node.rs:162
+  --
+  Accepted : variant
+  Duplicate : variant
+  Expired.0 : String
+  Rejected.kind : String
+  Rejected.message : String
+  Retry.reason : String
+  Retry.retry_after : Option &#60; Duration &#62;
+}
+entity "NodeHttp" as E719 <<struct>> {
+  deploy-queue/src/node.rs:182
+  --
+  client : reqwest :: Client
+  base : Url
+}
+entity "Sig" as E720 <<alias>> {
+  deploy-queue/src/record.rs:7
+  --
+  value : Vec &#60; u8 &#62;
+}
+E714 --> E713 : shard
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

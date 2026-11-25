@@ -1,0 +1,88 @@
+@startuml
+!include ../style.puml
+title catalog casper 026
+entity "ScopeSets" as E280 <<alias>> {
+  casper/src/rust/engine/multi_parent_casper/snapshot.rs:448
+  compute_snapshot
+  --
+  value : (Arc &#60; dashmap :: DashSet &#60; Bytes &#62; &#62; , Arc &#60; dashmap :: DashSet\n    &#60; Bytes &#62; &#62; , Arc &#60; dashmap :: DashMap &#60; Vec &#60; u8 &#62; , Vec &#60; Bytes &#62; &#62; &#62;\n    ,)
+}
+entity "MultiParentCasperImpl" as E281 <<struct>> {
+  casper/src/rust/engine/multi_parent_casper/types.rs:52
+  --
+  observer : Arc &#60; std :: sync :: OnceLock &#60; crate :: rust ::\n    soak_observer :: ObserverBinding &#62; &#62;
+  ingest : IngestHandle
+  event_publisher : F1r3flyEvents
+  runtime_manager : Arc &#60; RuntimeManager &#62;
+  estimator : Estimator
+  block_store : KeyValueBlockStore
+  block_dag_storage : BlockDagKeyValueStorage
+  deploy_storage : Arc &#60; KeyValueDeployStorage &#62;
+  rejected_deploy_buffer : Arc &#60; Mutex &#60; KeyValueRejectedDeployBuffer &#62; &#62;
+  validator_id : Option &#60; ValidatorIdentity &#62;
+  finalized_bond_cache : FinalizedBondCache
+  casper_shard_conf : CasperShardConf
+  approved_block : BlockMessage
+  effective_anchor : Arc &#60; AtomicI64 &#62;
+  divergence_monitor : Arc &#60; crate :: rust :: engine ::\n    multi_parent_casper :: finalization_runner :: DivergenceMonitor &#62;
+  finalizer : crate :: rust :: engine :: multi_parent_casper :: Finalizer
+  heartbeat_signal_ref : crate :: rust :: heartbeat_signal ::\n    HeartbeatSignalRef
+  deploys_in_scope_cache : Arc &#60; PlMutex &#60; Option &#60; (u64 , BlockHash , Vec\n    &#60; BlockHash &#62; , Arc &#60; dashmap :: DashSet &#60; Bytes &#62; &#62; , Arc &#60; dashmap ::\n    DashSet &#60; Bytes &#62; &#62; , Arc &#60; dashmap :: DashMap &#60; Vec &#60; u8 &#62; , Vec &#60;\n    Bytes &#62; &#62; &#62; ,) &#62; , &#62; , &#62;
+  active_validators_cache : Arc &#60; tokio :: sync :: Mutex &#60; HashMap &#60; Vec &#60;\n    u8 &#62; , Vec &#60; Validator &#62; &#62; &#62; &#62;
+  judged_twins : Arc &#60; BoundedCache &#60; BlockHash , Result &#60; () ,\n    InvalidBlock &#62; &#62; &#62;
+}
+entity "TwinJudgement" as E282 <<enum>> {
+  casper/src/rust/engine/multi_parent_casper/validation_dispatcher.rs:86
+  --
+  Valid : variant
+  Invalid.0 : InvalidBlock
+  Deferred.0 : BlockError
+}
+entity "SnapshotChunkContext" as E283 <<struct>> {
+  casper/src/rust/engine/running.rs:63
+  --
+  sync_driver : Arc &#60; SnapshotChunkSyncDriver &#62;
+  snapshot_dir : std :: path :: PathBuf
+  snapshot_merkle_roots : Arc &#60; tokio :: sync :: RwLock &#60; std ::\n    collections :: HashMap &#60; Vec &#60; u8 &#62; , ([u8 ; 32] , [u8 ; 32]) &#62; &#62; &#62;
+}
+entity "WalPayloadContext" as E284 <<struct>> {
+  casper/src/rust/engine/running.rs:83
+  --
+  sync_driver : Arc &#60; crate :: rust :: engine :: wal_payload_sync ::\n    WalPayloadSyncDriver &#62;
+  payload_lookup : Arc &#60; dyn crate :: rust :: engine :: wal_payload_server\n    :: PayloadLookup &#62;
+  tick_stop : Option &#60; crate :: rust :: engine :: wal_payload_sync ::\n    WalPayloadTickStop &#62;
+}
+entity "LastFinalizedBlockNotFoundError" as E285 <<struct>> {
+  casper/src/rust/engine/running.rs:157
+  --
+}
+entity "Running" as E286 <<struct>> {
+  casper/src/rust/engine/running.rs:579
+  --
+  ingest : IngestHandle
+  casper : Arc &#60; dyn MultiParentCasper + Send + Sync &#62;
+  approved_block : ApprovedBlock
+  the_init : Arc &#60; dyn Fn () -&#62; Pin &#60; Box &#60; dyn Future &#60; Output = Result &#60;\n    () , CasperError &#62; &#62; + Send &#62; &#62; + Send + Sync , &#62;
+  init_called : Arc &#60; Mutex &#60; bool &#62; &#62;
+  disable_state_exporter : bool
+  transport : Arc &#60; T &#62;
+  conf : RPConf
+  state_items_tx : Option &#60; mpsc :: Sender &#60; casper_message ::\n    StoreItemsMessage &#62; &#62;
+  snapshot_chunk_ctx : std :: sync :: OnceLock &#60; SnapshotChunkContext &#62;
+  wal_payload_ctx : std :: sync :: OnceLock &#60; WalPayloadContext &#62;
+  state_export_limiter : StateExportLimiter
+}
+entity "Chunk" as E287 <<struct>> {
+  casper/src/rust/engine/runtime_state_requester.rs:55
+  --
+  root : Blake2b256Hash
+  start_path : StatePartPath
+  last_path : StatePartPath
+}
+E286 --> E283 : snapshot_chunk_ctx
+E286 --> E284 : wal_payload_ctx
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,90 @@
+@startuml
+!include ../style.puml
+title catalog node 019
+entity "HeartbeatCheckResult" as E1202 <<struct>> {
+  node/src/rust/instances/heartbeat_proposer.rs:36
+  --
+  bug_failure : bool
+  refresh_deploy_grace_window : bool
+  finality_recovery_attempted : bool
+}
+entity "EmptyFrontierPressure" as E1203 <<struct>> {
+  node/src/rust/instances/heartbeat_proposer.rs:43
+  --
+  unfinalized_blocks : usize
+  max_unfinalized_blocks : usize
+  backpressure : bool
+}
+entity "FinalityProgress" as E1204 <<struct>> {
+  node/src/rust/instances/heartbeat_proposer.rs:50
+  --
+  last_finalized_block : Option &#60; BlockHash &#62;
+  last_progress_at : Instant
+  last_recovery_attempt_at : Option &#60; Instant &#62;
+}
+entity "FinalityProgressStatus" as E1205 <<struct>> {
+  node/src/rust/instances/heartbeat_proposer.rs:57
+  --
+  stalled_for : Duration
+  stalled : bool
+  recovery_round_due : bool
+}
+entity "ADOPTED_GEOMETRY_CHECK" as E1206 <<static>> {
+  node/src/rust/instances/heartbeat_proposer.rs:575
+  check_lfb_and_propose
+  --
+  value : std :: sync :: Once
+}
+entity "ParentUpdate" as E1207 <<struct>> {
+  node/src/rust/instances/heartbeat_proposer.rs:885
+  --
+  has_new_parents : bool
+  has_new_parent_with_user_deploys : bool
+}
+entity "LaneInputs" as E1208 <<struct>> {
+  node/src/rust/instances/heartbeat_proposer.rs:1013
+  --
+  lfb_is_stale : bool
+  lfb_lag_blocks : i64
+  has_pending_deploys : bool
+  has_new_parents : bool
+  has_new_parent_with_user_deploys : bool
+  deploy_grace_active : bool
+  self_recently_proposed : bool
+  self_proposed_too_recently : bool
+  self_idle_for_recovery_interval : bool
+  stale_recovery_interval_elapsed : bool
+  cone_has_user_work : bool
+  idle_recovery_window_open : bool
+  lag_recovery_leader : bool
+  empty_frontier_backpressure : bool
+  pending_deploy_max_lag : i64
+  deploy_recovery_max_lag : i64
+  effective_frontier_chase_cap : i64
+}
+entity "LaneDecision" as E1209 <<struct>> {
+  node/src/rust/instances/heartbeat_proposer.rs:1058
+  --
+  pending_deploys_due : bool
+  pending_deploy_backstop_due : bool
+  frontier_follow_due : bool
+  stale_lfb_recovery_due : bool
+  convergence_recovery_selected : bool
+  should_propose : bool
+  can_propose_pending_deploys_while_ahead : bool
+  can_chase_frontier_while_ahead : bool
+  can_follow_frontier_without_pending_deploys : bool
+  allow_frontier_follow_while_ahead_for_deploy_parent : bool
+}
+E1202 -[hidden]down-> E1203
+E1203 -[hidden]down-> E1204
+E1204 -[hidden]down-> E1205
+E1205 -[hidden]down-> E1206
+E1206 -[hidden]down-> E1207
+E1207 -[hidden]down-> E1208
+E1208 -[hidden]down-> E1209
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

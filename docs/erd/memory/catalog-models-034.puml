@@ -1,0 +1,81 @@
+@startuml
+!include ../style.puml
+title catalog models 034
+entity "DeployParameter" as E1002 <<struct>> {
+  models/src/rust/deploy_parameters.rs:25
+  --
+  name : String
+  value : RholangValue
+}
+entity "RholangValue" as E1003 <<enum>> {
+  models/src/rust/deploy_parameters.rs:32
+  --
+  Bool.0 : bool
+  Int.0 : i64
+  BigInt.0 : BigInt
+  String.0 : String
+  Bytes.0 : Vec &#60; u8 &#62;
+  Tuple.0 : Vec &#60; RholangValue &#62;
+  List.0 : Vec &#60; RholangValue &#62;
+  Set.0 : Vec &#60; RholangValue &#62;
+  Map.0 : Vec &#60; DeployMapEntry &#62;
+  Nil : variant
+  Uri.0 : String
+}
+entity "DeployMapEntry" as E1004 <<struct>> {
+  models/src/rust/deploy_parameters.rs:58
+  --
+  key : RholangValue
+  value : RholangValue
+}
+entity "ParameterError" as E1005 <<enum>> {
+  models/src/rust/deploy_parameters.rs:67
+  --
+  TooManyParameters : variant
+  InvalidName : variant
+  DuplicateName : variant
+  MissingValue : variant
+  TooDeep : variant
+  TooManyValues : variant
+  TooLarge : variant
+  DuplicateMapKey : variant
+  InvalidBigInt : variant
+}
+entity "Budget" as E1006 <<struct>> {
+  models/src/rust/deploy_parameters.rs:119
+  --
+  nodes : usize
+  bytes : usize
+}
+entity "DeployRequest" as E1007 <<struct>> {
+  models/src/rust/deploy_request.rs:9
+  --
+  data : DeployData
+  deployer : String
+  signature : String
+  sig_algorithm : String
+}
+entity "DeployRequestError" as E1008 <<enum>> {
+  models/src/rust/deploy_request.rs:20
+  --
+  Amount.0 : String
+  Parameters.0 : String
+  DeployerHex.0 : String
+  SignatureHex.0 : String
+  UnsupportedAlgorithm.0 : String
+  Unverified : variant
+}
+entity "NegativeDeployLifespan" as E1009 <<struct>> {
+  models/src/rust/deploy_window.rs:1
+  --
+  0 : i64
+}
+E1002 --> E1003 : value
+E1003 --> E1004 : Map.0
+E1004 --> E1003 : key
+E1004 --> E1003 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

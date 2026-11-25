@@ -1,0 +1,69 @@
+@startuml
+!include ../style.puml
+title catalog shared 003
+entity "BitVector" as E1805 <<alias>> {
+  shared/src/rust/mod.rs:20
+  --
+  value : Vec &#60; u8 &#62;
+}
+entity "BytesKey" as E1806 <<struct>> {
+  shared/src/rust/mod.rs:86
+  serde_btreemap_bytes
+  --
+  0 : Bytes
+}
+entity "Compression" as E1807 <<struct>> {
+  shared/src/rust/shared/compression.rs:7
+  --
+}
+entity "TransferEvent" as E1808 <<struct>> {
+  shared/src/rust/shared/f1r3fly_event.rs:6
+  --
+  from_addr : String
+  to_addr : String
+  amount : String
+  success : bool
+}
+entity "DeployEvent" as E1809 <<struct>> {
+  shared/src/rust/shared/f1r3fly_event.rs:16
+  --
+  id : String
+  cost : i64
+  deployer : String
+  errored : bool
+  transfers : Option &#60; Vec &#60; TransferEvent &#62; &#62;
+}
+entity "DeployTransfers" as E1810 <<struct>> {
+  shared/src/rust/shared/f1r3fly_event.rs:47
+  --
+  deploy_id : String
+  transfers : Vec &#60; TransferEvent &#62;
+}
+entity "F1r3flyEvent" as E1811 <<enum>> {
+  shared/src/rust/shared/f1r3fly_event.rs:55
+  --
+  BlockCreated.0 : BlockCreated
+  BlockAdded.0 : BlockAdded
+  BlockFinalised.0 : BlockFinalised
+  TransfersAvailable.0 : TransfersAvailable
+  SentUnapprovedBlock.0 : SentUnapprovedBlockData
+  SentApprovedBlock.0 : SentApprovedBlockData
+  BlockApprovalReceived.0 : BlockApprovalReceived
+  ApprovedBlockReceived.0 : ApprovedBlockReceived
+  EnteredRunningState.0 : EnteredRunningState
+  NodeStarted.0 : NodeStarted
+  DeployVerdicts.0 : DeployVerdicts
+}
+entity "DeployVerdicts" as E1812 <<struct>> {
+  shared/src/rust/shared/f1r3fly_event.rs:71
+  --
+  verdicts : Vec &#60; DeployVerdict &#62;
+}
+E1809 --> E1808 : transfers
+E1810 --> E1808 : transfers
+E1811 --> E1812 : DeployVerdicts.0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,68 @@
+@startuml
+!include ../style.puml
+title catalog casper 031
+entity "ForkChoice" as E320 <<struct>> {
+  casper/src/rust/estimator.rs:40
+  --
+  tips : Vec &#60; BlockHash &#62;
+  scores : HashMap &#60; BlockHash , BigInt &#62;
+  lca : BlockHash
+}
+entity "Estimator" as E321 <<struct>> {
+  casper/src/rust/estimator.rs:51
+  --
+}
+entity "LineageNext" as E322 <<enum>> {
+  casper/src/rust/finality/block_facts.rs:25
+  --
+  Base.0 : BlockHash
+  Genesis : variant
+  MalformedMultiParent : variant
+}
+entity "BlockFacts" as E323 <<struct>> {
+  casper/src/rust/finality/block_facts.rs:34
+  --
+  block_number : i64
+  timestamp : i64
+  sender : Bytes
+  parents : Vec &#60; BlockHash &#62;
+  lineage_next : LineageNext
+  deploy_sigs : Vec &#60; Bytes &#62;
+  applied_sigs : HashSet &#60; Bytes &#62;
+  rejected : Arc &#60; Vec &#60; RejectedDeploy &#62; &#62;
+}
+entity "FactsCache" as E324 <<struct>> {
+  casper/src/rust/finality/block_facts.rs:67
+  --
+  map : HashMap &#60; BlockHash , Arc &#60; BlockFacts &#62; &#62;
+  approx_bytes : usize
+}
+entity "CACHE" as E325 <<static>> {
+  casper/src/rust/finality/block_facts.rs:88
+  cache
+  --
+  value : OnceLock &#60; parking_lot :: Mutex &#60; FactsCache &#62; &#62;
+}
+entity "Lookup" as E326 <<enum>> {
+  casper/src/rust/finality/block_facts.rs:98
+  --
+  Held.0 : Arc &#60; BlockFacts &#62;
+  Absent : variant
+  CachedNotHeld : variant
+}
+entity "Gap" as E327 <<struct>> {
+  casper/src/rust/finality/deploy_lifecycle.rs:100
+  --
+  missing : BlockHash
+  context : MissingBlockContext
+  lowest_read : i64
+}
+E323 --> E322 : lineage_next
+E324 --> E323 : map
+E325 --> E324 : value
+E326 --> E323 : Held.0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

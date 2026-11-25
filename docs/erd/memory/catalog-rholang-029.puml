@@ -1,0 +1,62 @@
+@startuml
+!include ../style.puml
+title catalog rholang 029
+entity "ChatResponse" as E1486 <<struct>> {
+  rholang/src/rust/interpreter/ollama_service.rs:91
+  --
+  message : ChatMessage
+}
+entity "GenerateRequest" as E1487 <<struct>> {
+  rholang/src/rust/interpreter/ollama_service.rs:96
+  --
+  model : String
+  prompt : String
+  stream : bool
+}
+entity "GenerateResponse" as E1488 <<struct>> {
+  rholang/src/rust/interpreter/ollama_service.rs:103
+  --
+  response : String
+}
+entity "ModelInfo" as E1489 <<struct>> {
+  rholang/src/rust/interpreter/ollama_service.rs:108
+  --
+  name : String
+}
+entity "ListModelsResponse" as E1490 <<struct>> {
+  rholang/src/rust/interpreter/ollama_service.rs:113
+  --
+  models : Vec &#60; ModelInfo &#62;
+}
+entity "OllamaService" as E1491 <<enum>> {
+  rholang/src/rust/interpreter/ollama_service.rs:118
+  --
+  Real.client : Client
+  Real.base_url : String
+  Real.model : String
+  Real.timeout_sec : u64
+  Mock.chat_response : String
+  Mock.generate_response : String
+  Mock.models_response : Vec &#60; String &#62;
+  Disabled : variant
+}
+entity "SharedOllamaService" as E1492 <<alias>> {
+  rholang/src/rust/interpreter/ollama_service.rs:368
+  --
+  value : Arc &#60; tokio :: sync :: Mutex &#60; OllamaService &#62; &#62;
+}
+entity "OpenAIConfig" as E1493 <<struct>> {
+  rholang/src/rust/interpreter/openai_service.rs:33
+  --
+  enabled : bool
+  api_key : Option &#60; String &#62;
+  validate_api_key : bool
+  validation_timeout_sec : u64
+}
+E1490 --> E1489 : models
+E1492 --> E1491 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

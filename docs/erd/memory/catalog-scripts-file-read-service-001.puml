@@ -1,0 +1,65 @@
+@startuml
+!include ../style.puml
+title catalog scripts file read service 001
+entity "SidecarConfig" as E1777 <<struct>> {
+  scripts/file-read-service/src/config.rs:44
+  --
+  oracle_static_files : HashMap &#60; String , EntryValue &#62;
+  oracle_static_dirs : HashMap &#60; String , EntryValue &#62;
+  consensus_static_files : HashMap &#60; String , EntryValue &#62;
+  consensus_static_dirs : HashMap &#60; String , EntryValue &#62;
+}
+entity "EntryValue" as E1778 <<enum>> {
+  scripts/file-read-service/src/config.rs:69
+  --
+  Bare.0 : PathBuf
+  Full.path : PathBuf
+  Full.mode : Option &#60; String &#62;
+}
+entity "FcntlReadLockGuard" as E1779 <<struct>> {
+  scripts/file-read-service/src/fcntl.rs:29
+  --
+  fd : RawFd
+  l_start : libc :: off_t
+  l_len : libc :: off_t
+  locked : bool
+}
+entity "ListQuery" as E1780 <<struct>> {
+  scripts/file-read-service/src/handler.rs:38
+  --
+  prefix : Option &#60; String &#62;
+}
+entity "AppState" as E1781 <<struct>> {
+  scripts/file-read-service/src/handler.rs:134
+  --
+  index : Arc &#60; FileReadIndex &#62;
+}
+entity "ReadQuery" as E1782 <<struct>> {
+  scripts/file-read-service/src/handler.rs:145
+  --
+  offset : Option &#60; u64 &#62;
+  length : Option &#60; u64 &#62;
+  sub_rel : Option &#60; String &#62;
+}
+entity "ReadError" as E1783 <<enum>> {
+  scripts/file-read-service/src/handler.rs:249
+  --
+  IoOpen.0 : std :: io :: Error
+  Lock.0 : std :: io :: Error
+  Pread.0 : std :: io :: Error
+}
+entity "Entry" as E1784 <<enum>> {
+  scripts/file-read-service/src/index.rs:28
+  --
+  File.path : PathBuf
+  Dir.path : PathBuf
+}
+E1777 --> E1778 : consensus_static_dirs
+E1777 --> E1778 : consensus_static_files
+E1777 --> E1778 : oracle_static_dirs
+E1777 --> E1778 : oracle_static_files
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

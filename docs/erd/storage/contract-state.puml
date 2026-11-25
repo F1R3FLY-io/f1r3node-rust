@@ -1,0 +1,61 @@
+@startuml
+!include ../style.puml
+title Contract state stored as tuple-space values
+entity "Channel identity" as Channel {
+  Rholang Par / unforgeable name
+  channel hash : Blake2b-256
+}
+entity "Tuple-space row" as Row {
+  data : Datum<ListParWithRandom>
+  consumers : WaitingContinuation<BindPattern, TaggedContinuation>
+  joins : channel lists
+}
+entity "PoS stateCh map" as PoS {
+  allBonds : validator -> stake
+  activeValidators : validator set
+  withdrawers : validator -> (amount, quarantine)
+  committedRewards : validator -> BigInt
+  pendingWithdrawers : validator -> end height
+  randomImages / randomNumbers : maps
+}
+entity "System vault map" as VaultMap {
+  vaultAddress -> vault capability
+  implementation : TreeHashMap
+}
+entity "Vault / purse state" as Vault {
+  address / purse capability
+  balance : BigInt
+  authorization / logging channels
+}
+entity "Registry state" as Registry {
+  registered key -> stored value
+  TreeHashMap interior bitmaps and leaf maps
+}
+entity "Versioned registry" as Versioned {
+  lib / serve : (publisher, project) -> version -> entry
+  entry : code, deprecated, notify
+}
+entity "Application contract state" as Application {
+  arbitrary Par values and continuations
+  contract-defined keys and relationships
+  no fixed node-level relational schema
+}
+Channel --> Row : hashed addressing
+Row --> PoS : logical payload
+Row --> VaultMap : logical payload
+Row --> Registry : logical payload
+Row --> Versioned : logical payload
+Row --> Application : logical payload
+VaultMap "1" --> "0..*" Vault
+PoS --> Vault : stake / reward custody
+note bottom of Row
+These are logical schemas, not separate LMDB databases.
+During execution they are hot-store values.
+Checkpoints encode them through the history and cold stores.
+User contracts can create structures not present in this repository.
+end note
+legend bottom
+Selected built-in contract state. Sources: PoS.rhox, SystemVault.rho, MakeMint.rho, Registry.rho, VersionedRegistry.rho.
+The complete value grammar is the RhoTypes.proto catalog in memory/inventory.md.
+endlegend
+@enduml

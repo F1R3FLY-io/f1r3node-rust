@@ -1,0 +1,51 @@
+@startuml
+!include ../style.puml
+title catalog shared 005
+entity "ApprovedBlockReceived" as E1821 <<struct>> {
+  shared/src/rust/shared/f1r3fly_event.rs:182
+  --
+  block_hash : String
+}
+entity "EnteredRunningState" as E1822 <<struct>> {
+  shared/src/rust/shared/f1r3fly_event.rs:188
+  --
+  block_hash : String
+}
+entity "SentUnapprovedBlockData" as E1823 <<struct>> {
+  shared/src/rust/shared/f1r3fly_event.rs:194
+  --
+  block_hash : String
+}
+entity "SentApprovedBlockData" as E1824 <<struct>> {
+  shared/src/rust/shared/f1r3fly_event.rs:200
+  --
+  block_hash : String
+}
+entity "NodeStarted" as E1825 <<struct>> {
+  shared/src/rust/shared/f1r3fly_event.rs:206
+  --
+  address : String
+}
+entity "StartupBuffer" as E1826 <<alias>> {
+  shared/src/rust/shared/f1r3fly_events.rs:16
+  --
+  value : Arc &#60; Mutex &#60; Option &#60; Vec &#60; F1r3flyEvent &#62; &#62; &#62; &#62;
+}
+entity "F1r3flyEvents" as E1827 <<struct>> {
+  shared/src/rust/shared/f1r3fly_events.rs:21
+  --
+  sender : broadcast :: Sender &#60; F1r3flyEvent &#62;
+  startup_sealed : Arc &#60; AtomicBool &#62;
+  startup_buffer : StartupBuffer
+}
+entity "EventsLagged" as E1828 <<struct>> {
+  shared/src/rust/shared/f1r3fly_events.rs:91
+  --
+  0 : u64
+}
+E1827 --> E1826 : startup_buffer
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

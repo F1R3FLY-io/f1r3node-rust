@@ -1,0 +1,47 @@
+@startuml
+!include ../style.puml
+title catalog rholang 040
+entity "RhoTuplespace" as E1574 <<alias>> {
+  rholang/src/rust/interpreter/rho_runtime.rs:755
+  --
+  value : Arc &#60; Box &#60; dyn Tuplespace &#60; Par , BindPattern ,\n    ListParWithRandom , TaggedContinuation &#62; + Send + Sync &#62; &#62;
+}
+entity "RhoISpace" as E1575 <<alias>> {
+  rholang/src/rust/interpreter/rho_runtime.rs:758
+  --
+  value : Arc &#60; Box &#60; dyn ISpace &#60; Par , BindPattern , ListParWithRandom ,\n    TaggedContinuation &#62; + Send + Sync &#62; &#62;
+}
+entity "RhoReplayISpace" as E1576 <<alias>> {
+  rholang/src/rust/interpreter/rho_runtime.rs:761
+  --
+  value : Arc &#60; Box &#60; dyn IReplayRSpace &#60; Par , BindPattern ,\n    ListParWithRandom , TaggedContinuation &#62; + Send + Sync &#62; , &#62;
+}
+entity "RhoHistoryRepository" as E1577 <<alias>> {
+  rholang/src/rust/interpreter/rho_runtime.rs:765
+  --
+  value : Arc &#60; Box &#60; dyn HistoryRepository &#60; Par , BindPattern ,\n    ListParWithRandom , TaggedContinuation &#62; + Send + Sync + 'static , &#62; , &#62;
+}
+entity "ISpaceAndReplay" as E1578 <<alias>> {
+  rholang/src/rust/interpreter/rho_runtime.rs:774
+  --
+  value : (RhoISpace , RhoReplayISpace)
+}
+entity "RhoNil" as E1579 <<struct>> {
+  rholang/src/rust/interpreter/rho_type.rs:17
+  --
+}
+entity "RhoByteArray" as E1580 <<struct>> {
+  rholang/src/rust/interpreter/rho_type.rs:25
+  --
+}
+entity "RhoString" as E1581 <<struct>> {
+  rholang/src/rust/interpreter/rho_type.rs:47
+  --
+}
+E1578 --> E1575 : value
+E1578 --> E1576 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,79 @@
+@startuml
+!include ../style.puml
+title catalog models 035
+entity "HostWorkPhase" as E1010 <<enum>> {
+  models/src/rust/host_work.rs:8
+  --
+  StructuralAdmission : variant
+  PureReduction : variant
+  PrimitiveEvaluation : variant
+  Substitution : variant
+  AuthorityDiscovery : variant
+  PhysicalSearch : variant
+  WitnessDecoding : variant
+  WitnessVerification : variant
+}
+entity "HostWorkDimension" as E1011 <<enum>> {
+  models/src/rust/host_work.rs:72
+  --
+  StructuralItems : variant
+  StructuralBytes : variant
+  ReductionSteps : variant
+  ReductionTermBytes : variant
+  PrimitiveCalls : variant
+  PrimitiveInputBytes : variant
+  SubstitutionBindings : variant
+  SubstitutionBytes : variant
+  AuthorityNodes : variant
+  AuthorityDepth : variant
+  SearchCandidates : variant
+  SearchStateBytes : variant
+  WitnessFields : variant
+  WitnessBytes : variant
+  VerificationOperations : variant
+  VerificationBytes : variant
+}
+entity "HostWorkUnits" as E1012 <<struct>> {
+  models/src/rust/host_work.rs:183
+  --
+  0 : u64
+}
+entity "HostWorkLimit" as E1013 <<struct>> {
+  models/src/rust/host_work.rs:218
+  --
+  0 : u64
+}
+entity "HostWorkUsage" as E1014 <<struct>> {
+  models/src/rust/host_work.rs:251
+  --
+  0 : u64
+}
+entity "HostWorkLimits" as E1015 <<struct>> {
+  models/src/rust/host_work.rs:312
+  --
+  0 : [HostWorkLimit ; HOST_WORK_DIMENSION_COUNT]
+}
+entity "HostWorkUsages" as E1016 <<struct>> {
+  models/src/rust/host_work.rs:331
+  --
+  0 : [HostWorkUsage ; HOST_WORK_DIMENSION_COUNT]
+}
+entity "HostWorkReservation" as E1017 <<struct>> {
+  models/src/rust/host_work.rs:346
+  --
+  dimension : HostWorkDimension
+  usage_before : HostWorkUsage
+  requested : HostWorkUnits
+  usage_after : HostWorkUsage
+}
+E1015 --> E1013 : 0
+E1016 --> E1014 : 0
+E1017 --> E1011 : dimension
+E1017 --> E1012 : requested
+E1017 --> E1014 : usage_after
+E1017 --> E1014 : usage_before
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

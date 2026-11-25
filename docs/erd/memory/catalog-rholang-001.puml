@@ -1,0 +1,62 @@
+@startuml
+!include ../style.puml
+title catalog rholang 001
+entity "Conf" as E1262 <<struct>> {
+  rholang/src/rholang_cli.rs:50
+  --
+  binary : bool
+  text : bool
+  quiet : bool
+  unmatched_sends_only : bool
+  data_dir : Option &#60; PathBuf &#62;
+  map_size : usize
+  files : Vec &#60; String &#62;
+}
+entity "ErrorKind" as E1263 <<enum>> {
+  rholang/src/rholang_cli.rs:154
+  --
+  UserError : variant
+  Bug : variant
+}
+entity "CompiledRholangSource" as E1264 <<struct>> {
+  rholang/src/rust/build/compile_rholang_source.rs:17
+  --
+  code : String
+  normalizer_env : HashMap &#60; String , Par &#62;
+  path : String
+  term : Par
+}
+entity "CompiledRholangTemplate" as E1265 <<struct>> {
+  rholang/src/rust/build/compile_rholang_source.rs:41
+  --
+}
+entity "CostAccounting" as E1266 <<struct>> {
+  rholang/src/rust/interpreter/accounting/cost_accounting.rs:6
+  --
+}
+entity "Cost" as E1267 <<struct>> {
+  rholang/src/rust/interpreter/accounting/costs.rs:12
+  --
+  value : i64
+  operation : Cow &#60; 'static , str &#62;
+}
+entity "_cost" as E1268 <<alias>> {
+  rholang/src/rust/interpreter/accounting/mod.rs:14
+  --
+  value : CostManager
+}
+entity "CostManager" as E1269 <<struct>> {
+  rholang/src/rust/interpreter/accounting/mod.rs:17
+  --
+  state : Arc &#60; Mutex &#60; Cost &#62; &#62;
+  log : Arc &#60; Mutex &#60; VecDeque &#60; Cost &#62; &#62; &#62;
+  max_log_entries : usize
+}
+E1268 --> E1269 : value
+E1269 --> E1267 : log
+E1269 --> E1267 : state
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

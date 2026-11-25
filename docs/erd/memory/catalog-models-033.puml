@@ -1,0 +1,68 @@
+@startuml
+!include ../style.puml
+title catalog models 033
+entity "ProduceEvent" as E994 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:1608
+  --
+  channels_hash : ByteString
+  hash : ByteString
+  persistent : bool
+  times_repeated : i32
+  is_deterministic : bool
+  output_value : Vec &#60; ByteString &#62;
+  failed : bool
+}
+entity "ConsumeEvent" as E995 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:1620
+  --
+  channels_hashes : Vec &#60; ByteString &#62;
+  hash : ByteString
+  persistent : bool
+}
+entity "CommEvent" as E996 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:1627
+  --
+  consume : ConsumeEvent
+  produces : Vec &#60; ProduceEvent &#62;
+  peeks : Vec &#60; Peek &#62;
+}
+entity "Bond" as E997 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:1740
+  --
+  validator : ByteString
+  stake : TokenAmount
+}
+entity "StoreNodeKey" as E998 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:1764
+  --
+  hash : Blake2b256Hash
+  index : Option &#60; Byte &#62;
+}
+entity "StoreItemsMessageRequest" as E999 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:1803
+  --
+  start_path : Vec &#60; (Blake2b256Hash , Option &#60; Byte &#62;) &#62;
+  skip : i32
+  take : i32
+}
+entity "StoreItemsMessage" as E1000 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:1832
+  --
+  start_path : Vec &#60; (Blake2b256Hash , Option &#60; Byte &#62;) &#62;
+  last_path : Vec &#60; (Blake2b256Hash , Option &#60; Byte &#62;) &#62;
+  history_items : Vec &#60; (Blake2b256Hash , ByteString) &#62;
+  data_items : Vec &#60; (Blake2b256Hash , ByteString) &#62;
+}
+entity "MessageClass" as E1001 <<enum>> {
+  models/src/rust/casper/protocol/packet_type_tag.rs:23
+  --
+  Pull : variant
+  Push : variant
+}
+E996 --> E994 : produces
+E996 --> E995 : consume
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

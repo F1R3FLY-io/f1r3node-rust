@@ -1,0 +1,74 @@
+@startuml
+!include ../style.puml
+title catalog casper 030
+entity "WalPayloadTickStop" as E312 <<struct>> {
+  casper/src/rust/engine/wal_payload_sync.rs:747
+  --
+  signal : Arc &#60; tokio :: sync :: Notify &#62;
+}
+entity "WalPayloadTickHandle" as E313 <<struct>> {
+  casper/src/rust/engine/wal_payload_sync.rs:804
+  --
+  join_handle : tokio :: task :: JoinHandle &#60; () &#62;
+  stop : WalPayloadTickStop
+}
+entity "EnumerateStats" as E314 <<struct>> {
+  casper/src/rust/engine/wal_payload_sync.rs:869
+  --
+  resolved_locally : usize
+  enqueued_for_fetch : usize
+}
+entity "BootApplyReport" as E315 <<struct>> {
+  casper/src/rust/engine/wal_payload_sync.rs:888
+  --
+  enumerated : EnumerateStats
+  sidecar_populated : usize
+  wal_entries : usize
+}
+entity "BootApplyError" as E316 <<enum>> {
+  casper/src/rust/engine/wal_payload_sync.rs:902
+  --
+  PayloadFetchTimeout.pending_count : usize
+  MissingResolvedHash.hash_hex : String
+  ApplierFailed.message : String
+  ApplierPanic.message : String
+}
+entity "EquivocationDetector" as E317 <<struct>> {
+  casper/src/rust/equivocation_detector.rs:32
+  --
+}
+entity "CanonicalChildCache" as E318 <<alias>> {
+  casper/src/rust/equivocation_detector.rs:35
+  --
+  value : HashMap &#60; (BlockHash , Validator , i64) , Option &#60; BlockHash &#62; &#62;
+}
+entity "CasperError" as E319 <<enum>> {
+  casper/src/rust/errors.rs:14
+  --
+  InterpreterError.0 : InterpreterError
+  KvStoreError.0 : KvStoreError
+  RuntimeError.0 : String
+  SystemRuntimeError.0 : SystemDeployPlatformFailure
+  SigningError.0 : String
+  ReplayFailure.0 : ReplayFailure
+  CommError.0 : CommError
+  HistoryError.0 : HistoryError
+  StreamError.0 : String
+  LockError.0 : String
+  SlashAuth.0 : SlashAuthError
+  BlockNotHeld.0 : BlockHash
+  BlockNotHeld.1 : MissingBlockContext
+  IncompatibleFinalizedFork.0 : String
+  FloorDistanceExceeded.distance : i64
+  FloorDistanceExceeded.cap : i64
+  FloorDistanceExceeded.floor_block : i64
+  FloorDistanceExceeded.parents : usize
+  Other.0 : String
+}
+E313 --> E312 : stop
+E315 --> E314 : enumerated
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

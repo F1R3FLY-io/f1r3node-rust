@@ -1,0 +1,17 @@
+@startuml
+!include ../style.puml
+title catalog node 026
+entity "WebApiRoutes" as E1258 <<struct>> {
+  node/src/rust/web/web_api_routes.rs:46
+  --
+}
+entity "WebApiRoutesV1" as E1259 <<struct>> {
+  node/src/rust/web/web_api_routes_v1.rs:8
+  --
+}
+E1258 -[hidden]down-> E1259
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

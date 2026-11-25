@@ -1,0 +1,85 @@
+@startuml
+!include ../style.puml
+title catalog shared 004
+entity "DeployVerdictState" as E1813 <<enum>> {
+  shared/src/rust/shared/f1r3fly_event.rs:79
+  --
+  Finalized : variant
+  Expired : variant
+  Failed : variant
+}
+entity "DeployVerdict" as E1814 <<struct>> {
+  shared/src/rust/shared/f1r3fly_event.rs:89
+  --
+  deploy_id : String
+  state : DeployVerdictState
+  rejection_count : u32
+  block_hash : Option &#60; String &#62;
+}
+entity "DeployAdmission" as E1815 <<struct>> {
+  shared/src/rust/shared/f1r3fly_event.rs:100
+  --
+  cap : usize
+  cap_hit : bool
+  byte_cap_hit : bool
+  cap_source : String
+  backpressure : bool
+  finality_lag : i64
+}
+entity "BlockCreated" as E1816 <<struct>> {
+  shared/src/rust/shared/f1r3fly_event.rs:119
+  --
+  block_hash : String
+  block_number : i64
+  timestamp : i64
+  parent_hashes : Vec &#60; String &#62;
+  justification_hashes : Vec &#60; (String , String) &#62;
+  deploys : Vec &#60; DeployEvent &#62;
+  creator : String
+  seq_number : i32
+  deploy_admission : Option &#60; DeployAdmission &#62;
+}
+entity "BlockAdded" as E1817 <<struct>> {
+  shared/src/rust/shared/f1r3fly_event.rs:135
+  --
+  block_hash : String
+  block_number : i64
+  timestamp : i64
+  parent_hashes : Vec &#60; String &#62;
+  justification_hashes : Vec &#60; (String , String) &#62;
+  deploys : Vec &#60; DeployEvent &#62;
+  creator : String
+  seq_number : i32
+}
+entity "BlockFinalised" as E1818 <<struct>> {
+  shared/src/rust/shared/f1r3fly_event.rs:149
+  --
+  block_hash : String
+  block_number : i64
+  timestamp : i64
+  parent_hashes : Vec &#60; String &#62;
+  justification_hashes : Vec &#60; (String , String) &#62;
+  deploys : Vec &#60; DeployEvent &#62;
+  creator : String
+  seq_number : i32
+}
+entity "TransfersAvailable" as E1819 <<struct>> {
+  shared/src/rust/shared/f1r3fly_event.rs:164
+  --
+  block_hash : String
+  block_number : i64
+  deploys : Vec &#60; DeployTransfers &#62;
+}
+entity "BlockApprovalReceived" as E1820 <<struct>> {
+  shared/src/rust/shared/f1r3fly_event.rs:175
+  --
+  block_hash : String
+  sender : String
+}
+E1814 --> E1813 : state
+E1816 --> E1815 : deploy_admission
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

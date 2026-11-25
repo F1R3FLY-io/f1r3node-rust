@@ -1,0 +1,53 @@
+@startuml
+!include ../style.puml
+title catalog shared 006
+entity "EventStream" as E1829 <<struct>> {
+  shared/src/rust/shared/f1r3fly_events.rs:97
+  --
+  sender : broadcast :: Sender &#60; F1r3flyEvent &#62;
+  inner : BroadcastStream &#60; F1r3flyEvent &#62;
+}
+entity "ListOps" as E1830 <<struct>> {
+  shared/src/rust/shared/list_ops.rs:6
+  --
+}
+entity "Printer" as E1831 <<struct>> {
+  shared/src/rust/shared/printer.rs:5
+  --
+}
+entity "RecentHashFilter" as E1832 <<struct>> {
+  shared/src/rust/shared/recent_hash_filter.rs:7
+  --
+  set : Mutex &#60; IndexSet &#60; String &#62; &#62;
+  max_entries : usize
+}
+entity "LmdbDatabase" as E1833 <<alias>> {
+  shared/src/rust/store/atomic_store.rs:15
+  --
+  value : Database &#60; SerdeBincode &#60; Vec &#60; u8 &#62; &#62; , SerdeBincode &#60; Vec &#60; u8\n    &#62; &#62; &#62;
+}
+entity "Changes" as E1834 <<alias>> {
+  shared/src/rust/store/atomic_store.rs:16
+  --
+  value : BTreeMap &#60; u64 , BTreeMap &#60; Vec &#60; u8 &#62; , Option &#60; Vec &#60; u8 &#62; &#62; &#62;\n    &#62;
+}
+entity "AtomicStoreGroup" as E1835 <<struct>> {
+  shared/src/rust/store/atomic_store.rs:18
+  --
+  backend : Backend
+}
+entity "Backend" as E1836 <<enum>> {
+  shared/src/rust/store/atomic_store.rs:23
+  --
+  Lmdb.env : Arc &#60; Env &#62;
+  Lmdb.databases : Vec &#60; LmdbDatabase &#62;
+  Memory.env : Arc &#60; MemoryEnvironment &#62;
+  Memory.tables : Vec &#60; u64 &#62;
+}
+E1835 --> E1836 : backend
+E1836 --> E1833 : Lmdb.databases
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

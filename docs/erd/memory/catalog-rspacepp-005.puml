@@ -1,0 +1,73 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 005
+entity "PruneGuard" as E1658 <<struct>> {
+  rspace++/src/rspace/history/prune_guard.rs:158
+  --
+  rw : RwLock &#60; () &#62;
+  pinned : Mutex &#60; Pinned &#62;
+  generation : AtomicU64
+}
+entity "PassStart" as E1659 <<struct>> {
+  rspace++/src/rspace/history/prune_guard.rs:169
+  --
+  generation : u64
+  pins_before : usize
+  pins_evicted : usize
+  pins_after : usize
+}
+entity "Item" as E1660 <<enum>> {
+  rspace++/src/rspace/history/radix_tree.rs:18
+  --
+  EmptyItem : variant
+  Leaf.prefix : ByteVector
+  Leaf.value : ByteVector
+  NodePtr.prefix : ByteVector
+  NodePtr.ptr : ByteVector
+}
+entity "Node" as E1661 <<alias>> {
+  rspace++/src/rspace/history/radix_tree.rs:33
+  --
+  value : Vec &#60; Item &#62;
+}
+entity "ExportData" as E1662 <<struct>> {
+  rspace++/src/rspace/history/radix_tree.rs:298
+  --
+  node_prefixes : Vec &#60; ByteVector &#62;
+  node_keys : Vec &#60; ByteVector &#62;
+  node_values : Vec &#60; ByteVector &#62;
+  leaf_prefixes : Vec &#60; ByteVector &#62;
+  leaf_values : Vec &#60; ByteVector &#62;
+}
+entity "ExportDataSettings" as E1663 <<struct>> {
+  rspace++/src/rspace/history/radix_tree.rs:334
+  --
+  flag_node_prefixes : bool
+  flag_node_keys : bool
+  flag_node_values : bool
+  flag_leaf_prefixes : bool
+  flag_leaf_values : bool
+}
+entity "NodeData" as E1664 <<struct>> {
+  rspace++/src/rspace/history/radix_tree.rs:375
+  sequential_export
+  --
+  prefix : ByteVector
+  decoded : Node
+  next_item_index : usize
+}
+entity "RadixTreeImpl" as E1665 <<struct>> {
+  rspace++/src/rspace/history/radix_tree.rs:527
+  --
+  store : Arc &#60; dyn KeyValueStore &#62;
+  cache_r : DashMap &#60; ByteVector , Arc &#60; Node &#62; &#62;
+  cache_w : DashMap &#60; ByteVector , ByteVector &#62;
+}
+E1661 --> E1660 : value
+E1664 --> E1661 : decoded
+E1665 --> E1661 : cache_r
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

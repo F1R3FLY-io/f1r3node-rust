@@ -1,0 +1,56 @@
+@startuml
+!include ../style.puml
+title catalog comm 012
+entity "OutgoingPacketCache" as E626 <<alias>> {
+  comm/src/rust/transport/packet_ops.rs:16
+  --
+  value : Arc &#60; DashMap &#60; String , Packet &#62; &#62;
+}
+entity "PacketOps" as E627 <<struct>> {
+  comm/src/rust/transport/packet_ops.rs:19
+  --
+}
+entity "SslSessionClientInterceptor" as E628 <<struct>> {
+  comm/src/rust/transport/ssl_session_client_interceptor.rs:11
+  --
+  network_id : String
+}
+entity "SslSessionServerInterceptor" as E629 <<struct>> {
+  comm/src/rust/transport/ssl_session_server_interceptor.rs:10
+  --
+  network_id : String
+}
+entity "CertificateValidationContext" as E630 <<struct>> {
+  comm/src/rust/transport/ssl_session_server_interceptor.rs:33
+  --
+  peer_certificates : Option &#60; Vec &#60; Vec &#60; u8 &#62; &#62; &#62;
+  tls_validation_passed : bool
+  network_id : String
+}
+entity "CircuitBreaker" as E631 <<alias>> {
+  comm/src/rust/transport/stream_handler.rs:21
+  --
+  value : fn (&#38; Streamed) -&#62; Circuit
+}
+entity "Header" as E632 <<struct>> {
+  comm/src/rust/transport/stream_handler.rs:25
+  --
+  sender : PeerNode
+  type_id : String
+  content_length : i32
+  network_id : String
+  chain_id : Bytes
+  compressed : bool
+}
+entity "Circuit" as E633 <<enum>> {
+  comm/src/rust/transport/stream_handler.rs:63
+  --
+  Opened.error : StreamError
+  Closed : variant
+}
+E631 --> E633 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

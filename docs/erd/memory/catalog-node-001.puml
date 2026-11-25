@@ -1,0 +1,71 @@
+@startuml
+!include ../style.puml
+title catalog node 001
+entity "Diagnostic" as E1058 <<protobuf>> {
+  node/src/main/protobuf/lsp.proto
+  .lsp
+  --
+  range #1 : .lsp.Range
+  severity #2 : .lsp.DiagnosticSeverity
+  source #3 : String
+  message #4 : String
+}
+entity "DiagnosticList" as E1059 <<protobuf>> {
+  node/src/main/protobuf/lsp.proto
+  .lsp
+  --
+  diagnostics #1 : repeated .lsp.Diagnostic
+}
+entity "DiagnosticSeverity" as E1060 <<protobuf enum>> {
+  node/src/main/protobuf/lsp.proto
+  .lsp
+  --
+  ERROR : 0
+  WARNING : 1
+  INFORMATION : 2
+  HINT : 3
+}
+entity "Position" as E1061 <<protobuf>> {
+  node/src/main/protobuf/lsp.proto
+  .lsp
+  --
+  line #1 : Uint64
+  column #2 : Uint64
+}
+entity "Range" as E1062 <<protobuf>> {
+  node/src/main/protobuf/lsp.proto
+  .lsp
+  --
+  start #1 : .lsp.Position
+  end #2 : .lsp.Position
+}
+entity "ValidateRequest" as E1063 <<protobuf>> {
+  node/src/main/protobuf/lsp.proto
+  .lsp
+  --
+  text #1 : String
+}
+entity "ValidateResponse" as E1064 <<protobuf>> {
+  node/src/main/protobuf/lsp.proto
+  .lsp
+  --
+  success #1 oneof result : .lsp.DiagnosticList
+  error #2 oneof result : String
+}
+entity "CmdRequest" as E1065 <<protobuf>> {
+  node/src/main/protobuf/repl.proto
+  .repl
+  --
+  line #1 : String
+}
+E1058 --> E1060 : severity #2
+E1058 --> E1062 : range #1
+E1059 --> E1058 : diagnostics #1
+E1062 --> E1061 : end #2
+E1062 --> E1061 : start #1
+E1064 --> E1059 : success #1 oneof result
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

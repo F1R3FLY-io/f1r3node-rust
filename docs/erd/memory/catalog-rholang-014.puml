@@ -1,0 +1,59 @@
+@startuml
+!include ../style.puml
+title catalog rholang 014
+entity "FsRemoveFileHandler" as E1366 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_remove_file.rs:86
+  --
+}
+entity "FsRemoveFileArgs" as E1367 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_remove_file.rs:89
+  --
+  root : String
+  rel : String
+  cmode : ConsensusMode
+}
+entity "FS_REMOVE_FILE_ENTRY" as E1368 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_remove_file.rs:272
+  --
+  value : FsHandlerEntry
+}
+entity "FsRenameHandler" as E1369 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_rename.rs:94
+  --
+}
+entity "FsRenameArgs" as E1370 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_rename.rs:97
+  --
+  from_root : String
+  from_rel : String
+  to_root : String
+  to_rel : String
+  cmode : ConsensusMode
+}
+entity "FS_RENAME_ENTRY" as E1371 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_rename.rs:327
+  --
+  value : FsHandlerEntry
+}
+entity "FsTruncateHandler" as E1372 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_truncate.rs:71
+  --
+}
+entity "FsTruncateArgs" as E1373 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_truncate.rs:74
+  --
+  fd : u64
+  n : u64
+}
+E1366 -[hidden]down-> E1367
+E1367 -[hidden]down-> E1368
+E1368 -[hidden]down-> E1369
+E1369 -[hidden]down-> E1370
+E1370 -[hidden]down-> E1371
+E1371 -[hidden]down-> E1372
+E1372 -[hidden]down-> E1373
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

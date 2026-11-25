@@ -1,0 +1,58 @@
+@startuml
+!include ../style.puml
+title catalog casper 029
+entity "WalPayloadRetriever" as E304 <<struct>> {
+  casper/src/rust/engine/wal_payload_retriever.rs:109
+  --
+  payloads : Arc &#60; RwLock &#60; HashMap &#60; [u8 ; 32] , PayloadRequestState &#62; &#62;\n    &#62;
+}
+entity "ServeError" as E305 <<enum>> {
+  casper/src/rust/engine/wal_payload_server.rs:40
+  --
+  UnknownPayload : variant
+  PayloadHashMismatch : variant
+  BackingStoreFailed.0 : String
+}
+entity "InMemoryPayloadStore" as E306 <<struct>> {
+  casper/src/rust/engine/wal_payload_server.rs:150
+  --
+  map : Arc &#60; RwLock &#60; HashMap &#60; [u8 ; 32] , Vec &#60; u8 &#62; &#62; &#62; &#62;
+}
+entity "DirectoryPayloadStore" as E307 <<struct>> {
+  casper/src/rust/engine/wal_payload_server.rs:226
+  --
+  dir : PathBuf
+}
+entity "PayloadStoreBundle" as E308 <<struct>> {
+  casper/src/rust/engine/wal_payload_server.rs:309
+  --
+  persistence : Arc &#60; dyn rholang :: rust :: interpreter :: io :: wal ::\n    PayloadPersistence &#62;
+  lookup : Arc &#60; dyn PayloadLookup &#62;
+}
+entity "PayloadSources" as E309 <<struct>> {
+  casper/src/rust/engine/wal_payload_sync.rs:55
+  --
+  sources : VecDeque &#60; PeerNode &#62;
+  broadcasted_has_request : bool
+}
+entity "TickAction" as E310 <<enum>> {
+  casper/src/rust/engine/wal_payload_sync.rs:67
+  --
+  SendFresh : variant
+  WaitInFlight : variant
+  GiveUp : variant
+}
+entity "WalPayloadSyncDriver" as E311 <<struct>> {
+  casper/src/rust/engine/wal_payload_sync.rs:92
+  --
+  retriever : Arc &#60; WalPayloadRetriever &#62;
+  per_hash_sources : Arc &#60; RwLock &#60; HashMap &#60; [u8 ; 32] , PayloadSources &#62;\n    &#62; &#62;
+  blacklisted : Arc &#60; RwLock &#60; HashMap &#60; PeerNode , u64 &#62; &#62; &#62;
+}
+E311 --> E304 : retriever
+E311 --> E309 : per_hash_sources
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,28 @@
+@startuml
+!include ../style.puml
+title catalog rho pure eval 001
+entity "Env" as E1260 <<struct>> {
+  rho-pure-eval/src/env.rs:12
+  --
+  bindings : Vector &#60; A &#62;
+  shift : i32
+}
+entity "EvalError" as E1261 <<enum>> {
+  rho-pure-eval/src/error.rs:3
+  --
+  UnboundVariable.index : i32
+  OperatorTypeMismatch.op : &#38; 'static str
+  OperatorTypeMismatch.left : String
+  OperatorTypeMismatch.right : Option &#60; String &#62;
+  DivisionByZero : variant
+  ArithmeticOverflow.op : &#38; 'static str
+  UnsupportedExpression.kind : &#38; 'static str
+  MissingExprInstance : variant
+  NotASingleValue.actual : Box &#60; Par &#62;
+}
+E1260 -[hidden]down-> E1261
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

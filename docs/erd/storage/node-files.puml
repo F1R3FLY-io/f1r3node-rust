@@ -1,0 +1,58 @@
+@startuml
+!include ../style.puml
+title Node files outside the chain databases
+entity "Node configuration" as Config <<input>> {
+  NodeConf / CasperConf / StorageConf / TlsConf
+  network / API / consensus / retention settings
+  paths supplied by CLI and configuration
+}
+entity "TLS certificate and key" as Identity <<files>> {
+  certificate : X.509
+  private key : configured key file
+  public key derives peer identity
+}
+entity "Genesis inputs" as Genesis <<input>> {
+  validator public keys and bond amounts
+  initial vault addresses and balances
+  embedded contracts and token metadata
+}
+entity "File I/O provisioning" as Provisioning <<input>> {
+  logical root identities
+  operator paths and capabilities
+  static / dynamic execution modes
+}
+entity "LMDB environment" as Env <<directory>> {
+  data.mdb : database pages
+  lock.mdb : LMDB coordination
+  named databases share one environment
+  map size is not allocated disk usage
+}
+entity "Bounded log files" as Logs <<output>> {
+  tracing events and operational fields
+  rotation / byte limits
+  not consensus state
+}
+entity "Detached DAG capture" as Capture <<diagnostic>> {
+  SnapshotData / DetachedBlock / Coverage
+  bounded forensic capture
+  not the filesystem WAL snapshot format
+}
+entity "known-peers" as Peers <<file>> {
+  one PeerNode address per line
+  sorted unique addresses
+  parsed peer ID, host, and ports
+  temporary write, fsync, rename, directory fsync
+}
+Config --> Identity : configured paths
+Config --> Genesis : genesis settings
+Config --> Provisioning : provisioned roots
+Config --> Env : data directory
+Config --> Logs : logging settings
+Config --> Peers : data directory
+Env --> Capture : bounded read capture
+legend bottom
+No credential values are included. Paths vary by configuration.
+Sources: configuration/model.rs, node_environment.rs, tracing_init/bounded_file.rs, dag/soak_snapshot.rs.
+This page distinguishes inputs and diagnostics from durable consensus tables.
+endlegend
+@enduml

@@ -1,0 +1,72 @@
+@startuml
+!include ../style.puml
+title catalog casper 025
+entity "TupleSpaceStreamProcessor" as E272 <<struct>> {
+  casper/src/rust/engine/lfs_tuple_space_requester.rs:245
+  --
+  request_ops : T
+  state_importer : Arc &#60; dyn RSpaceImporter &#62;
+  st : Arc &#60; Mutex &#60; ST &#60; StatePartPath &#62; &#62; &#62;
+  request_tx : mpsc :: Sender &#60; bool &#62;
+}
+entity "FinalizedBondCache" as E273 <<struct>> {
+  casper/src/rust/engine/multi_parent_casper/bond_cache.rs:12
+  --
+  validator : Option &#60; Bytes &#62;
+  bonded : Arc &#60; AtomicBool &#62;
+}
+entity "DivergenceMonitor" as E274 <<struct>> {
+  casper/src/rust/engine/multi_parent_casper/finalization_runner.rs:90
+  --
+  state : std :: sync :: Mutex &#60; HoldStreak &#62;
+  diverged : AtomicBool
+}
+entity "HoldStreak" as E275 <<struct>> {
+  casper/src/rust/engine/multi_parent_casper/finalization_runner.rs:110
+  --
+  pinned_lfb : Option &#60; BlockHash &#62;
+  refusals : u64
+  first_derived_number : i64
+  latest_derived_number : i64
+}
+entity "FinalizationContext" as E276 <<struct>> {
+  casper/src/rust/engine/multi_parent_casper/finalization_runner.rs:192
+  --
+  observer : Arc &#60; std :: sync :: OnceLock &#60; crate :: rust ::\n    soak_observer :: ObserverBinding &#62; &#62;
+  block_dag_storage : BlockDagKeyValueStorage
+  block_store : KeyValueBlockStore
+  runtime_manager : Arc &#60; RuntimeManager &#62;
+  event_publisher : F1r3flyEvents
+  divergence_monitor : Arc &#60; DivergenceMonitor &#62;
+  deploy_storage : Arc &#60; KeyValueDeployStorage &#62;
+  finalized_bond_cache : super :: bond_cache :: FinalizedBondCache
+  shard_conf : CasperShardConf
+}
+entity "CycleFuture" as E277 <<alias>> {
+  casper/src/rust/engine/multi_parent_casper/finalization_runner.rs:228
+  --
+  value : std :: pin :: Pin &#60; Box &#60; dyn std :: future :: Future &#60; Output =\n    () &#62; + Send &#62; &#62;
+}
+entity "Cycle" as E278 <<alias>> {
+  casper/src/rust/engine/multi_parent_casper/finalization_runner.rs:229
+  --
+  value : Box &#60; dyn Fn () -&#62; CycleFuture + Send &#62;
+}
+entity "Finalizer" as E279 <<struct>> {
+  casper/src/rust/engine/multi_parent_casper/finalization_runner.rs:231
+  --
+  wake : Arc &#60; tokio :: sync :: Notify &#62;
+  requested : Arc &#60; std :: sync :: atomic :: AtomicU64 &#62;
+  in_cycle : Arc &#60; AtomicBool &#62;
+  completed : tokio :: sync :: watch :: Receiver &#60; u64 &#62;
+  _stop : tokio :: sync :: oneshot :: Sender &#60; () &#62;
+}
+E274 --> E275 : state
+E276 --> E273 : finalized_bond_cache
+E276 --> E274 : divergence_monitor
+E278 --> E277 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

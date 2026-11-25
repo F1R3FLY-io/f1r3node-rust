@@ -1,0 +1,71 @@
+@startuml
+!include ../style.puml
+title catalog casper 034
+entity "BundleEntry" as E344 <<struct>> {
+  casper/src/rust/genesis/contracts/fs_genesis.rs:183
+  --
+  logical_name : String
+  canon_path : PathBuf
+  kind : BundleEntryKind
+  mode : String
+  consensus_mode : BundleConsensusMode
+}
+entity "ProofOfStake" as E345 <<struct>> {
+  casper/src/rust/genesis/contracts/proof_of_stake.rs:10
+  --
+  minimum_bond : TokenAmount
+  maximum_bond : TokenAmount
+  validators : Vec &#60; Validator &#62;
+  epoch_length : i32
+  quarantine_length : i32
+  number_of_active_validators : u32
+  fault_tolerance_threshold_ppm : i64
+  max_parent_depth : i32
+  deploy_lifespan : i64
+  min_phlo_price : TokenAmount
+  max_phlo_limit : i64
+  pos_multi_sig_public_keys : Vec &#60; String &#62;
+  pos_multi_sig_quorum : u32
+}
+entity "REGISTRY_PUB_KEY" as E346 <<lazy static>> {
+  casper/src/rust/genesis/contracts/standard_deploys.rs:82
+  --
+  value : PublicKey
+}
+entity "VERSIONED_REGISTRY_PUB_KEY" as E347 <<lazy static>> {
+  casper/src/rust/genesis/contracts/standard_deploys.rs:83
+  --
+  value : PublicKey
+}
+entity "LIST_OPS_PUB_KEY" as E348 <<lazy static>> {
+  casper/src/rust/genesis/contracts/standard_deploys.rs:84
+  --
+  value : PublicKey
+}
+entity "EITHER_PUB_KEY" as E349 <<lazy static>> {
+  casper/src/rust/genesis/contracts/standard_deploys.rs:85
+  --
+  value : PublicKey
+}
+entity "NON_NEGATIVE_NUMBER_PUB_KEY" as E350 <<lazy static>> {
+  casper/src/rust/genesis/contracts/standard_deploys.rs:86
+  --
+  value : PublicKey
+}
+entity "MAKE_MINT_PUB_KEY" as E351 <<lazy static>> {
+  casper/src/rust/genesis/contracts/standard_deploys.rs:87
+  --
+  value : PublicKey
+}
+E344 -[hidden]down-> E345
+E345 -[hidden]down-> E346
+E346 -[hidden]down-> E347
+E347 -[hidden]down-> E348
+E348 -[hidden]down-> E349
+E349 -[hidden]down-> E350
+E350 -[hidden]down-> E351
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

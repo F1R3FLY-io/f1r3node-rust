@@ -1,0 +1,85 @@
+@startuml
+!include ../style.puml
+title catalog casper 015
+entity "BlockAnnouncer" as E192 <<struct>> {
+  casper/src/rust/blocks/ingest/validation_worker.rs:96
+  --
+  transport : Arc &#60; T &#62;
+  connections : ConnectionsCell
+  conf : RPConf
+  permits : Arc &#60; Semaphore &#62;
+}
+entity "Validation" as E193 <<struct>> {
+  casper/src/rust/blocks/ingest/validation_worker.rs:149
+  --
+  block_store : KeyValueBlockStore
+  dag : BlockDagKeyValueStorage
+  announcer : BlockAnnouncer &#60; T &#62;
+  settled_admissions : AtomicU64
+  state_root_fetch_tx : Option &#60; mpsc :: Sender &#60; Blake2b256Hash &#62; &#62;
+}
+entity "PreparedUserDeploys" as E194 <<struct>> {
+  casper/src/rust/blocks/proposer/block_creator.rs:60
+  --
+  deploys : HashSet &#60; Signed &#60; DeployData &#62; &#62;
+  effective_cap : usize
+  cap_hit : bool
+  selected_retry_count : usize
+  selected_ordinary_count : usize
+  selected_in_scope_recovery_count : usize
+  selected_in_scope_recovery_sigs : HashSet &#60; Bytes &#62;
+  already_in_scope_count : usize
+  selected_user_deploy_bytes : usize
+  deferred_user_deploy_bytes : usize
+  byte_cap_hit : bool
+}
+entity "DeployAdmissionPolicy" as E195 <<struct>> {
+  casper/src/rust/blocks/proposer/block_creator.rs:74
+  --
+  allow_ordinary : bool
+  ordinary_cap : usize
+  allow_in_scope_recovery : bool
+  in_scope_recovery_cap : usize
+  reserve_tail : bool
+  fallback : bool
+  backpressure : bool
+  ordinary_cap_source : OrdinaryCapSource
+  in_scope_recovery_cap_source : OrdinaryCapSource
+}
+entity "BranchDeployInfo" as E196 <<struct>> {
+  casper/src/rust/blocks/proposer/block_creator.rs:87
+  --
+  block_hash : BlockHash
+  sender : Validator
+  block_number : i64
+  timestamp : i64
+  deploy_sig_count : usize
+  new_sig_count : usize
+  recycled_sig_count : usize
+}
+entity "DeployInclusionProgress" as E197 <<struct>> {
+  casper/src/rust/blocks/proposer/block_creator.rs:98
+  --
+  leader : Option &#60; Validator &#62;
+  latest_deploy : Option &#60; BranchDeployInfo &#62;
+}
+entity "FreshLocalDeployStats" as E198 <<struct>> {
+  casper/src/rust/blocks/proposer/block_creator.rs:104
+  --
+  count : usize
+  oldest_age_millis : i64
+}
+entity "InScopeLocalDeployStats" as E199 <<struct>> {
+  casper/src/rust/blocks/proposer/block_creator.rs:110
+  --
+  count : usize
+  oldest_age_millis : i64
+  stranded_count : usize
+}
+E193 --> E192 : announcer
+E197 --> E196 : latest_deploy
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

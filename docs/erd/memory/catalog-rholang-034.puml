@@ -1,0 +1,63 @@
+@startuml
+!include ../style.puml
+title catalog rholang 034
+entity "WriteZipperMethod" as E1526 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:4124
+  DebruijnInterpreter::write_zipper_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "WriteZipperAtMethod" as E1527 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:4177
+  DebruijnInterpreter::write_zipper_at_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "DescendToMethod" as E1528 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:4244
+  DebruijnInterpreter::descend_to_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "GetLeafMethod" as E1529 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:4303
+  DebruijnInterpreter::get_leaf_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "GetSubtrieMethod" as E1530 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:4388
+  DebruijnInterpreter::get_subtrie_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "SetLeafMethod" as E1531 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:4469
+  DebruijnInterpreter::set_leaf_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "SetSubtrieMethod" as E1532 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:4527
+  DebruijnInterpreter::set_subtrie_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+entity "RemoveLeafMethod" as E1533 <<struct>> {
+  rholang/src/rust/interpreter/reduce.rs:4827
+  DebruijnInterpreter::remove_leaf_method
+  --
+  outer : &#38; 'a DebruijnInterpreter
+}
+E1526 -[hidden]down-> E1527
+E1527 -[hidden]down-> E1528
+E1528 -[hidden]down-> E1529
+E1529 -[hidden]down-> E1530
+E1530 -[hidden]down-> E1531
+E1531 -[hidden]down-> E1532
+E1532 -[hidden]down-> E1533
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

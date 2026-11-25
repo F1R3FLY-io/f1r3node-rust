@@ -1,0 +1,72 @@
+@startuml
+!include ../style.puml
+title catalog block storage 004
+entity "DagPersistence" as E24 <<struct>> {
+  block-storage/src/rust/dag/dag_persistence.rs:66
+  --
+  membership_store : Arc &#60; dyn shared :: rust :: store :: key_value_store\n    :: KeyValueStore &#62;
+  group : Arc &#60; AtomicStoreGroup &#62;
+  history : Arc &#60; DagHistoryIndex &#62;
+  gc : Arc &#60; DagGcStore &#62;
+}
+entity "LifecycleEventKind" as E25 <<enum>> {
+  block-storage/src/rust/dag/deploy_lifecycle_types.rs:27
+  --
+  Included.is_failed : bool
+  Rejected.duplicate : bool
+}
+entity "LifecycleEvent" as E26 <<struct>> {
+  block-storage/src/rust/dag/deploy_lifecycle_types.rs:33
+  --
+  height : i64
+  block_hash : ByteString
+  kind : LifecycleEventKind
+}
+entity "LifecycleEvents" as E27 <<struct>> {
+  block-storage/src/rust/dag/deploy_lifecycle_types.rs:40
+  --
+  valid_after : Option &#60; i64 &#62;
+  events : Vec &#60; LifecycleEvent &#62;
+}
+entity "TerminalState" as E28 <<enum>> {
+  block-storage/src/rust/dag/deploy_lifecycle_types.rs:49
+  --
+  Finalized : variant
+  Expired : variant
+  Failed : variant
+}
+entity "TerminalRecord" as E29 <<struct>> {
+  block-storage/src/rust/dag/deploy_lifecycle_types.rs:56
+  --
+  state : TerminalState
+  rejection_count : u32
+  latest_height : i64
+  latest_block_hash : ByteString
+}
+entity "DeployLifecycleTables" as E30 <<struct>> {
+  block-storage/src/rust/dag/deploy_lifecycle_types.rs:66
+  --
+  events : KeyValueTypedStoreImpl &#60; ByteString , LifecycleEvents &#62;
+  terminal : KeyValueTypedStoreImpl &#60; ByteString , TerminalRecord &#62;
+}
+entity "CaptureLimits" as E31 <<struct>> {
+  block-storage/src/rust/dag/soak_snapshot.rs:38
+  --
+  read : ReadLimits
+  block_decode : BlockDecodeLimits
+  max_blocks : usize
+  max_validators : usize
+  max_edges : usize
+  max_work : usize
+  lock_wait : Duration
+}
+E26 --> E25 : kind
+E27 --> E26 : events
+E29 --> E28 : state
+E30 --> E27 : events
+E30 --> E29 : terminal
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

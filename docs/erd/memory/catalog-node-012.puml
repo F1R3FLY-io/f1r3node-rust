@@ -1,0 +1,60 @@
+@startuml
+!include ../style.puml
+title catalog node 012
+entity "FlatEntry" as E1146 <<struct>> {
+  node/src/rust/configuration/boot_validation.rs:453
+  --
+  bucket : &#38; 'static str
+  logical_name : &#38; 'a str
+  path : &#38; 'a Path
+  mode : &#38; 'a str
+  kind : EntryKind
+  is_consensus : bool
+}
+entity "CliStaticFileArg" as E1147 <<struct>> {
+  node/src/rust/configuration/commandline/cli_static_provisioning.rs:50
+  --
+  logical_name : String
+  entry : StaticFileEntry
+}
+entity "CliStaticDirArg" as E1148 <<struct>> {
+  node/src/rust/configuration/commandline/cli_static_provisioning.rs:57
+  --
+  logical_name : String
+  entry : StaticDirEntry
+}
+entity "Wire" as E1149 <<struct>> {
+  node/src/rust/configuration/commandline/cli_static_provisioning.rs:157
+  parse_value
+  --
+  path : String
+  mode : String
+}
+entity "Base16Converter" as E1150 <<struct>> {
+  node/src/rust/configuration/commandline/converters.rs:14
+  --
+}
+entity "NameConverter" as E1151 <<struct>> {
+  node/src/rust/configuration/commandline/converters.rs:41
+  --
+}
+entity "PrivateKeyConverter" as E1152 <<struct>> {
+  node/src/rust/configuration/commandline/converters.rs:61
+  --
+}
+entity "PublicKeyConverter" as E1153 <<struct>> {
+  node/src/rust/configuration/commandline/converters.rs:72
+  --
+}
+E1146 -[hidden]down-> E1147
+E1147 -[hidden]down-> E1148
+E1148 -[hidden]down-> E1149
+E1149 -[hidden]down-> E1150
+E1150 -[hidden]down-> E1151
+E1151 -[hidden]down-> E1152
+E1152 -[hidden]down-> E1153
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

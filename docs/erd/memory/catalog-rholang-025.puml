@@ -1,0 +1,85 @@
+@startuml
+!include ../style.puml
+title catalog rholang 025
+entity "FdPositionMutator" as E1454 <<enum>> {
+  rholang/src/rust/interpreter/io/verify.rs:104
+  --
+  FsSeek : variant
+  FsRead : variant
+  FsWrite : variant
+}
+entity "WalMark" as E1455 <<struct>> {
+  rholang/src/rust/interpreter/io/wal.rs:84
+  --
+  len : usize
+}
+entity "WalEntry" as E1456 <<struct>> {
+  rholang/src/rust/interpreter/io/wal.rs:107
+  --
+  op : WalOp
+  path : PathBuf
+  extra_path : Option &#60; PathBuf &#62;
+  offset : Option &#60; u64 &#62;
+  length : Option &#60; u64 &#62;
+  payload_ref : Option &#60; PayloadRef &#62;
+  mode_bits : Option &#60; u32 &#62;
+  owner : Option &#60; String &#62;
+  group : Option &#60; String &#62;
+  outcome : WalOutcome
+}
+entity "WalOutcome" as E1457 <<enum>> {
+  rholang/src/rust/interpreter/io/wal.rs:191
+  --
+  Success : variant = 0
+  Failure.code : u32
+}
+entity "WalOp" as E1458 <<enum>> {
+  rholang/src/rust/interpreter/io/wal.rs:221
+  --
+  Write : variant = 0
+  WriteAt : variant = 1
+  Truncate : variant = 2
+  Chmod : variant = 3
+  Chown : variant = 4
+  RemoveFile : variant = 5
+  RemoveDir : variant = 6
+  Rename : variant = 7
+  CopyFile : variant = 8
+  Read : variant = 9
+  ReadAt : variant = 10
+  Stat : variant = 11
+  Entries : variant = 12
+  Size : variant = 13
+  EntriesStreamNext : variant = 14
+  Exists : variant = 15
+  Mkdir : variant = 16
+}
+entity "PayloadRef" as E1459 <<enum>> {
+  rholang/src/rust/interpreter/io/wal.rs:344
+  --
+  Hash.0 : [u8 ; 32]
+  DeployRef.block_hash : [u8 ; 32]
+  DeployRef.deploy_index : u32
+  DeployRef.arg_index : u32
+}
+entity "Wal" as E1460 <<struct>> {
+  rholang/src/rust/interpreter/io/wal.rs:487
+  --
+  inner : Arc &#60; RwLock &#60; WalInner &#62; &#62;
+}
+entity "WalInner" as E1461 <<struct>> {
+  rholang/src/rust/interpreter/io/wal.rs:526
+  --
+  entries : Vec &#60; WalEntry &#62;
+  ack_hashes : Vec &#60; [u8 ; 32] &#62;
+}
+E1456 --> E1457 : outcome
+E1456 --> E1458 : op
+E1456 --> E1459 : payload_ref
+E1460 --> E1461 : inner
+E1461 --> E1456 : entries
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

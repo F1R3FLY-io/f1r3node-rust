@@ -1,0 +1,73 @@
+@startuml
+!include ../style.puml
+title catalog comm 006
+entity "F1r3flyConnector" as E578 <<struct>> {
+  comm/src/rust/transport/f1r3fly_connector.rs:24
+  --
+  tls_connector : F1r3flyTlsConnector
+  connect_timeout : Duration
+  peer_f1r3fly_address : String
+}
+entity "F1r3flyConnectorError" as E579 <<enum>> {
+  comm/src/rust/transport/f1r3fly_connector.rs:37
+  --
+  UriParseError.0 : String
+  TlsConnectionError.0 : F1r3flyTlsTransportError
+  TcpConnectionError.0 : std :: io :: Error
+  DnsResolutionError.0 : String
+  ConnectionTimeout.timeout : Duration
+}
+entity "AcceptErrorLog" as E580 <<struct>> {
+  comm/src/rust/transport/f1r3fly_server.rs:57
+  --
+  last_error : Option &#60; tokio :: time :: Instant &#62;
+  summary_start : Option &#60; tokio :: time :: Instant &#62;
+  suppressed : u64
+}
+entity "F1r3flyServer" as E581 <<struct>> {
+  comm/src/rust/transport/f1r3fly_server.rs:88
+  --
+  acceptor : F1r3flyTlsAcceptor
+  bind_addr : SocketAddr
+  tcp_keepalive : Option &#60; Duration &#62;
+  tcp_nodelay : bool
+  http2_keepalive_interval : Option &#60; Duration &#62;
+  http2_keepalive_timeout : Option &#60; Duration &#62;
+  handshake_timeout : Duration
+}
+entity "F1r3flyServerError" as E582 <<enum>> {
+  comm/src/rust/transport/f1r3fly_server.rs:114
+  --
+  TlsTransport.0 : F1r3flyTlsTransportError
+  Io.0 : io :: Error
+  Bind.0 : String
+  Config.0 : String
+}
+entity "F1r3flyIncoming" as E583 <<struct>> {
+  comm/src/rust/transport/f1r3fly_server.rs:359
+  --
+  receiver : ReceiverStream &#60; Result &#60; F1r3flyServerConnection ,\n    F1r3flyServerError &#62; &#62;
+  _listener_task : tokio :: task :: JoinHandle &#60; () &#62;
+}
+entity "F1r3flyServerConnection" as E584 <<struct>> {
+  comm/src/rust/transport/f1r3fly_server.rs:378
+  --
+  inner : F1r3flyServerTlsTransport &#60; tokio :: net :: TcpStream &#62;
+  peer_addr : SocketAddr
+  peer_certificates : Option &#60; Vec &#60; Vec &#60; u8 &#62; &#62; &#62;
+  closer : ConnectionCloser
+}
+entity "F1r3flyConnectInfo" as E585 <<struct>> {
+  comm/src/rust/transport/f1r3fly_server.rs:390
+  --
+  tcp_info : TcpConnectInfo
+  peer_certificates : Option &#60; Vec &#60; Vec &#60; u8 &#62; &#62; &#62;
+  closer : ConnectionCloser
+}
+E583 --> E582 : receiver
+E583 --> E584 : receiver
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

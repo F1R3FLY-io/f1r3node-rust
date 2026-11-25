@@ -1,0 +1,53 @@
+@startuml
+!include ../style.puml
+title catalog node 025
+entity "TransactionResponse" as E1250 <<struct>> {
+  node/src/rust/web/transaction.rs:42
+  --
+  data : Vec &#60; TransactionInfo &#62;
+}
+entity "VersionInfo" as E1251 <<struct>> {
+  node/src/rust/web/version_info.rs:18
+  --
+}
+entity "PublicApi" as E1252 <<struct>> {
+  node/src/rust/web/web_api_docs.rs:9
+  --
+}
+entity "AdminApi" as E1253 <<struct>> {
+  node/src/rust/web/web_api_docs.rs:48
+  --
+}
+entity "ViewQuery" as E1254 <<struct>> {
+  node/src/rust/web/web_api_routes.rs:19
+  --
+  view : Option &#60; String &#62;
+}
+entity "BlocksByHeightsQuery" as E1255 <<struct>> {
+  node/src/rust/web/web_api_routes.rs:28
+  --
+  view : Option &#60; String &#62;
+  include_missing : Option &#60; bool &#62;
+}
+entity "BlockHashQuery" as E1256 <<struct>> {
+  node/src/rust/web/web_api_routes.rs:34
+  --
+  block_hash : Option &#60; String &#62;
+}
+entity "DeployerQuery" as E1257 <<struct>> {
+  node/src/rust/web/web_api_routes.rs:39
+  --
+  deployer : Option &#60; String &#62;
+}
+E1250 -[hidden]down-> E1251
+E1251 -[hidden]down-> E1252
+E1252 -[hidden]down-> E1253
+E1253 -[hidden]down-> E1254
+E1254 -[hidden]down-> E1255
+E1255 -[hidden]down-> E1256
+E1256 -[hidden]down-> E1257
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

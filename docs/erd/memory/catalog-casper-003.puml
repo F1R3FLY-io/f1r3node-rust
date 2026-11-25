@@ -1,0 +1,54 @@
+@startuml
+!include ../style.puml
+title catalog casper 003
+entity "ExploratoryDeployTaskError" as E96 <<enum>> {
+  casper/src/rust/api/block_api.rs:415
+  --
+  Join.0 : tokio :: task :: JoinError
+  Timeout : variant
+}
+entity "LatestBlockMessageError" as E97 <<enum>> {
+  casper/src/rust/api/block_api.rs:437
+  --
+  NodeReadOnlyError : variant
+  NoBlockMessageError : variant
+}
+entity "InvalidPublicKeyError" as E98 <<struct>> {
+  casper/src/rust/api/block_api.rs:461
+  --
+  0 : String
+}
+entity "DeployValidationError" as E99 <<struct>> {
+  casper/src/rust/api/block_api.rs:470
+  --
+  message : String
+}
+entity "DeployExpiredError" as E100 <<struct>> {
+  casper/src/rust/api/block_api.rs:483
+  --
+  message : String
+}
+entity "ValidatorNotBondedError" as E101 <<struct>> {
+  casper/src/rust/api/block_api.rs:498
+  --
+}
+entity "ProposeReadOnlyError" as E102 <<struct>> {
+  casper/src/rust/api/block_api.rs:514
+  --
+}
+entity "NoNewDeploysError" as E103 <<struct>> {
+  casper/src/rust/api/block_api.rs:528
+  --
+}
+E96 -[hidden]down-> E97
+E97 -[hidden]down-> E98
+E98 -[hidden]down-> E99
+E99 -[hidden]down-> E100
+E100 -[hidden]down-> E101
+E101 -[hidden]down-> E102
+E102 -[hidden]down-> E103
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

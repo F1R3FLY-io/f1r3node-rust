@@ -1,0 +1,63 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 008
+entity "DeleteJoins" as E1682 <<struct>> {
+  rspace++/src/rspace/hot_store_action.rs:48
+  --
+  channel : C
+}
+entity "DeleteContinuations" as E1683 <<struct>> {
+  rspace++/src/rspace/hot_store_action.rs:53
+  --
+  channels : Vec &#60; C &#62;
+}
+entity "HotStoreTrieAction" as E1684 <<enum>> {
+  rspace++/src/rspace/hot_store_trie_action.rs:5
+  --
+  TrieInsertAction.0 : TrieInsertAction &#60; C , P , A , K &#62;
+  TrieDeleteAction.0 : TrieDeleteAction
+}
+entity "TrieInsertAction" as E1685 <<enum>> {
+  rspace++/src/rspace/hot_store_trie_action.rs:11
+  --
+  TrieInsertProduce.0 : TrieInsertProduce &#60; A &#62;
+  TrieInsertJoins.0 : TrieInsertJoins &#60; C &#62;
+  TrieInsertConsume.0 : TrieInsertConsume &#60; P , K &#62;
+  TrieInsertBinaryProduce.0 : TrieInsertBinaryProduce
+  TrieInsertBinaryJoins.0 : TrieInsertBinaryJoins
+  TrieInsertBinaryConsume.0 : TrieInsertBinaryConsume
+}
+entity "TrieInsertProduce" as E1686 <<struct>> {
+  rspace++/src/rspace/hot_store_trie_action.rs:21
+  --
+  hash : Blake2b256Hash
+  data : Vec &#60; Datum &#60; A &#62; &#62;
+}
+entity "TrieInsertJoins" as E1687 <<struct>> {
+  rspace++/src/rspace/hot_store_trie_action.rs:33
+  --
+  hash : Blake2b256Hash
+  joins : Vec &#60; Vec &#60; C &#62; &#62;
+}
+entity "TrieInsertConsume" as E1688 <<struct>> {
+  rspace++/src/rspace/hot_store_trie_action.rs:43
+  --
+  hash : Blake2b256Hash
+  continuations : Vec &#60; WaitingContinuation &#60; P , K &#62; &#62;
+}
+entity "TrieInsertBinaryProduce" as E1689 <<struct>> {
+  rspace++/src/rspace/hot_store_trie_action.rs:58
+  --
+  hash : Blake2b256Hash
+  data : Vec &#60; Vec &#60; u8 &#62; &#62;
+}
+E1684 --> E1685 : TrieInsertAction.0
+E1685 --> E1686 : TrieInsertProduce.0
+E1685 --> E1687 : TrieInsertJoins.0
+E1685 --> E1688 : TrieInsertConsume.0
+E1685 --> E1689 : TrieInsertBinaryProduce.0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

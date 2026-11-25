@@ -1,0 +1,99 @@
+@startuml
+!include ../style.puml
+title catalog node 015
+entity "StaticFileEntry" as E1170 <<struct>> {
+  node/src/rust/configuration/file_io_provisioning.rs:106
+  --
+  path : PathBuf
+  mode : String
+}
+entity "StaticDirEntry" as E1171 <<struct>> {
+  node/src/rust/configuration/file_io_provisioning.rs:118
+  --
+  path : PathBuf
+  mode : String
+}
+entity "Wire" as E1172 <<enum>> {
+  node/src/rust/configuration/file_io_provisioning.rs:210
+  deserialize_static_entry
+  --
+  Object.path : PathBuf
+  Object.mode : String
+  Bare.0 : String
+}
+entity "FileIoProvisioning" as E1173 <<struct>> {
+  node/src/rust/configuration/file_io_provisioning.rs:258
+  --
+  oracle_static_files : HashMap &#60; String , StaticFileEntry &#62;
+  oracle_static_dirs : HashMap &#60; String , StaticDirEntry &#62;
+  consensus_static_files : HashMap &#60; String , StaticFileEntry &#62;
+  consensus_static_dirs : HashMap &#60; String , StaticDirEntry &#62;
+}
+entity "NodeConf" as E1174 <<struct>> {
+  node/src/rust/configuration/model.rs:23
+  --
+  standalone : bool
+  autopropose : bool
+  protocol_server : ProtocolServer
+  protocol_client : ProtocolClient
+  peers_discovery : PeersDiscovery
+  api_server : ApiServer
+  storage : Storage
+  tls : TlsConf
+  casper : CasperConf
+  metrics : Metrics
+  logging : LoggingConfig
+  dev_mode : bool
+  dev : DevConf
+  openai : OpenAIConf
+  soak_observer : Option &#60; SoakObserverConfig &#62;
+}
+entity "SoakObserverConfig" as E1175 <<struct>> {
+  node/src/rust/configuration/model.rs:59
+  --
+  directory : PathBuf
+  source_revision : String
+  approved_request_sha256 : String
+  peer_pid : u32
+  peer_start_ticks : u64
+  session_timeout_ms : u64
+  max_sessions : u32
+}
+entity "ProtocolServer" as E1176 <<struct>> {
+  node/src/rust/configuration/model.rs:71
+  --
+  network_id : String
+  host : Option &#60; String &#62;
+  allow_private_addresses : bool
+  use_random_ports : bool
+  dynamic_ip : bool
+  no_upnp : bool
+  port : u16
+  grpc_max_recv_message_size : u32
+  grpc_max_recv_stream_message_size : u32
+  max_message_consumers : u32
+  disable_state_exporter : bool
+}
+entity "ProtocolClient" as E1177 <<struct>> {
+  node/src/rust/configuration/model.rs:109
+  --
+  network_id : String
+  bootstrap : String
+  disable_lfs : bool
+  batch_max_connections : u32
+  network_timeout : Duration
+  grpc_max_recv_message_size : u32
+  grpc_stream_chunk_size : u32
+}
+E1173 --> E1170 : consensus_static_files
+E1173 --> E1170 : oracle_static_files
+E1173 --> E1171 : consensus_static_dirs
+E1173 --> E1171 : oracle_static_dirs
+E1174 --> E1175 : soak_observer
+E1174 --> E1176 : protocol_server
+E1174 --> E1177 : protocol_client
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

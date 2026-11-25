@@ -1,0 +1,80 @@
+@startuml
+!include ../style.puml
+title catalog models 002
+entity "BlockPrunedResponseProto" as E746 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  hash #1 : Bytes
+  block_height #2 : Int64
+  prune_floor #3 : Int64
+}
+entity "BlockRequestProto" as E747 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  hash #1 : Bytes
+}
+entity "BodyProto" as E748 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  state #1 : .casper.RChainStateProto
+  deploys #2 : repeated .casper.ProcessedDeployProto
+  systemDeploys #3 : repeated .casper.ProcessedSystemDeployProto
+  extraBytes #4 : Bytes
+  rejectedDeploys #5 : repeated .casper.RejectedDeployProto
+  appliedFromScope #6 : repeated Bytes
+  mergeBase #7 : Bytes
+}
+entity "BondProto" as E749 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  validator #1 : Bytes
+  stake #3 : Bytes
+}
+entity "CloseBlockSystemDeployDataProto" as E750 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+}
+entity "CommEventProto" as E751 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  consume #1 : .casper.ConsumeEventProto
+  produces #2 : repeated .casper.ProduceEventProto
+  peeks #3 : repeated .casper.PeekProto
+}
+entity "ConsumeEventProto" as E752 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  channelsHashes #1 : repeated Bytes
+  hash #2 : Bytes
+  persistent #3 : Bool
+}
+entity "DeployDataProto" as E753 <<protobuf>> {
+  models/src/main/protobuf/CasperMessage.proto
+  .casper
+  --
+  deployer #1 : Bytes
+  term #2 : String
+  timestamp #3 : Int64
+  sig #4 : Bytes
+  sigAlgorithm #5 : String
+  phloPrice #15 : Bytes
+  phloLimit #8 : Int64
+  validAfterBlockNumber #10 : Int64
+  shardId #11 : String
+  language #12 : String
+  expirationTimestamp #13 : Int64
+  parameters #14 : repeated .casper.DeployParameter
+}
+E751 --> E752 : consume #1
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,59 @@
+@startuml
+!include ../style.puml
+title catalog rholang 011
+entity "FsLockRangeHandler" as E1342 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/lock/fs_lock_range.rs:70
+  --
+}
+entity "FsLockRangeArgs" as E1343 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/lock/fs_lock_range.rs:73
+  --
+  fd : u64
+  offset : u64
+  length : u64
+  mode : LockMode
+  holder : Par
+  wait_policy : WaitPolicy
+}
+entity "FS_LOCK_RANGE_ENTRY" as E1344 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/lock/fs_lock_range.rs:226
+  --
+  value : FsHandlerEntry
+}
+entity "FsLockSequentialHandler" as E1345 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/lock/fs_lock_sequential.rs:63
+  --
+}
+entity "FsLockSequentialArgs" as E1346 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/lock/fs_lock_sequential.rs:66
+  --
+  fd : u64
+  holder : Par
+  wait_policy : WaitPolicy
+}
+entity "FS_LOCK_SEQUENTIAL_ENTRY" as E1347 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/lock/fs_lock_sequential.rs:178
+  --
+  value : FsHandlerEntry
+}
+entity "FsReleaseAllForHolderHandler" as E1348 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/lock/fs_release_all_for_holder.rs:62
+  --
+}
+entity "FsReleaseAllForHolderArgs" as E1349 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/lock/fs_release_all_for_holder.rs:65
+  --
+  holder : Par
+}
+E1342 -[hidden]down-> E1343
+E1343 -[hidden]down-> E1344
+E1344 -[hidden]down-> E1345
+E1345 -[hidden]down-> E1346
+E1346 -[hidden]down-> E1347
+E1347 -[hidden]down-> E1348
+E1348 -[hidden]down-> E1349
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

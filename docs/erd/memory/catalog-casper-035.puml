@@ -1,0 +1,55 @@
+@startuml
+!include ../style.puml
+title catalog casper 035
+entity "AUTH_KEY_PUB_KEY" as E352 <<lazy static>> {
+  casper/src/rust/genesis/contracts/standard_deploys.rs:88
+  --
+  value : PublicKey
+}
+entity "SYSTEM_VAULT_PUB_KEY" as E353 <<lazy static>> {
+  casper/src/rust/genesis/contracts/standard_deploys.rs:89
+  --
+  value : PublicKey
+}
+entity "MULTI_SIG_SYSTEM_VAULT_PUB_KEY" as E354 <<lazy static>> {
+  casper/src/rust/genesis/contracts/standard_deploys.rs:90
+  --
+  value : PublicKey
+}
+entity "POS_GENERATOR_PUB_KEY" as E355 <<lazy static>> {
+  casper/src/rust/genesis/contracts/standard_deploys.rs:91
+  --
+  value : PublicKey
+}
+entity "VAULTS_GENERATOR_PUB_KEY" as E356 <<lazy static>> {
+  casper/src/rust/genesis/contracts/standard_deploys.rs:92
+  --
+  value : PublicKey
+}
+entity "STACK_PUB_KEY" as E357 <<lazy static>> {
+  casper/src/rust/genesis/contracts/standard_deploys.rs:93
+  --
+  value : PublicKey
+}
+entity "TOKEN_METADATA_PUB_KEY" as E358 <<lazy static>> {
+  casper/src/rust/genesis/contracts/standard_deploys.rs:94
+  --
+  value : PublicKey
+}
+entity "FS_GENERATOR_PUB_KEY" as E359 <<lazy static>> {
+  casper/src/rust/genesis/contracts/standard_deploys.rs:95
+  --
+  value : PublicKey
+}
+E352 -[hidden]down-> E353
+E353 -[hidden]down-> E354
+E354 -[hidden]down-> E355
+E355 -[hidden]down-> E356
+E356 -[hidden]down-> E357
+E357 -[hidden]down-> E358
+E358 -[hidden]down-> E359
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

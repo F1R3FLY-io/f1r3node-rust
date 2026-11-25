@@ -1,0 +1,64 @@
+@startuml
+!include ../style.puml
+title catalog models 025
+entity "Ack" as E930 <<protobuf>> {
+  models/src/main/protobuf/routing.proto
+  .routing
+  --
+  header #1 : .routing.Header
+}
+entity "Chunk" as E931 <<protobuf>> {
+  models/src/main/protobuf/routing.proto
+  .routing
+  --
+  header #1 oneof content : .routing.ChunkHeader
+  data #2 oneof content : .routing.ChunkData
+}
+entity "ChunkData" as E932 <<protobuf>> {
+  models/src/main/protobuf/routing.proto
+  .routing
+  --
+  contentData #1 : Bytes
+}
+entity "ChunkHeader" as E933 <<protobuf>> {
+  models/src/main/protobuf/routing.proto
+  .routing
+  --
+  sender #1 : .routing.Node
+  typeId #2 : String
+  compressed #3 : Bool
+  contentLength #4 : Int32
+  networkId #5 : String
+  chainId #6 : Bytes
+}
+entity "Disconnect" as E934 <<protobuf>> {
+  models/src/main/protobuf/routing.proto
+  .routing
+  --
+}
+entity "Header" as E935 <<protobuf>> {
+  models/src/main/protobuf/routing.proto
+  .routing
+  --
+  sender #1 : .routing.Node
+  networkId #2 : String
+  chainId #3 : Bytes
+}
+entity "Heartbeat" as E936 <<protobuf>> {
+  models/src/main/protobuf/routing.proto
+  .routing
+  --
+}
+entity "HeartbeatResponse" as E937 <<protobuf>> {
+  models/src/main/protobuf/routing.proto
+  .routing
+  --
+}
+E930 --> E935 : header #1
+E931 --> E932 : data #2 oneof content
+E931 --> E933 : header #1 oneof content
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

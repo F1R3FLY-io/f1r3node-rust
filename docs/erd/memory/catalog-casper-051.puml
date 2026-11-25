@@ -1,0 +1,62 @@
+@startuml
+!include ../style.puml
+title catalog casper 051
+entity "DeployRuntime" as E480 <<struct>> {
+  casper/src/rust/util/comm/deploy_runtime.rs:20
+  --
+}
+entity "Dispatch" as E481 <<enum>> {
+  casper/src/rust/util/comm/fair_round_robin_dispatcher.rs:14
+  --
+  Handle : variant
+  Pass : variant
+  Drop : variant
+}
+entity "DispatcherState" as E482 <<struct>> {
+  casper/src/rust/util/comm/fair_round_robin_dispatcher.rs:25
+  --
+  queue : VecDeque &#60; S &#62;
+  messages : HashMap &#60; S , VecDeque &#60; M &#62; &#62;
+  retries : HashMap &#60; S , usize &#62;
+  skipped : usize
+}
+entity "DispatcherConfig" as E483 <<struct>> {
+  casper/src/rust/util/comm/fair_round_robin_dispatcher.rs:48
+  --
+  max_source_queue_size : usize
+  give_up_after_skipped : usize
+  drop_source_after_retries : usize
+}
+entity "FairRoundRobinDispatcher" as E484 <<struct>> {
+  casper/src/rust/util/comm/fair_round_robin_dispatcher.rs:72
+  --
+  state : Arc &#60; Mutex &#60; DispatcherState &#60; S , M &#62; &#62; &#62;
+  config : DispatcherConfig
+  filter : Arc &#60; dyn Fn (&#38; M) -&#62; Pin &#60; Box &#60; dyn Future &#60; Output =\n    Dispatch &#62; + Send &#62; &#62; + Send + Sync &#62;
+  handle : Arc &#60; dyn Fn (S , M) -&#62; Pin &#60; Box &#60; dyn Future &#60; Output = () &#62;\n    + Send &#62; &#62; + Send + Sync &#62;
+  lock : Arc &#60; MetricsSemaphore &#62;
+}
+entity "GrpcDeployService" as E485 <<struct>> {
+  casper/src/rust/util/comm/grpc_deploy_service.rs:42
+  --
+  client : DeployServiceClient &#60; Channel &#62;
+}
+entity "GrpcProposeService" as E486 <<struct>> {
+  casper/src/rust/util/comm/grpc_propose_service.rs:14
+  --
+  client : ProposeServiceClient &#60; Channel &#62;
+}
+entity "Name" as E487 <<enum>> {
+  casper/src/rust/util/comm/listen_at_name.rs:14
+  --
+  PubName.0 : String
+  PrivName.0 : String
+}
+E484 --> E481 : filter
+E484 --> E482 : state
+E484 --> E483 : config
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

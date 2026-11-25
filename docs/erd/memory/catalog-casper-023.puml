@@ -1,0 +1,67 @@
+@startuml
+!include ../style.puml
+title catalog casper 023
+entity "ReceiveInfo" as E256 <<struct>> {
+  casper/src/rust/engine/lfs_block_requester.rs:56
+  --
+  requested : bool
+  latest : bool
+  lastlatest : bool
+}
+entity "PrunedReport" as E257 <<enum>> {
+  casper/src/rust/engine/lfs_block_requester.rs:74
+  --
+  Reported : variant
+  AskedAgain : variant
+}
+entity "ST" as E258 <<struct>> {
+  casper/src/rust/engine/lfs_block_requester.rs:80
+  --
+  d : HashMap &#60; Key , ReqStatus &#62;
+  latest : HashSet &#60; Key &#62;
+  lower_bound : i64
+  height_map : BTreeMap &#60; i64 , HashSet &#60; Key &#62; &#62;
+  finished : HashSet &#60; Key &#62;
+  pruned_reports : HashMap &#60; Key , PrunedReport &#62;
+  skipped : HashMap &#60; Key , i64 &#62;
+}
+entity "StreamProcessor" as E259 <<struct>> {
+  casper/src/rust/engine/lfs_block_requester.rs:358
+  --
+  requester : &#38; 'a mut T
+  st : Arc &#60; Mutex &#60; ST &#60; BlockHash &#62; &#62; &#62;
+  latest_messages : HashMap &#60; BlockHash , Validator &#62;
+  response_hash_sender : mpsc :: Sender &#60; BlockHash &#62;
+}
+entity "HasRootFn" as E260 <<alias>> {
+  casper/src/rust/engine/lfs_horizon_requester.rs:66
+  --
+  value : Arc &#60; dyn Fn (&#38; Blake2b256Hash) -&#62; Result &#60; bool , CasperError &#62;\n    + Send + Sync &#62;
+}
+entity "HorizonProgress" as E261 <<struct>> {
+  casper/src/rust/engine/lfs_horizon_requester.rs:71
+  --
+  requested : usize
+  done : usize
+  finished : bool
+}
+entity "Wanted" as E262 <<enum>> {
+  casper/src/rust/engine/lfs_horizon_requester.rs:88
+  --
+  Node.0 : Blake2b256Hash
+  Data.kind : Option &#60; u8 &#62;
+  Data.data : HashSet &#60; Blake2b256Hash &#62;
+}
+entity "PathTimer" as E263 <<struct>> {
+  casper/src/rust/engine/lfs_horizon_requester.rs:97
+  --
+  sent_at : Instant
+  timeout : Duration
+}
+E258 --> E257 : pruned_reports
+E259 --> E258 : st
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,55 @@
+@startuml
+!include ../style.puml
+title catalog casper 050
+entity "BondsParserError" as E472 <<enum>> {
+  casper/src/rust/util/bonds_parser.rs:13
+  --
+  InvalidLineFormat.line : String
+  InvalidPublicKey.key : String
+  InvalidStake.stake : String
+  DuplicateKey.key : String
+  ParsingFailed.path : String
+  ParsingFailed.source : Box &#60; dyn std :: error :: Error + Send + Sync &#62;
+  IoError.0 : std :: io :: Error
+}
+entity "BondsParser" as E473 <<struct>> {
+  casper/src/rust/util/bonds_parser.rs:33
+  --
+}
+entity "BoundedCache" as E474 <<struct>> {
+  casper/src/rust/util/bounded_cache.rs:7
+  --
+  entries : Mutex &#60; LruCache &#60; K , Arc &#60; V &#62; &#62; &#62;
+}
+entity "Clique" as E475 <<struct>> {
+  casper/src/rust/util/clique.rs:8
+  --
+}
+entity "CasperPacketHandler" as E476 <<struct>> {
+  casper/src/rust/util/comm/casper_packet_handler.rs:32
+  --
+  engine_cell : EngineCell
+}
+entity "BlockCreator" as E477 <<struct>> {
+  casper/src/rust/util/comm/casper_packet_handler.rs:69
+  --
+  value : Bytes
+}
+entity "DispatcherMessage" as E478 <<struct>> {
+  casper/src/rust/util/comm/casper_packet_handler.rs:113
+  --
+  peer : PeerNode
+  message : CasperMessage
+}
+entity "FairDispatcherPacketHandler" as E479 <<struct>> {
+  casper/src/rust/util/comm/casper_packet_handler.rs:210
+  --
+  dispatcher : Arc &#60; FairRoundRobinDispatcher &#60; BlockCreator ,\n    DispatcherMessage &#62; &#62;
+}
+E479 --> E477 : dispatcher
+E479 --> E478 : dispatcher
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

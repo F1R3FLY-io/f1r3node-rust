@@ -1,0 +1,70 @@
+@startuml
+!include ../style.puml
+title catalog casper 057
+entity "SystemDeployPlatformFailure" as E528 <<enum>> {
+  casper/src/rust/util/rholang/system_deploy_user_error.rs:18
+  --
+  UnexpectedResult.0 : Vec &#60; Par &#62;
+  UnexpectedSystemErrors.0 : Vec &#60; InterpreterError &#62;
+  GasPaymentFailure.0 : String
+  GasRefundFailure.0 : String
+  ConsumeFailed : variant
+}
+entity "Tools" as E529 <<struct>> {
+  casper/src/rust/util/rholang/tools.rs:8
+  --
+}
+entity "HistoryGcResult" as E530 <<struct>> {
+  casper/src/rust/util/rspace_history_gc.rs:66
+  --
+  marked : usize
+  swept : usize
+  pins_initial : usize
+  pins_evicted : usize
+  pins_mid_pass_added : usize
+  marked_from_pins : usize
+  batches : usize
+}
+entity "VaultParserError" as E531 <<enum>> {
+  casper/src/rust/util/vault_parser.rs:11
+  --
+  InvalidLineFormat.line : String
+  ParseError.line : String
+  ParseError.source : Box &#60; dyn std :: error :: Error + Send + Sync &#62;
+  InvalidBalance.balance : String
+  DuplicateAddress.address : String
+  ParsingFailed.path : String
+  ParsingFailed.source : Box &#60; dyn std :: error :: Error + Send + Sync &#62;
+  IoError.0 : std :: io :: Error
+}
+entity "VaultParser" as E532 <<struct>> {
+  casper/src/rust/util/vault_parser.rs:35
+  --
+}
+entity "PublicKey" as E533 <<alias>> {
+  casper/src/rust/validate.rs:83
+  --
+  value : Vec &#60; u8 &#62;
+}
+entity "Data" as E534 <<alias>> {
+  casper/src/rust/validate.rs:84
+  --
+  value : Vec &#60; u8 &#62;
+}
+entity "Signature" as E535 <<alias>> {
+  casper/src/rust/validate.rs:85
+  --
+  value : Vec &#60; u8 &#62;
+}
+E528 -[hidden]down-> E529
+E529 -[hidden]down-> E530
+E530 -[hidden]down-> E531
+E531 -[hidden]down-> E532
+E532 -[hidden]down-> E533
+E533 -[hidden]down-> E534
+E534 -[hidden]down-> E535
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

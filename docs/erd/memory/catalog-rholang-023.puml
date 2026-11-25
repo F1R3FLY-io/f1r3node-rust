@@ -1,0 +1,61 @@
+@startuml
+!include ../style.puml
+title catalog rholang 023
+entity "Root" as E1438 <<struct>> {
+  rholang/src/rust/interpreter/io/path/identity.rs:48
+  --
+  canonical : PathBuf
+  identity : (u64 , u64)
+}
+entity "RootIdentityRegistry" as E1439 <<struct>> {
+  rholang/src/rust/interpreter/io/path/identity.rs:133
+  --
+  slot : Arc &#60; RwLock &#60; Arc &#60; RwLock &#60; Inner &#62; &#62; &#62; &#62;
+  test_permissive : Arc &#60; std :: sync :: atomic :: AtomicBool &#62;
+}
+entity "Inner" as E1440 <<struct>> {
+  rholang/src/rust/interpreter/io/path/identity.rs:198
+  --
+  entries : HashMap &#60; PathBuf , Root &#62;
+}
+entity "QuarantineError" as E1441 <<enum>> {
+  rholang/src/rust/interpreter/io/path/mod.rs:54
+  --
+  Empty : variant
+  RootSelf : variant
+  EscapesRoot : variant
+  SymlinkComponent : variant
+  RootIdentityChanged : variant
+  IoError.0 : io :: ErrorKind
+  IoError.1 : String
+}
+entity "SafeParent" as E1442 <<struct>> {
+  rholang/src/rust/interpreter/io/path/mod.rs:82
+  --
+  dirfd : OwnedFd
+  leaf : CString
+}
+entity "Fd" as E1443 <<struct>> {
+  rholang/src/rust/interpreter/io/response.rs:12
+  --
+  0 : u64
+}
+entity "FdOutOfRange" as E1444 <<struct>> {
+  rholang/src/rust/interpreter/io/response.rs:48
+  --
+  attempted : u64
+}
+entity "SnapshotBlob" as E1445 <<struct>> {
+  rholang/src/rust/interpreter/io/snapshot.rs:209
+  --
+  bytes : Vec &#60; u8 &#62;
+  root : [u8 ; 32]
+  merkle_root : [u8 ; 32]
+}
+E1439 --> E1440 : slot
+E1440 --> E1438 : entries
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,70 @@
+@startuml
+!include ../style.puml
+title catalog rholang 009
+entity "FS_HANDLERS" as E1326 <<static>> {
+  rholang/src/rust/interpreter/io/handler_trait/fs_handlers.rs:161
+  --
+  value : [FsHandlerEntry]
+}
+entity "FsProcesses" as E1327 <<struct>> {
+  rholang/src/rust/interpreter/io/handler_trait/fs_processes.rs:55
+  --
+  dispatcher : RhoDispatch
+  handles : FileHandleTable
+  mode : ConsensusMode
+  metering : Arc &#60; dyn Metering &#62;
+}
+entity "JournalPath" as E1328 <<enum>> {
+  rholang/src/rust/interpreter/io/handler_trait/journal_path.rs:23
+  --
+  Leader.fresh_reply : &#38; 'a Par
+  VerifySuccess.fresh_reply : &#38; 'a Par
+  VerifyDivergence.fresh_reply : &#38; 'a Par
+  VerifyDivergence.divergence_reply : &#38; 'a Par
+  OracularEcho.previous_reply : &#38; 'a Par
+}
+entity "HandlerReply" as E1329 <<enum>> {
+  rholang/src/rust/interpreter/io/handler_trait/reply.rs:19
+  --
+  Ok.0 : Par
+  Err.0 : Par
+}
+entity "SyscallCtx" as E1330 <<struct>> {
+  rholang/src/rust/interpreter/io/handler_trait/syscall_ctx.rs:49
+  --
+  dispatcher : &#38; 'a RhoDispatch
+  handles : &#38; 'a FileHandleTable
+  mode : ConsensusMode
+  metering : &#38; 'a Arc &#60; dyn Metering &#62;
+  ack : &#38; 'a Par
+}
+entity "FcntlLockGuard" as E1331 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/helpers/fcntl_lock.rs:65
+  --
+  fd : RawFd
+  l_start : libc :: off_t
+  l_len : libc :: off_t
+  locked : bool
+}
+entity "RemoveKind" as E1332 <<enum>> {
+  rholang/src/rust/interpreter/io/handlers/helpers/unlink.rs:43
+  --
+  File : variant
+  Dir : variant
+}
+entity "FsCloseHandler" as E1333 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/lifecycle/fs_close.rs:52
+  --
+}
+E1326 -[hidden]down-> E1327
+E1327 -[hidden]down-> E1328
+E1328 -[hidden]down-> E1329
+E1329 -[hidden]down-> E1330
+E1330 -[hidden]down-> E1331
+E1331 -[hidden]down-> E1332
+E1332 -[hidden]down-> E1333
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

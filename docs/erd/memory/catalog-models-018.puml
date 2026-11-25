@@ -1,0 +1,77 @@
+@startuml
+!include ../style.puml
+title catalog models 018
+entity "EApp" as E874 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  fun #1 : .rhoapi.Par
+  args #2 : repeated .rhoapi.Par
+  locallyFree #3 : Bytes
+  connective_used #4 : Bool
+}
+entity "EDiv" as E875 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p1 #1 : .rhoapi.Par
+  p2 #2 : .rhoapi.Par
+}
+entity "EEq" as E876 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p1 #1 : .rhoapi.Par
+  p2 #2 : .rhoapi.Par
+}
+entity "EGt" as E877 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p1 #1 : .rhoapi.Par
+  p2 #2 : .rhoapi.Par
+}
+entity "EGte" as E878 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p1 #1 : .rhoapi.Par
+  p2 #2 : .rhoapi.Par
+}
+entity "ELambda" as E879 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  bindCount #1 : Sint32
+  body #2 : .rhoapi.Par
+  locallyFree #3 : Bytes
+  connective_used #4 : Bool
+}
+entity "EList" as E880 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  ps #1 : repeated .rhoapi.Par
+  locallyFree #3 : Bytes
+  connective_used #4 : Bool
+  remainder #5 : .rhoapi.Var
+}
+entity "ELt" as E881 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p1 #1 : .rhoapi.Par
+  p2 #2 : .rhoapi.Par
+}
+E874 -[hidden]down-> E875
+E875 -[hidden]down-> E876
+E876 -[hidden]down-> E877
+E877 -[hidden]down-> E878
+E878 -[hidden]down-> E879
+E879 -[hidden]down-> E880
+E880 -[hidden]down-> E881
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

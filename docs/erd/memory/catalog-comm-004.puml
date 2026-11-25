@@ -1,0 +1,61 @@
+@startuml
+!include ../style.puml
+title catalog comm 004
+entity "HeartbeatFailure" as E562 <<enum>> {
+  comm/src/rust/rp/connect.rs:23
+  --
+  Retained.streak : usize
+  Retained.threshold : usize
+  Evicted : variant
+}
+entity "PeerLivenessTracker" as E563 <<struct>> {
+  comm/src/rust/rp/connect.rs:32
+  --
+  streaks : HashMap &#60; Bytes , usize &#62;
+  threshold : usize
+}
+entity "ConnectFailureTracker" as E564 <<struct>> {
+  comm/src/rust/rp/connect.rs:92
+  --
+  streaks : HashMap &#60; Bytes , (Endpoint , u32) &#62;
+  threshold : u32
+}
+entity "Connections" as E565 <<struct>> {
+  comm/src/rust/rp/connect.rs:131
+  --
+  0 : Vec &#60; Connection &#62;
+}
+entity "ConnectionsCell" as E566 <<struct>> {
+  comm/src/rust/rp/connect.rs:230
+  --
+  peers : Arc &#60; Mutex &#60; Connections &#62; &#62;
+}
+entity "RPConf" as E567 <<struct>> {
+  comm/src/rust/rp/rp_conf.rs:10
+  --
+  local : PeerNode
+  network_id : String
+  chain_id : ChainIdCell
+  bootstrap : Option &#60; PeerNode &#62;
+  default_timeout : Duration
+  max_num_of_connections : usize
+  clear_connections : ClearConnectionsConf
+}
+entity "ClearConnectionsConf" as E568 <<struct>> {
+  comm/src/rust/rp/rp_conf.rs:52
+  --
+  num_of_connections_pinged : usize
+}
+entity "RPConfCell" as E569 <<struct>> {
+  comm/src/rust/rp/rp_conf.rs:65
+  --
+  conf : Arc &#60; Mutex &#60; RPConf &#62; &#62;
+}
+E566 --> E565 : peers
+E567 --> E568 : clear_connections
+E569 --> E567 : conf
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

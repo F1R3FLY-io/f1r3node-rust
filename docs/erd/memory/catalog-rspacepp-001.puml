@@ -1,0 +1,78 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 001
+entity "SoftCheckpoint" as E1626 <<struct>> {
+  rspace++/src/rspace/checkpoint.rs:10
+  --
+  cache_snapshot : HotStoreState &#60; C , P , A , K &#62;
+  log : Log
+  produce_counter : BTreeMap &#60; Produce , i32 &#62;
+}
+entity "Checkpoint" as E1627 <<struct>> {
+  rspace++/src/rspace/checkpoint.rs:17
+  --
+  root : Blake2b256Hash
+  log : Log
+}
+entity "RSpaceError" as E1628 <<enum>> {
+  rspace++/src/rspace/errors.rs:5
+  --
+  InterpreterError.0 : String
+  OutOfPhlogistons : variant
+  NestingLimitExceeded.limit : usize
+  HistoryError.0 : HistoryError
+  RadixTreeError.0 : RadixTreeError
+  KvStoreError.0 : KvStoreError
+  BugFoundError.0 : String
+  ReportingError.0 : String
+  UnusedCommEvent.leftover_count : usize
+  UnusedCommEvent.leftover : Vec &#60; String &#62;
+}
+entity "HistoryError" as E1629 <<enum>> {
+  rspace++/src/rspace/errors.rs:67
+  --
+  ActionError.0 : String
+  RadixTreeError.0 : RadixTreeError
+  KvStoreError.0 : KvStoreError
+  RootError.0 : RootError
+  MergeError.0 : String
+}
+entity "HistoryRepositoryError" as E1630 <<enum>> {
+  rspace++/src/rspace/errors.rs:102
+  --
+  RootError.0 : RootError
+  HistoryError.0 : HistoryError
+}
+entity "RadixTreeError" as E1631 <<enum>> {
+  rspace++/src/rspace/errors.rs:127
+  --
+  KeyNotFound.0 : String
+  KvStoreError.0 : KvStoreError
+  PrefixError.0 : String
+  CollisionError.0 : String
+  SerializationError.0 : String
+  MissingNode.ptr : crate :: rspace :: hashing :: blake2b256_hash ::\n    Blake2b256Hash
+}
+entity "RootError" as E1632 <<enum>> {
+  rspace++/src/rspace/errors.rs:168
+  --
+  KvStoreError.0 : String
+  UnknownRootError.0 : String
+  RootNotFound.0 : crate :: rspace :: hashing :: blake2b256_hash ::\n    Blake2b256Hash
+}
+entity "GcRootRegistry" as E1633 <<struct>> {
+  rspace++/src/rspace/gc_roots.rs:29
+  --
+  counts : Mutex &#60; HashMap &#60; Vec &#60; u8 &#62; , NonZeroU32 &#62; &#62;
+}
+E1628 --> E1629 : HistoryError.0
+E1628 --> E1631 : RadixTreeError.0
+E1629 --> E1631 : RadixTreeError.0
+E1629 --> E1632 : RootError.0
+E1630 --> E1629 : HistoryError.0
+E1630 --> E1632 : RootError.0
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

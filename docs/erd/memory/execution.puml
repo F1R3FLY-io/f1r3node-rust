@@ -1,0 +1,76 @@
+@startuml
+!include ../style.puml
+title Runtime, tuple space, and replay relationships
+entity RuntimeManager {
+  space : RSpace
+  replay_space : ReplayRSpace
+  history_repo : RhoHistoryRepository
+  mergeable_store : typed store handle
+  block / bonds / parent-state caches : bounded
+  replay_cache : Option<InMemoryReplayCache>
+  replay_lock : Arc<ReplayLock>
+  root_registry / shared_lock_registry
+}
+entity RSpace {
+  hot store : working rows
+  history repository : checkpoint state
+  trace log : execution events
+  channel locks : matching coordination
+}
+entity ReplayRSpace {
+  hot store : replay working rows
+  replay data : IOEvent -> multiset<COMM>
+  history repository : replay checkpoint state
+}
+entity HotStoreState {
+  data : channel -> datums
+  continuations : channel list -> continuations
+  joins : channel -> channel lists
+  installed_continuations / installed_joins
+}
+entity Datum {
+  a : ListParWithRandom
+  persist : bool
+  source : Produce
+}
+entity WaitingContinuation {
+  patterns : Vec<BindPattern>
+  continuation : TaggedContinuation
+  persist : bool
+  peeks : set<i32>
+  source : Consume
+}
+entity COMM {
+  consume : Consume
+  produces : Vec<Produce>
+  peeks : set<i32>
+  times_repeated : map<Produce, i32>
+  triggered_by_produce : bool
+}
+entity HistoryRepositoryImpl {
+  current_history : History
+  roots_repository : RootRepository
+  checkpoint_writer : CheckpointWriter
+  leaf_store / history_kv_store : handles
+  prune_guard : shared coordination
+}
+entity Checkpoint {
+  root : Blake2b256Hash
+  log : execution event log
+}
+RuntimeManager "1" --> "1" RSpace : execution
+RuntimeManager "1" --> "1" ReplayRSpace : validation
+RSpace --> HotStoreState
+ReplayRSpace --> HotStoreState
+HotStoreState "1" --> "0..*" Datum
+HotStoreState "1" --> "0..*" WaitingContinuation
+ReplayRSpace "1" --> "0..*" COMM : expected matches
+RSpace --> HistoryRepositoryImpl
+ReplayRSpace --> HistoryRepositoryImpl
+HistoryRepositoryImpl --> Checkpoint : produces
+legend bottom
+RSpace generic types are specialized here for the Rholang interpreter.
+Hot rows are runtime values. History and cold leaves are separate disk records.
+Full fields: inventory.md. Sources: runtime_manager.rs, hot_store.rs, internal.rs, history_repository_impl.rs.
+endlegend
+@enduml

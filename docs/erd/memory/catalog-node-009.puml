@@ -1,0 +1,86 @@
+@startuml
+!include ../style.puml
+title catalog node 009
+entity "ExploratoryDeployResponse" as E1122 <<struct>> {
+  node/src/rust/api/web_api.rs:1426
+  --
+  expr : Vec &#60; RhoExpr &#62;
+  block : LightBlockInfoSerde
+}
+entity "RhoDataResponse" as E1123 <<struct>> {
+  node/src/rust/api/web_api.rs:1432
+  --
+  expr : Vec &#60; RhoExpr &#62;
+  block : LightBlockInfoSerde
+  cost : u64
+}
+entity "PrepareRequest" as E1124 <<struct>> {
+  node/src/rust/api/web_api.rs:1439
+  --
+  deployer : String
+  timestamp : i64
+  valid_after_block_number : i64
+  name_qty : i32
+}
+entity "PrepareResponse" as E1125 <<struct>> {
+  node/src/rust/api/web_api.rs:1449
+  --
+  names : Vec &#60; String &#62;
+  seq_number : i32
+}
+entity "ReadyResponse" as E1126 <<struct>> {
+  node/src/rust/api/web_api.rs:1456
+  --
+  ready : bool
+}
+entity "PeerInfoData" as E1127 <<struct>> {
+  node/src/rust/api/web_api.rs:1461
+  --
+  address : String
+  node_id : String
+  host : String
+  protocol_port : i32
+  discovery_port : i32
+  is_connected : bool
+}
+entity "ApiStatus" as E1128 <<struct>> {
+  node/src/rust/api/web_api.rs:1475
+  --
+  version : VersionInfo
+  address : String
+  network_id : String
+  shard_id : String
+  peers : i32
+  nodes : i32
+  min_phlo_price : String
+  peer_list : Vec &#60; PeerInfoData &#62;
+  native_token_name : String
+  native_token_symbol : String
+  native_token_decimals : u32
+  last_finalized_block_number : i64
+  is_validator : bool
+  is_read_only : bool
+  is_ready : bool
+  current_epoch : i64
+  epoch_length : i32
+  latest_block_number : Option &#60; i64 &#62;
+  deploy_lifespan : Option &#60; i64 &#62;
+  max_user_deploys_per_block : Option &#60; u32 &#62;
+  max_parent_depth : Option &#60; i32 &#62;
+  max_phlo_limit : Option &#60; i64 &#62;
+}
+entity "DeployPacing" as E1129 <<struct>> {
+  node/src/rust/api/web_api.rs:1536
+  --
+  latest_block_number : i64
+  deploy_lifespan : i64
+  max_user_deploys_per_block : u32
+  max_parent_depth : i32
+  max_phlo_limit : i64
+}
+E1128 --> E1127 : peer_list
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

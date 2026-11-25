@@ -1,0 +1,70 @@
+@startuml
+!include ../style.puml
+title catalog models 024
+entity "ReceiveBind" as E922 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  patterns #1 : repeated .rhoapi.Par
+  source #2 : .rhoapi.Par
+  remainder #3 : .rhoapi.Var
+  freeCount #4 : Int32
+}
+entity "Send" as E923 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  chan #1 : .rhoapi.Par
+  data #2 : repeated .rhoapi.Par
+  persistent #3 : Bool
+  locallyFree #5 : Bytes
+  connective_used #6 : Bool
+}
+entity "TaggedContinuation" as E924 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  par_body #1 oneof tagged_cont : .rhoapi.ParWithRandom
+  scala_body_ref #2 oneof tagged_cont : Int64
+  guard #3 : .rhoapi.Par
+}
+entity "Var" as E925 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  bound_var #1 oneof var_instance : Sint32
+  free_var #2 oneof var_instance : Sint32
+  wildcard #3 oneof var_instance : .rhoapi.Var.WildcardMsg
+}
+entity "VarRef" as E926 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  index #1 : Sint32
+  depth #2 : Sint32
+}
+entity "InjectionsEntry" as E927 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi.New
+  --
+  key #1 : String
+  value #2 : .rhoapi.Par
+}
+entity "WildcardMsg" as E928 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi.Var
+  --
+}
+entity "ServiceError" as E929 <<protobuf>> {
+  models/src/main/protobuf/ServiceError.proto
+  .servicemodelapi
+  --
+  messages #1 : repeated String
+}
+E922 --> E925 : remainder #3
+E925 --> E928 : wildcard #3 oneof var_instance
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

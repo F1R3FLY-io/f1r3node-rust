@@ -1,0 +1,93 @@
+@startuml
+!include ../style.puml
+title catalog models 031
+entity "ApprovedBlockRequest" as E978 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:771
+  --
+  identifier : String
+  trim_state : bool
+}
+entity "BlockHashMessage" as E979 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:793
+  --
+  block_hash : ByteString
+  block_creator : ByteString
+}
+entity "BlockMessage" as E980 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:815
+  --
+  block_hash : ByteString
+  header : Header
+  body : Body
+  justifications : Vec &#60; Justification &#62;
+  sender : ByteString
+  seq_num : i32
+  sig : ByteString
+  sig_algorithm : String
+  shard_id : String
+  extra_bytes : ByteString
+}
+entity "Header" as E981 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:878
+  --
+  parents_hash_list : Vec &#60; ByteString &#62;
+  timestamp : i64
+  version : i64
+  extra_bytes : ByteString
+  chain_id : ByteString
+}
+entity "BlockCommitment" as E982 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:911
+  --
+  header : Header
+  pre_state_hash : ByteString
+  post_state_hash : ByteString
+  bonds_root : [u8 ; 32]
+  justifications_root : [u8 ; 32]
+  block_number : i64
+  rejected_root : [u8 ; 32]
+  applied_from_scope_root : [u8 ; 32]
+  merge_base : ByteString
+  body_extra_bytes : ByteString
+  sender : ByteString
+  sig_algorithm : String
+  seq_num : i32
+  shard_id : String
+  extra_bytes : ByteString
+  deploys_root : [u8 ; 32]
+  sig : ByteString
+}
+entity "RejectedDeploy" as E983 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:998
+  --
+  sig : ByteString
+  duplicate : bool
+  carrier : ByteString
+}
+entity "Body" as E984 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:1029
+  --
+  state : F1r3flyState
+  deploys : Vec &#60; ProcessedDeploy &#62;
+  rejected_deploys : Vec &#60; RejectedDeploy &#62;
+  system_deploys : Vec &#60; ProcessedSystemDeploy &#62;
+  extra_bytes : ByteString
+  applied_from_scope : Vec &#60; ByteString &#62;
+  merge_base : ByteString
+}
+entity "Justification" as E985 <<struct>> {
+  models/src/rust/casper/protocol/casper_message.rs:1097
+  --
+  validator : ByteString
+  latest_block_hash : ByteString
+}
+E980 --> E981 : header
+E980 --> E984 : body
+E980 --> E985 : justifications
+E982 --> E981 : header
+E984 --> E983 : rejected_deploys
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,53 @@
+@startuml
+!include ../style.puml
+title catalog rholang 019
+entity "FsTellArgs" as E1406 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_tell.rs:75
+  --
+  fd : u64
+}
+entity "FS_TELL_ENTRY" as E1407 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/observation/fs_tell.rs:141
+  --
+  value : FsHandlerEntry
+}
+entity "FsEntriesStreamCloseHandler" as E1408 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/stream/fs_entries_stream_close.rs:53
+  --
+}
+entity "FsEntriesStreamCloseArgs" as E1409 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/stream/fs_entries_stream_close.rs:56
+  --
+  fd : u64
+}
+entity "FS_ENTRIES_STREAM_CLOSE_ENTRY" as E1410 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/stream/fs_entries_stream_close.rs:112
+  --
+  value : FsHandlerEntry
+}
+entity "FsEntriesStreamNextHandler" as E1411 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/stream/fs_entries_stream_next.rs:90
+  --
+}
+entity "FsEntriesStreamNextArgs" as E1412 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/stream/fs_entries_stream_next.rs:93
+  --
+  fd : u64
+}
+entity "FS_ENTRIES_STREAM_NEXT_ENTRY" as E1413 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/stream/fs_entries_stream_next.rs:221
+  --
+  value : FsHandlerEntry
+}
+E1406 -[hidden]down-> E1407
+E1407 -[hidden]down-> E1408
+E1408 -[hidden]down-> E1409
+E1409 -[hidden]down-> E1410
+E1410 -[hidden]down-> E1411
+E1411 -[hidden]down-> E1412
+E1412 -[hidden]down-> E1413
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

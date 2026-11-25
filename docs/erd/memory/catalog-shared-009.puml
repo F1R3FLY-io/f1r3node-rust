@@ -1,0 +1,71 @@
+@startuml
+!include ../style.puml
+title catalog shared 009
+entity "ReadUsage" as E1853 <<struct>> {
+  shared/src/rust/store/soak_snapshot.rs:87
+  --
+  operations : usize
+  records : usize
+  bytes : usize
+}
+entity "EnvSession" as E1854 <<struct>> {
+  shared/src/rust/store/soak_snapshot.rs:134
+  --
+  env : Arc &#60; Env &#62;
+  path : PathBuf
+  txn : RoTxn &#60; 'static , WithTls &#62;
+  last_txn_id_before_open : usize
+  txn_id : usize
+}
+entity "BoundedLmdbReader" as E1855 <<struct>> {
+  shared/src/rust/store/soak_snapshot.rs:142
+  --
+  limits : ReadLimits
+  sessions : Vec &#60; EnvSession &#62;
+  usage : ReadUsage
+}
+entity "TokenAmount" as E1856 <<struct>> {
+  shared/src/rust/token_amount.rs:13
+  --
+  0 : BigInt
+}
+entity "RotatedFile" as E1857 <<struct>> {
+  shared/src/rust/tracing_init/bounded_file.rs:9
+  --
+  path : PathBuf
+  bytes : u64
+}
+entity "BoundedFile" as E1858 <<struct>> {
+  shared/src/rust/tracing_init/bounded_file.rs:14
+  --
+  directory : PathBuf
+  config : LogFileConfig
+  file : Option &#60; File &#62;
+  current_bytes : u64
+  total_bytes : u64
+  rotated : VecDeque &#60; RotatedFile &#62;
+  period : Option &#60; u64 &#62;
+  sequence : u128
+  _lock : File
+}
+entity "CapturedEvent" as E1859 <<struct>> {
+  shared/src/rust/tracing_init/capture.rs:10
+  --
+  level : Level
+  target : String
+  message : String
+}
+entity "EventCapture" as E1860 <<struct>> {
+  shared/src/rust/tracing_init/capture.rs:17
+  --
+  events : Arc &#60; Mutex &#60; Vec &#60; CapturedEvent &#62; &#62; &#62;
+}
+E1855 --> E1853 : usage
+E1855 --> E1854 : sessions
+E1858 --> E1857 : rotated
+E1860 --> E1859 : events
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

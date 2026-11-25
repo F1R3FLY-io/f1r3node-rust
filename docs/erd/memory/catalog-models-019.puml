@@ -1,0 +1,76 @@
+@startuml
+!include ../style.puml
+title catalog models 019
+entity "ELte" as E882 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p1 #1 : .rhoapi.Par
+  p2 #2 : .rhoapi.Par
+}
+entity "EMap" as E883 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  kvs #1 : repeated .rhoapi.KeyValuePair
+  locallyFree #3 : Bytes
+  connective_used #4 : Bool
+  remainder #5 : .rhoapi.Var
+}
+entity "EMatches" as E884 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  target #1 : .rhoapi.Par
+  pattern #2 : .rhoapi.Par
+}
+entity "EMethod" as E885 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  methodName #1 : String
+  target #2 : .rhoapi.Par
+  arguments #3 : repeated .rhoapi.Par
+  locallyFree #5 : Bytes
+  connective_used #6 : Bool
+}
+entity "EMinus" as E886 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p1 #1 : .rhoapi.Par
+  p2 #2 : .rhoapi.Par
+}
+entity "EMinusMinus" as E887 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p1 #1 : .rhoapi.Par
+  p2 #2 : .rhoapi.Par
+}
+entity "EMod" as E888 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p1 #1 : .rhoapi.Par
+  p2 #2 : .rhoapi.Par
+}
+entity "EMult" as E889 <<protobuf>> {
+  models/src/main/protobuf/RhoTypes.proto
+  .rhoapi
+  --
+  p1 #1 : .rhoapi.Par
+  p2 #2 : .rhoapi.Par
+}
+E882 -[hidden]down-> E883
+E883 -[hidden]down-> E884
+E884 -[hidden]down-> E885
+E885 -[hidden]down-> E886
+E886 -[hidden]down-> E887
+E887 -[hidden]down-> E888
+E888 -[hidden]down-> E889
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

@@ -1,0 +1,66 @@
+@startuml
+!include ../style.puml
+title catalog casper 038
+entity "Contributors" as E376 <<struct>> {
+  casper/src/rust/merging/conflict_set_merger.rs:405
+  --
+  survivors : u32
+  sources : HashSet &#60; S &#62;
+}
+entity "LossProfile" as E377 <<struct>> {
+  casper/src/rust/merging/conflict_set_merger.rs:809
+  --
+  max : u64
+  sum : u64
+}
+entity "NameSeeds" as E378 <<struct>> {
+  casper/src/rust/merging/dag_merger.rs:807
+  --
+  of_scope_deploys : HashMap &#60; Bytes , Vec &#60; u8 &#62; &#62;
+  held_by_base : HashMap &#60; Vec &#60; u8 &#62; , Bytes &#62;
+}
+entity "BranchDerived" as E379 <<struct>> {
+  casper/src/rust/merging/dag_merger.rs:1475
+  merge
+  --
+  user_deploy_ids : HashSet &#60; Bytes &#62;
+  combined_all_event_log : rspace_plus_plus :: rspace :: merger ::\n    event_log_index :: EventLogIndex
+}
+entity "DeployIdWithCost" as E380 <<struct>> {
+  casper/src/rust/merging/deploy_chain_index.rs:20
+  --
+  deploy_id : Bytes
+  cost : u64
+}
+entity "DeployChainIndex" as E381 <<struct>> {
+  casper/src/rust/merging/deploy_chain_index.rs:26
+  --
+  deploys_with_cost : HashableSet &#60; DeployIdWithCost &#62;
+  post_state_hash : Blake2b256Hash
+  user_event_log_index : Arc &#60; EventLogIndex &#62;
+  system_event_log_index : Arc &#60; EventLogIndex &#62;
+  event_log_index : Arc &#60; EventLogIndex &#62;
+  state_changes : Arc &#60; StateChange &#62;
+  source_block_hash : BlockHash
+  source_block_number : i64
+  deploy_windows : std :: collections :: HashMap &#60; Bytes , i64 &#62;
+  prior_rejections : u64
+}
+entity "DeployIndex" as E382 <<struct>> {
+  casper/src/rust/merging/deploy_index.rs:6
+  --
+  deploy_id : prost :: bytes :: Bytes
+  cost : u64
+  event_log_index : EventLogIndex
+}
+entity "TopoSort" as E383 <<alias>> {
+  casper/src/rust/mod.rs:47
+  --
+  value : Vec &#60; Vec &#60; BlockHash &#62; &#62;
+}
+E381 --> E380 : deploys_with_cost
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

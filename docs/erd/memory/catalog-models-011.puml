@@ -1,0 +1,88 @@
+@startuml
+!include ../style.puml
+title catalog models 011
+entity "LightBlockInfo" as E818 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  blockHash #1 : String
+  sender #2 : String
+  seqNum #3 : Int64
+  sig #4 : String
+  sigAlgorithm #5 : String
+  shardId #6 : String
+  extraBytes #7 : Bytes
+  version #8 : Int64
+  timestamp #9 : Int64
+  headerExtraBytes #10 : Bytes
+  parentsHashList #11 : repeated String
+  blockNumber #12 : Int64
+  preStateHash #13 : String
+  postStateHash #14 : String
+  bodyExtraBytes #15 : Bytes
+  bonds #16 : repeated .casper.BondInfo
+  blockSize #17 : String
+  deployCount #18 : Int32
+  faultTolerance #19 : Float
+  justifications #20 : repeated .casper.JustificationInfo
+  rejectedDeploys #21 : repeated .casper.RejectedDeployInfo
+  isFinalized #22 : Bool
+}
+entity "MachineVerifyQuery" as E819 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+}
+entity "PeerInfo" as E820 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  address #1 : String
+  nodeId #2 : String
+  host #3 : String
+  protocolPort #4 : Int32
+  discoveryPort #5 : Int32
+  isConnected #6 : Bool
+}
+entity "PendingDeployInfo" as E821 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  deploy #1 : .casper.DeployDataProto
+  isRejected #2 : Bool
+}
+entity "PendingDeploysQuery" as E822 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  deployerPubkey #1 : Bytes
+}
+entity "PendingDeploysResponsePayload" as E823 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  deploys #1 : repeated .casper.PendingDeployInfo
+  totalAvailable #2 : Uint32
+}
+entity "PrivateNamePreviewQuery" as E824 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  user #1 : Bytes
+  timestamp #2 : Int64
+  nameQty #3 : Int32
+  validAfterBlockNumber #4 oneof _validAfterBlockNumber : Int64
+}
+entity "RejectedDeployInfo" as E825 <<protobuf>> {
+  models/src/main/protobuf/DeployServiceCommon.proto
+  .casper
+  --
+  sig #1 : String
+}
+E818 --> E825 : rejectedDeploys #21
+E823 --> E821 : deploys #1
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

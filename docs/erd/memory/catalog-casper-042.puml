@@ -1,0 +1,67 @@
+@startuml
+!include ../style.puml
+title catalog casper 042
+entity "QUERY" as E408 <<static>> {
+  casper/src/rust/rholang/runtime.rs:1716
+  RuntimeOps::activate_validator_query_par
+  --
+  value : OnceLock &#60; Par &#62;
+}
+entity "QUERY" as E409 <<static>> {
+  casper/src/rust/rholang/runtime.rs:1736
+  RuntimeOps::bonds_query_par
+  --
+  value : OnceLock &#60; Par &#62;
+}
+entity "QUERY" as E410 <<static>> {
+  casper/src/rust/rholang/runtime.rs:1744
+  RuntimeOps::withdrawers_query_par
+  --
+  value : OnceLock &#60; Par &#62;
+}
+entity "EvalCollector" as E411 <<struct>> {
+  casper/src/rust/rholang/types/eval_collector.rs:9
+  --
+  event_log : Vec &#60; Event &#62;
+  mergeable_channels : HashMap &#60; Par , MergeType &#62;
+}
+entity "WalDeployScope" as E412 <<struct>> {
+  casper/src/rust/rholang/wal_deploy_scope.rs:87
+  --
+  wal : Wal
+  mark : WalMark
+  committed : bool
+  lock_registry : SharedLockRegistry
+  deploy_scope : DeployScope
+  fs_handles : FileHandleTable
+}
+entity "CliqueOracle" as E413 <<struct>> {
+  casper/src/rust/safety/clique_oracle.rs:18
+  --
+}
+entity "ExactOracleResult" as E414 <<struct>> {
+  casper/src/rust/safety/clique_oracle.rs:20
+  --
+  decision : bool
+  total_stake : Option &#60; BigInt &#62;
+  agreeing_stake : Option &#60; BigInt &#62;
+  clique_weight : Option &#60; BigInt &#62;
+  early_return : Option &#60; &#38; 'static str &#62;
+}
+entity "M" as E415 <<alias>> {
+  casper/src/rust/safety/clique_oracle.rs:32
+  --
+  value : BlockHash
+}
+E408 -[hidden]down-> E409
+E409 -[hidden]down-> E410
+E410 -[hidden]down-> E411
+E411 -[hidden]down-> E412
+E412 -[hidden]down-> E413
+E413 -[hidden]down-> E414
+E414 -[hidden]down-> E415
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

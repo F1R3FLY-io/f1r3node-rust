@@ -1,0 +1,56 @@
+@startuml
+!include ../style.puml
+title catalog rholang 042
+entity "RhoDeployId" as E1590 <<struct>> {
+  rholang/src/rust/interpreter/rho_type.rs:284
+  --
+}
+entity "RhoName" as E1591 <<struct>> {
+  rholang/src/rust/interpreter/rho_type.rs:306
+  --
+}
+entity "RhoExpression" as E1592 <<struct>> {
+  rholang/src/rust/interpreter/rho_type.rs:328
+  --
+}
+entity "RhoUnforgeable" as E1593 <<struct>> {
+  rholang/src/rust/interpreter/rho_type.rs:336
+  --
+}
+entity "RhoSysAuthToken" as E1594 <<struct>> {
+  rholang/src/rust/interpreter/rho_type.rs:346
+  --
+}
+entity "ChargingRSpace" as E1595 <<struct>> {
+  rholang/src/rust/interpreter/storage/charging_rspace.rs:27
+  --
+}
+entity "TriggeredBy" as E1596 <<enum>> {
+  rholang/src/rust/interpreter/storage/charging_rspace.rs:29
+  --
+  Consume.id : Vec &#60; u8 &#62;
+  Consume.persistent : bool
+  Consume.channels_count : i64
+  Produce.id : Vec &#60; u8 &#62;
+  Produce.persistent : bool
+  Produce.channels_count : i64
+}
+entity "ChargingRSpace" as E1597 <<struct>> {
+  rholang/src/rust/interpreter/storage/charging_rspace.rs:59
+  ChargingRSpace::charging_rspace
+  --
+  space : T
+  cost : _cost
+}
+E1590 -[hidden]down-> E1591
+E1591 -[hidden]down-> E1592
+E1592 -[hidden]down-> E1593
+E1593 -[hidden]down-> E1594
+E1594 -[hidden]down-> E1595
+E1595 -[hidden]down-> E1596
+E1596 -[hidden]down-> E1597
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

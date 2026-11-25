@@ -1,0 +1,83 @@
+@startuml
+!include ../style.puml
+title catalog casper 056
+entity "ConsensusReplayWaiter" as E520 <<struct>> {
+  casper/src/rust/util/rholang/runtime_manager.rs:173
+  --
+  0 : &#38; 'a ReplayLock
+}
+entity "RuntimeManager" as E521 <<struct>> {
+  casper/src/rust/util/rholang/runtime_manager.rs:265
+  --
+  space : RSpace &#60; Par , BindPattern , ListParWithRandom ,\n    TaggedContinuation &#62;
+  replay_space : ReplayRSpace &#60; Par , BindPattern , ListParWithRandom ,\n    TaggedContinuation &#62;
+  history_repo : RhoHistoryRepository
+  mergeable_store : MergeableStore
+  mergeable_tags : std :: sync :: Arc &#60; std :: collections :: HashMap &#60;\n    Par , rspace_plus_plus :: rspace :: merger :: merging_logic :: MergeType\n    &#62; , &#62;
+  block_index_cache : Arc &#60; BoundedCache &#60; BlockHash , BlockIndex &#62; &#62;
+  active_validators_cache : Arc &#60; BoundedCache &#60; StateHash , Vec &#60;\n    Validator &#62; &#62; &#62;
+  bonds_cache : Arc &#60; BoundedCache &#60; StateHash , Vec &#60; Bond &#62; &#62; &#62;
+  quarantined_cache : Arc &#60; BoundedCache &#60; StateHash , Vec &#60; Bond &#62; &#62; &#62;
+  parents_post_state_cache : Arc &#60; BoundedCache &#60; ParentsPostStateCacheKey\n    , ParentsPostStateCacheVal &#62; &#62;
+  replay_cache : Option &#60; Arc &#60; InMemoryReplayCache &#62; &#62;
+  replay_lock : Arc &#60; ReplayLock &#62;
+  exploratory_deploy_semaphore : Arc &#60; Semaphore &#62;
+  exploratory_deploy_phlo_limit : i64
+  exploratory_deploy_execution_timeout : Duration
+  external_services : ExternalServices
+  fs_snapshot_writer : Arc &#60; tokio :: sync :: RwLock &#60; Option &#60; rholang ::\n    rust :: interpreter :: io :: snapshot :: SnapshotWriter &#62; &#62; &#62;
+  snapshot_merkle_roots : Arc &#60; tokio :: sync :: RwLock &#60; std ::\n    collections :: HashMap &#60; Vec &#60; u8 &#62; , ([u8 ; 32] , [u8 ; 32]) &#62; &#62; &#62;
+  payload_store : Arc &#60; tokio :: sync :: RwLock &#60; Option &#60; crate :: rust\n    :: engine :: wal_payload_server :: PayloadStoreBundle &#62; &#62; , &#62;
+  consensus_static_roots : Arc &#60; tokio :: sync :: RwLock &#60; Vec &#60; std ::\n    path :: PathBuf &#62; &#62; &#62;
+  root_registry : rholang :: rust :: interpreter :: io :: path :: identity\n    :: RootIdentityRegistry
+  shared_lock_registry : rholang :: rust :: interpreter :: io :: lock ::\n    SharedLockRegistry
+}
+entity "ParentsPostStateCacheKey" as E522 <<struct>> {
+  casper/src/rust/util/rholang/runtime_manager.rs:377
+  --
+  sorted_parent_hashes : Vec &#60; BlockHash &#62;
+  snapshot_lfb_hash : BlockHash
+  sorted_latest_messages : Vec &#60; (Validator , BlockHash) &#62;
+  buffer_populated : bool
+}
+entity "MergedPreState" as E523 <<struct>> {
+  casper/src/rust/util/rholang/runtime_manager.rs:396
+  --
+  state : StateHash
+  rejected_user : Vec &#60; models :: rust :: casper :: protocol ::\n    casper_message :: RejectedDeploy &#62;
+  applied_from_scope : std :: collections :: HashSet &#60; prost :: bytes ::\n    Bytes &#62;
+  merge_base : Option &#60; BlockHash &#62;
+}
+entity "ParentsPostStateCacheVal" as E524 <<alias>> {
+  casper/src/rust/util/rholang/runtime_manager.rs:421
+  --
+  value : MergedPreState
+}
+entity "SystemDeployEnum" as E525 <<enum>> {
+  casper/src/rust/util/rholang/system_deploy_enum.rs:6
+  --
+  Slash.0 : SlashDeploy
+  Close.0 : CloseBlockDeploy
+}
+entity "SystemDeployResult" as E526 <<enum>> {
+  casper/src/rust/util/rholang/system_deploy_result.rs:11
+  --
+  PlaySucceeded.state_hash : StateHash
+  PlaySucceeded.processed_system_deploy : ProcessedSystemDeploy
+  PlaySucceeded.mergeable_channels : NumberChannelsEndVal
+  PlaySucceeded.result : A
+  PlayFailed.processed_system_deploy : ProcessedSystemDeploy
+}
+entity "SystemDeployUserError" as E527 <<struct>> {
+  casper/src/rust/util/rholang/system_deploy_user_error.rs:9
+  --
+  error_message : String
+}
+E521 --> E522 : parents_post_state_cache
+E521 --> E524 : parents_post_state_cache
+E524 --> E523 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

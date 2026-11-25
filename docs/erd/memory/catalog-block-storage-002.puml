@@ -1,0 +1,82 @@
+@startuml
+!include ../style.puml
+title catalog block storage 002
+entity "DagState" as E8 <<struct>> {
+  block-storage/src/rust/dag/block_metadata_store.rs:42
+  --
+  resident_height_map : imbl :: OrdMap &#60; i64 , imbl :: HashSet &#60; BlockHash\n    &#62; &#62;
+  edges : usize
+  sequence : u64
+  max_height : Option &#60; i64 &#62;
+  cutoff : i64
+  pruning_cutoff : i64
+  total : u64
+  dag_set : imbl :: HashSet &#60; BlockHash &#62;
+  child_map : imbl :: HashMap &#60; BlockHash , imbl :: HashSet &#60; BlockHash &#62;\n    &#62;
+  height_map : imbl :: OrdMap &#60; i64 , imbl :: HashSet &#60; BlockHash &#62; &#62;
+  block_number_map : imbl :: HashMap &#60; BlockHash , i64 &#62;
+  main_parent_map : imbl :: HashMap &#60; BlockHash , BlockHash &#62;
+  self_justification_map : imbl :: HashMap &#60; BlockHash , BlockHash &#62;
+  last_finalized_block : Option &#60; (BlockHash , i64) &#62;
+  finalized_block_set : imbl :: HashSet &#60; BlockHash &#62;
+}
+entity "BlockInfo" as E9 <<struct>> {
+  block-storage/src/rust/dag/block_metadata_store.rs:99
+  --
+  hash : BlockHash
+  parents : Vec &#60; BlockHash &#62;
+  main_parent : Option &#60; BlockHash &#62;
+  self_justification : Option &#60; BlockHash &#62;
+  block_num : i64
+  is_invalid : bool
+  is_directly_finalized : bool
+  is_finalized : bool
+}
+entity "CarrierEntry" as E10 <<struct>> {
+  block-storage/src/rust/dag/carrier_index.rs:32
+  --
+  height : i64
+  block_hash : ByteString
+}
+entity "SeedCarrierEntry" as E11 <<struct>> {
+  block-storage/src/rust/dag/carrier_index.rs:38
+  --
+  height : i64
+  block_hash : ByteString
+  sig : ByteString
+}
+entity "CarrierIndex" as E12 <<struct>> {
+  block-storage/src/rust/dag/carrier_index.rs:45
+  --
+  carriers : KeyValueTypedStoreImpl &#60; ByteString , Vec &#60; CarrierEntry &#62; &#62;
+  seed_carriers : KeyValueTypedStoreImpl &#60; ByteString , Vec &#60;\n    SeedCarrierEntry &#62; &#62;
+  meta : KeyValueTypedStoreImpl &#60; String , i64 &#62;
+}
+entity "DagGcSlots" as E13 <<struct>> {
+  block-storage/src/rust/dag/dag_gc_store.rs:19
+  --
+  metadata : usize
+  state : usize
+  retry : usize
+}
+entity "DagGcStore" as E14 <<struct>> {
+  block-storage/src/rust/dag/dag_gc_store.rs:26
+  --
+  group : Arc &#60; AtomicStoreGroup &#62;
+  slots : DagGcSlots
+}
+entity "DiscoveryState" as E15 <<struct>> {
+  block-storage/src/rust/dag/dag_gc_store.rs:32
+  --
+  claimed_ceiling : Option &#60; i64 &#62;
+  completed_ceiling : Option &#60; i64 &#62;
+  cursor : Option &#60; Vec &#60; u8 &#62; &#62;
+}
+E12 --> E10 : carriers
+E12 --> E11 : seed_carriers
+E14 --> E13 : slots
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

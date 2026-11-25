@@ -1,0 +1,105 @@
+@startuml
+!include ../style.puml
+title catalog deploy queue 002
+entity "Effect" as E681 <<alias>> {
+  deploy-queue/src/engine.rs:206
+  --
+  value : Box &#60; dyn FnOnce () + Send &#62;
+}
+entity "IntakeResult" as E682 <<alias>> {
+  deploy-queue/src/engine.rs:207
+  --
+  value : Result &#60; Sig , IntakeError &#62;
+}
+entity "CreatedSample" as E683 <<struct>> {
+  deploy-queue/src/engine.rs:209
+  --
+  number : i64
+  creator : String
+  admission : Option &#60; Admission &#62;
+  took : usize
+  left : usize
+  at : Instant
+}
+entity "Engine" as E684 <<struct>> {
+  deploy-queue/src/engine.rs:218
+  --
+  store : QueueStore
+  node : NodeHttp
+  commands : mpsc :: Sender &#60; Command &#62;
+  records : HashMap &#60; Sig , QueueRecord &#62;
+  counts : HashMap &#60; QueueState , usize &#62;
+  ready : BTreeMap &#60; (i64 , u64) , Sig &#62;
+  waiting : BTreeMap &#60; (i64 , u64) , Sig &#62;
+  expiry : DeadlineIndex
+  closed : BTreeMap &#60; (i64 , u64) , Sig &#62;
+  closed_checking : HashSet &#60; Sig &#62;
+  released_index : BTreeMap &#60; (i64 , u64) , Sig &#62;
+  resend_index : BTreeMap &#60; (i64 , u64) , Sig &#62;
+  decided_index : BTreeMap &#60; (i64 , u64) , Sig &#62;
+  held_by_deployer : HashMap &#60; Vec &#60; u8 &#62; , usize &#62;
+  chain : Option &#60; ChainSnapshot &#62;
+  connected : bool
+  health : Option &#60; Health &#62;
+  created : HashMap &#60; String , CreatedSample &#62;
+  learned : HashMap &#60; String , i64 &#62;
+  held_for_finality : bool
+  next_sequence : u64
+  retry_at : Option &#60; Instant &#62;
+  retry_delay : Duration
+  transitions : broadcast :: Sender &#60; Transition &#62;
+  dirty : HashSet &#60; Sig &#62;
+  removed : Vec &#60; Sig &#62;
+  new_payloads : HashMap &#60; Sig , Vec &#60; u8 &#62; &#62;
+  dropped_payloads : Vec &#60; Sig &#62;
+  payload_bytes : u64
+  intake_replies : Vec &#60; (oneshot :: Sender &#60; IntakeResult &#62; ,\n    IntakeResult) &#62;
+  effects : Vec &#60; Effect &#62;
+}
+entity "DeadlineIndex" as E685 <<struct>> {
+  deploy-queue/src/engine.rs:1429
+  --
+  deploys : BTreeMap &#60; (i64 , u64) , Sig &#62;
+  per_deadline : BTreeMap &#60; i64 , usize &#62;
+}
+entity "Slot" as E686 <<struct>> {
+  deploy-queue/src/engine.rs:1518
+  --
+  releasable_from : i64
+  last : i64
+}
+entity "Congestion" as E687 <<enum>> {
+  deploy-queue/src/error.rs:5
+  --
+  Validator : variant
+  ValidatorIdle : variant
+  Shard : variant
+  Storage : variant
+}
+entity "IntakeError" as E688 <<enum>> {
+  deploy-queue/src/error.rs:33
+  --
+  IllegalArgument.0 : String
+  DeployExpired.0 : String
+  InvalidDeployWindow.0 : String
+  Duplicate.0 : Sig
+  QueueFull.retry_after_secs : u64
+  QueueFull.cause : Congestion
+  DeployerShareFull.held : usize
+  DeployerShareFull.limit : usize
+  DeployerShareFull.retry_after_secs : u64
+  NodeUnavailable.retry_after_secs : u64
+  Stopped : variant
+  Store.0 : String
+}
+E682 --> E688 : value
+E684 --> E681 : effects
+E684 --> E682 : intake_replies
+E684 --> E683 : created
+E684 --> E685 : expiry
+E688 --> E687 : QueueFull.cause
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

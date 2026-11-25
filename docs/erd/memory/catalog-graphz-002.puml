@@ -1,0 +1,30 @@
+@startuml
+!include ../style.puml
+title catalog graphz 002
+entity "GraphArrowType" as E735 <<enum>> {
+  graphz/src/rust/graphz.rs:150
+  --
+  NormalArrow : variant
+  InvArrow : variant
+  NoneArrow : variant
+}
+entity "Graphz" as E736 <<struct>> {
+  graphz/src/rust/graphz.rs:344
+  --
+  graph_type : GraphType
+  tab : String
+  serializer : Arc &#60; dyn GraphSerializer &#62;
+}
+entity "GraphzError" as E737 <<enum>> {
+  graphz/src/rust/graphz.rs:441
+  --
+  IoError.0 : String
+  SerializationError.0 : String
+}
+E735 -[hidden]down-> E736
+E736 -[hidden]down-> E737
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

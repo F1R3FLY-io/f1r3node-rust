@@ -1,0 +1,65 @@
+@startuml
+!include ../style.puml
+title catalog rholang 013
+entity "FsChownArgs" as E1358 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_chown.rs:86
+  --
+  root : String
+  rel : String
+  owner : Option &#60; String &#62;
+  group : Option &#60; String &#62;
+  cmode : ConsensusMode
+}
+entity "FS_CHOWN_ENTRY" as E1359 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_chown.rs:321
+  --
+  value : FsHandlerEntry
+}
+entity "FsCopyFileHandler" as E1360 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_copy_file.rs:102
+  --
+}
+entity "FsCopyFileArgs" as E1361 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_copy_file.rs:105
+  --
+  from_root : String
+  from_rel : String
+  to_root : String
+  to_rel : String
+  cmode : ConsensusMode
+}
+entity "FS_COPY_FILE_ENTRY" as E1362 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_copy_file.rs:309
+  --
+  value : FsHandlerEntry
+}
+entity "FsMkdirHandler" as E1363 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_mkdir.rs:74
+  --
+}
+entity "FsMkdirArgs" as E1364 <<struct>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_mkdir.rs:77
+  --
+  root : String
+  rel : String
+  mode : u32
+  parents : bool
+  cmode : ConsensusMode
+}
+entity "FS_MKDIR_ENTRY" as E1365 <<static>> {
+  rholang/src/rust/interpreter/io/handlers/mutation/fs_mkdir.rs:282
+  --
+  value : FsHandlerEntry
+}
+E1358 -[hidden]down-> E1359
+E1359 -[hidden]down-> E1360
+E1360 -[hidden]down-> E1361
+E1361 -[hidden]down-> E1362
+E1362 -[hidden]down-> E1363
+E1363 -[hidden]down-> E1364
+E1364 -[hidden]down-> E1365
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

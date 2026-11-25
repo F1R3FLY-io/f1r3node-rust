@@ -1,0 +1,62 @@
+@startuml
+!include ../style.puml
+title catalog rholang 005
+entity "ProcVisitOutputs" as E1294 <<struct>> {
+  rholang/src/rust/interpreter/compiler/normalize.rs:49
+  --
+  par : Par
+  free_map : FreeMap &#60; VarSort &#62;
+}
+entity "NameVisitInputs" as E1295 <<struct>> {
+  rholang/src/rust/interpreter/compiler/normalize.rs:56
+  --
+  bound_map_chain : BoundMapChain &#60; VarSort &#62;
+  free_map : FreeMap &#60; VarSort &#62;
+}
+entity "NameVisitOutputs" as E1296 <<struct>> {
+  rholang/src/rust/interpreter/compiler/normalize.rs:62
+  --
+  par : Par
+  free_map : FreeMap &#60; VarSort &#62;
+}
+entity "CollectVisitInputs" as E1297 <<struct>> {
+  rholang/src/rust/interpreter/compiler/normalize.rs:68
+  --
+  bound_map_chain : BoundMapChain &#60; VarSort &#62;
+  free_map : FreeMap &#60; VarSort &#62;
+}
+entity "CollectVisitOutputs" as E1298 <<struct>> {
+  rholang/src/rust/interpreter/compiler/normalize.rs:74
+  --
+  expr : Expr
+  free_map : FreeMap &#60; VarSort &#62;
+}
+entity "Frame" as E1299 <<struct>> {
+  rholang/src/rust/interpreter/compiler/process_depth.rs:9
+  process_depth
+  --
+  events : Box &#60; dyn Iterator &#60; Item = DfsEventExt &#60; 'a &#62; &#62; + 'a &#62;
+  base : usize
+  open : usize
+}
+entity "SpanContext" as E1300 <<struct>> {
+  rholang/src/rust/interpreter/compiler/span_utils.rs:7
+  --
+}
+entity "ContractCall" as E1301 <<struct>> {
+  rholang/src/rust/interpreter/contract_call.rs:9
+  --
+  dispatcher : RhoDispatch
+}
+E1294 -[hidden]down-> E1295
+E1295 -[hidden]down-> E1296
+E1296 -[hidden]down-> E1297
+E1297 -[hidden]down-> E1298
+E1298 -[hidden]down-> E1299
+E1299 -[hidden]down-> E1300
+E1300 -[hidden]down-> E1301
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

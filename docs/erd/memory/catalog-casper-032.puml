@@ -1,0 +1,64 @@
+@startuml
+!include ../style.puml
+title catalog casper 032
+entity "WalkEnd" as E328 <<enum>> {
+  casper/src/rust/finality/deploy_lifecycle.rs:108
+  --
+  Done : variant
+  Stopped : variant
+  Gap.0 : Gap
+}
+entity "FloorSettledProbe" as E329 <<struct>> {
+  casper/src/rust/finality/deploy_lifecycle.rs:216
+  --
+  floors : Vec &#60; (BlockHash , i64) &#62;
+  sets : Vec &#60; Option &#60; HashSet &#60; Bytes &#62; &#62; &#62;
+  total_walked : usize
+}
+entity "LineageMemo" as E330 <<struct>> {
+  casper/src/rust/finality/deploy_lifecycle.rs:284
+  --
+  last : Option &#60; WalkedLineage &#62;
+}
+entity "WalkedLineage" as E331 <<struct>> {
+  casper/src/rust/finality/deploy_lifecycle.rs:292
+  --
+  start : BlockHash
+  start_height : i64
+  answered : HashSet &#60; Bytes &#62;
+  applied_at : HashMap &#60; Bytes , i64 &#62;
+  gap_lowest_read : Option &#60; i64 &#62;
+}
+entity "Settled" as E332 <<struct>> {
+  casper/src/rust/finality/deploy_lifecycle.rs:301
+  --
+  terminal : Vec &#60; (Bytes , TerminalRecord) &#62;
+  walked : usize
+}
+entity "SettlePass" as E333 <<struct>> {
+  casper/src/rust/finality/deploy_lifecycle.rs:371
+  --
+  basis : BlockHash
+  basis_height : i64
+  applied_at : HashMap &#60; Bytes , i64 &#62;
+  gap_lowest_read : Option &#60; i64 &#62;
+  deploy_lifespan : i64
+  citability_horizon : Option &#60; i64 &#62;
+}
+entity "Floor" as E334 <<struct>> {
+  casper/src/rust/finality/floor.rs:43
+  --
+  hash : BlockHash
+  block_number : i64
+}
+entity "IntroducedSigsMemo" as E335 <<alias>> {
+  casper/src/rust/finality/floor.rs:51
+  --
+  value : HashMap &#60; BlockHash , HashSet &#60; Bytes &#62; &#62;
+}
+E330 --> E331 : last
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

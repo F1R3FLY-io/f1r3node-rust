@@ -1,0 +1,59 @@
+@startuml
+!include ../style.puml
+title catalog casper 001
+entity "BlockAPI" as E80 <<struct>> {
+  casper/src/rust/api/block_api.rs:48
+  --
+}
+entity "ApiErr" as E81 <<alias>> {
+  casper/src/rust/api/block_api.rs:50
+  --
+  value : eyre :: Result &#60; T &#62;
+}
+entity "DeployNotFoundError" as E82 <<struct>> {
+  casper/src/rust/api/block_api.rs:52
+  --
+  deploy_id : String
+}
+entity "REPORT_TRANSFORMER" as E83 <<lazy static>> {
+  casper/src/rust/api/block_api.rs:171
+  --
+  value : ReportingProtoTransformer
+}
+entity "BlockNotFoundError" as E84 <<struct>> {
+  casper/src/rust/api/block_api.rs:175
+  --
+  hash : String
+}
+entity "BlockPrunedError" as E85 <<struct>> {
+  casper/src/rust/api/block_api.rs:188
+  --
+  hash : String
+  block_height : i64
+  prune_floor : i64
+}
+entity "BlockUnavailableError" as E86 <<struct>> {
+  casper/src/rust/api/block_api.rs:222
+  --
+  hash : String
+  block_height : i64
+  prune_floor : i64
+}
+entity "MissingBlockEntry" as E87 <<struct>> {
+  casper/src/rust/api/block_api.rs:252
+  --
+  hash : BlockHash
+  block_height : i64
+}
+E80 -[hidden]down-> E81
+E81 -[hidden]down-> E82
+E82 -[hidden]down-> E83
+E83 -[hidden]down-> E84
+E84 -[hidden]down-> E85
+E85 -[hidden]down-> E86
+E86 -[hidden]down-> E87
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

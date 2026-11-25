@@ -1,0 +1,76 @@
+@startuml
+!include ../style.puml
+title catalog casper 028
+entity "ServeError" as E296 <<enum>> {
+  casper/src/rust/engine/snapshot_chunk_server.rs:34
+  --
+  UnknownBlockHash : variant
+  IndexOutOfRange.requested : u32
+  IndexOutOfRange.chunk_count : u32
+  DiskReadFailed.0 : String
+  AtomicRootMismatch : variant
+}
+entity "SnapshotSyncState" as E297 <<struct>> {
+  casper/src/rust/engine/snapshot_chunk_sync.rs:66
+  --
+  retriever : Arc &#60; SnapshotChunkRetriever &#62;
+  sources : VecDeque &#60; PeerNode &#62;
+  blacklisted_sources : HashSet &#60; PeerNode &#62;
+  broadcasted_has_request : bool
+}
+entity "SnapshotCompletion" as E298 <<struct>> {
+  casper/src/rust/engine/snapshot_chunk_sync.rs:111
+  --
+  block_hash : Vec &#60; u8 &#62;
+  atomic_root : [u8 ; 32]
+  path : PathBuf
+}
+entity "SnapshotChunkSyncDriver" as E299 <<struct>> {
+  casper/src/rust/engine/snapshot_chunk_sync.rs:126
+  --
+  snapshots : Arc &#60; RwLock &#60; HashMap &#60; Vec &#60; u8 &#62; , SnapshotSyncState &#62; &#62;\n    &#62;
+  snapshot_dir : PathBuf
+  completion_sink : Arc &#60; std :: sync :: RwLock &#60; Option &#60; tokio :: sync\n    :: mpsc :: UnboundedSender &#60; SnapshotCompletion &#62; &#62; &#62; &#62;
+}
+entity "StateExportLimiter" as E300 <<struct>> {
+  casper/src/rust/engine/state_export_limiter.rs:15
+  --
+  exports : Semaphore
+  pending : Mutex &#60; HashMap &#60; PeerNode , usize &#62; &#62;
+  max_pending_per_peer : usize
+  queued_bytes_budget : usize
+  queued_bytes_wait : Duration
+}
+entity "PeerSlot" as E301 <<struct>> {
+  casper/src/rust/engine/state_export_limiter.rs:23
+  --
+  limiter : &#38; 'a StateExportLimiter
+  peer : PeerNode
+}
+entity "PayloadRequestState" as E302 <<struct>> {
+  casper/src/rust/engine/wal_payload_retriever.rs:43
+  --
+  payload_hash : [u8 ; 32]
+  last_request_ms : u64
+  initial_request_ms : u64
+  peers_tried : Vec &#60; Vec &#60; u8 &#62; &#62;
+  retry_count : u32
+  bytes : Option &#60; Vec &#60; u8 &#62; &#62;
+}
+entity "AdmitOutcome" as E303 <<enum>> {
+  casper/src/rust/engine/wal_payload_retriever.rs:87
+  --
+  PayloadAccepted : variant
+  UnknownRequest : variant
+  MalformedPayloadHash : variant
+  PayloadOversized : variant
+  PayloadHashMismatch : variant
+}
+E299 --> E297 : snapshots
+E299 --> E298 : completion_sink
+E301 --> E300 : limiter
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

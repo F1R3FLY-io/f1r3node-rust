@@ -1,0 +1,72 @@
+@startuml
+!include ../style.puml
+title catalog models 036
+entity "HostWorkReservationError" as E1018 <<enum>> {
+  models/src/rust/host_work.rs:358
+  --
+  UsageOverflow.dimension : HostWorkDimension
+  UsageOverflow.limit : HostWorkLimit
+  UsageOverflow.usage : HostWorkUsage
+  UsageOverflow.requested : HostWorkUnits
+  LimitExceeded.dimension : HostWorkDimension
+  LimitExceeded.limit : HostWorkLimit
+  LimitExceeded.usage : HostWorkUsage
+  LimitExceeded.requested : HostWorkUnits
+  BudgetRejected.dimension : HostWorkDimension
+  BudgetRejected.usage : HostWorkUsage
+  BudgetRejected.requested : HostWorkUnits
+}
+entity "ParMap" as E1019 <<struct>> {
+  models/src/rust/par_map.rs:9
+  --
+  ps : SortedParMap
+  connective_used : bool
+  locally_free : Vec &#60; u8 &#62;
+  remainder : Option &#60; Var &#62;
+}
+entity "ParMapTypeMapper" as E1020 <<struct>> {
+  models/src/rust/par_map_type_mapper.rs:11
+  --
+}
+entity "ParSet" as E1021 <<struct>> {
+  models/src/rust/par_set.rs:9
+  --
+  ps : SortedParHashSet
+  connective_used : bool
+  locally_free : Vec &#60; u8 &#62;
+  remainder : Option &#60; Var &#62;
+}
+entity "ParSetTypeMapper" as E1022 <<struct>> {
+  models/src/rust/par_set_type_mapper.rs:11
+  --
+}
+entity "ParToSExpr" as E1023 <<struct>> {
+  models/src/rust/par_to_sexpr.rs:8
+  --
+}
+entity "Tag" as E1024 <<enum>> {
+  models/src/rust/path_map_encoder.rs:15
+  --
+  NewVar : variant
+  Symbol.0 : u8
+  VarRef.0 : u8
+  Arity.0 : u8
+}
+entity "SExpr" as E1025 <<enum>> {
+  models/src/rust/path_map_encoder.rs:52
+  --
+  Symbol.0 : String
+  List.0 : Vec &#60; SExpr &#62;
+}
+E1018 -[hidden]down-> E1019
+E1019 -[hidden]down-> E1020
+E1020 -[hidden]down-> E1021
+E1021 -[hidden]down-> E1022
+E1022 -[hidden]down-> E1023
+E1023 -[hidden]down-> E1024
+E1024 -[hidden]down-> E1025
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

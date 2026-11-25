@@ -1,0 +1,61 @@
+@startuml
+!include ../style.puml
+title catalog comm 009
+entity "StreamValidation" as E602 <<struct>> {
+  comm/src/rust/transport/grpc_transport_receiver.rs:47
+  --
+  network_id : String
+  chain_id : ChainIdCell
+  max_size : u64
+}
+entity "MessageBuffers" as E603 <<alias>> {
+  comm/src/rust/transport/grpc_transport_receiver.rs:168
+  --
+  value : (Arc &#60; FlumeLimitedBuffer &#60; CommSend &#62; &#62; , Arc &#60;\n    FlumeLimitedBuffer &#60; StreamMessage &#62; &#62; , Arc &#60; JoinHandle &#60; () &#62; &#62; , Arc\n    &#60; JoinHandle &#60; () &#62; &#62; ,)
+}
+entity "PeerBufferSlot" as E604 <<struct>> {
+  comm/src/rust/transport/grpc_transport_receiver.rs:176
+  --
+  once_cell : Arc &#60; OnceCell &#60; MessageBuffers &#62; &#62;
+  last_seen_ms : u64
+}
+entity "MessageHandlers" as E605 <<alias>> {
+  comm/src/rust/transport/grpc_transport_receiver.rs:182
+  --
+  value : (Arc &#60; dyn Fn (CommSend) -&#62; Pin &#60; Box &#60; dyn Future &#60; Output =\n    Result &#60; () , CommError &#62; &#62; + Send &#62; &#62; + Send + Sync , &#62; , Arc &#60; dyn Fn\n    (StreamMessage) -&#62; Pin &#60; Box &#60; dyn Future &#60; Output = Result &#60; () ,\n    CommError &#62; &#62; + Send &#62; &#62; + Send + Sync , &#62; ,)
+}
+entity "TransportLayerService" as E606 <<struct>> {
+  comm/src/rust/transport/grpc_transport_receiver.rs:196
+  --
+  network_id : String
+  rp_config : RPConf
+  max_stream_message_size : u64
+  buffers_map : Arc &#60; Mutex &#60; HashMap &#60; PeerNode , PeerBufferSlot &#62; &#62; &#62;
+  message_handlers : MessageHandlers
+  cache : StreamCache
+  parallelism : usize
+  recent_hash_filter : RecentHashFilter
+}
+entity "PEER_BUFFER_ACTIVITY_COUNT" as E607 <<static>> {
+  comm/src/rust/transport/grpc_transport_receiver.rs:221
+  --
+  value : AtomicUsize
+}
+entity "TransportBind" as E608 <<enum>> {
+  comm/src/rust/transport/grpc_transport_receiver.rs:743
+  --
+  Port.0 : u16
+  Listener.0 : Arc &#60; std :: net :: TcpListener &#62;
+}
+entity "GrpcTransportReceiver" as E609 <<struct>> {
+  comm/src/rust/transport/grpc_transport_receiver.rs:753
+  --
+}
+E604 --> E603 : once_cell
+E606 --> E604 : buffers_map
+E606 --> E605 : message_handlers
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

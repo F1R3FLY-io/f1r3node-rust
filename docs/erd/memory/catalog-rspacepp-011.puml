@@ -1,0 +1,70 @@
+@startuml
+!include ../style.puml
+title catalog rspacepp 011
+entity "EventLogIndex" as E1706 <<struct>> {
+  rspace++/src/rspace/merger/event_log_index.rs:13
+  --
+  produces_linear : HashableSet &#60; Produce &#62;
+  produces_persistent : HashableSet &#60; Produce &#62;
+  produces_consumed : HashableSet &#60; Produce &#62;
+  produces_peeked : HashableSet &#60; Produce &#62;
+  produces_copied_by_peek : HashableSet &#60; Produce &#62;
+  produces_touching_base_joins : HashableSet &#60; Produce &#62;
+  consumes_linear_and_peeks : HashableSet &#60; Consume &#62;
+  consumes_persistent : HashableSet &#60; Consume &#62;
+  consumes_produced : HashableSet &#60; Consume &#62;
+  produces_mergeable : HashableSet &#60; Produce &#62;
+  consumes_mergeable : HashableSet &#60; Consume &#62;
+  number_channels_data : NumberChannelsDiff
+}
+entity "EventLogIndexFold" as E1707 <<struct>> {
+  rspace++/src/rspace/merger/event_log_index.rs:356
+  --
+  index : EventLogIndex
+  created : HashSet &#60; Produce &#62;
+}
+entity "MergeType" as E1708 <<enum>> {
+  rspace++/src/rspace/merger/merging_logic.rs:13
+  --
+  IntegerAdd : variant
+  BitmaskOr : variant
+}
+entity "NumberChannelsEndVal" as E1709 <<alias>> {
+  rspace++/src/rspace/merger/merging_logic.rs:34
+  --
+  value : BTreeMap &#60; Blake2b256Hash , (BigInt , MergeType) &#62;
+}
+entity "NumberChannelsDiff" as E1710 <<alias>> {
+  rspace++/src/rspace/merger/merging_logic.rs:36
+  --
+  value : BTreeMap &#60; Blake2b256Hash , (BigInt , MergeType) &#62;
+}
+entity "RejectionOption" as E1711 <<struct>> {
+  rspace++/src/rspace/merger/merging_logic.rs:1237
+  compute_rejection_options
+  --
+  rejected_so_far : HashableSet &#60; A &#62;
+  remaining_conflicts_map : HashMap &#60; A , HashableSet &#60; A &#62; &#62;
+}
+entity "StateChange" as E1712 <<struct>> {
+  rspace++/src/rspace/merger/state_change.rs:19
+  --
+  datums_changes : DashMap &#60; Blake2b256Hash , ChannelChange &#60; Vec &#60; u8 &#62; &#62;\n    &#62;
+  cont_changes : DashMap &#60; Vec &#60; Blake2b256Hash &#62; , ChannelChange &#60; Vec &#60;\n    u8 &#62; &#62; &#62;
+  consume_channels_to_join_serialized_map : DashMap &#60; Vec &#60; Blake2b256Hash\n    &#62; , Vec &#60; u8 &#62; &#62;
+}
+entity "JoinActionKind" as E1713 <<enum>> {
+  rspace++/src/rspace/merger/state_change_merger.rs:17
+  --
+  AddJoin.0 : Vec &#60; Blake2b256Hash &#62;
+  RemoveJoin.0 : Vec &#60; Blake2b256Hash &#62;
+}
+E1706 --> E1710 : number_channels_data
+E1707 --> E1706 : index
+E1709 --> E1708 : value
+E1710 --> E1708 : value
+legend bottom
+Fields preserve source types. Arrows show local type references, not ownership or foreign keys.
+Other type definitions are listed in inventory.md. Enum rows are alternatives.
+endlegend
+@enduml

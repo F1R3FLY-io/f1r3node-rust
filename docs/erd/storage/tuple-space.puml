@@ -1,0 +1,58 @@
+@startuml
+!include ../style.puml
+title Persistent tuple-space roots, radix nodes, and cold leaves
+entity "{prefix}-roots" as Roots <<LMDB>> {
+  current-root -> raw root hash
+  raw root hash -> ASCII tag
+  environment : {prefix}/history
+}
+entity "{prefix}-history" as History <<LMDB>> {
+  * key : Blake2b-256 encoded node hash
+  --
+  value : compact radix node encoding
+  environment : {prefix}/history
+}
+entity "Radix node" as Node {
+  slots : 256 items
+  item : Empty OR Leaf OR NodePtr
+  prefix : byte path
+  leaf value : cold leaf hash
+  node pointer : child node hash
+}
+entity "{prefix}-cold" as Cold <<LMDB>> {
+  * key : bincode Blake2b256Hash of leaf content
+  --
+  value : bincode PersistedData
+  environment : {prefix}/cold
+}
+entity PersistedData {
+  Data(DataLeaf)
+  Continuations(ContinuationsLeaf)
+  Joins(JoinsLeaf)
+}
+entity DataLeaf {
+  bytes : serialized datums
+  each datum : value, persist, Produce source
+}
+entity ContinuationsLeaf {
+  bytes : serialized waiting continuations
+  each : patterns, continuation, persist, peeks, Consume
+}
+entity JoinsLeaf {
+  bytes : serialized channel lists
+}
+Roots --> History : root hash
+History "1" --> "1" Node : decode
+Node --> History : NodePtr child hashes
+Node --> Cold : Leaf value hashes
+Cold "1" --> "1" PersistedData : decode
+PersistedData --> DataLeaf : alternative
+PersistedData --> ContinuationsLeaf : alternative
+PersistedData --> JoinsLeaf : alternative
+legend bottom
+prefix = rspace for chain state, eval for evaluator state.
+Trie paths distinguish data, continuations, and joins before the channel hash.
+Legacy mode uses rspace/casper/v2/{history,roots,cold,channels}, each named db.
+Sources: roots_store.rs, radix_tree.rs, cold_store.rs, serializers.rs, rnode_key_value_store_manager.rs.
+endlegend
+@enduml
