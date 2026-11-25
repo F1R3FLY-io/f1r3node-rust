@@ -1,1 +1,0 @@
-../casper/cbc-evidence/docs-casper-design-authority-live-executor-md.md

@@ -4,13 +4,12 @@
 use comm::rust::rp::protocol_helper;
 use models::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
-    BlockMessageProto, BlockRequestProto, FloorCacheRequestProto, FloorCacheResponseProto,
-    ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto, GetWalPayloadRequestProto,
-    HasBlockProto, HasBlockRequestProto, HasSnapshotProto, HasSnapshotRequestProto,
-    HasWalPayloadProto, HasWalPayloadRequestProto, MergeableEntryRequestProto,
-    MergeableEntryResponseProto, NoApprovedBlockAvailableProto, SnapshotChunkResponseProto,
-    StoreItemsMessageProto, StoreItemsMessageRequestProto, UnapprovedBlockProto,
-    WalPayloadResponseProto,
+    BlockMessageProto, BlockPrunedResponseProto, BlockRequestProto, FloorCacheRequestProto,
+    FloorCacheResponseProto, ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto,
+    GetWalPayloadRequestProto, HasBlockProto, HasBlockRequestProto, HasSnapshotProto,
+    HasSnapshotRequestProto, HasWalPayloadProto, HasWalPayloadRequestProto,
+    NoApprovedBlockAvailableProto, SnapshotChunkResponseProto, StoreItemsMessageProto,
+    StoreItemsMessageRequestProto, UnapprovedBlockProto, WalPayloadResponseProto,
 };
 use models::routing::{Packet, Protocol};
 use models::rust::block_hash::BlockHash;
@@ -66,6 +65,7 @@ pub enum CasperMessageProto {
     ApprovedBlock(ApprovedBlockProto),
     ApprovedBlockRequest(ApprovedBlockRequestProto),
     BlockRequest(BlockRequestProto),
+    BlockPrunedResponse(BlockPrunedResponseProto),
     HasBlock(HasBlockProto),
     HasBlockRequest(HasBlockRequestProto),
     ForkChoiceTipRequest(ForkChoiceTipRequestProto),
@@ -74,8 +74,6 @@ pub enum CasperMessageProto {
     NoApprovedBlockAvailable(NoApprovedBlockAvailableProto),
     StoreItemsMessageRequest(StoreItemsMessageRequestProto),
     StoreItemsMessage(StoreItemsMessageProto),
-    MergeableEntryRequest(MergeableEntryRequestProto),
-    MergeableEntryResponse(MergeableEntryResponseProto),
     FloorCacheRequest(FloorCacheRequestProto),
     FloorCacheResponse(FloorCacheResponseProto),
     // Snapshot chunk-fetch (Wave 3, Phase 7b-1).
@@ -103,6 +101,7 @@ pub fn to_casper_message_proto(packet: &Packet) -> PacketParseResult<CasperMessa
         "ApprovedBlock" => convert_approved_block(packet),
         "ApprovedBlockRequest" => convert_approved_block_request(packet),
         "BlockRequest" => convert_block_request(packet),
+        "BlockPrunedResponse" => convert_block_pruned_response(packet),
         "HasBlock" => convert_has_block(packet),
         "HasBlockRequest" => convert_has_block_request(packet),
         "ForkChoiceTipRequest" => convert_fork_choice_tip_request(packet),
@@ -111,8 +110,6 @@ pub fn to_casper_message_proto(packet: &Packet) -> PacketParseResult<CasperMessa
         "NoApprovedBlockAvailable" => convert_no_approved_block_available(packet),
         "StoreItemsMessageRequest" => convert_store_items_message_request(packet),
         "StoreItemsMessage" => convert_store_items_message(packet),
-        "MergeableEntryRequest" => convert_mergeable_entry_request(packet),
-        "MergeableEntryResponse" => convert_mergeable_entry_response(packet),
         "FloorCacheRequest" => parse_packet::<FloorCacheRequestProto>(packet)
             .map(CasperMessageProto::FloorCacheRequest),
         "FloorCacheResponse" => parse_packet::<FloorCacheResponseProto>(packet)
@@ -151,6 +148,9 @@ pub fn casper_message_from_proto(proto: CasperMessageProto) -> Result<CasperMess
             Ok(CasperMessage::from_approved_block_request(proto))
         }
         CasperMessageProto::BlockRequest(proto) => Ok(CasperMessage::from_block_request(proto)),
+        CasperMessageProto::BlockPrunedResponse(proto) => {
+            Ok(CasperMessage::from_block_pruned_response(proto))
+        }
         CasperMessageProto::HasBlock(proto) => Ok(CasperMessage::from_has_block(proto)),
         CasperMessageProto::HasBlockRequest(proto) => {
             Ok(CasperMessage::from_has_block_request(proto))
@@ -169,17 +169,11 @@ pub fn casper_message_from_proto(proto: CasperMessageProto) -> Result<CasperMess
         CasperMessageProto::StoreItemsMessage(proto) => {
             CasperMessage::from_store_items_message(proto)
         }
-        CasperMessageProto::MergeableEntryRequest(proto) => {
-            Ok(CasperMessage::from_mergeable_entry_request(proto))
-        }
         CasperMessageProto::FloorCacheRequest(proto) => {
             Ok(CasperMessage::from_floor_cache_request(proto))
         }
         CasperMessageProto::FloorCacheResponse(proto) => {
             Ok(CasperMessage::from_floor_cache_response(proto))
-        }
-        CasperMessageProto::MergeableEntryResponse(proto) => {
-            Ok(CasperMessage::from_mergeable_entry_response(proto))
         }
         CasperMessageProto::GetSnapshotChunkRequest(proto) => {
             Ok(CasperMessage::from_get_snapshot_chunk_request(proto))
@@ -225,6 +219,10 @@ fn convert_block_request(packet: &Packet) -> PacketParseResult<CasperMessageProt
     parse_packet::<BlockRequestProto>(packet).map(CasperMessageProto::BlockRequest)
 }
 
+fn convert_block_pruned_response(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
+    parse_packet::<BlockPrunedResponseProto>(packet).map(CasperMessageProto::BlockPrunedResponse)
+}
+
 fn convert_has_block(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
     parse_packet::<HasBlockProto>(packet).map(CasperMessageProto::HasBlock)
 }
@@ -257,16 +255,6 @@ fn convert_store_items_message_request(packet: &Packet) -> PacketParseResult<Cas
 
 fn convert_store_items_message(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
     parse_packet::<StoreItemsMessageProto>(packet).map(CasperMessageProto::StoreItemsMessage)
-}
-
-fn convert_mergeable_entry_request(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
-    parse_packet::<MergeableEntryRequestProto>(packet)
-        .map(CasperMessageProto::MergeableEntryRequest)
-}
-
-fn convert_mergeable_entry_response(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
-    parse_packet::<MergeableEntryResponseProto>(packet)
-        .map(CasperMessageProto::MergeableEntryResponse)
 }
 
 /// Generic function to parse a packet into a specific protobuf message type

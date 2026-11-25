@@ -31,7 +31,7 @@ node deploy \
 Parameters:
 - positional: path to the `.rho` file
 - `--private-key` (or `--private-key-path`): deployer's key
-- `--phlo-limit`: maximum phlogiston to spend
+- `--phlo-limit`: maximum phlogiston to spend, at most the shard's `maxPhloLimit` (see `GET /api/status`)
 - `--phlo-price`: price per phlogiston unit (typically 1)
 - `--valid-after-block`: the deploy is valid for `deploy-lifespan` blocks after this height
 - `--shard-id`: target shard
@@ -86,7 +86,7 @@ curl -X POST http://localhost:40413/api/deploy \
     "data": {
       "term": "new stdout(`rho:io:stdout`) in { stdout!(\"hello\") }",
       "timestamp": 1700000000000,
-      "phloPrice": 1,
+      "phloPrice": "1",
       "phloLimit": 100000,
       "validAfterBlockNumber": 0,
       "shardId": "root"

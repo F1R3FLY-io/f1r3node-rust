@@ -1,0 +1,219 @@
+{
+  "acceptance": null,
+  "change": {
+    "task": "Issue #649 (PR #622 review follow-up), PR #774",
+    "design": "docs/casper/design/soak-log-budget-guardian.md",
+    "commit": "da4e394588b19614ff2a20cb63cabb2414c6072a",
+    "origin": "Issue #649 lists four log probe hardening items from the PR #622 review. The driver is accepted at 82fe22a0a (digest 4bc13454). Thirteen later commits on dev changed the driver or its fixture without a new acceptance, and no gate detected it (issue #777). This package therefore covers the full change from 82fe22a0a to da4e39458.",
+    "issue_649": [
+      "The node log docker exec gets /dev/null as its standard input, so a later change cannot consume the container ID list.",
+      "An empty LogPath makes the probe unavailable with the reason 'the logging driver writes no log file'.",
+      "The probe error file is a mktemp file in TMPDIR. An EXIT trap in the guardian removes it. Nothing is written to OUTPUT_DIR.",
+      "SOAK_NODE_LOG_DIR sets the node log directory (default /var/lib/rnode/logs). A value that is not an absolute path of letters, digits, '.', '_', '-', and '/' stops the driver with exit 2."
+    ],
+    "unaccepted_changes_since_82fe22a0a": [
+      {
+        "commit": "2da04d374",
+        "files": [
+          "fixture"
+        ],
+        "change": "After a fixture exit 2, report the scenario, the driver exit code, the summary state, and the last 20 driver log lines. SOAK_DISK_TEST_DRIVER_TIMEOUT overrides the driver timeout (TASK-023-2)."
+      },
+      {
+        "commit": "abffaba3b",
+        "files": [
+          "fixture"
+        ],
+        "change": "The log-probe-vanished workload ends after the vanish and one later probe, not after a fixed 25 s sleep (TASK-023-1)."
+      },
+      {
+        "commit": "8f657a9d2",
+        "files": [
+          "driver"
+        ],
+        "change": "session_bounded kills its watchdog by PID when the process group kill fails, because the watchdog may not have called setsid yet. Before, wait blocked for the full watchdog budget (TASK-023-8)."
+      },
+      {
+        "commit": "37a19c662",
+        "files": [
+          "driver",
+          "fixture"
+        ],
+        "change": "session_bounded tries the group kill again after the PID kill. The fixture counts LogPath probes with a default of 0 when the command file does not exist yet."
+      },
+      {
+        "commit": "291d4843c",
+        "files": [
+          "driver",
+          "fixture"
+        ],
+        "change": "During work, one failed log probe is a warning. Two consecutive failed probes are a breach. The admission check still refuses on one failure (weekend soak 38076682321)."
+      },
+      {
+        "commit": "4c328485c",
+        "files": [
+          "driver",
+          "fixture"
+        ],
+        "change": "The node log probe keeps the stdout and the stderr of docker exec apart. It parses stdout only after a zero exit status, and it accepts only one '<bytes>\\t<directory>' line (PR #698 review)."
+      },
+      {
+        "commit": "29868fde6",
+        "files": [
+          "fixture"
+        ],
+        "change": "The fixture creates ci-ports.shard.yml, matches the new compose arguments, and returns a validator1 port in the merged config."
+      },
+      {
+        "commit": "1878e9d7a",
+        "files": [
+          "driver"
+        ],
+        "change": "Each iteration can start the node I/O sampler (scripts/bench/sample-node-io.sh) for issue #24."
+      },
+      {
+        "commit": "ac5274230",
+        "files": [
+          "driver"
+        ],
+        "change": "The repository variable SOAK_IO_DIAGNOSTICS gates the I/O sampler, which is off by default."
+      },
+      {
+        "commit": "e5c922f19",
+        "files": [
+          "driver"
+        ],
+        "change": "An iteration that the segment deadline stops (exit 124) is not recorded as a provider failure in its metrics."
+      },
+      {
+        "commit": "cb6201d93",
+        "files": [
+          "driver"
+        ],
+        "change": "The driver compresses each iteration's node-metrics CSV with gzip when the snapshot loop stops, and skips it under an emergency deadline (weekend run 38995239992 stopped on the disk floor)."
+      },
+      {
+        "commit": "1c4803567",
+        "files": [
+          "driver"
+        ],
+        "change": "The gzip step runs after the I/O sampler stops. A gzip failure is logged, and the soak continues (PR #759 review)."
+      },
+      {
+        "commit": "2b7e06f76",
+        "files": [
+          "driver"
+        ],
+        "change": "Each iteration writes issue24-phases.jsonl next to metrics.json (PR #767)."
+      }
+    ],
+    "fixture": "Three new scenarios in scripts/bench/test-soak-disk-admission.sh: log-probe-no-logfile-boundary, log-node-dir-override, and log-node-dir-range. The in-budget scenarios check that each node log exec gets /dev/null as its standard input. Every log scenario checks that no probe error file remains. The fixture now has 59 scenarios.",
+    "unchanged": "The budgets, the breach rule of 291d4843c, the admission check, the 4-second probe deadline, the disk floor, the memory floor, the hygiene band, the emergency deadline, the stop path, and the summary contract are unchanged by the issue #649 commit."
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf",
+    "docs/claims/soak-disk-protection.md": "906a0755b470f1f5da538fd87a8a096f3119b05d891a14514a05fb7e5cac1c81"
+  },
+  "claim_digests_note": "docs/claims/soak-disk-protection.md changed from 6fd5f24d at the previous package. Commit 8f657a9d2 added the bounded-command liveness statement to CLAIM-SOAK-001.",
+  "claim_discharge": "pending",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "related_claims": {
+    "CLAIM-SOAK-001": "proposed-unratified. The node log caps stay recorded as enforced checks in docs/claims/soak-disk-protection.md."
+  },
+  "evidence_before_change": {
+    "scripts/run-merge-recovery-soak.sh": {
+      "path": "docs/casper/cbc-evidence/runs/casper-soak-log-budget-guardian-acceptance-20261005-01/report.json",
+      "sha256": "32d0af7350dda78fa0927025fa310c2a18b0cde8c2b5e780ef188d656ca5b199"
+    },
+    "scripts/bench/test-soak-disk-admission.sh": {
+      "path": "docs/casper/cbc-evidence/runs/casper-soak-log-budget-guardian-acceptance-20261005-01/report.json",
+      "sha256": "32d0af7350dda78fa0927025fa310c2a18b0cde8c2b5e780ef188d656ca5b199"
+    }
+  },
+  "source_digests_before_change": {
+    "scripts/bench/test-soak-disk-admission.sh": "beb5576761f8ad614f9aa6f5d2d2e16514fe3e0b98a38241eb860a26f02b8123",
+    "scripts/run-merge-recovery-soak.sh": "4bc134545eea9a2f355ea3e018d8024400d8691ca22047402a20b7bc16e6008a"
+  },
+  "source_digests": {
+    "scripts/bench/test-soak-disk-admission.sh": "09f0877dab9161b1419e5574b3d97bdb7a8ce5fbe22988f3cf3c50cbe2edf4ac",
+    "scripts/run-merge-recovery-soak.sh": "4626f343d7915214bca057255b6352b3fb4db95cec3c9677873e34afe976d663"
+  },
+  "verification": {
+    "fixture_local": {
+      "command": "bash scripts/bench/test-soak-disk-admission.sh",
+      "environment": "Docker 29.8.2 on arm64. Each scenario runs in a disposable unprivileged container, with no network and no Docker socket, and with the casper-soak harness binary built from the same tree.",
+      "exit": 0,
+      "scenarios_passed": 59,
+      "scope": "All 59 scenarios, including the 7 changed or new log scenarios."
+    },
+    "regression_controls": {
+      "description": "The fixture of this change with the driver of dev 1ea533684, which has none of the issue #649 changes",
+      "behavioral_failures": {
+        "log-within-budget": "A node log exec did not get /dev/null as its standard input.",
+        "log-node-dir-override": "A node log exec did not get /dev/null as its standard input.",
+        "log-probe-no-logfile-boundary": "The refusal did not name the missing log file.",
+        "log-node-dir-range": "A relative SOAK_NODE_LOG_DIR permitted workload admission.",
+        "log-probe-missing-active": "The guardian left .log-probe-error in the output directory."
+      },
+      "passed": 0
+    },
+    "claims_audit_local": {
+      "command": "check-casper-claims",
+      "exit": 0
+    },
+    "not_run_locally": "The driver suite (scripts/bench/test-run-merge-recovery-soak.sh) needs Linux. It stops at the first iteration on macOS for the unchanged dev driver too. The hosted run below covers it."
+  },
+  "hosted": {
+    "repository": "F1R3FLY-io/f1r3node-rust",
+    "tested_sha": "649b64c00bc31016650c2388872b8ec519538d3d",
+    "note": "The tested SHA merges dev (PR #770) into the change commit da4e39458. The merge changes only scripts/bench/summarize-issue24-phases.sh and its test. The driver and fixture digests at the tested SHA equal the source digests of this package.",
+    "full_suite": {
+      "run_id": 39263491669,
+      "conclusion": "success",
+      "job_summary": "31 jobs passed and 6 were skipped, without ci-heavy.",
+      "steps": {
+        "Verify soak fail-closed driver": "success",
+        "Verify isolated disk admission and emergency scenarios": "success",
+        "Verify the disk admission failure report and bounded-command liveness": "success"
+      }
+    },
+    "claims_and_bindings": {
+      "run_id": 39262131408,
+      "conclusion": "success",
+      "jobs": [
+        "Casper driver binding fixtures",
+        "Formal verification gate",
+        "Node observation binding tests"
+      ]
+    }
+  },
+  "soak_observation": {
+    "run_id": 39270872359,
+    "kind": "30-minute non-publishing OCI protection canary (canary=true, series daily)",
+    "target_sha": "649b64c00bc31016650c2388872b8ec519538d3d",
+    "dispatched_at": "2026-10-19T14:39Z",
+    "note": "The target is the tested SHA of this package. Its driver and fixture bytes equal the source digests of this package. Earlier soaks on master ran the 13 drift commits as they merged.",
+    "status": "in progress. This record is interim and does not discharge the claim. The acceptance package records the canary result."
+  },
+  "expected_gate_state": "check-casper-claims passes because it reports CLAIM-CASPER-SOAK-001 as pending. The two ledger records keep the digests of the acceptance package casper-soak-log-budget-guardian-acceptance-20261005-01 until a maintainer accepts this package.",
+  "node_execution": false,
+  "phase": "pre_pr216_merge",
+  "schema_version": 1,
+  "scope": "bounded-harness-node-log-budgets",
+  "soak": "pending",
+  "status": "change-verified-pending-acceptance",
+  "tiers": {
+    "binding": "passed",
+    "construction": "not-applicable",
+    "refutation": "bounded-safety-pass"
+  },
+  "verified_at": "2026-10-19",
+  "waiver": null,
+  "acceptance_request": {
+    "acceptor": "jltatbeach",
+    "where": "PR #774 comment",
+    "scope": "One acceptance covers the four issue #649 changes and the 13 unaccepted commits since 82fe22a0a. The maintainer decided on 2026-10-19 to accept the 13 commits after the fact, in this package, without a separate review of each commit."
+  }
+}

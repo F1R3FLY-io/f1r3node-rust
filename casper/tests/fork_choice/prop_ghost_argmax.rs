@@ -147,7 +147,7 @@ async fn build_fork(
         .zip(shape.stakes.iter())
         .map(|(v, stake)| Bond {
             validator: v.clone(),
-            stake: *stake,
+            stake: u64::try_from(*stake).expect("fixture stake").into(),
         })
         .collect();
 
@@ -235,7 +235,7 @@ proptest! {
             let estimator = Estimator::apply();
 
             let tips = estimator
-                .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, false, None, None), latest, i32::MAX, None)
+                .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, None, None, None), latest, i32::MAX, None)
                 .await
                 .expect("tips")
                 .tips;
@@ -299,7 +299,7 @@ async fn main_parent_is_ghost_head_deterministic() {
             let ghost_main_parent = estimator
                 .tips_with_latest_messages(
                     &mut dag,
-                    &BlockMetadata::from_block(&genesis, false, None, None),
+                    &BlockMetadata::from_block(&genesis, None, None, None),
                     permuted,
                     i32::MAX,
                     None,

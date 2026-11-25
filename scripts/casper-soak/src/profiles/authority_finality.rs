@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use casper_soak::{array, artifact, file_hash, hash, manifest, object, parse, text};
+use casper_soak::{array, artifact, file_hash, hash, manifest, object, parse, stake, text};
 use eyre::{ensure, eyre, Result};
+use num_bigint::Sign;
 use serde_json::{json, Value};
 
 use crate::incarnation;
@@ -79,25 +80,25 @@ fn equal(a: &Value, b: &Value, fields: &[&str]) -> Result<()> {
     Ok(())
 }
 pub fn threshold(v: &Value) -> Result<bool> {
-    let q = manifest::decimal(&v["q"])? as u128;
-    let total = manifest::decimal(&v["S"])? as u128;
-    let agreeing = manifest::decimal(&v["agreeing_stake"])? as u128;
+    let q = stake(&v["q"])?;
+    let total = stake(&v["S"])?;
+    let agreeing = stake(&v["agreeing_stake"])?;
     let n = manifest::decimal(&v["n"])? as u128;
     let d = manifest::decimal(&v["d"])? as u128;
     ensure!(
-        total > 0 && q <= agreeing && agreeing <= total && d > 0 && n <= d,
+        total.sign() == Sign::Plus
+            && q.sign() != Sign::Minus
+            && q <= agreeing
+            && agreeing <= total
+            && d > 0
+            && n <= d,
         "Threshold inputs are outside the supported domain."
     );
-    if agreeing * 2 <= total {
+    if &agreeing * 2u8 <= total {
         return Ok(false);
     }
-    let lhs = q
-        .checked_mul(2)
-        .and_then(|x| x.checked_mul(d))
-        .ok_or_else(|| eyre!("Threshold arithmetic overflow."))?;
-    let rhs = total
-        .checked_mul(d + n)
-        .ok_or_else(|| eyre!("Threshold arithmetic overflow."))?;
+    let lhs = q * 2u8 * d;
+    let rhs = total * (d + n);
     Ok(lhs >= rhs)
 }
 fn measurement(v: &Value) -> Result<Option<&Value>> {
@@ -896,7 +897,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn threshold_checked_arithmetic_matches_two_thousand_small_integer_cases() {
+    fn threshold_exact_arithmetic_matches_two_thousand_small_integer_cases() {
         for seed in 0u64..2000 {
             let total = seed % 32 + 1;
             let agreeing = (seed / 3) % (total + 1);
@@ -912,7 +913,7 @@ mod tests {
         assert!(
             !threshold(&json!({"q":"0","S":max,"agreeing_stake":"0","n":max,"d":max})).unwrap()
         );
-        assert!(threshold(&json!({"q":max,"S":max,"agreeing_stake":max,"n":"0","d":max})).is_err());
+        assert!(threshold(&json!({"q":max,"S":max,"agreeing_stake":max,"n":"0","d":max})).unwrap());
         assert!(threshold(&json!({"q":"1","S":"1","agreeing_stake":"1","n":"0","d":"0"})).is_err());
     }
 }

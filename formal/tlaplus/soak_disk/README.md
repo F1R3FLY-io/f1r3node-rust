@@ -205,7 +205,7 @@ bash scripts/bench/test-soak-disk-admission.sh --scenario band  # one scenario
 
 Do not run the historical pre-fix driver directly on a host. Its sweep ignores the root overrides.
 
-Evidence: [docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md](../../../docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md).
+Evidence: [docs/casper/cbc-evidence/scripts-run-merge-recovery-soak-sh.md](../../../docs/casper/cbc-evidence/scripts-run-merge-recovery-soak-sh.md).
 
 The per-cycle modules that preceded these two (`SoakDisk`, `DiskProbeAdmission`, `DiskSampleValidation`, `ActiveDiskProbe`, `DiskEmergencyRecord`, `GuardianSupervision`, `DiskProbeDeadline`, `DiskDiagnosticDeadline`, `DiskBreachRestart`, `DiskStopDeadline`, `GuardianAdmission`) are unregistered and scheduled for removal. See `docs/work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md`.
 

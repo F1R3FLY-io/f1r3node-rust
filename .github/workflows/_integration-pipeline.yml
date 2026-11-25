@@ -28,11 +28,21 @@ on:
         type: string
         required: false
         default: ""
+      build_id:
+        description: "Build identity for the selected source. Empty uses git describe."
+        type: string
+        required: false
+        default: ""
       gated:
         description: "When true, launch_ephemeral_runners uses the ephemeral-launch environment (required-reviewer approval)."
         type: boolean
         required: false
         default: false
+      oci_tests:
+        description: "When false, no OCI runners launch and the integration and UCC tests skip. The image build and the smoke tests still run."
+        type: boolean
+        required: false
+        default: true
 env:
   CARGO_TERM_COLOR: always
   # AES/SSE2 CPU features for gxhash (required by PathMap crate)
@@ -45,7 +55,7 @@ env:
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit,
   # via `just repin-system-integration <sha>`.
-  SYSTEM_INTEGRATION_REF: 942de7b7ead62cb215fc162efce7ae1b6206e261
+  SYSTEM_INTEGRATION_REF: 54f89b684fb64aa0357e23d266d734782f17cb62
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -75,7 +85,10 @@ jobs:
   # rather than on each other.
   build_docker_image:
     name: Build Docker Image (${{ matrix.arch }})
-    needs: await_approval
+    needs: [await_approval, resolve_harness]
+    outputs:
+      build_id: ${{ steps.identity.outputs.build_id }}
+      node_version: ${{ steps.identity.outputs.node_version }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
@@ -104,6 +117,7 @@ jobs:
         with:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
           # Fork PRs reach this pipeline through ci-fork-pr.yml's
           # pull_request_target, and recent actions/checkout releases refuse to
@@ -138,11 +152,34 @@ jobs:
             echo "Docker daemon config already up to date, skipping restart"
           fi
 
+      - name: Resolve build identity
+        id: identity
+        env:
+          REQUESTED_BUILD_ID: ${{ inputs.build_id }}
+        shell: bash -euo pipefail {0}
+        run: |
+          VERSION="$REQUESTED_BUILD_ID"
+          if [ -z "$VERSION" ]; then
+            VERSION="$(git describe --tags --always --exclude '*/*')"
+          fi
+          if [[ -z "$VERSION" || "$VERSION" == unknown || "$VERSION" =~ [[:space:][:cntrl:]] ]]; then
+            echo "::error::The build identity must be known and contain no whitespace or control characters."
+            exit 1
+          fi
+          NODE_VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' node/Cargo.toml | head -n 1)"
+          if [ -z "$NODE_VERSION" ]; then
+            echo "::error::Cannot read the node package version from node/Cargo.toml."
+            exit 1
+          fi
+          echo "build_id=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "node_version=$NODE_VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Build Docker Image
+        env:
+          VERSION: ${{ steps.identity.outputs.build_id }}
         shell: bash -ex {0}
         run: |
           docker context use default
-          VERSION="$(git describe --tags --always)"
           docker buildx build \
             --platform ${{ matrix.platform }} \
             --file node/Dockerfile \
@@ -150,6 +187,14 @@ jobs:
             --tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} \
             --load \
             .
+
+      - name: Verify image build identity
+        env:
+          IMAGE_NAME: ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }}
+          EXPECTED_BUILD_ID: ${{ steps.identity.outputs.build_id }}
+        shell: bash -euo pipefail {0}
+        run: |
+          bash .github/scripts/check-image-build-identity.sh "$IMAGE_NAME" "$EXPECTED_BUILD_ID"
 
       - name: Export Docker Image
         shell: bash -ex {0}
@@ -201,6 +246,35 @@ jobs:
         shell: bash -e {0}
         run: echo "Ephemeral launch approved for this run; proceeding to OCI launch."
 
+  resolve_harness:
+    name: Resolve Candidate Integration Pin
+    needs: await_approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      system_integration_ref: ${{ steps.pin.outputs.system_integration_ref }}
+    steps:
+      - name: Checkout pin reader
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Read candidate integration pin
+        id: pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPOSITORY: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
+          SOURCE_SHA: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
+        shell: bash -euo pipefail {0}
+        run: |
+          pin="$(bash .github/scripts/read-system-integration-pin.sh --repository "$SOURCE_REPOSITORY" "$SOURCE_SHA")"
+          echo "system_integration_ref=$pin" >> "$GITHUB_OUTPUT"
+          echo "integration suite pin: $pin"
+
   # Launch ephemeral OCI VMs that will pick up the integration-tests matrix
   # jobs. Each VM boots from a baked image, registers as a GitHub Actions runner
   # under this run's own run-<id> label, picks up exactly one matrix job, then
@@ -221,6 +295,7 @@ jobs:
   launch_ephemeral_runners:
     name: Launch Ephemeral Runners
     needs: [await_approval, build_docker_image]
+    if: inputs.oci_tests
     runs-on: ubuntu-latest
     environment: oci-credentials
     # Serializes real OCI VM creation across every heavy run in the repository:
@@ -477,7 +552,7 @@ jobs:
   # in ci.yml / ci-fork-pr.yml match on contains("Integration Tests (amd64-").
   integration_tests:
     name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }})
-    needs: [build_docker_image, launch_ephemeral_runners]
+    needs: [build_docker_image, launch_ephemeral_runners, resolve_harness]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     permissions:
@@ -561,7 +636,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: F1R3FLY-io/system-integration
-          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
+          ref: ${{ needs.resolve_harness.outputs.system_integration_ref }}
           path: system-integration
           persist-credentials: false
 
@@ -623,7 +698,6 @@ jobs:
             integration-tests/test/tests/custom/ \
             integration-tests/test/tests/standalone/ \
             --deselect integration-tests/test/tests/custom/test_load.py \
-            --deselect integration-tests/test/tests/custom/test_shard_degradation.py \
             --deselect integration-tests/test/tests/custom/test_user_contract_concurrency.py \
             --deselect integration-tests/test/tests/shared/test_convergence.py::test_network_converges_after_slow_deploy \
             --provider=${{ matrix.provider }} \
@@ -642,14 +716,15 @@ jobs:
   # The user-contract-concurrency suite runs as its own job: its tests share
   # one xdist group, so inside integration_tests they would serialize onto a
   # single worker and put ~30-40 wall-clock minutes of convergence rounds on
-  # that job's critical path. Both legs run on amd64 — the faster runners for
+  # that job's critical path. test_load, which loads a shard through deploy
+  # queues, runs after it on the same runners. Both legs run on amd64 — the faster runners for
   # a wall-clock-bound suite — covering both providers with two runners,
   # respecting the OCI daily instance-creation quota. The job name keeps the
   # "Integration Tests (arch-" prefix so the per-arch aggregators in ci.yml /
   # ci-fork-pr.yml count these legs without modification.
   ucc_tests:
     name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}, ucc)
-    needs: [build_docker_image, launch_ephemeral_runners]
+    needs: [build_docker_image, launch_ephemeral_runners, resolve_harness]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     permissions:
@@ -697,7 +772,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: F1R3FLY-io/system-integration
-          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
+          ref: ${{ needs.resolve_harness.outputs.system_integration_ref }}
           path: system-integration
           persist-credentials: false
 
@@ -713,16 +788,17 @@ jobs:
           zcat /tmp/rust-node-docker.tar.gz | docker image load
           docker tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} ${{ env.DOCKER_IMAGE_NAME }}:latest
 
-      - name: Extract rnode binary from image (subprocess provider only)
+      - name: Extract rnode and deploy-queue binaries from image (subprocess provider only)
         if: matrix.provider == 'subprocess'
         shell: bash -ex {0}
         run: |
           docker create --name extract-rnode ${{ env.DOCKER_IMAGE_NAME }}:latest
           docker cp extract-rnode:/opt/docker/bin/node /tmp/rnode
-          chmod +x /tmp/rnode
+          docker cp extract-rnode:/opt/docker/bin/deploy-queue /tmp/deploy-queue
+          chmod +x /tmp/rnode /tmp/deploy-queue
           docker rm extract-rnode
           /tmp/rnode --version 2>/dev/null || true
-          ldd /tmp/rnode
+          ldd /tmp/rnode /tmp/deploy-queue
 
       - name: Install system-integration dependencies
         shell: bash -ex {0}
@@ -731,16 +807,22 @@ jobs:
           poetry lock --no-update
           poetry install --with integration
 
-      - name: Run UCC Suite (${{ matrix.provider }} provider)
+      # test_load runs after the UCC suite on the same runner: it builds its own
+      # shard with a deploy queue in front of each validator once the UCC shard
+      # is gone. No -x, so a UCC failure still reports test_load's verdict.
+      - name: Run UCC Suite and Load Test (${{ matrix.provider }} provider)
         shell: bash -ex {0}
         env:
           F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
           F1R3FLY_NODE_BINARY: /tmp/rnode
+          F1R3FLY_DEPLOY_QUEUE_BINARY: /tmp/deploy-queue
           F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node/src/main/resources/defaults.conf
+          LOAD_TEST_OUT: ${{ github.workspace }}/system-integration/integration-tests/test-load.jsonl
         run: |
           cd system-integration
           poetry run pytest \
             integration-tests/test/tests/custom/test_user_contract_concurrency.py \
+            integration-tests/test/tests/custom/test_load.py \
             --provider=${{ matrix.provider }} \
             -v --tb=short --instafail --timeout=1200
 
@@ -968,7 +1050,11 @@ jobs:
 
       - name: Start standalone node
         shell: bash -ex {0}
-        run: docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml up -d
+        # docker/.env is not tracked (#745). Compose reads the node keys from
+        # it, so the job copies the development template first.
+        run: |
+          cp docker/.env.example docker/.env
+          docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml up -d
 
       - name: Wait for Running state
         shell: bash -ex {0}
@@ -983,9 +1069,25 @@ jobs:
           done
           docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml logs 2>&1 | grep "Making a transition to Running state" || (echo "FAIL: Node did not reach Running state" && exit 1)
 
-      - name: Verify HTTP API
-        shell: bash -ex {0}
-        run: curl -sf http://localhost:14403/api/status
+      - name: Verify node build identity
+        env:
+          EXPECTED_BUILD_ID: ${{ needs.build_docker_image.outputs.build_id }}
+          NODE_VERSION: ${{ needs.build_docker_image.outputs.node_version }}
+        shell: bash -exu -o pipefail {0}
+        run: |
+          test -n "$EXPECTED_BUILD_ID"
+          test "$EXPECTED_BUILD_ID" != unknown
+          EXPECTED="F1r3node Rust $NODE_VERSION ($EXPECTED_BUILD_ID)"
+          STATUS_VERSION="$(curl -fsS http://localhost:14403/api/status | jq -er '.version.node')"
+          HTTP_VERSION="$(curl -fsS http://localhost:14403/version)"
+          test "$STATUS_VERSION" = "$EXPECTED"
+          test "$HTTP_VERSION" = "$EXPECTED"
+          GRPC_VERSION="$(docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml \
+            exec -T standalone grpcurl -plaintext 127.0.0.1:40401 casper.v1.DeployService/status \
+            | jq -er '.status.version.node')"
+          test "$GRPC_VERSION" = "$EXPECTED"
+          docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml logs --no-color \
+            | grep -F "$EXPECTED"
 
       - name: Wait for 10 finalized blocks
         shell: bash -ex {0}
@@ -1000,6 +1102,12 @@ jobs:
             sleep 5
           done
           [ "$LFB" -ge 10 ] 2>/dev/null || (echo "FAIL: LFB only at #$LFB after 300s" && exit 1)
+
+      - name: Check malformed deploy rejection through the queue
+        run: |
+          bash scripts/ci/test-malformed-deploy.sh http://127.0.0.1:14403 \
+            docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml \
+            exec -T deploy-queue /opt/docker/bin/node --grpc-host 127.0.0.1 --grpc-port 40401
 
       - name: Collect logs
         if: always()
@@ -1029,7 +1137,7 @@ jobs:
     name: Smoke Test (Docker Shard)
     needs: build_docker_image
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
     steps:
@@ -1076,7 +1184,11 @@ jobs:
 
       - name: Start shard
         shell: bash -ex {0}
-        run: docker compose -f docker/shard.yml -f docker/ci-ports.shard.yml up -d
+        # docker/.env is not tracked (#745). Compose reads the node keys from
+        # it, so the job copies the development template first.
+        run: |
+          cp docker/.env.example docker/.env
+          docker compose -f docker/shard.yml -f docker/ci-ports.shard.yml up -d
 
       - name: Wait for bootstrap Running state
         shell: bash -ex {0}
@@ -1104,6 +1216,25 @@ jobs:
             sleep 5
           done
           [ "$LFB" -ge 10 ] 2>/dev/null || (echo "FAIL: LFB only at #$LFB after 300s" && exit 1)
+          echo "LFB_BEFORE_RESTART=$LFB" >> "$GITHUB_ENV"
+
+      - name: Restart shard with its data
+        shell: bash -ex {0}
+        run: docker compose -f docker/shard.yml -f docker/ci-ports.shard.yml restart
+
+      - name: Wait for finalization to advance after restart
+        shell: bash -ex {0}
+        run: |
+          for i in $(seq 1 60); do
+            LFB=$(curl -sf http://localhost:14403/api/last-finalized-block 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('blockInfo',{}).get('blockNumber',0))" 2>/dev/null || echo 0)
+            echo "  [$((i*5))s] LFB: #$LFB (before restart: #$LFB_BEFORE_RESTART)"
+            if [ "$LFB" -gt "$LFB_BEFORE_RESTART" ] 2>/dev/null; then
+              echo "Finalization advanced to LFB #$LFB after the restart"
+              break
+            fi
+            sleep 5
+          done
+          [ "$LFB" -gt "$LFB_BEFORE_RESTART" ] 2>/dev/null || (echo "FAIL: LFB #$LFB did not pass #$LFB_BEFORE_RESTART within 300s of the restart" && exit 1)
 
       - name: Collect logs
         if: always()
@@ -1208,9 +1339,13 @@ jobs:
           # inside the ephemeral range the Actions agent draws from. This job
           # binds on the host directly, so the ports move via CLI flags rather
           # than a compose mapping.
+          # The key is the development standalone key from docker/.env.example
+          # (#745), so no key value is written into this workflow.
+          validator_key="$(sed -n 's/^STANDALONE_PRIVATE_KEY=//p' docker/.env.example)"
+          test -n "$validator_key"
           ./target/release/node run -s \
             --config-file=run-local/conf/standalone.conf \
-            --validator-private-key=5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657 \
+            --validator-private-key="$validator_key" \
             --host=localhost \
             --protocol-port=14400 \
             --api-port-grpc-external=14401 \

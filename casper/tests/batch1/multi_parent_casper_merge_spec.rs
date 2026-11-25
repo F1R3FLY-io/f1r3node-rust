@@ -67,17 +67,20 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
         .block_dag_storage
         .get_representation()
         .expect("dag representation")
-        .is_finalized(&genesis.genesis_block.block_hash));
+        .is_finalized(&genesis.genesis_block.block_hash)
+        .unwrap());
     assert!(!nodes[0]
         .block_dag_storage
         .get_representation()
         .expect("dag representation")
-        .is_finalized(&block0.block_hash));
+        .is_finalized(&block0.block_hash)
+        .unwrap());
     assert!(!nodes[0]
         .block_dag_storage
         .get_representation()
         .expect("dag representation")
-        .is_finalized(&block1.block_hash));
+        .is_finalized(&block1.block_hash)
+        .unwrap());
 
     //multiparent block joining block0 and block1 since they do not conflict
     let multiparent_block = {
@@ -599,12 +602,14 @@ async fn hash_set_casper_should_produce_identical_merge_results_regardless_of_fi
         .block_dag_storage
         .get_representation()
         .expect("dag representation")
-        .is_finalized(&block0.block_hash));
+        .is_finalized(&block0.block_hash)
+        .unwrap());
     assert!(!nodes[1]
         .block_dag_storage
         .get_representation()
         .expect("dag representation")
-        .is_finalized(&block0.block_hash));
+        .is_finalized(&block0.block_hash)
+        .unwrap());
 
     // Node2 creates a merge block (node2 has NOT finalized block0 either)
     let d2 = construct_deploy::source_deploy_now(

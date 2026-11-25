@@ -4,13 +4,12 @@ use prost::Message;
 
 use crate::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
-    BlockMessageProto, BlockRequestProto, FloorCacheRequestProto, FloorCacheResponseProto,
-    ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto, GetWalPayloadRequestProto,
-    HasBlockProto, HasBlockRequestProto, HasSnapshotProto, HasSnapshotRequestProto,
-    HasWalPayloadProto, HasWalPayloadRequestProto, MergeableEntryRequestProto,
-    MergeableEntryResponseProto, NoApprovedBlockAvailableProto, SnapshotChunkResponseProto,
-    StoreItemsMessageProto, StoreItemsMessageRequestProto, UnapprovedBlockProto,
-    WalPayloadResponseProto,
+    BlockMessageProto, BlockPrunedResponseProto, BlockRequestProto, FloorCacheRequestProto,
+    FloorCacheResponseProto, ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto,
+    GetWalPayloadRequestProto, HasBlockProto, HasBlockRequestProto, HasSnapshotProto,
+    HasSnapshotRequestProto, HasWalPayloadProto, HasWalPayloadRequestProto,
+    NoApprovedBlockAvailableProto, SnapshotChunkResponseProto, StoreItemsMessageProto,
+    StoreItemsMessageRequestProto, UnapprovedBlockProto, WalPayloadResponseProto,
 };
 use crate::routing::Packet;
 
@@ -21,48 +20,103 @@ pub trait ToPacket {
     fn mk_packet(&self) -> Packet;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageClass {
+    Pull,
+    Push,
+}
+
 // Macro to implement both traits
 #[macro_export]
 macro_rules! impl_packet {
-    ($type:ty, $tag:expr) => {
+    ($(($type:ty, $tag:literal, $class:ident)),+ $(,)?) => {
+        pub fn packet_message_class(type_id: &str) -> MessageClass {
+            match type_id {
+                $($tag => MessageClass::$class,)+
+                _ => MessageClass::Push,
+            }
+        }
+
+        $(impl $type {
+            pub const PACKET_TYPE_ID: &'static str = $tag;
+        }
+
         impl ToPacket for $type {
             fn content(&self) -> prost::bytes::Bytes { self.encode_to_vec().into() }
 
             fn mk_packet(&self) -> Packet {
                 Packet {
-                    type_id: $tag.to_string(),
+                    type_id: Self::PACKET_TYPE_ID.to_string(),
                     content: self.content(),
                 }
             }
-        }
+        })+
     };
 }
 
 // Implement for all message types
-impl_packet!(BlockMessageProto, "BlockMessage");
-impl_packet!(BlockHashMessageProto, "BlockHashMessage");
-impl_packet!(ApprovedBlockProto, "ApprovedBlock");
-impl_packet!(UnapprovedBlockProto, "UnapprovedBlock");
-impl_packet!(BlockApprovalProto, "BlockApproval");
-impl_packet!(NoApprovedBlockAvailableProto, "NoApprovedBlockAvailable");
-impl_packet!(BlockRequestProto, "BlockRequest");
-impl_packet!(ApprovedBlockRequestProto, "ApprovedBlockRequest");
-impl_packet!(HasBlockRequestProto, "HasBlockRequest");
-impl_packet!(HasBlockProto, "HasBlock");
-impl_packet!(ForkChoiceTipRequestProto, "ForkChoiceTipRequest");
-impl_packet!(StoreItemsMessageRequestProto, "StoreItemsMessageRequest");
-impl_packet!(StoreItemsMessageProto, "StoreItemsMessage");
-impl_packet!(MergeableEntryRequestProto, "MergeableEntryRequest");
-impl_packet!(MergeableEntryResponseProto, "MergeableEntryResponse");
-impl_packet!(FloorCacheRequestProto, "FloorCacheRequest");
-impl_packet!(FloorCacheResponseProto, "FloorCacheResponse");
-// Snapshot chunk-fetch (Wave 3, Phase 7b-1).
-impl_packet!(GetSnapshotChunkRequestProto, "GetSnapshotChunkRequest");
-impl_packet!(SnapshotChunkResponseProto, "SnapshotChunkResponse");
-impl_packet!(HasSnapshotRequestProto, "HasSnapshotRequest");
-impl_packet!(HasSnapshotProto, "HasSnapshot");
-// WAL payload fetch (Wave 3, Phase 7b-2).
-impl_packet!(GetWalPayloadRequestProto, "GetWalPayloadRequest");
-impl_packet!(WalPayloadResponseProto, "WalPayloadResponse");
-impl_packet!(HasWalPayloadRequestProto, "HasWalPayloadRequest");
-impl_packet!(HasWalPayloadProto, "HasWalPayload");
+impl_packet!(
+    (BlockMessageProto, "BlockMessage", Push),
+    (BlockHashMessageProto, "BlockHashMessage", Push),
+    (ApprovedBlockProto, "ApprovedBlock", Push),
+    (UnapprovedBlockProto, "UnapprovedBlock", Push),
+    (BlockApprovalProto, "BlockApproval", Push),
+    (
+        NoApprovedBlockAvailableProto,
+        "NoApprovedBlockAvailable",
+        Push
+    ),
+    (BlockRequestProto, "BlockRequest", Pull),
+    (BlockPrunedResponseProto, "BlockPrunedResponse", Push),
+    (ApprovedBlockRequestProto, "ApprovedBlockRequest", Pull),
+    (HasBlockRequestProto, "HasBlockRequest", Pull),
+    (HasBlockProto, "HasBlock", Push),
+    (ForkChoiceTipRequestProto, "ForkChoiceTipRequest", Pull),
+    (
+        StoreItemsMessageRequestProto,
+        "StoreItemsMessageRequest",
+        Pull
+    ),
+    (StoreItemsMessageProto, "StoreItemsMessage", Push),
+    (FloorCacheRequestProto, "FloorCacheRequest", Pull),
+    (FloorCacheResponseProto, "FloorCacheResponse", Push),
+    (
+        GetSnapshotChunkRequestProto,
+        "GetSnapshotChunkRequest",
+        Pull
+    ),
+    (SnapshotChunkResponseProto, "SnapshotChunkResponse", Push),
+    (HasSnapshotRequestProto, "HasSnapshotRequest", Pull),
+    (HasSnapshotProto, "HasSnapshot", Push),
+    (GetWalPayloadRequestProto, "GetWalPayloadRequest", Pull),
+    (WalPayloadResponseProto, "WalPayloadResponse", Push),
+    (HasWalPayloadRequestProto, "HasWalPayloadRequest", Pull),
+    (HasWalPayloadProto, "HasWalPayload", Push),
+);
+
+/// The packet of a block whose `BlockMessageProto` encoding is already in hand.
+pub fn encoded_block_message_packet(content: prost::bytes::Bytes) -> Packet {
+    Packet {
+        type_id: BlockMessageProto::PACKET_TYPE_ID.to_string(),
+        content,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_encoded_block_packet_equals_the_packet_of_the_block() {
+        let block = BlockMessageProto {
+            block_hash: vec![7; 32].into(),
+            sender: vec![3; 65].into(),
+            seq_num: 11,
+            ..BlockMessageProto::default()
+        };
+        assert_eq!(
+            encoded_block_message_packet(block.encode_to_vec().into()),
+            block.mk_packet()
+        );
+    }
+}

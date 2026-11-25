@@ -20,7 +20,6 @@ use crate::rust::interpreter::compiler::receive_binds_sort_matcher::pre_sort_bin
 use crate::rust::interpreter::compiler::span_utils::SpanContext;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
-use crate::rust::interpreter::unwrap_option_safe;
 use crate::rust::interpreter::util::filter_and_adjust_bitset;
 
 pub fn normalize_p_input<'ast>(
@@ -311,9 +310,9 @@ pub fn normalize_p_input<'ast>(
                 current_known_free = updated_known_free;
                 locally_free = union(
                     locally_free,
-                    par.locally_free(par.clone(), input.bound_map_chain.depth() as i32),
+                    par.locally_free(input.bound_map_chain.depth() as i32),
                 );
-                connective_used = connective_used || par.clone().connective_used(par);
+                connective_used = connective_used || par.connective_used();
             }
 
             Ok((
@@ -371,7 +370,7 @@ pub fn normalize_p_input<'ast>(
                         current_known_free = updated_known_free;
                         locally_free = union(
                             locally_free,
-                            par.locally_free(par.clone(), input.bound_map_chain.depth() as i32 + 1),
+                            par.locally_free(input.bound_map_chain.depth() as i32 + 1),
                         );
                     }
 
@@ -425,17 +424,15 @@ pub fn normalize_p_input<'ast>(
             |known_free, receive_bind_free_map| {
                 let (updated_known_free, conflicts) = known_free.merge(receive_bind_free_map);
 
-                if conflicts.is_empty() {
-                    Ok(updated_known_free)
-                } else {
-                    let (shadowing_var, source_span) = &conflicts[0];
-                    let original_span =
-                        unwrap_option_safe(known_free.get(shadowing_var))?.source_span;
-                    Err(InterpreterError::UnexpectedReuseOfNameContextFree {
-                        var_name: shadowing_var.to_string(),
-                        first_use: original_span,
-                        second_use: *source_span,
-                    })
+                match conflicts.into_iter().next() {
+                    None => Ok(updated_known_free),
+                    Some((shadowing_var, first_use, second_use)) => {
+                        Err(InterpreterError::UnexpectedReuseOfNameContextFree {
+                            var_name: shadowing_var,
+                            first_use,
+                            second_use,
+                        })
+                    }
                 }
             },
         )?;

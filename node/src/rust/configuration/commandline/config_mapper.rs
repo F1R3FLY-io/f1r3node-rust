@@ -234,10 +234,6 @@ impl ConfigMapper<Options> for NodeConf {
                 run.casper_loop_interval,
             );
             Self::try_override_value(
-                &mut self.casper.requested_blocks_timeout,
-                run.requested_blocks_timeout,
-            );
-            Self::try_override_value(
                 &mut self.casper.fork_choice_stale_threshold,
                 run.fork_choice_stale_threshold,
             );
@@ -338,12 +334,20 @@ impl ConfigMapper<Options> for NodeConf {
                 self.casper.genesis_ceremony.ceremony_master_mode = true;
             }
             Self::try_override_value(&mut self.casper.min_phlo_price, run.min_phlo_price);
+            Self::try_override_value(&mut self.casper.max_phlo_limit, run.max_phlo_limit);
 
             // Mergeable channel GC overrides
             if run.disable_mergeable_channel_gc {
                 self.casper.enable_mergeable_channel_gc = false;
             } else if run.enable_mergeable_channel_gc {
                 self.casper.enable_mergeable_channel_gc = true;
+            }
+
+            // Block-store GC overrides
+            if run.disable_block_store_gc {
+                self.casper.enable_block_store_gc = false;
+            } else if run.enable_block_store_gc {
+                self.casper.enable_block_store_gc = true;
             }
 
             // Heartbeat configuration overrides
@@ -399,6 +403,19 @@ impl ConfigMapper<Options> for NodeConf {
                     .empty_frontier_max_unfinalized_blocks,
                 run.heartbeat_advanced_empty_frontier_max_unfinalized_blocks,
             );
+
+            // File I/O FIP static-provisioning CLI vecs.  Move the
+            // parsed `Vec<CliStatic{File,Dir}Arg>` off `RunOptions`
+            // into `Storage` so `setup_node_program` can thread them
+            // into `merge_and_validate` without reaching back into
+            // the clap options struct.  Replace semantics: a CLI
+            // invocation always sets the slot (empty vec included),
+            // mirroring the "last run wins" posture of the other
+            // overrides.
+            self.storage.cli_oracle_static_files = run.oracle_static_files;
+            self.storage.cli_oracle_static_dirs = run.oracle_static_dirs;
+            self.storage.cli_consensus_static_files = run.consensus_static_files;
+            self.storage.cli_consensus_static_dirs = run.consensus_static_dirs;
         }
     }
 
@@ -485,7 +502,6 @@ mod tests {
         "--validator-private-key=111111",
         "--validator-private-key-path=/var/lib/rnode/pem.key",
         "--casper-loop-interval=111111seconds",
-        "--requested-blocks-timeout=111111seconds",
         "--finalization-rate=111111",
         "--max-number-of-parents=111111",
         "--max-parent-depth=111111",
@@ -494,6 +510,7 @@ mod tests {
         "--synchrony-constraint-threshold=111111",
         "--height-constraint-threshold=111111",
         "--max-user-deploys-per-block=777777",
+        "--max-phlo-limit=888888",
         "--frrd-max-peer-queue-size=111111",
         "--frrd-give-up-after-skipped=111111",
         "--frrd-drop-peer-after-retries=111111",
@@ -597,6 +614,18 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_args_non_positive_max_phlo_limit_rejected() {
+        for value in ["0", "-1"] {
+            let arg = format!("--max-phlo-limit={value}");
+            let err = Options::try_parse_from(["rnode", "run", &arg])
+                .err()
+                .expect("a non-positive --max-phlo-limit must fail clap parse")
+                .to_string();
+            assert!(err.contains(&format!("{value} is not in 1..")), "{err}");
+        }
+    }
+
+    #[test]
     fn test_cli_options_override_defaults() {
         // Create CLI options that mirror the Scala test
         let options = Options {
@@ -662,7 +691,6 @@ mod tests {
                 validator_private_key: Some("111111".to_string()),
                 validator_private_key_path: Some(PathBuf::from("/var/lib/rnode/pem.key")),
                 casper_loop_interval: Some(Duration::from_secs(111111)),
-                requested_blocks_timeout: Some(Duration::from_secs(111111)),
                 finalization_rate: Some(111111),
                 max_number_of_parents: Some(111111),
                 max_parent_depth: Some(111111),
@@ -676,9 +704,9 @@ mod tests {
                 frrd_drop_peer_after_retries: Some(111111),
                 bonds_file: Some("/var/lib/rnode/genesis/bonds1.txt".to_string()),
                 wallets_file: Some("/var/lib/rnode/genesis/wallets1.txt".to_string()),
-                bond_minimum: Some(111111),
+                bond_minimum: Some(111111.into()),
                 genesis_block_number: Some(222),
-                bond_maximum: Some(111111),
+                bond_maximum: Some(111111.into()),
                 epoch_length: Some(111111),
                 quarantine_length: Some(111111),
                 number_of_active_validators: Some(111111),
@@ -697,10 +725,13 @@ mod tests {
                 deploy_timestamp: Some(111111),
                 dev_mode: true,
                 deployer_private_key: Some("test-key".to_string()),
-                min_phlo_price: Some(1),
+                min_phlo_price: Some((1).into()),
+                max_phlo_limit: Some(888888),
                 ceremony_master_mode: false,
                 enable_mergeable_channel_gc: false,
                 disable_mergeable_channel_gc: false,
+                enable_block_store_gc: false,
+                disable_block_store_gc: false,
                 heartbeat_enabled: true,
                 heartbeat_disabled: true,
                 heartbeat_check_interval: Some(Duration::from_secs(111111)),
@@ -765,8 +796,10 @@ mod tests {
                 port_http: 40403,
                 port_admin_http: 40405,
                 http_max_body_bytes: 16777216,
+                deploy_max_inflight: None,
                 max_blocks_limit: 100,
                 enable_reporting: false,
+                report_cache_retention_blocks: 0,
                 exploratory_deploy_max_concurrent: 1,
                 exploratory_deploy_phlo_limit: 5_000_000,
                 exploratory_deploy_execution_timeout: Duration::from_secs(15),
@@ -780,6 +813,10 @@ mod tests {
             storage: crate::rust::configuration::model::Storage {
                 data_dir: PathBuf::from("/var/lib/rnode"),
                 file_io_provisioning: Default::default(),
+                cli_oracle_static_files: Vec::new(),
+                cli_oracle_static_dirs: Vec::new(),
+                cli_consensus_static_files: Vec::new(),
+                cli_consensus_static_dirs: Vec::new(),
             },
             tls: crate::rust::configuration::model::TlsConf {
                 certificate_path: PathBuf::from("/var/lib/rnode/node.certificate.pem"),
@@ -795,11 +832,12 @@ mod tests {
                 shard_name: "".to_string(),
                 parent_shard_id: "/".to_string(),
                 casper_loop_interval: Duration::from_secs(1),
-                requested_blocks_timeout: Duration::from_secs(30),
                 finalization_rate: 1,
                 max_number_of_parents: 1,
                 max_parent_depth: 1,
+                dag_hot_window_depth: 1024,
                 deploy_lifespan: 50,
+                deploy_admission: Default::default(),
                 deploy_play_budget: Duration::ZERO,
                 fork_choice_stale_threshold: Duration::from_secs(30),
                 fork_choice_check_if_stale_interval: Duration::from_secs(30),
@@ -814,8 +852,8 @@ mod tests {
                     genesis_data_dir: "/var/lib/rnode/genesis".to_string(),
                     bonds_file: "".to_string(),
                     wallets_file: "".to_string(),
-                    bond_minimum: 1,
-                    bond_maximum: 1000000000,
+                    bond_minimum: 1.into(),
+                    bond_maximum: 1000000000.into(),
                     epoch_length: 10000,
                     quarantine_length: 10000,
                     number_of_active_validators: 5,
@@ -835,7 +873,8 @@ mod tests {
                     genesis_validator_mode: false,
                     ceremony_master_mode: false,
                 },
-                min_phlo_price: 1,
+                min_phlo_price: (1).into(),
+                max_phlo_limit: 20_000_000,
                 heartbeat_conf: casper::rust::casper_conf::HeartbeatConf {
                     enabled: false,
                     check_interval: Duration::from_secs(30),
@@ -846,6 +885,8 @@ mod tests {
                 enable_mergeable_channel_gc: false,
                 mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
                 mergeable_channels_gc_depth_buffer: 10,
+                enable_block_store_gc: false,
+                enable_history_pruning: false,
                 synchrony_recovery_stall_window: Duration::from_secs(60),
                 synchrony_recovery_cooldown: Duration::from_secs(20),
                 synchrony_recovery_max_bypasses: 2,
@@ -1034,10 +1075,6 @@ mod tests {
             default_config.casper.casper_loop_interval,
             Duration::from_secs(111111)
         );
-        assert_eq!(
-            default_config.casper.requested_blocks_timeout,
-            Duration::from_secs(111111)
-        );
         assert_eq!(default_config.casper.finalization_rate, 111111);
         assert_eq!(default_config.casper.max_number_of_parents, 111111);
         assert_eq!(default_config.casper.max_parent_depth, 111111);
@@ -1062,7 +1099,8 @@ mod tests {
         );
         assert_eq!(default_config.casper.height_constraint_threshold, 111111);
         assert_eq!(default_config.casper.max_user_deploys_per_block, 777777);
-        assert_eq!(default_config.casper.min_phlo_price, 1);
+        assert_eq!(default_config.casper.min_phlo_price, 1.into());
+        assert_eq!(default_config.casper.max_phlo_limit, 888888);
 
         // Heartbeat configuration
         // --heartbeat-disabled takes precedence over --heartbeat-enabled (both set in test options)
@@ -1160,11 +1198,11 @@ mod tests {
         );
         assert_eq!(
             default_config.casper.genesis_block_data.bond_minimum,
-            111111
+            111111.into()
         );
         assert_eq!(
             default_config.casper.genesis_block_data.bond_maximum,
-            111111
+            111111.into()
         );
         assert_eq!(
             default_config.casper.genesis_block_data.epoch_length,
@@ -1212,5 +1250,77 @@ mod tests {
                 .genesis_ceremony
                 .genesis_validator_mode
         );
+    }
+
+    /// `--*-static-{file,dir}` CLI vecs flow from `RunOptions` into
+    /// `Storage.cli_*` so `setup_node_program` can thread them into
+    /// `merge_and_validate` alongside the HOCON entries.  Without
+    /// this wire-up the four `Vec<CliStatic{File,Dir}Arg>` would
+    /// be dropped on the floor at config-mapping time and the
+    /// `--consensus-static-file` / `--oracle-static-dir` CLI
+    /// surface would silently no-op.
+    ///
+    /// Drives the production boot path (`builder::build`) which runs
+    /// HOCON load + `override_config_values` + validation — same
+    /// pipeline `setup_node_program` consumes.
+    #[test]
+    fn test_cli_static_provisioning_vecs_flow_into_storage() {
+        use crate::rust::configuration::commandline::cli_static_provisioning::{
+            CliStaticDirArg, CliStaticFileArg,
+        };
+        use crate::rust::configuration::file_io_provisioning::{StaticDirEntry, StaticFileEntry};
+
+        let argv = vec![
+            "rnode",
+            "run",
+            "--oracle-static-file",
+            r#"cfg={"path":"/etc/cfg","mode":"r"}"#,
+            "--oracle-static-dir",
+            r#"share={"path":"/srv/share","mode":"r+"}"#,
+            "--consensus-static-file",
+            r#"state={"path":"/var/state","mode":"r+"}"#,
+            "--consensus-static-dir",
+            r#"work={"path":"/var/work","mode":"r+"}"#,
+        ];
+        let options = Options::try_parse_from(argv).expect("clap parse");
+        let (cfg, _profile, _config_file, _warnings) =
+            crate::rust::configuration::builder::build(options).expect("builder::build");
+
+        assert_eq!(
+            cfg.storage.cli_oracle_static_files,
+            vec![CliStaticFileArg {
+                logical_name: "cfg".into(),
+                entry: StaticFileEntry {
+                    path: PathBuf::from("/etc/cfg"),
+                    mode: "r".into(),
+                },
+            }],
+            "oracle_static_files must land in storage.cli_oracle_static_files",
+        );
+        assert_eq!(cfg.storage.cli_oracle_static_dirs, vec![CliStaticDirArg {
+            logical_name: "share".into(),
+            entry: StaticDirEntry {
+                path: PathBuf::from("/srv/share"),
+                mode: "r+".into(),
+            },
+        }],);
+        assert_eq!(cfg.storage.cli_consensus_static_files, vec![
+            CliStaticFileArg {
+                logical_name: "state".into(),
+                entry: StaticFileEntry {
+                    path: PathBuf::from("/var/state"),
+                    mode: "r+".into(),
+                },
+            }
+        ],);
+        assert_eq!(cfg.storage.cli_consensus_static_dirs, vec![
+            CliStaticDirArg {
+                logical_name: "work".into(),
+                entry: StaticDirEntry {
+                    path: PathBuf::from("/var/work"),
+                    mode: "r+".into(),
+                },
+            }
+        ],);
     }
 }

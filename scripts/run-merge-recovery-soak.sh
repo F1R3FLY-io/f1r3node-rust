@@ -149,10 +149,14 @@ fi
 # own deadline, undoing the early exit and burning the runner time it was meant
 # to save. The rollup below still runs, so the final segment produces a summary
 # to publish.
+# The summary of such a segment keeps the reason of the earlier stop.
+PRIOR_EARLY_EXIT_REASON=""
 if [ -f "$OUTPUT_DIR/early-exit.txt" ]; then
-	printf 'soak already ended (%s); this segment does no work\n' \
-		"$(head -1 "$OUTPUT_DIR/early-exit.txt" 2>/dev/null || echo 'reason unrecorded')"
+	PRIOR_EARLY_EXIT_LINE="$(head -1 "$OUTPUT_DIR/early-exit.txt" 2>/dev/null)" || PRIOR_EARLY_EXIT_LINE=""
+	printf 'soak already ended (%s); this segment does no work\n' "${PRIOR_EARLY_EXIT_LINE:-reason unrecorded}"
 	DEADLINE=0
+	PRIOR_EARLY_EXIT_REASON="${PRIOR_EARLY_EXIT_LINE%%:*}"
+	[[ "$PRIOR_EARLY_EXIT_REASON" =~ ^[a-z_]+$ ]] || PRIOR_EARLY_EXIT_REASON=earlier_segment
 fi
 
 if [ "$CASPER_RUNTIME" -eq 0 ] && [ -n "$CASPER_MANIFEST_DIGEST" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; then
@@ -343,7 +347,11 @@ fi
 # A failed log probe during work is a breach only when the next probe also
 # fails. Admission checks before work still refuse on one failure.
 LOG_PROBE_FAILURES_FOR_BREACH=2
-NODE_LOG_DIR=/var/lib/rnode/logs
+NODE_LOG_DIR="${SOAK_NODE_LOG_DIR:-/var/lib/rnode/logs}"
+if ! [[ "$NODE_LOG_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+	printf 'SOAK_NODE_LOG_DIR must be an absolute path of letters, digits, ".", "_", "-", and "/"\n' >&2
+	exit 2
+fi
 # Where harness sessions leave their compose and genesis files (the
 # `test-*` sweep below), and where the runner keeps _diag and _work. Both are
 # overridable so the driver test can sweep and measure a private tree instead
@@ -353,6 +361,14 @@ SOAK_RUNNER_ROOT="${SOAK_RUNNER_ROOT:-/opt/actions-runner}"
 DISK_STOP_SECONDS="${SOAK_DISK_STOP_SECONDS:-2}"
 if ! [[ "$DISK_STOP_SECONDS" =~ ^[1-5]$ ]]; then
 	printf 'SOAK_DISK_STOP_SECONDS must be an integer from 1 through 5\n' >&2
+	exit 2
+fi
+# The emergency budget above bounds a stop during a host protection breach.
+# The writer stop at the end of a segment has no emergency, and a slow docker
+# daemon must not make it fail.
+WRITER_STOP_SECONDS="${SOAK_WRITER_STOP_SECONDS:-30}"
+if ! [[ "$WRITER_STOP_SECONDS" =~ ^([5-9]|[1-9][0-9]|1[01][0-9]|120)$ ]]; then
+	printf 'SOAK_WRITER_STOP_SECONDS must be an integer from 5 through 120\n' >&2
 	exit 2
 fi
 GUARDIAN_MAX_SILENCE_SECONDS="${SOAK_GUARDIAN_MAX_SILENCE_SECONDS:-10}"
@@ -366,6 +382,11 @@ if ! [[ "$DISK_HYGIENE_SECONDS" =~ ^([1-9]|[12][0-9]|30)$ ]]; then
 	exit 2
 fi
 DISK_DIAGNOSTIC_SECONDS="${SOAK_DISK_DIAGNOSTIC_SECONDS:-10}"
+DISK_USAGE_RECORD_SECONDS="${SOAK_DISK_USAGE_RECORD_SECONDS:-60}"
+if ! [[ "$DISK_USAGE_RECORD_SECONDS" =~ ^[1-9][0-9]{0,2}$ ]]; then
+	printf 'SOAK_DISK_USAGE_RECORD_SECONDS must be an integer from 1 through 999\n' >&2
+	exit 2
+fi
 if ! [[ "$DISK_DIAGNOSTIC_SECONDS" =~ ^([1-9]|10)$ ]]; then
 	printf 'SOAK_DISK_DIAGNOSTIC_SECONDS must be an integer from 1 through 10\n' >&2
 	exit 2
@@ -544,6 +565,11 @@ log_budget_sample() {
 		container_mb=-
 		node_mb=-
 		if [ "$CONTAINER_LOG_BUDGET_MB" -gt 0 ]; then
+			if [ -z "$path" ]; then
+				log_container_running "$cid" || continue
+				printf 'log probe unavailable: container log of %s (the logging driver writes no log file)\n' "${cid:0:12}" >&2
+				return 1
+			fi
 			if [[ "$path" != /* ]] || ! total="$(log_file_bytes "$path")"; then
 				log_container_running "$cid" || continue
 				printf 'log probe unavailable: container log of %s\n' "${cid:0:12}" >&2
@@ -570,7 +596,7 @@ log_budget_sample() {
 				return 1
 			}
 			exec_status=0
-			exec_out="$(docker exec "$cid" sh -c 'if [ -d "$1" ]; then du -sb "$1"; else printf "0\t%s\n" "$1"; fi' sh "$NODE_LOG_DIR" 2>"$exec_err_file")" ||
+			exec_out="$(docker exec "$cid" sh -c 'if [ -d "$1" ]; then du -sb "$1"; else printf "0\t%s\n" "$1"; fi' sh "$NODE_LOG_DIR" </dev/null 2>"$exec_err_file")" ||
 				exec_status=$?
 			exec_err="$(awk 'NF { print; exit }' "$exec_err_file" 2>/dev/null | tr -cd '[:print:]' | cut -c1-160)"
 			rm -f "$exec_err_file"
@@ -648,35 +674,67 @@ mark_owned_oom_preferred() {
 	host_control prefer-oom "$SOAK_WRITER_OWNER"
 }
 
+# A container can exit between docker ps and docker inspect or the command, so
+# an error there does not prove a failed stop. A container that docker ps still
+# lists afterwards does. Each failure names its step on stderr. Each confirmed
+# container stops before the next inspect: the docker CLI inspects one container
+# for each request, so a slow daemon must not use the emergency budget on
+# inspects before the first stop.
 stop_node_writer_commands() {
 	local selection="$1"
 	shift
-	local cid owner ids status=0
-	stop_owned_host_writers || status=1
-	ids="$(docker ps "$selection" --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER" 2>/dev/null)" || return 1
+	local cid owner ids remaining status=0
+	local -a unconfirmed=()
+	stop_owned_host_writers || {
+		printf 'host-control stop-owned failed\n' >&2
+		status=1
+	}
+	ids="$(docker ps "$selection" --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER")" || {
+		printf 'docker ps failed\n' >&2
+		return 1
+	}
 	while IFS= read -r cid; do
 		[ -n "$cid" ] || continue
 		if ! [[ "$cid" =~ ^[a-f0-9]{64}$ ]]; then
+			printf 'docker ps listed an invalid container ID: %s\n' "$cid" >&2
 			status=1
 			continue
 		fi
-		owner="$(docker inspect --format '{{index .Config.Labels "io.f1r3fly.soak.owner"}}' "$cid" 2>/dev/null)" || {
-			status=1
-			continue
-		}
-		[ "$owner" = "$SOAK_WRITER_OWNER" ] || {
-			status=1
-			continue
-		}
-		docker "$@" "$cid" 2>/dev/null || status=1
+		if owner="$(docker inspect --format '{{index .Config.Labels "io.f1r3fly.soak.owner"}}' "$cid")"; then
+			if [ "$owner" = "$SOAK_WRITER_OWNER" ]; then
+				docker "$@" "$cid" >/dev/null || unconfirmed+=("$cid")
+			else
+				printf 'container %s has the owner %s\n' "${cid:0:12}" "$owner" >&2
+				status=1
+			fi
+		else
+			unconfirmed+=("$cid")
+		fi
 	done <<<"$ids"
+	[ "${#unconfirmed[@]}" -gt 0 ] || return "$status"
+	remaining="$(docker ps "$selection" --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER")" || {
+		printf 'docker ps failed after docker %s\n' "$*" >&2
+		return 1
+	}
+	for cid in "${unconfirmed[@]}"; do
+		if grep -qxF "$cid" <<<"$remaining"; then
+			printf 'container %s remains after docker %s\n' "${cid:0:12}" "$*" >&2
+			status=1
+		fi
+	done
 	return "$status"
 }
 
-stop_node_writers() (
+stop_node_writers() {
+	stop_node_writers_within "$DISK_STOP_SECONDS" "$@"
+}
+
+stop_node_writers_within() (
+	local budget="$1"
+	shift
 	export SOAK_WRITER_OWNER
 	export -f host_control stop_owned_host_writers stop_node_writer_commands
-	timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" \
+	timeout --signal=TERM --kill-after=1 "$budget" \
 		bash -c 'trap "" TERM; stop_node_writer_commands "$@"' bash "$@"
 )
 
@@ -704,7 +762,7 @@ start_crash_monitor() {
 	CRASH_MONITOR_DIR="$directory"
 	(
 		export SOAK_WRITER_OWNER DISK_STOP_SECONDS
-		export -f host_control stop_owned_host_writers stop_node_writer_commands stop_node_writers crash_monitor
+		export -f host_control stop_owned_host_writers stop_node_writer_commands stop_node_writers stop_node_writers_within crash_monitor
 		exec setsid bash -c 'crash_monitor "$@"' soak-crash-monitor "$$" "$identity" "$directory" "$OUTPUT_DIR"
 	) >"$directory/monitor.log" 2>&1 &
 	monitor=$!
@@ -840,6 +898,49 @@ disk_diagnostics_bounded() {
 
 disk_usage_snapshot() {
 	disk_diagnostics_bounded disk_usage_snapshot_data
+}
+
+# One row per component: time, label, component, and MiB. The df rows give
+# the total, and the roots and docker types say which part grew between two
+# labels. Docker reports decimal units, which become MiB here.
+disk_usage_record_rows() {
+	local label="$1" now root mb out
+	now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	df -Pm "$OUTPUT_DIR" 2>/dev/null | awk -v t="$now" -v l="$label" \
+		'NR == 2 { printf "%s\t%s\tdf_used\t%s\n%s\t%s\tdf_avail\t%s\n", t, l, $3, t, l, $4 }'
+	# A command that exits nonzero gives no size, even when it printed a
+	# partial one: du prints a partial total when it cannot read a subtree.
+	while IFS= read -r root; do
+		[ -d "$root" ] || continue
+		mb='?'
+		if out="$(bounded 20 du -sm "$root" 2>/dev/null)"; then
+			out="${out%%$'\t'*}"
+			[[ "$out" =~ ^[0-9]+$ ]] && mb="$out"
+		fi
+		printf '%s\t%s\t%s\t%s\n' "$now" "$label" "$root" "$mb"
+	done < <(disk_usage_roots)
+	if command -v docker >/dev/null 2>&1 &&
+		out="$(bounded 20 docker system df --format '{{.Type}}\t{{.Size}}' 2>/dev/null)"; then
+		printf '%s\n' "$out" |
+			awk -F '\t' -v t="$now" -v l="$label" '
+				NF == 2 && match($2, /^[0-9.]+/) {
+					value = substr($2, 1, RLENGTH); unit = substr($2, RLENGTH + 1)
+					factor = unit == "kB" ? 1e3 : unit == "MB" ? 1e6 : unit == "GB" ? 1e9 : unit == "TB" ? 1e12 : 1
+					type = $1; gsub(/ /, "_", type)
+					printf "%s\t%s\tdocker:%s\t%d\n", t, l, type, value * factor / 1048576
+				}'
+	fi
+}
+
+record_disk_usage() {
+	local definitions file="$OUTPUT_DIR/disk-usage.tsv"
+	[ -s "$file" ] || printf 'time\tlabel\tcomponent\tmb\n' >"$file" 2>/dev/null || return 0
+	definitions="$(
+		declare -p OUTPUT_DIR HARNESS_TELEMETRY_DIRS SOAK_TMP_ROOT SOAK_RUNNER_ROOT
+		declare -f bounded disk_usage_roots disk_usage_record_rows
+	)"
+	SOAK_DISK_USAGE_RECORD=1 timeout --signal=TERM --kill-after=1 "$DISK_USAGE_RECORD_SECONDS" bash -c "$definitions"$'\n''disk_usage_record_rows "$1"' bash "$1" \
+		>>"$file" 2>/dev/null || true
 }
 
 disk_guardian_diagnostics() {
@@ -1357,6 +1458,7 @@ run_bench_segment() {
 			publish_record -t "$OUTPUT_DIR/protection-breach.txt" printf 'The disk sample does not permit benchmark admission. The driver refused work.\n'
 			publish_record "$OUTPUT_DIR/early-exit.txt" printf 'host_protection_breach: benchmark disk sample %s MiB, required %s MiB\n' \
 				"${disk_mb:-unavailable}" "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))"
+			disk_usage_snapshot >"$OUTPUT_DIR/disk-floor-breach.txt" 2>/dev/null || true
 			return 1
 		fi
 	fi
@@ -1454,6 +1556,7 @@ run_bench_segment() {
 	fi
 	INFLIGHT_BENCHMARK=0
 	persist_soak_state || exit 2
+	record_disk_usage "bench-$BENCH_SEGMENTS"
 }
 
 mkdir -p "$OUTPUT_DIR"
@@ -1592,6 +1695,7 @@ ITERATION_TEE_PID=""
 ITERATION_SNAPSHOT_PID=""
 ITERATION_IO_SAMPLER_PID=""
 ITERATION_FIFO=""
+WRITER_STOP_DONE=0
 cleanup_soak_processes() {
 	[ -z "$HOST_GUARDIAN_PID" ] || kill "$HOST_GUARDIAN_PID" 2>/dev/null || true
 	if [ -n "$BENCHMARK_PID" ]; then
@@ -1621,6 +1725,21 @@ cleanup_soak_processes() {
 			fi
 			persist_soak_state || return 1
 		fi
+	elif [ "$CASPER_RUNTIME" -eq 0 ] && [ "$WRITER_STOP_DONE" -eq 0 ]; then
+		# An exit between iterations, for example after a failed state write,
+		# skips the stop at the end of the segment. The writers of a failed
+		# iteration still run, and no later segment owns them.
+		if ! stop_node_writers_within "$WRITER_STOP_SECONDS" -q kill >"$OUTPUT_DIR/.writer-stop.log" 2>&1; then
+			{
+				printf 'Writer termination is unconfirmed at the exit of the driver.\n'
+				cat "$OUTPUT_DIR/.writer-stop.log"
+			} >"$OUTPUT_DIR/writer-stop-failure.txt"
+			[ -f "$OUTPUT_DIR/early-exit.txt" ] ||
+				publish_record "$OUTPUT_DIR/early-exit.txt" printf 'writer_stop_failed: Writer termination is unconfirmed.\n'
+			[ "$FAILURES" -gt 0 ] || FAILURES=1
+			persist_soak_state || true
+		fi
+		rm -f "$OUTPUT_DIR/.writer-stop.log"
 	fi
 	if [ -n "$CRASH_MONITOR_DIR" ]; then
 		printf 'handled\n' >"$CRASH_MONITOR_DIR/handled-exit"
@@ -1708,6 +1827,11 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		container_log_over=0
 		node_log_over=0
 		log_probe_failures=0
+		log_probe_error_file=""
+		if log_budgets_enabled; then
+			log_probe_error_file="$(mktemp "${TMPDIR:-/tmp}/soak-log-probe-error.XXXXXXXX" 2>/dev/null)" || log_probe_error_file=""
+			[ -z "$log_probe_error_file" ] || trap 'rm -f "$log_probe_error_file"' EXIT
+		fi
 		# The disk floor rule for one log probe: a sample over the budget is a
 		# strike, and three consecutive strikes or one sample at two times the
 		# budget is a breach. The comparison avoids doubling a 64-bit budget.
@@ -1768,8 +1892,9 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 				# through docker exec at test teardown, and a probe exec can fail
 				# in that window (soak 38076682321). Two consecutive failed
 				# probes are a breach.
-				if ! log_sample="$(log_budget_probe 2>"$OUTPUT_DIR/.log-probe-error")"; then
-					log_reason="$(head -1 "$OUTPUT_DIR/.log-probe-error" 2>/dev/null)"
+				if ! log_sample="$(log_budget_probe 2>"${log_probe_error_file:-/dev/null}")"; then
+					log_reason=""
+					[ -z "$log_probe_error_file" ] || log_reason="$(head -1 "$log_probe_error_file" 2>/dev/null)"
 					log_probe_failures=$((log_probe_failures + 1))
 					if [ "$log_probe_failures" -lt "$LOG_PROBE_FAILURES_FOR_BREACH" ]; then
 						printf 'log guardian: probe unavailable (%s); consecutive failed probes %s of %s\n' \
@@ -1837,6 +1962,8 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		"$HOST_FREE_FLOOR_MB" "$((HOST_FREE_FLOOR_MB / 2))" "$((HOST_FREE_FLOOR_MB + 4096))" \
 		"$DISK_FREE_FLOOR_MB" "$((DISK_FREE_FLOOR_MB / 2))" "$HOST_GUARDIAN_PID"
 fi
+
+record_disk_usage "segment-$SEGMENT-start"
 
 # Only on the first segment: this is the run's opening baseline measurement,
 # and repeating it at every resume would add segments the cadence never asked
@@ -2165,6 +2292,19 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		FAILURES="$((FAILURES + 1))"
 		persist_soak_state
 		printf '%s\n' "$STATUS" >"$ITERATION_DIR/exit-code.txt"
+		# A pytest that a signal ends, for example an OOM kill, skips its
+		# teardown, and its nodes would run into the next iterations. Stop the
+		# owned writers before the evidence copy. The stop at the end of the
+		# segment fails the soak if a writer remains.
+		if [ "$STATUS" -ge 128 ]; then
+			ITERATION_STOP_BUDGET="$WRITER_STOP_SECONDS"
+			if [ -n "$EMERGENCY_DEADLINE_EPOCH" ] || [ -s "$HOST_GUARDIAN_BREACH" ]; then
+				ITERATION_STOP_BUDGET="$DISK_STOP_SECONDS"
+			fi
+			stop_node_writers_within "$ITERATION_STOP_BUDGET" -q kill >"$ITERATION_DIR/writer-stop.log" 2>&1 ||
+				printf 'The writer stop after iteration %s is unconfirmed.\n' "$ITERATIONS" >>"$ITERATION_DIR/writer-stop.log"
+			[ -s "$ITERATION_DIR/writer-stop.log" ] || rm -f "$ITERATION_DIR/writer-stop.log"
+		fi
 		for evidence_root in "${HARNESS_TELEMETRY_DIRS[@]}"; do
 			[ -d "$evidence_root" ] || continue
 			# Evidence only — logs, CSVs, configs. A full `cp -a` drags the nodes'
@@ -2182,12 +2322,25 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 					tee -a "$OUTPUT_DIR/emergency-skipped.txt" >&2
 				continue
 			fi
+			# A subprocess node of an earlier, deadline-stopped session keeps
+			# writing its logs in its own session directory, and soak
+			# 39711861154 copied 1.6 to 5.7 GB of them into each failed
+			# iteration. Under .subprocess-data, copy only the session
+			# directories that this iteration created.
+			stale_sessions=false
+			[ "$evidence_name" != .subprocess-data ] || stale_sessions=true
 			session_bounded "$copy_budget" bash -c '
 				cd "$1" &&
-					find . -type f -newer "$3" \( -name "*.log" -o -name "*.csv" -o -name "*.txt" \
-						-o -name "*.json" -o -name "*.conf" -o -name "*.toml" \) -print0 |
+					if [ "$4" = true ]; then
+						find . -path "./*" ! -path "./*/*" -type d ! -newer "$3" -prune -o \
+							-type f -newer "$3" \( -name "*.log" -o -name "*.csv" -o -name "*.txt" \
+							-o -name "*.json" -o -name "*.conf" -o -name "*.toml" \) -print0
+					else
+						find . -type f -newer "$3" \( -name "*.log" -o -name "*.csv" -o -name "*.txt" \
+							-o -name "*.json" -o -name "*.conf" -o -name "*.toml" \) -print0
+					fi |
 					tar --null -T - -cf - |
-					tar -xf - -C "$2"' bash "$evidence_root" "$ITERATION_DIR/$evidence_name" "$ITERATION_DIR/.started" ||
+					tar -xf - -C "$2"' bash "$evidence_root" "$ITERATION_DIR/$evidence_name" "$ITERATION_DIR/.started" "$stale_sessions" ||
 				printf 'failure-evidence copy incomplete (non-fatal)\n' >&2
 			printf 'failure evidence preserved in %ss\n' "$(($(date +%s) - COPY_STARTED))"
 		done
@@ -2243,10 +2396,11 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	# Keep this after the metrics, the failure-evidence copy, and the breach
 	# checks above. Moving it earlier deletes the evidence they read.
 	reset_harness_archives
+	record_disk_usage "iteration-$ITERATIONS-$PROVIDER"
 
 	if target_ref_moved; then
 		EARLY_EXIT_REASON="target_advanced"
-		publish_record -t "$OUTPUT_DIR/early-exit.txt" printf '%s advanced past %s; ending soak after iteration %s\n' \
+		publish_record -t "$OUTPUT_DIR/early-exit.txt" printf 'target_advanced: %s advanced past %s; ending soak after iteration %s\n' \
 			"$TARGET_REF" "$TARGET_SHA" "$ITERATIONS"
 		break
 	fi
@@ -2257,6 +2411,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	fi
 
 done
+record_disk_usage "soak-end"
 
 # A breach during the final iteration (or one that still exited 0) ends the
 # loop by deadline without passing the top-of-loop check, which would let the
@@ -2267,6 +2422,83 @@ if [ -z "$EARLY_EXIT_REASON" ] && [ -s "$HOST_GUARDIAN_BREACH" ]; then
 	publish_record -t "$OUTPUT_DIR/protection-breach.txt" head -1 "$HOST_GUARDIAN_BREACH"
 	publish_record "$OUTPUT_DIR/early-exit.txt" printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")"
 	FAILURES="$((FAILURES + 1))"
+fi
+
+# Each segment has its own owner marker, so a later segment cannot stop a
+# writer that this segment leaves running. A deadline stop ends pytest without
+# its teardown, and the detached subprocess nodes of that session keep writing
+# (most likely the disk growth of runs 39194089405 and 39369559337). Kill every
+# owned writer while this segment still owns it. Kill keeps the containers, so
+# their logs remain for the evidence that a deadline stop does not copy. A
+# failed stop makes the soak fail with a count of at least 1. It does not raise
+# a higher count, because the soak fails either way, and writer-stop-failure.txt
+# records the stop. The stop has its own budget: a slow docker daemon at the end
+# of a segment is not a host emergency. After a host protection breach, the
+# emergency budget applies, so the stop cannot delay the breach records.
+WRITER_STOP_STATUS=0
+WRITER_STOP_BUDGET="$WRITER_STOP_SECONDS"
+if [ -n "$EMERGENCY_DEADLINE_EPOCH" ] || [ "$EARLY_EXIT_REASON" = host_protection_breach ]; then
+	WRITER_STOP_BUDGET="$DISK_STOP_SECONDS"
+fi
+if [ "$CASPER_RUNTIME" -eq 0 ]; then
+	stop_node_writers_within "$WRITER_STOP_BUDGET" -q kill >"$OUTPUT_DIR/.writer-stop.log" 2>&1 || WRITER_STOP_STATUS=$?
+fi
+if [ "$WRITER_STOP_STATUS" -ne 0 ]; then
+	{
+		printf 'Writer termination is unconfirmed at the end of the segment.\n'
+		if [ "$WRITER_STOP_STATUS" -eq 124 ] || [ "$WRITER_STOP_STATUS" -eq 137 ]; then
+			printf 'The stop did not complete within %s s.\n' "$WRITER_STOP_BUDGET"
+		fi
+		cat "$OUTPUT_DIR/.writer-stop.log"
+	} >"$OUTPUT_DIR/writer-stop-failure.txt"
+	if [ -z "$EARLY_EXIT_REASON" ] && [ -z "$PRIOR_EARLY_EXIT_REASON" ]; then
+		EARLY_EXIT_REASON="writer_stop_failed"
+		publish_record "$OUTPUT_DIR/early-exit.txt" printf 'writer_stop_failed: Writer termination is unconfirmed.\n'
+	fi
+	if [ "$FAILURES" -eq 0 ]; then
+		FAILURES=1
+	fi
+fi
+# A confirmed stop can still report a skipped process or a container that
+# exited during the stop. Keep that output as evidence.
+if [ "$WRITER_STOP_STATUS" -eq 0 ] && [ -s "$OUTPUT_DIR/.writer-stop.log" ]; then
+	mv -f "$OUTPUT_DIR/.writer-stop.log" "$OUTPUT_DIR/writer-stop.log"
+fi
+rm -f "$OUTPUT_DIR/.writer-stop.log"
+WRITER_STOP_DONE=1
+
+# The owner stop above reported success in soak 39711861154, but the nodes of
+# the two deadline-stopped subprocess sessions kept running and filled the disk.
+# A subprocess node names its session directory in its arguments, so stop every
+# process of this user whose arguments or working directory are under
+# .subprocess-data, whatever its owner marker. residual-writers.txt records each
+# one with its environment and owner state, which shows why the owner stop
+# missed it. A writer that remains fails the soak like a failed owner stop.
+SUBPROCESS_DATA_DIR="$SYSTEM_INTEGRATION_DIR/integration-tests/.subprocess-data"
+# After a host protection breach the soak already fails and must publish that
+# failure promptly, so the stop kills and records within the disk stop budget
+# and skips the 2 s write check.
+if [ "$CASPER_RUNTIME" -eq 0 ] && [ -d "$SUBPROCESS_DATA_DIR" ]; then
+	residual_status=0
+	residual_quiet_ms=2000
+	residual_budget=30
+	if [ "${EARLY_EXIT_REASON:-}" = host_protection_breach ]; then
+		residual_quiet_ms=0
+		residual_budget="$DISK_STOP_SECONDS"
+	fi
+	residual_lines="$(timeout --signal=KILL "$residual_budget" "$SOAK_HARNESS_BIN" host-control stop-under \
+		--owner "$SOAK_WRITER_OWNER" --quiet-ms "$residual_quiet_ms" "$SUBPROCESS_DATA_DIR" 2>/dev/null)" || residual_status=$?
+	[ -z "$residual_lines" ] || printf '%s\n' "$residual_lines" | sed "s/^/segment=$SEGMENT /" >>"$OUTPUT_DIR/residual-writers.txt"
+	if [ "$residual_status" -ne 0 ]; then
+		printf 'Residual writer termination under .subprocess-data is unconfirmed at the end of the segment.\n' >>"$OUTPUT_DIR/writer-stop-failure.txt"
+		if [ -z "$EARLY_EXIT_REASON" ] && [ -z "$PRIOR_EARLY_EXIT_REASON" ]; then
+			EARLY_EXIT_REASON="writer_stop_failed"
+			publish_record "$OUTPUT_DIR/early-exit.txt" printf 'writer_stop_failed: Writer termination is unconfirmed.\n'
+		fi
+		if [ "$FAILURES" -eq 0 ]; then
+			FAILURES=1
+		fi
+	fi
 fi
 
 if [ "${EARLY_EXIT_REASON:-}" = host_protection_breach ]; then
@@ -2290,7 +2522,7 @@ emit_soak_summary() {
 	printf 'failures=%s\n' "$FAILURES"
 	printf 'bench_segments=%s\n' "$BENCH_SEGMENTS"
 	printf 'bench_failures=%s\n' "$BENCH_FAILURES"
-	printf 'early_exit_reason=%s\n' "${EARLY_EXIT_REASON:-none}"
+	printf 'early_exit_reason=%s\n' "${EARLY_EXIT_REASON:-${PRIOR_EARLY_EXIT_REASON:-none}}"
 }
 publish_record -t "$OUTPUT_DIR/summary.txt" emit_soak_summary
 

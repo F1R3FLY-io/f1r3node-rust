@@ -6,11 +6,13 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use casper::rust::engine::engine::transition_to_initializing;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::initializing::Initializing;
 use casper::rust::engine::lfs_tuple_space_requester;
 use casper::rust::errors::CasperError;
+use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::protocol_helper::packet_with_content;
 use comm::rust::test_instances::TransportLayerStub;
 use crypto::rust::hash::blake2b256::Blake2b256;
@@ -43,7 +45,11 @@ impl InitializingSpec {
     }
 
     fn after_each(fixture: &TestFixture) { fixture.transport_layer.reset(); }
-    async fn make_transition_to_running_once_approved_block_received() {
+    async fn make_transition_to_running_once_approved_block_received() -> (
+        Arc<Initializing<TransportLayerStub>>,
+        BlockMessage,
+        PeerNode,
+    ) {
         let _event_bus = shared::rust::shared::f1r3fly_events::F1r3flyEvents::new();
 
         let fixture = TestFixture::new().await;
@@ -176,7 +182,7 @@ impl InitializingSpec {
             store_request_messages.push(request);
             store_response_messages.push(response);
 
-            if last_path.is_empty() || last_path == next_start_path {
+            if last_path.len() <= 1 || last_path == next_start_path {
                 break;
             }
             next_start_path = last_path;
@@ -236,6 +242,7 @@ impl InitializingSpec {
                 packet_with_content(
                     &local_for_expected,
                     &fixture.network_id,
+                    Bytes::new(),
                     request.clone().to_proto(),
                 )
             })
@@ -243,23 +250,15 @@ impl InitializingSpec {
         expected_requests.push(packet_with_content(
             &local_for_expected,
             &fixture.network_id,
+            Bytes::new(),
             block_request_message.to_proto(),
         ));
         expected_requests.push(packet_with_content(
             &local_for_expected,
             &fixture.network_id,
+            Bytes::new(),
             models::casper::ForkChoiceTipRequestProto::default(),
         ));
-        // After the genesis BlockMessage lands and is saved, the joiner fires
-        // a MergeableEntryRequest for the same hash.
-        expected_requests.push(packet_with_content(
-            &local_for_expected,
-            &fixture.network_id,
-            models::casper::MergeableEntryRequestProto {
-                block_hash: genesis.block_hash.clone(),
-            },
-        ));
-
         let test = async {
             engine_cell.set(initializing_engine.clone()).await;
 
@@ -371,6 +370,11 @@ impl InitializingSpec {
         test.await;
 
         Self::after_each(&fixture);
+        (
+            initializing_engine,
+            fixture.genesis.clone(),
+            fixture.local.clone(),
+        )
     }
 }
 
@@ -388,13 +392,27 @@ async fn create_initializing_engine(
     >,
     engine_cell: Arc<EngineCell>,
 ) -> Result<Arc<Initializing<TransportLayerStub>>, String> {
+    create_initializing_engine_with_dag(
+        fixture,
+        the_init,
+        engine_cell,
+        fixture.block_dag_storage.clone(),
+    )
+    .await
+}
+
+#[allow(clippy::type_complexity)]
+async fn create_initializing_engine_with_dag(
+    fixture: &TestFixture,
+    the_init: Arc<
+        dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> + Send + Sync,
+    >,
+    engine_cell: Arc<EngineCell>,
+    block_dag_storage: BlockDagKeyValueStorage,
+) -> Result<Arc<Initializing<TransportLayerStub>>, String> {
     // Create engine-specific channels (each Initializing instance needs its own)
     let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(50);
     let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(50);
-    // Mergeable-channels sync channel.
-    let (mergeable_tx, mergeable_rx) =
-        mpsc::channel::<models::rust::casper::protocol::casper_message::MergeableEntryResponse>(50);
-    let (block_processing_queue_tx, _block_processing_queue_rx) = mpsc::channel(1024);
 
     // Use all stores and managers from fixture (matching Scala's Setup pattern)
     Ok(Arc::new(Initializing::new(
@@ -403,13 +421,11 @@ async fn create_initializing_engine(
         fixture.connections_cell.clone(),
         fixture.last_approved_block.clone(),
         fixture.block_store.clone(),
-        fixture.block_dag_storage.clone(),
+        block_dag_storage,
         fixture.deploy_storage.clone(),
         fixture.rejected_deploy_buffer.clone(),
-        fixture.casper_buffer_storage.clone(),
         fixture.rspace_state_manager.clone(),
-        block_processing_queue_tx,
-        fixture.blocks_in_processing.clone(),
+        fixture.ingest.clone(),
         fixture.casper_shard_conf.clone(),
         Some(fixture.validator_id.clone()),
         the_init,
@@ -417,16 +433,14 @@ async fn create_initializing_engine(
         block_rx,
         tuple_tx,
         tuple_rx,
-        mergeable_tx,
-        mergeable_rx,
         true,
         false,
         fixture.event_publisher.clone(),
-        fixture.block_retriever.clone(),
         engine_cell.clone(),
         fixture.runtime_manager.clone(),
         fixture.estimator.clone(),
         casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
+        None,
         None,
     )))
 }
@@ -434,6 +448,37 @@ async fn create_initializing_engine(
 #[tokio::test]
 async fn make_transition_to_running_once_approved_block_received() {
     InitializingSpec::make_transition_to_running_once_approved_block_received().await;
+}
+
+#[tokio::test]
+async fn a_genesis_restore_and_a_late_block_response_log_no_warnings() {
+    use casper::rust::engine::engine::Engine;
+    use shared::rust::tracing_init::EventCapture;
+    use tracing::Level;
+
+    let capture = EventCapture::new();
+    let _guard = capture.install();
+
+    let (initializing_engine, genesis, peer) =
+        InitializingSpec::make_transition_to_running_once_approved_block_received().await;
+    initializing_engine
+        .handle(peer, CasperMessage::BlockMessage(genesis))
+        .await
+        .expect("a late block response is accepted");
+
+    assert!(capture
+        .with_message("anchored at genesis")
+        .iter()
+        .any(|event| event.level == Level::INFO));
+    assert!(capture
+        .with_message("the LFS block requester is no longer running")
+        .iter()
+        .any(|event| event.level == Level::DEBUG));
+    assert_eq!(capture.with_message("has no floor seed"), vec![]);
+    assert_eq!(
+        capture.with_message("Failed to enqueue BlockMessage"),
+        vec![]
+    );
 }
 
 /// Test that verifies the fix for the race condition where a slow validator
@@ -578,6 +623,279 @@ async fn a_failed_restore_requests_the_approved_block_again() {
     InitializingSpec::after_each(&fixture);
 }
 
+/// An Initializing engine whose DAG holds only the anchor of a truncated
+/// restore, at height 5. Such a restore learns its genesis hash only from the
+/// bootstrap's floor-cache response.
+async fn truncated_restore(
+    fixture: &TestFixture,
+) -> (
+    Arc<Initializing<TransportLayerStub>>,
+    BlockDagKeyValueStorage,
+    ApprovedBlock,
+) {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    use models::rust::block_implicits::get_random_block;
+    use models::rust::casper::protocol::casper_message::ApprovedBlockCandidate;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    let mut kvm = InMemoryStoreManager::new();
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+        .await
+        .expect("empty DAG storage");
+    let anchor = get_random_block(
+        Some(5),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![Bytes::from(vec![0xaa; 32])]),
+        None,
+        None,
+        None,
+        Some(vec![]),
+        None,
+        None,
+    );
+    dag_storage
+        .insert(&anchor, InsertMode::Approved)
+        .expect("insert the restore anchor");
+    let approved_block = ApprovedBlock {
+        candidate: ApprovedBlockCandidate {
+            block: anchor,
+            required_sigs: 0,
+        },
+        floor_seed: None,
+        sigs: vec![],
+    };
+
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let engine = create_initializing_engine_with_dag(
+        fixture,
+        the_init,
+        Arc::new(EngineCell::init()),
+        dag_storage.clone(),
+    )
+    .await
+    .expect("Failed to create Initializing engine");
+    (engine, dag_storage, approved_block)
+}
+
+fn floor_cache_requests(fixture: &TestFixture) -> usize {
+    fixture
+        .transport_layer
+        .get_all_requests()
+        .iter()
+        .filter(|request| {
+            matches!(&request.msg.message, Some(ProtocolMessage::Packet(packet))
+                if packet.type_id == "FloorCacheRequest")
+        })
+        .count()
+}
+
+async fn wait_for_floor_cache_requests(fixture: &TestFixture, count: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while floor_cache_requests(fixture) < count {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the restore asks the bootstrap for the floor cache");
+}
+
+async fn respond_with_floor_cache(
+    engine: &Initializing<TransportLayerStub>,
+    from: comm::rust::peer_node::PeerNode,
+    genesis_hash: Bytes,
+) {
+    use casper::rust::engine::engine::Engine;
+    use models::rust::casper::protocol::casper_message::FloorCacheResponse;
+
+    engine
+        .handle(
+            from,
+            CasperMessage::FloorCacheResponse(FloorCacheResponse {
+                entries: vec![],
+                genesis_hash,
+                genesis_block: None,
+            }),
+        )
+        .await
+        .expect("FloorCacheResponse handling");
+}
+
+fn request_floor_cache_in_background(
+    engine: &Arc<Initializing<TransportLayerStub>>,
+    approved_block: &ApprovedBlock,
+) -> tokio::task::JoinHandle<()> {
+    let (engine, approved_block) = (engine.clone(), approved_block.clone());
+    tokio::spawn(async move {
+        engine
+            .request_floor_cache(&approved_block, 0, i64::MAX)
+            .await
+            .unwrap()
+    })
+}
+
+async fn await_floor_cache_request(request: tokio::task::JoinHandle<()>) {
+    tokio::time::timeout(std::time::Duration::from_secs(30), request)
+        .await
+        .expect("the floor-cache request finishes once the bootstrap answers")
+        .expect("the floor-cache request does not panic");
+}
+
+/// A truncated restore learns its genesis hash only from the bootstrap's
+/// floor-cache response. When every floor-cache attempt times out, the restore
+/// fails and recovery asks again. The retry must reach the bootstrap and learn
+/// the hash once the bootstrap answers: the first attempt consumed the
+/// floor-cache receiver, so recovery must install a new channel.
+#[tokio::test]
+async fn a_floor_cache_retry_after_a_timeout_learns_the_genesis_hash() {
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    let (engine, dag_storage, approved_block) = truncated_restore(&fixture).await;
+
+    tokio::time::pause();
+
+    engine
+        .request_floor_cache(&approved_block, 0, i64::MAX)
+        .await
+        .unwrap();
+    assert!(
+        floor_cache_requests(&fixture) > 0,
+        "the first attempt asks the bootstrap"
+    );
+    assert!(
+        dag_storage.genesis_hash().unwrap().is_none(),
+        "a bootstrap that never answers teaches no genesis hash"
+    );
+
+    fixture.transport_layer.reset();
+    fixture
+        .transport_layer
+        .set_responses(|_peer, _protocol| Ok(()));
+    engine
+        .recover_from_restore_failure(CasperError::RuntimeError(
+            "simulated restore without a genesis hash".to_string(),
+        ))
+        .await
+        .expect("the first failure is recovered");
+
+    let retry = request_floor_cache_in_background(&engine, &approved_block);
+    wait_for_floor_cache_requests(&fixture, 1).await;
+    let genesis_hash = fixture.genesis.block_hash.clone();
+    respond_with_floor_cache(&engine, fixture.local.clone(), genesis_hash.clone()).await;
+    await_floor_cache_request(retry).await;
+
+    assert_eq!(
+        dag_storage.genesis_hash().unwrap(),
+        Some(genesis_hash),
+        "the retry learns the genesis hash from the recovered bootstrap"
+    );
+
+    InitializingSpec::after_each(&fixture);
+}
+
+/// The floor cache, and the genesis hash in it, is requested only from the
+/// bootstrap. A response from another peer must not reach the restore: the
+/// recorded hash is write-once and becomes this node's chain identity. This
+/// applies also to a response that arrives before the request.
+#[tokio::test]
+async fn a_floor_cache_response_from_a_peer_that_is_not_the_bootstrap_is_ignored() {
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    let (engine, dag_storage, approved_block) = truncated_restore(&fixture).await;
+    let forged = Bytes::from(vec![0x66; 32]);
+    let genesis_hash = fixture.genesis.block_hash.clone();
+
+    tokio::time::pause();
+
+    respond_with_floor_cache(&engine, stranger(), forged.clone()).await;
+    let request = request_floor_cache_in_background(&engine, &approved_block);
+    wait_for_floor_cache_requests(&fixture, 1).await;
+    respond_with_floor_cache(&engine, stranger(), forged).await;
+    respond_with_floor_cache(&engine, fixture.local.clone(), genesis_hash.clone()).await;
+    await_floor_cache_request(request).await;
+
+    assert_eq!(
+        dag_storage.genesis_hash().unwrap(),
+        Some(genesis_hash),
+        "only the bootstrap's answer sets the genesis hash"
+    );
+
+    InitializingSpec::after_each(&fixture);
+}
+
+/// A node that adopted its chain identity from the bootstrap does not record a
+/// shipped genesis hash that disagrees with it. The record is write-once, so a
+/// wrong one would cut the node off from its network until a resync.
+#[tokio::test]
+async fn a_shipped_genesis_hash_that_contradicts_the_adopted_identity_is_not_recorded() {
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    let (engine, dag_storage, approved_block) = truncated_restore(&fixture).await;
+    let genesis_hash = fixture.genesis.block_hash.clone();
+    fixture
+        .rp_conf_ask
+        .chain_id
+        .set_once(genesis_hash.clone())
+        .expect("the identity adopted from the bootstrap");
+
+    tokio::time::pause();
+
+    let request = request_floor_cache_in_background(&engine, &approved_block);
+    wait_for_floor_cache_requests(&fixture, 1).await;
+    respond_with_floor_cache(&engine, fixture.local.clone(), Bytes::from(vec![0x66; 32])).await;
+    wait_for_floor_cache_requests(&fixture, 2).await;
+    respond_with_floor_cache(&engine, fixture.local.clone(), genesis_hash.clone()).await;
+    await_floor_cache_request(request).await;
+
+    assert_eq!(
+        dag_storage.genesis_hash().unwrap(),
+        Some(genesis_hash),
+        "the contradicting hash is ignored and the agreeing one is recorded"
+    );
+
+    InitializingSpec::after_each(&fixture);
+}
+
+/// A restore that failed on this node's chain identity fails the same way on
+/// every retry, because the identity is write-once. Recovery gives up at once
+/// and does not start another full restore.
+#[tokio::test]
+async fn a_restore_that_failed_on_the_chain_identity_is_not_retried() {
+    use comm::rust::errors::CommError;
+
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let engine = create_initializing_engine(&fixture, the_init, Arc::new(EngineCell::init()))
+        .await
+        .expect("Failed to create Initializing engine");
+
+    let outcome = engine
+        .recover_from_restore_failure(CasperError::CommError(CommError::WrongChainId(
+            "local".to_string(),
+            "the shipped genesis hash conflicts with the adopted identity".to_string(),
+        )))
+        .await;
+
+    assert!(outcome.is_err(), "a permanent failure ends the recovery");
+    let requests = fixture.transport_layer.get_all_requests();
+    assert!(
+        requests.is_empty(),
+        "no new restore starts after a permanent failure. Requests sent: {:?}",
+        requests.iter().map(|r| &r.msg).collect::<Vec<_>>()
+    );
+
+    InitializingSpec::after_each(&fixture);
+}
+
 #[test]
 fn transition_to_initializing_invokes_init_immediately() {
     use models::casper::ApprovedBlockRequestProto;
@@ -611,8 +929,7 @@ fn transition_to_initializing_invokes_init_immediately() {
                     .set_responses(|_peer, _protocol| Ok(()));
 
                 transition_to_initializing(
-                    &fixture.block_processing_queue_tx,
-                    &fixture.blocks_in_processing,
+                    &fixture.ingest,
                     &fixture.casper_shard_conf,
                     &Some(fixture.validator_id.clone()),
                     the_init,
@@ -626,14 +943,13 @@ fn transition_to_initializing_invokes_init_immediately() {
                     &fixture.block_dag_storage,
                     &fixture.deploy_storage,
                     &fixture.rejected_deploy_buffer,
-                    &fixture.casper_buffer_storage,
                     &fixture.rspace_state_manager,
                     fixture.event_publisher.clone(),
-                    fixture.block_retriever.clone(),
                     &engine_cell,
                     &fixture.runtime_manager,
                     &fixture.estimator,
                     &heartbeat_signal_ref,
+                    None,
                     None,
                 )
                 .await
@@ -927,5 +1243,239 @@ async fn store_items_from_a_peer_that_was_not_asked_are_ignored() {
     );
     assert!(engine_cell.get().await.with_casper().is_some());
 
+    InitializingSpec::after_each(&fixture);
+}
+
+async fn run_restore_that_cites_pruned_genesis(
+    fixture: &TestFixture,
+    answer_from: comm::rust::peer_node::PeerNode,
+    within: std::time::Duration,
+) -> (bool, bool) {
+    use casper::rust::engine::engine::Engine;
+    use models::casper::BlockRequestProto;
+    use models::rust::block_implicits::get_random_block;
+    use models::rust::casper::protocol::casper_message::{
+        ApprovedBlockCandidate, BlockPrunedResponse, Justification,
+    };
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    let genesis_hash = Bytes::from(vec![0xab; 32]);
+    let own = fixture.validator_id.public_key.bytes.clone();
+    let template = |number: i64, parent: Bytes, justifications: Vec<Justification>| {
+        fixture.validator_id.sign_block(&get_random_block(
+            Some(number),
+            None,
+            None,
+            Some(fixture.genesis.body.state.post_state_hash.clone()),
+            None,
+            None,
+            None,
+            Some(vec![parent]),
+            Some(justifications),
+            Some(vec![]),
+            Some(vec![]),
+            Some(vec![]),
+            Some(fixture.casper_shard_conf.shard_name.clone()),
+            None,
+        ))
+    };
+    let cites_genesis = template(9_999, Bytes::from(vec![0xcd; 32]), vec![Justification {
+        validator: Bytes::from(vec![0x77; 65]),
+        latest_block_hash: genesis_hash.clone(),
+    }]);
+    let anchor = template(10_000, cites_genesis.block_hash.clone(), vec![
+        Justification {
+            validator: own,
+            latest_block_hash: cites_genesis.block_hash.clone(),
+        },
+    ]);
+    let approved_block = ApprovedBlock {
+        candidate: ApprovedBlockCandidate {
+            block: anchor.clone(),
+            required_sigs: 0,
+        },
+        floor_seed: None,
+        sigs: vec![],
+    };
+    let honest = honest_store_items(fixture, &approved_block);
+
+    let mut kvm = InMemoryStoreManager::new();
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+        .await
+        .expect("empty DAG storage");
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let engine = create_initializing_engine_with_dag(
+        fixture,
+        the_init,
+        Arc::new(EngineCell::init()),
+        dag_storage,
+    )
+    .await
+    .expect("Failed to create Initializing engine");
+
+    let restore = tokio::spawn({
+        let (engine, local) = (engine.clone(), fixture.local.clone());
+        async move {
+            engine
+                .handle(local, CasperMessage::ApprovedBlock(approved_block))
+                .await
+        }
+    });
+    for chunk in &honest {
+        engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::StoreItemsMessage(chunk.clone()),
+            )
+            .await
+            .expect("StoreItemsMessage handling");
+    }
+
+    let reached_floor_cache = tokio::time::timeout(within, async {
+        let mut answered = 0;
+        while floor_cache_requests(fixture) == 0 {
+            let requests = fixture.transport_layer.get_all_requests();
+            let seen = requests.len();
+            for request in requests.iter().skip(answered) {
+                let Some(ProtocolMessage::Packet(packet)) = &request.msg.message else {
+                    continue;
+                };
+                if packet.type_id != "BlockRequest" {
+                    continue;
+                }
+                let hash = BlockRequestProto::decode(packet.content.as_ref())
+                    .expect("BlockRequest")
+                    .hash;
+                let held = [&anchor, &cites_genesis]
+                    .into_iter()
+                    .find(|block| block.block_hash == hash);
+                let (from, answer) = match held {
+                    Some(block) => (
+                        fixture.local.clone(),
+                        CasperMessage::BlockMessage(block.clone()),
+                    ),
+                    None => (
+                        answer_from.clone(),
+                        CasperMessage::BlockPrunedResponse(BlockPrunedResponse {
+                            block_height: if hash == genesis_hash { 0 } else { 9_000 },
+                            hash,
+                            prune_floor: 9_500,
+                        }),
+                    ),
+                };
+                engine.handle(from, answer).await.expect("answer handling");
+            }
+            answered = seen;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .is_ok();
+    let restarted = reached_floor_cache && {
+        respond_with_floor_cache(&engine, fixture.local.clone(), genesis_hash).await;
+        tokio::time::timeout(within, async {
+            while !fixture
+                .transport_layer
+                .get_all_requests()
+                .iter()
+                .any(|request| {
+                    matches!(&request.msg.message, Some(ProtocolMessage::Packet(packet))
+                        if packet.type_id == "ApprovedBlockRequest")
+                })
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .is_ok()
+    };
+    restore.abort();
+    (reached_floor_cache, restarted)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restore_that_cites_pruned_genesis_fails_once_nobody_ships_the_block() {
+    let mut fixture = TestFixture::new().await;
+    fixture.casper_shard_conf.max_parent_depth = 25;
+    InitializingSpec::before_each(&fixture);
+    let bootstrap = fixture.local.clone();
+    let (reached_floor_cache, restarted) = run_restore_that_cites_pruned_genesis(
+        &fixture,
+        bootstrap,
+        std::time::Duration::from_secs(60),
+    )
+    .await;
+    assert!(
+        reached_floor_cache,
+        "a pruned genesis must not hold the block download"
+    );
+    assert!(
+        restarted,
+        "a restore without the cited genesis must fail and ask for the approved state again"
+    );
+    InitializingSpec::after_each(&fixture);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pruned_answer_from_a_peer_that_is_not_the_bootstrap_is_ignored() {
+    let mut fixture = TestFixture::new().await;
+    fixture.casper_shard_conf.max_parent_depth = 25;
+    InitializingSpec::before_each(&fixture);
+    let (reached_floor_cache, _) = run_restore_that_cites_pruned_genesis(
+        &fixture,
+        stranger(),
+        std::time::Duration::from_secs(20),
+    )
+    .await;
+    assert!(
+        !reached_floor_cache,
+        "a stranger must not end the wait for a block"
+    );
+    InitializingSpec::after_each(&fixture);
+}
+
+#[tokio::test]
+async fn init_keeps_requesting_while_the_bootstrap_cannot_be_reached() {
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    assert_eq!(
+        fixture.rp_conf_ask.bootstrap.as_ref(),
+        Some(&fixture.rp_conf_ask.local),
+        "the fixture node is its own bootstrap"
+    );
+
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let engine_cell = Arc::new(EngineCell::init());
+    let engine = create_initializing_engine(&fixture, the_init, engine_cell)
+        .await
+        .expect("Failed to create Initializing engine");
+
+    fixture.transport_layer.reset();
+    fixture.transport_layer.set_responses(|_peer, _protocol| {
+        Err(comm::rust::errors::CommError::PeerUnavailable(
+            "TCP connection failed".to_string(),
+        ))
+    });
+
+    tokio::time::pause();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(60), {
+        use casper::rust::engine::engine::Engine;
+        engine.init()
+    })
+    .await;
+
+    assert!(
+        outcome.is_err(),
+        "init returned although the bootstrap never accepted a send: {outcome:?}. The bootstrap request is now bounded; update this test with option (c) of issue #1120"
+    );
+    assert!(
+        fixture.transport_layer.request_count() >= 6,
+        "init retried {} times in 60 s",
+        fixture.transport_layer.request_count()
+    );
     InitializingSpec::after_each(&fixture);
 }

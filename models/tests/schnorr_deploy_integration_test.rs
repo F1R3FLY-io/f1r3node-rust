@@ -10,7 +10,7 @@ fn sample_deploy() -> DeployData {
     DeployData {
         term: "@\"rho:io:stdout\"!(\"schnorr-deploy\")".to_string(),
         time_stamp: 1_773_865_000_000,
-        phlo_price: 1,
+        phlo_price: (1).into(),
         phlo_limit: 1_000_000,
         valid_after_block_number: 1,
         shard_id: "root".to_string(),

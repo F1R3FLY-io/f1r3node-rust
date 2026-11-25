@@ -209,6 +209,12 @@ impl GrpcDeployService {
                         proto_string(&bi)
                     );
                 }
+                // `getBlocks` never emits these, but the oneof is shared
+                // with `getBlocksByHeights` (#1087). Ignore unexpected
+                // variants so an unrelated proto addition can't break
+                // this CLI path.
+                Some(block_info_response::Message::Pruned(_))
+                | Some(block_info_response::Message::Unavailable(_)) => {}
                 None => return Err(vec!["empty BlockInfoResponse.message".into()]),
             }
         }

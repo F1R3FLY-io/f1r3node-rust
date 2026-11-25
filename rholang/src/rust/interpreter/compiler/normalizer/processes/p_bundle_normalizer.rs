@@ -113,7 +113,7 @@ pub fn normalize_p_bundle<'ast>(
         error(target_result)
     } else {
         let new_bundle = match target_result.par.single_bundle() {
-            Some(single) => BundleOps::merge(&outermost_bundle, &single),
+            Some(single) => BundleOps::merge(&outermost_bundle, single),
             None => outermost_bundle,
         };
 

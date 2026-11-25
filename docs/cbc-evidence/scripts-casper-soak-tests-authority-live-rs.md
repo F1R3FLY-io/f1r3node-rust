@@ -1,1 +1,0 @@
-../casper/cbc-evidence/scripts-casper-soak-tests-authority-live-rs.md

@@ -42,6 +42,7 @@ The pinned fixture uses this structure. Replace the example artifact values with
       "local_peer": "rnode://<client-id>@127.0.0.1?protocol=40410&discovery=40414",
       "target_peer": "rnode://<node-id>@127.0.0.1?protocol=40400&discovery=40404",
       "network_id": "soak-qualification",
+      "chain_id": "<genesis-block-hash>",
       "timeout_ms": 2000,
       "certificate": {"path": "client.pem", "bytes": 1, "sha256": "<digest>"},
       "private_key_path": "/run/soak/private/client-key.pem",
@@ -57,6 +58,8 @@ The pinned fixture uses this structure. Replace the example artifact values with
 ```
 
 Each requested member needs a configuration. Include block files and certificates in `runtime.authority_executor.assets` when the outer executor stages inputs.
+
+Set `chain_id` to the genesis block hash of the target network, as 64 lowercase hexadecimal digits. A node that knows its chain refuses a block from a sender that names no chain. The field is optional. Without it, the driver names no chain, and only a node that does not know its chain yet accepts the blocks. See [Chain identity](../../comm/README.md#chain-identity).
 
 Keep the private key outside the evidence inventory. Its file must belong to the current user and have no group or other permissions.
 

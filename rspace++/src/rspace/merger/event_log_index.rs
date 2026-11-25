@@ -6,9 +6,7 @@ use std::sync::{Arc, Mutex};
 use rayon::prelude::*;
 use shared::rust::hashable_set::HashableSet;
 
-use super::merging_logic::{
-    NumberChannelsDiff, combine_mergeable_value, combine_produces_copied_by_peek,
-};
+use super::merging_logic::{NumberChannelsDiff, combine_mergeable_value, produces_created};
 use crate::rspace::errors::HistoryError;
 use crate::rspace::trace::event::{Consume, Event, IOEvent, Produce};
 
@@ -340,50 +338,109 @@ impl EventLogIndex {
         result
     }
 
-    pub fn combine(x: &Self, y: &Self) -> Result<Self, HistoryError> {
-        // Merge number channels (combine differences according to per-channel
-        // merge strategy: IntegerAdd uses bounded exact addition, BitmaskOr uses
-        // bitwise OR). Both branches must agree on merge_type for
-        // a given channel; disagreement yields a tagged error so callers can
-        // reject the merge instead of crashing the validator.
+    pub fn combine(x: &Self, y: &Self) -> Result<Self, HistoryError> { Self::combine_all([x, y]) }
+
+    /// The combination of every index in `indices`, equal to folding them left
+    /// to right with `combine` but built in one accumulator.
+    pub fn combine_all<'a>(
+        indices: impl IntoIterator<Item = &'a EventLogIndex>,
+    ) -> Result<Self, HistoryError> {
+        let mut fold = EventLogIndexFold::default();
+        for index in indices {
+            fold.add(index)?;
+        }
+        Ok(fold.finish())
+    }
+}
+
+/// Accumulates event-log indices in place. `finish` returns what folding the
+/// same inputs left to right with pairwise `combine` would return, without
+/// rebuilding the accumulated sets for every input.
+///
+/// Every field is a union except `produces_copied_by_peek`: the union of the
+/// inputs' copied-by-peek produces, minus every produce any input created.
+/// The subtraction waits for `finish`, because an input added later may create
+/// a produce an earlier input copied.
+pub struct EventLogIndexFold {
+    index: EventLogIndex,
+    created: HashSet<Produce>,
+}
+
+impl Default for EventLogIndexFold {
+    fn default() -> Self {
+        Self {
+            index: EventLogIndex::empty(),
+            created: HashSet::new(),
+        }
+    }
+}
+
+impl EventLogIndexFold {
+    /// Adds `other`. Number channels fold per channel in insertion order:
+    /// IntegerAdd sums with a bound check on every partial sum, BitmaskOr ORs.
+    /// Two inputs that disagree on a channel's merge type fail the fold, as
+    /// does an IntegerAdd partial sum outside the bound.
+    pub fn add(&mut self, other: &EventLogIndex) -> Result<(), HistoryError> {
+        self.fold_number_channels(other)?;
+
+        let trace = tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG);
+        macro_rules! absorb {
+            ($field:ident) => {{
+                let before = self.index.$field.0.len();
+                self.index.$field.0.extend(other.$field.0.iter().cloned());
+                if trace {
+                    trace_union(
+                        stringify!($field),
+                        before,
+                        other.$field.0.len(),
+                        self.index.$field.0.len(),
+                    );
+                }
+            }};
+        }
+        absorb!(produces_linear);
+        absorb!(produces_persistent);
+        absorb!(produces_consumed);
+        absorb!(produces_peeked);
+        absorb!(produces_touching_base_joins);
+        absorb!(consumes_linear_and_peeks);
+        absorb!(consumes_persistent);
+        absorb!(consumes_produced);
+        absorb!(produces_mergeable);
+        absorb!(consumes_mergeable);
+
+        self.index
+            .produces_copied_by_peek
+            .0
+            .extend(other.produces_copied_by_peek.0.iter().cloned());
+        self.created.extend(produces_created(other).0);
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> EventLogIndex {
+        let created = &self.created;
+        self.index
+            .produces_copied_by_peek
+            .0
+            .retain(|produce| !created.contains(produce));
         tracing::debug!(
             target: "f1r3fly.merge.step",
-            step = "combine.ENTER",
-            x_produces_linear = x.produces_linear.0.len(),
-            x_produces_persistent = x.produces_persistent.0.len(),
-            x_produces_consumed = x.produces_consumed.0.len(),
-            x_produces_peeked = x.produces_peeked.0.len(),
-            x_produces_touching_base_joins = x.produces_touching_base_joins.0.len(),
-            x_consumes_linear_and_peeks = x.consumes_linear_and_peeks.0.len(),
-            x_consumes_persistent = x.consumes_persistent.0.len(),
-            x_consumes_produced = x.consumes_produced.0.len(),
-            x_produces_mergeable = x.produces_mergeable.0.len(),
-            x_consumes_mergeable = x.consumes_mergeable.0.len(),
-            x_number_channels_data = x.number_channels_data.len(),
-            y_produces_linear = y.produces_linear.0.len(),
-            y_produces_persistent = y.produces_persistent.0.len(),
-            y_produces_consumed = y.produces_consumed.0.len(),
-            y_produces_peeked = y.produces_peeked.0.len(),
-            y_produces_touching_base_joins = y.produces_touching_base_joins.0.len(),
-            y_consumes_linear_and_peeks = y.consumes_linear_and_peeks.0.len(),
-            y_consumes_persistent = y.consumes_persistent.0.len(),
-            y_consumes_produced = y.consumes_produced.0.len(),
-            y_produces_mergeable = y.produces_mergeable.0.len(),
-            y_consumes_mergeable = y.consumes_mergeable.0.len(),
-            y_number_channels_data = y.number_channels_data.len(),
+            step = "combine.EXIT",
+            produces_copied_by_peek = self.index.produces_copied_by_peek.0.len(),
+            number_channels_data = self.index.number_channels_data.len(),
         );
+        self.index
+    }
 
-        let mut number_channels_data = NumberChannelsDiff::new();
-        for (key, value) in x
-            .number_channels_data
-            .iter()
-            .chain(y.number_channels_data.iter())
-        {
-            let (incoming_diff, incoming_mt) = (&value.0, value.1);
+    fn fold_number_channels(&mut self, other: &EventLogIndex) -> Result<(), HistoryError> {
+        let trace = tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG);
+        let number_channels_data = &mut self.index.number_channels_data;
+        for (key, (incoming_diff, incoming_mt)) in &other.number_channels_data {
+            let incoming_mt = *incoming_mt;
             match number_channels_data.get_mut(key) {
                 Some(existing) => {
                     if existing.1 != incoming_mt {
-                        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                        if trace {
                             tracing::debug!(
                                 target: "f1r3fly.merge.step",
                                 step = "combine.NUMCHAN_MISMATCH",
@@ -399,34 +456,29 @@ impl EventLogIndex {
                             key, existing.1, incoming_mt,
                         )));
                     }
-                    let prev_diff = existing.0.clone();
-                    existing.0 =
-                        match combine_mergeable_value(&existing.0, incoming_diff, incoming_mt) {
-                            Some(v) => v,
-                            // IntegerAdd overflow in the intra-chain fold: fail loudly
-                            // rather than construct a chain holding a wrapped value.
-                            None => {
-                                return Err(HistoryError::MergeError(format!(
-                                    "IntegerAdd overflow combining mergeable channel {:?} ({} + \
-                                     {})",
-                                    key, prev_diff, incoming_diff,
-                                )));
-                            }
-                        };
-                    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                    let Some(folded) =
+                        combine_mergeable_value(&existing.0, incoming_diff, incoming_mt)
+                    else {
+                        return Err(HistoryError::MergeError(format!(
+                            "IntegerAdd overflow combining mergeable channel {:?} ({} + {})",
+                            key, existing.0, incoming_diff,
+                        )));
+                    };
+                    if trace {
                         tracing::debug!(
                             target: "f1r3fly.merge.step",
                             step = "combine.NUMCHAN_FOLD",
                             key = %hex::encode(key.clone().bytes()),
-                            existing_diff = %prev_diff,
+                            existing_diff = %existing.0,
                             incoming_diff = %incoming_diff,
                             merge_type = ?incoming_mt,
-                            result_diff = %existing.0,
+                            result_diff = %folded,
                         );
                     }
+                    existing.0 = folded;
                 }
                 None => {
-                    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                    if trace {
                         tracing::debug!(
                             target: "f1r3fly.merge.step",
                             step = "combine.NUMCHAN_INSERT",
@@ -439,149 +491,31 @@ impl EventLogIndex {
                 }
             }
         }
+        Ok(())
+    }
+}
 
-        let result = EventLogIndex {
-            produces_linear: HashableSet(
-                x.produces_linear
-                    .0
-                    .union(&y.produces_linear.0)
-                    .cloned()
-                    .collect(),
-            ),
-            produces_persistent: HashableSet(
-                x.produces_persistent
-                    .0
-                    .union(&y.produces_persistent.0)
-                    .cloned()
-                    .collect(),
-            ),
-            produces_consumed: HashableSet(
-                x.produces_consumed
-                    .0
-                    .union(&y.produces_consumed.0)
-                    .cloned()
-                    .collect(),
-            ),
-            produces_peeked: HashableSet(
-                x.produces_peeked
-                    .0
-                    .union(&y.produces_peeked.0)
-                    .cloned()
-                    .collect(),
-            ),
-            produces_copied_by_peek: combine_produces_copied_by_peek(x, y),
-            //TODO this joins combination is very restrictive. Join might be originated inside
-            // aggregated event log - OLD
-            produces_touching_base_joins: HashableSet(
-                x.produces_touching_base_joins
-                    .0
-                    .union(&y.produces_touching_base_joins.0)
-                    .cloned()
-                    .collect(),
-            ),
-            consumes_linear_and_peeks: HashableSet(
-                x.consumes_linear_and_peeks
-                    .0
-                    .union(&y.consumes_linear_and_peeks.0)
-                    .cloned()
-                    .collect(),
-            ),
-            consumes_persistent: HashableSet(
-                x.consumes_persistent
-                    .0
-                    .union(&y.consumes_persistent.0)
-                    .cloned()
-                    .collect(),
-            ),
-            consumes_produced: HashableSet(
-                x.consumes_produced
-                    .0
-                    .union(&y.consumes_produced.0)
-                    .cloned()
-                    .collect(),
-            ),
-            // Combine mergeable produces and consumes
-            produces_mergeable: HashableSet(
-                x.produces_mergeable
-                    .0
-                    .union(&y.produces_mergeable.0)
-                    .cloned()
-                    .collect(),
-            ),
-            consumes_mergeable: HashableSet(
-                x.consumes_mergeable
-                    .0
-                    .union(&y.consumes_mergeable.0)
-                    .cloned()
-                    .collect(),
-            ),
-            number_channels_data,
-        };
-
-        // EXIT: report the combined per-field set sizes. For each union-built set
-        // field, x.len + y.len > result.len means `.union()` discarded duplicate
-        // members across the two inputs — a multiplicity COLLAPSE.
-        // produces_copied_by_peek is built via combine_produces_copied_by_peek
-        // (not a plain union), so its size is reported without a collapse
-        // verdict.
-        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-            macro_rules! collapse_check {
-                ($field:ident) => {{
-                    let x_len = x.$field.0.len();
-                    let y_len = y.$field.0.len();
-                    let result_len = result.$field.0.len();
-                    tracing::debug!(
-                        target: "f1r3fly.merge.step",
-                        step = "combine.EXIT",
-                        field = stringify!($field),
-                        x_len,
-                        y_len,
-                        result_len,
-                    );
-                    if x_len + y_len > result_len {
-                        tracing::debug!(
-                            target: "f1r3fly.merge.step",
-                            step = "combine.COLLAPSE",
-                            field = stringify!($field),
-                            x_len,
-                            y_len,
-                            result_len,
-                            collapsed = x_len + y_len - result_len,
-                        );
-                    }
-                }};
-            }
-
-            collapse_check!(produces_linear);
-            collapse_check!(produces_persistent);
-            collapse_check!(produces_consumed);
-            collapse_check!(produces_peeked);
-            collapse_check!(produces_touching_base_joins);
-            collapse_check!(consumes_linear_and_peeks);
-            collapse_check!(consumes_persistent);
-            collapse_check!(consumes_produced);
-            collapse_check!(produces_mergeable);
-            collapse_check!(consumes_mergeable);
-
-            tracing::debug!(
-                target: "f1r3fly.merge.step",
-                step = "combine.EXIT",
-                field = "produces_copied_by_peek",
-                x_len = x.produces_copied_by_peek.0.len(),
-                y_len = y.produces_copied_by_peek.0.len(),
-                result_len = result.produces_copied_by_peek.0.len(),
-            );
-            tracing::debug!(
-                target: "f1r3fly.merge.step",
-                step = "combine.EXIT",
-                field = "number_channels_data",
-                x_len = x.number_channels_data.len(),
-                y_len = y.number_channels_data.len(),
-                result_len = result.number_channels_data.len(),
-            );
-        }
-
-        Ok(result)
+/// A union that grew by less than the incoming set's size dropped members the
+/// accumulator already held: a multiplicity collapse.
+fn trace_union(field: &'static str, acc_len: usize, incoming_len: usize, result_len: usize) {
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "combine.ADD",
+        field,
+        x_len = acc_len,
+        y_len = incoming_len,
+        result_len,
+    );
+    if acc_len + incoming_len > result_len {
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "combine.COLLAPSE",
+            field,
+            x_len = acc_len,
+            y_len = incoming_len,
+            result_len,
+            collapsed = acc_len + incoming_len - result_len,
+        );
     }
 }
 
@@ -1076,5 +1010,327 @@ mod event_log_index_new_tests {
         assert!(idx.consumes_mergeable.0.contains(&c_comm));
         assert!(idx.produces_linear.0.is_empty());
         assert!(idx.consumes_linear_and_peeks.0.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod fold_equivalence_tests {
+    use std::collections::HashSet;
+
+    use num_bigint::BigInt;
+    use proptest::prelude::*;
+    use shared::rust::hashable_set::HashableSet;
+
+    use super::{EventLogIndex, EventLogIndexFold};
+    use crate::rspace::errors::HistoryError;
+    use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    use crate::rspace::merger::merging_logic::{
+        MergeType, NumberChannelsDiff, combine_mergeable_value, produces_created,
+    };
+    use crate::rspace::trace::event::{Consume, Produce};
+
+    const UNIVERSE: u8 = 6;
+
+    fn mk_hash(byte: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![byte; 32]) }
+
+    fn produce(id: u8) -> Produce {
+        Produce::new(mk_hash(id), mk_hash(100 + id), id.is_multiple_of(2))
+    }
+
+    fn consume(id: u8) -> Consume {
+        Consume {
+            channel_hashes: vec![mk_hash(id)],
+            hash: mk_hash(200 + id),
+            persistent: id.is_multiple_of(2),
+        }
+    }
+
+    fn produces(mask: u8) -> std::collections::HashSet<Produce> {
+        (0..UNIVERSE)
+            .filter(|id| mask & (1 << id) != 0)
+            .map(produce)
+            .collect()
+    }
+
+    fn consumes(mask: u8) -> std::collections::HashSet<Consume> {
+        (0..UNIVERSE)
+            .filter(|id| mask & (1 << id) != 0)
+            .map(consume)
+            .collect()
+    }
+
+    /// IntegerAdd values around 2^255, so two of them overflow the 256-bit
+    /// bound and where the overflow happens depends on the fold order.
+    fn diff_strategy() -> impl Strategy<Value = BigInt> {
+        prop_oneof![
+            (-3i64..=3).prop_map(BigInt::from),
+            (-2i64..=2).prop_map(|k| (BigInt::from(1) << 255u32) + k),
+            (-2i64..=2).prop_map(|k| -(BigInt::from(1) << 255u32) + k),
+        ]
+    }
+
+    fn index_strategy() -> impl Strategy<Value = EventLogIndex> {
+        (
+            prop::collection::vec(any::<u8>(), 11),
+            prop::collection::vec((0u8..3, diff_strategy(), any::<bool>()), 0..3),
+        )
+            .prop_map(|(masks, channels)| {
+                let mut index = EventLogIndex::empty();
+                index.produces_linear.0 = produces(masks[0]);
+                index.produces_persistent.0 = produces(masks[1]);
+                index.produces_consumed.0 = produces(masks[2]);
+                index.produces_peeked.0 = produces(masks[3]);
+                index.produces_copied_by_peek.0 = produces(masks[4]);
+                index.produces_touching_base_joins.0 = produces(masks[5]);
+                index.produces_mergeable.0 = produces(masks[6]);
+                index.consumes_linear_and_peeks.0 = consumes(masks[7]);
+                index.consumes_persistent.0 = consumes(masks[8]);
+                index.consumes_produced.0 = consumes(masks[9]);
+                index.consumes_mergeable.0 = consumes(masks[10]);
+                let mut data = NumberChannelsDiff::new();
+                for (key, diff, bitmask) in channels {
+                    let merge_type = if bitmask {
+                        MergeType::BitmaskOr
+                    } else {
+                        MergeType::IntegerAdd
+                    };
+                    data.insert(mk_hash(50 + key), (diff, merge_type));
+                }
+                index.number_channels_data = data;
+                index
+            })
+    }
+
+    /// The pairwise definition `EventLogIndexFold` must reproduce.
+    fn pairwise_reference(
+        x: &EventLogIndex,
+        y: &EventLogIndex,
+    ) -> Result<EventLogIndex, HistoryError> {
+        let mut number_channels_data = NumberChannelsDiff::new();
+        for (key, value) in x
+            .number_channels_data
+            .iter()
+            .chain(y.number_channels_data.iter())
+        {
+            let (incoming_diff, incoming_mt) = (&value.0, value.1);
+            match number_channels_data.get_mut(key) {
+                Some(existing) => {
+                    if existing.1 != incoming_mt {
+                        return Err(HistoryError::MergeError(format!(
+                            "MergeType mismatch on channel {:?}: {:?} vs {:?}",
+                            key, existing.1, incoming_mt,
+                        )));
+                    }
+                    let prev_diff = existing.0.clone();
+                    existing.0 =
+                        match combine_mergeable_value(&existing.0, incoming_diff, incoming_mt) {
+                            Some(v) => v,
+                            None => {
+                                return Err(HistoryError::MergeError(format!(
+                                    "IntegerAdd overflow combining mergeable channel {:?} ({} + \
+                                     {})",
+                                    key, prev_diff, incoming_diff,
+                                )));
+                            }
+                        };
+                }
+                None => {
+                    number_channels_data.insert(key.clone(), (incoming_diff.clone(), incoming_mt));
+                }
+            }
+        }
+
+        Ok(EventLogIndex {
+            produces_linear: HashableSet(
+                x.produces_linear
+                    .0
+                    .union(&y.produces_linear.0)
+                    .cloned()
+                    .collect(),
+            ),
+            produces_persistent: HashableSet(
+                x.produces_persistent
+                    .0
+                    .union(&y.produces_persistent.0)
+                    .cloned()
+                    .collect(),
+            ),
+            produces_consumed: HashableSet(
+                x.produces_consumed
+                    .0
+                    .union(&y.produces_consumed.0)
+                    .cloned()
+                    .collect(),
+            ),
+            produces_peeked: HashableSet(
+                x.produces_peeked
+                    .0
+                    .union(&y.produces_peeked.0)
+                    .cloned()
+                    .collect(),
+            ),
+            produces_copied_by_peek: {
+                let created: HashSet<Produce> = produces_created(x)
+                    .0
+                    .union(&produces_created(y).0)
+                    .cloned()
+                    .collect();
+                HashableSet(
+                    x.produces_copied_by_peek
+                        .0
+                        .union(&y.produces_copied_by_peek.0)
+                        .filter(|produce| !created.contains(*produce))
+                        .cloned()
+                        .collect(),
+                )
+            },
+            //TODO this joins combination is very restrictive. Join might be originated inside
+            // aggregated event log - OLD
+            produces_touching_base_joins: HashableSet(
+                x.produces_touching_base_joins
+                    .0
+                    .union(&y.produces_touching_base_joins.0)
+                    .cloned()
+                    .collect(),
+            ),
+            consumes_linear_and_peeks: HashableSet(
+                x.consumes_linear_and_peeks
+                    .0
+                    .union(&y.consumes_linear_and_peeks.0)
+                    .cloned()
+                    .collect(),
+            ),
+            consumes_persistent: HashableSet(
+                x.consumes_persistent
+                    .0
+                    .union(&y.consumes_persistent.0)
+                    .cloned()
+                    .collect(),
+            ),
+            consumes_produced: HashableSet(
+                x.consumes_produced
+                    .0
+                    .union(&y.consumes_produced.0)
+                    .cloned()
+                    .collect(),
+            ),
+            // Combine mergeable produces and consumes
+            produces_mergeable: HashableSet(
+                x.produces_mergeable
+                    .0
+                    .union(&y.produces_mergeable.0)
+                    .cloned()
+                    .collect(),
+            ),
+            consumes_mergeable: HashableSet(
+                x.consumes_mergeable
+                    .0
+                    .union(&y.consumes_mergeable.0)
+                    .cloned()
+                    .collect(),
+            ),
+            number_channels_data,
+        })
+    }
+
+    fn pairwise_left_fold(inputs: &[EventLogIndex]) -> Result<EventLogIndex, HistoryError> {
+        inputs
+            .iter()
+            .try_fold(EventLogIndex::empty(), |acc, index| pairwise_reference(&acc, index))
+    }
+
+    fn assert_same(
+        reference: Result<EventLogIndex, HistoryError>,
+        folded: Result<EventLogIndex, HistoryError>,
+    ) -> Result<(), TestCaseError> {
+        match (reference, folded) {
+            (Ok(reference), Ok(folded)) => prop_assert_eq!(reference, folded),
+            (Err(reference), Err(folded)) => {
+                prop_assert_eq!(format!("{reference:?}"), format!("{folded:?}"))
+            }
+            (reference, folded) => prop_assert!(
+                false,
+                "one side failed: reference {:?}, fold {:?}",
+                reference.err(),
+                folded.err()
+            ),
+        }
+        Ok(())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1000))]
+
+        #[test]
+        fn fold_equals_left_fold_of_pairwise_combine(
+            inputs in prop::collection::vec(index_strategy(), 0..7),
+        ) {
+            assert_same(pairwise_left_fold(&inputs), EventLogIndex::combine_all(inputs.iter()))?;
+        }
+
+        #[test]
+        fn combine_equals_pairwise_reference(
+            x in index_strategy(),
+            y in index_strategy(),
+        ) {
+            assert_same(
+                pairwise_reference(&x, &y),
+                EventLogIndex::combine(&x, &y),
+            )?;
+        }
+    }
+
+    #[test]
+    fn a_produce_copied_early_and_created_later_is_not_copied_in_the_result() {
+        let mut copies = EventLogIndex::empty();
+        copies.produces_copied_by_peek.0.insert(produce(1));
+        let unrelated = EventLogIndex::empty();
+        let mut creates = EventLogIndex::empty();
+        creates.produces_linear.0.insert(produce(1));
+
+        let inputs = [copies, unrelated, creates];
+        let folded = EventLogIndex::combine_all(inputs.iter()).unwrap();
+        assert!(folded.produces_copied_by_peek.0.is_empty());
+        assert_eq!(folded, pairwise_left_fold(&inputs).unwrap());
+    }
+
+    #[test]
+    fn integer_add_overflow_fails_at_the_same_partial_sum_as_the_pairwise_fold() {
+        let half = BigInt::from(1) << 255u32;
+        let with = |diff: BigInt| {
+            let mut index = EventLogIndex::empty();
+            index
+                .number_channels_data
+                .insert(mk_hash(50), (diff, MergeType::IntegerAdd));
+            index
+        };
+        let inputs = [with(half.clone()), with(half.clone()), with(-half.clone())];
+
+        let folded = EventLogIndex::combine_all(inputs.iter()).unwrap_err();
+        let reference = pairwise_left_fold(&inputs).unwrap_err();
+        assert_eq!(format!("{folded:?}"), format!("{reference:?}"));
+        assert!(format!("{folded:?}").contains("IntegerAdd overflow"));
+    }
+
+    #[test]
+    fn merge_type_mismatch_fails_with_the_pairwise_error() {
+        let with = |merge_type: MergeType| {
+            let mut index = EventLogIndex::empty();
+            index
+                .number_channels_data
+                .insert(mk_hash(50), (BigInt::from(1), merge_type));
+            index
+        };
+        let inputs = [with(MergeType::IntegerAdd), with(MergeType::BitmaskOr)];
+
+        let folded = EventLogIndex::combine_all(inputs.iter()).unwrap_err();
+        let reference = pairwise_left_fold(&inputs).unwrap_err();
+        assert_eq!(format!("{folded:?}"), format!("{reference:?}"));
+        assert!(format!("{folded:?}").contains("MergeType mismatch"));
+    }
+
+    #[test]
+    fn an_empty_fold_is_the_empty_index() {
+        assert_eq!(EventLogIndexFold::default().finish(), EventLogIndex::empty());
     }
 }

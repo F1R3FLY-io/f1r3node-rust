@@ -5,8 +5,7 @@ use super::has_locally_free::HasLocallyFree;
 use super::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use crate::rust::interpreter::metrics_constants::{
     RHOLANG_MATCHER_FOLD_MATCH_CALLS_METRIC,
-    RHOLANG_MATCHER_FOLD_MATCH_RECURSION_DEPTH_TOTAL_METRIC,
-    RHOLANG_MATCHER_FOLD_MATCH_TAIL_CLONE_NS_METRIC, RHOLANG_METRICS_SOURCE,
+    RHOLANG_MATCHER_FOLD_MATCH_RECURSION_DEPTH_TOTAL_METRIC, RHOLANG_METRICS_SOURCE,
 };
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - foldMatch
@@ -33,12 +32,7 @@ impl FoldMatch<Par, Par> for SpatialMatcherContext {
 
         let n = tlist.len().min(plist.len());
         for i in 0..n {
-            let __clone_start = std::time::Instant::now();
-            let t_owned = tlist[i].clone();
-            let p_owned = plist[i].clone();
-            metrics::counter!(RHOLANG_MATCHER_FOLD_MATCH_TAIL_CLONE_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
-                .increment(__clone_start.elapsed().as_nanos() as u64);
-            self.spatial_match(t_owned, p_owned)?;
+            self.spatial_match(tlist[i].clone(), plist[i].clone())?;
         }
 
         if tlist.len() == plist.len() {
@@ -68,7 +62,7 @@ impl FoldMatch<Par, Par> for SpatialMatcherContext {
             &[] => Some(acc),
 
             [item, rem @ ..] => {
-                if self.locally_free(item.to_owned(), 0).is_empty() {
+                if item.locally_free(0).is_empty() {
                     acc.push(item.clone());
                     self.free_check(rem, level, acc)
                 } else {
@@ -121,7 +115,7 @@ impl FoldMatch<MatchCase, MatchCase> for SpatialMatcherContext {
             &[] => Some(acc),
 
             [item, rem @ ..] => {
-                if self.locally_free(item.to_owned(), 0).is_empty() {
+                if item.locally_free(0).is_empty() {
                     acc.push(item.clone());
                     self.free_check(rem, level, acc)
                 } else {

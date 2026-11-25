@@ -1139,6 +1139,8 @@ mod tests {
 
     #[async_trait]
     impl TransportLayer for CapturingTransport {
+        fn queued_stream_bytes(&self) -> usize { 0 }
+
         async fn send(&self, peer: &PeerNode, msg: &Protocol) -> Result<(), CommError> {
             self.sends.lock().unwrap().push((peer.clone(), msg.clone()));
             Ok(())
@@ -1161,6 +1163,7 @@ mod tests {
         RPConf::new(
             mk_peer("local"),
             "test-network".to_string(),
+            comm::rust::rp::chain_id::ChainIdCell::unknown(),
             None,
             Duration::from_secs(5),
             10,

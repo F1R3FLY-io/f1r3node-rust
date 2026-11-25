@@ -105,6 +105,15 @@ where
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
 
+    async fn get_data_at(
+        &self,
+        checkpoint: &SoftCheckpoint<C, P, A, K>,
+        channel: &C,
+    ) -> Vec<Datum<A>> {
+        self.get_store()
+            .get_data_at(&checkpoint.cache_snapshot, channel)
+    }
+
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
         self.get_store().get_continuations(&channels)
     }
@@ -113,6 +122,15 @@ where
 
     async fn clear(&self) -> Result<(), RSpaceError> {
         self.reset(&RadixHistory::empty_root_node_hash()).await
+    }
+
+    async fn sweep_channels(&self, trapped_channels: Vec<C>) -> Result<(), RSpaceError>
+    where C: 'async_trait {
+        super::ops_sweep::locked_sweep(&**self.get_store(), trapped_channels)
+    }
+
+    fn gc_roots(&self) -> std::sync::Arc<crate::rspace::gc_roots::GcRootRegistry> {
+        self.gc_roots.clone()
     }
 
     async fn get_root(&self) -> Blake2b256Hash { self.get_history_repository().root() }

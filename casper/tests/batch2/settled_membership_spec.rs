@@ -61,7 +61,6 @@ async fn floor_settled_plain_send_is_released_from_deploy_storage() {
     assert!(
         nodes[0]
             .deploy_storage
-            .lock()
             .read_all()
             .expect("storage read")
             .iter()
@@ -142,7 +141,6 @@ async fn floor_settled_plain_send_is_released_from_deploy_storage() {
     assert!(
         !nodes[0]
             .deploy_storage
-            .lock()
             .read_all()
             .expect("storage read")
             .iter()

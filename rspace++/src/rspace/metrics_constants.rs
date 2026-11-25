@@ -69,13 +69,8 @@ pub const REPLAY_WAITING_CONTINUATIONS_CHANNEL_DEPTH_METRIC: &str =
 // wall-clock; *.calls + *_count counters provide call-rate context.
 pub const HOT_STORE_PUT_CONT_CALLS_METRIC: &str = "hot-store.put_continuation.calls";
 pub const HOT_STORE_PUT_CONT_TIME_NS_METRIC: &str = "hot-store.put_continuation.time_ns";
-pub const HOT_STORE_PUT_CONT_IDENTITY_BUILD_NS_METRIC: &str =
-    "hot-store.put_continuation.identity_build_ns";
-pub const HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC: &str =
-    "hot-store.put_continuation.identity_compare_ns";
 pub const HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC: &str =
     "hot-store.put_continuation.existing_count_sum";
-pub const HOT_STORE_PUT_CONT_DUPLICATES_METRIC: &str = "hot-store.put_continuation.duplicates";
 pub const HOT_STORE_PUT_CONT_HISTORY_FILL_METRIC: &str = "hot-store.put_continuation.history_fill";
 
 pub const HOT_STORE_PUT_JOIN_CALLS_METRIC: &str = "hot-store.put_join.calls";

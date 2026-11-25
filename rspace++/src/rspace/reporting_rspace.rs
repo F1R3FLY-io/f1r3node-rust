@@ -324,6 +324,14 @@ where
         self.replay_rspace.get_data(channel).await
     }
 
+    async fn get_data_at(
+        &self,
+        checkpoint: &SoftCheckpoint<C, P, A, K>,
+        channel: &C,
+    ) -> Vec<Datum<A>> {
+        self.replay_rspace.get_data_at(checkpoint, channel).await
+    }
+
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
         self.replay_rspace.get_waiting_continuations(channels).await
     }
@@ -333,6 +341,15 @@ where
     }
 
     async fn clear(&self) -> Result<(), RSpaceError> { self.replay_rspace.clear().await }
+
+    async fn sweep_channels(&self, trapped_channels: Vec<C>) -> Result<(), RSpaceError>
+    where C: 'async_trait {
+        self.replay_rspace.sweep_channels(trapped_channels).await
+    }
+
+    fn gc_roots(&self) -> std::sync::Arc<crate::rspace::gc_roots::GcRootRegistry> {
+        self.replay_rspace.gc_roots()
+    }
 
     async fn get_root(&self) -> Blake2b256Hash { self.replay_rspace.get_root().await }
 
@@ -451,17 +468,17 @@ where
 {
     fn log_comm(
         &self,
-        data_candidates: &Vec<ConsumeCandidate<C, A>>,
-        channels: &Vec<C>,
-        wk: WaitingContinuation<P, K>,
-        comm: COMM,
+        data_candidates: &[ConsumeCandidate<C, A>],
+        channels: &[C],
+        wk: &WaitingContinuation<P, K>,
+        _comm: &COMM,
         _label: &str,
-    ) -> COMM {
+    ) {
         let reporting_consume = ReportingConsume {
-            channels: channels.clone(),
-            patterns: wk.patterns,
-            continuation: wk.continuation,
-            peeks: wk.peeks.into_iter().collect(),
+            channels: channels.to_vec(),
+            patterns: wk.patterns.clone(),
+            continuation: wk.continuation.clone(),
+            peeks: wk.peeks.iter().copied().collect(),
         };
 
         let reporting_produces = data_candidates
@@ -480,8 +497,6 @@ where
         if let Ok(mut soft_report_guard) = self.soft_report.lock() {
             soft_report_guard.push(reporting_comm);
         }
-
-        comm
     }
 
     fn log_consume(

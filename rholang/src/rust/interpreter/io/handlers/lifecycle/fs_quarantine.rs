@@ -22,10 +22,15 @@
 //
 // 1. Resolve the caller's logical root through the
 //    [`RootIdentityRegistry`](super::super::super::path::identity::RootIdentityRegistry)
-//    via `resolve_or_identity`.  Returns `(on_disk_root,
-//    expected_root_id)` — pre-Shape-A unregistered roots fall
-//    through as `(logical, None)` so Oracular callers over arbitrary
-//    host paths work.
+//    via `resolve_or_identity_gated_for_consensus` with
+//    `ConsensusMode::Oracular`.  Returns `(on_disk_root,
+//    expected_root_id)`.  Semantics are unchanged from the pre-
+//    gated resolver: fs_quarantine has no `cmode` arg, so the
+//    Oracular arm is used and unregistered logicals fall through
+//    as `(logical, None)` — matches the pre-gating behavior while
+//    keeping every handler call site on the single gated API so a
+//    future audit does not have to re-reason about each ungated
+//    caller.
 // 2. `spawn_blocking_par` wraps the TOCTOU-immune
 //    [`safe_descend_verified`](super::super::super::path::descend::safe_descend_verified)
 //    call.  On success, build `ok_string(root.join(rel))`.  On
@@ -72,6 +77,7 @@ use crate::rust::interpreter::io::handler_trait::{
 use crate::rust::interpreter::io::path::descend::safe_descend_verified;
 use crate::rust::interpreter::io::path::quarantine_err_reply;
 use crate::rust::interpreter::io::response::{err, ok_string};
+use crate::rust::interpreter::io::ConsensusMode;
 use crate::rust::interpreter::rho_type::RhoString;
 use crate::rust::interpreter::system_processes::{BodyRefs, FixedChannels};
 
@@ -120,12 +126,23 @@ impl FsHandler for FsQuarantineHandler {
     ) -> Pin<Box<dyn Future<Output = HandlerReply> + Send + 'a>> {
         Box::pin(async move {
             // Shape-A root resolution: look up the caller's logical
-            // root in the registry.  Unregistered logicals fall
-            // through to `(logical, None)` — Oracular callers over
-            // arbitrary host paths still work.
+            // root in the registry via the gated resolver with
+            // `ConsensusMode::Oracular`.  fs_quarantine has no
+            // caller-supplied cmode, so route through the Oracular
+            // arm — unregistered logicals fall through to
+            // `(logical, None)` (same as the pre-gated resolver),
+            // and the Consensus refusal path is unreachable here.
+            // The Err arm is discriminated to keep this handler
+            // symmetric with the other migrated sites.
             let logical = PathBuf::from(&args.root);
-            let (on_disk_root, expected_root_id) =
-                ctx.handles.root_registry.resolve_or_identity(&logical);
+            let (on_disk_root, expected_root_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&logical, ConsensusMode::Oracular)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::err(c, m),
+            };
             let rel = args.rel;
 
             // spawn_blocking_par runs the TOCTOU-immune descend off
@@ -279,5 +296,28 @@ mod tests {
             prost::Message::encode_to_vec(&reply),
             prost::Message::encode_to_vec(&Par::default())
         );
+    }
+
+    /// Resolver contract pin — fs_quarantine routes through the
+    /// gated resolver with `ConsensusMode::Oracular`.  The Oracular
+    /// arm on an unregistered logical root falls through to
+    /// `(logical, None)`, preserving the pre-migration semantics
+    /// (handler treats the caller-supplied path as the on-disk path
+    /// and skips the H-5 identity check).  Pattern mirrors
+    /// `resolve_gated_oracular_unregistered_falls_through` in
+    /// `path/identity.rs`.
+    #[test]
+    fn gated_resolver_oracular_unregistered_falls_through_for_fs_quarantine() {
+        use std::path::Path;
+
+        use crate::rust::interpreter::io::path::identity::RootIdentityRegistry;
+
+        let reg = RootIdentityRegistry::new();
+        let logical = Path::new("/arbitrary/host/path");
+        let (on_disk, id) = reg
+            .resolve_or_identity_gated_for_consensus(logical, ConsensusMode::Oracular)
+            .expect("Oracular + unregistered must fall through");
+        assert_eq!(on_disk, logical);
+        assert!(id.is_none());
     }
 }

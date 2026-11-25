@@ -58,8 +58,7 @@ fn ground_int_passes_through() {
 
 #[test]
 fn evar_resolves_from_env() {
-    let mut env = Env::<Par>::new();
-    let env = env.put(gint(7));
+    let env = Env::<Par>::new().put(gint(7));
     let result = eval(&evar(0), &env).unwrap();
     assert_int(&result, 7);
 }
@@ -282,8 +281,7 @@ fn nested_expressions_resolve() {
 #[test]
 fn evar_in_arithmetic() {
     // x + 1 where x = 41 → 42
-    let mut env = Env::<Par>::new();
-    let env = env.put(gint(41));
+    let env = Env::<Par>::new().put(gint(41));
     let expr = par_of(ExprInstance::EPlusBody(EPlus {
         p1: Some(evar(0)),
         p2: Some(gint(1)),
@@ -484,4 +482,30 @@ fn determinism_same_input_same_output() {
     let r1 = eval(&expr, &env).unwrap();
     let r2 = eval(&expr, &env).unwrap();
     assert_eq!(r1, r2);
+}
+
+#[test]
+fn extended_matches_sequential_puts() {
+    let seed: Env<Par> = Env::new().put(gint(100)).put(gint(200));
+    let bindings = vec![gint(1), gint(2), gint(3), gint(4), gint(5)];
+
+    let via_put = bindings
+        .clone()
+        .into_iter()
+        .fold(seed.clone(), |env, b| env.put(b));
+    let via_extended = seed.extended(bindings.clone());
+
+    for k in 0..(via_put.level()) {
+        assert_eq!(via_put.get(&k), via_extended.get(&k));
+    }
+    assert_eq!(via_put.level(), via_extended.level());
+    assert_eq!(via_put.shift, via_extended.shift);
+}
+
+#[test]
+fn extended_preserves_shift() {
+    let seed: Env<Par> = Env::new().put(gint(1)).shift(7);
+    let out = seed.extended([gint(2), gint(3)]);
+    assert_eq!(out.shift, 7);
+    assert_eq!(out.level(), 3);
 }

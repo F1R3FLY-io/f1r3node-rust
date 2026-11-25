@@ -11,15 +11,18 @@ use axum::http::request::Parts;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
-    BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
+    BlockNotFoundError, BlockPrunedError, BlockUnavailableError, DeployExpiredError,
+    DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
     ExploratoryDeployRejection, InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError,
-    NoNewDeploysError, ProposeReadOnlyError,
+    NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError,
+    ValidatorNotBondedError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::casper::DeployError;
 use casper::rust::errors::CasperError;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
+use models::rust::deploy_request::DeployRequest;
 use rholang::rust::interpreter::errors::InterpreterError;
 use serde::Serialize;
 use serde_json::json;
@@ -30,12 +33,13 @@ use utoipa::ToSchema;
 use crate::rust::api::admin_web_api::AdminWebApi;
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::web_api::{
-    DeployRequest, ExploreDeployRequest, RhoDataResponse, SimpleExploreDeployRequest, ViewMode,
-    WebApi,
+    ExploreDeployRequest, RhoDataResponse, SimpleExploreDeployRequest, ViewMode, WebApi,
 };
+use crate::rust::api::{DeployIngressBusy, DeployRequestLimiter, DeployRequestPermit};
 
 #[derive(Clone)]
 pub struct AppState {
+    deploy_limiter: DeployRequestLimiter,
     pub admin_web_api: Arc<dyn AdminWebApi + Send + Sync + 'static>,
     pub web_api: Arc<dyn WebApi + Send + Sync + 'static>,
     pub block_report_api: Arc<BlockReportAPI>,
@@ -58,6 +62,7 @@ impl AppState {
         startup_events: StartupBuffer,
     ) -> Self {
         Self {
+            deploy_limiter: DeployRequestLimiter::default(),
             admin_web_api,
             web_api,
             block_report_api,
@@ -67,6 +72,11 @@ impl AppState {
             event_stream: event_consumer,
             startup_events,
         }
+    }
+
+    pub(crate) fn with_deploy_limiter(mut self, limiter: DeployRequestLimiter) -> Self {
+        self.deploy_limiter = limiter;
+        self
     }
 }
 
@@ -79,7 +89,7 @@ pub struct ApiErrorResponse {
     /// **400 Bad Request:**
     /// `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`,
     /// `invalid_hash`, `illegal_argument`, `rholang_bad_term`,
-    /// `readonly_node_required`,
+    /// `readonly_node_required`, `deploy_expired`, `invalid_deploy_window`
     ///
     /// **404 Not Found:**
     /// `deploy_not_found`, `block_not_found`, `endpoint_not_found`
@@ -87,11 +97,23 @@ pub struct ApiErrorResponse {
     /// **405 Method Not Allowed:**
     /// `method_not_allowed`
     ///
+    /// **410 Gone:**
+    /// `block_pruned` — the block was once held by this node and the
+    /// retention sweep has advanced past its height, so the body has
+    /// been deleted. Permanent on this node; consult an archive.
+    ///
+    /// **413 Payload Too Large:**
+    /// `deploy_too_large`
+    ///
+    /// **415 Unsupported Media Type:**
+    /// `invalid_request_body`
+    ///
     /// **422 Unprocessable Entity:**
-    /// `out_of_phlogistons`, `user_abort`, `rholang_execution_error`, `aggregate_error`
+    /// `invalid_request_body`, `out_of_phlogistons`, `user_abort`,
+    /// `rholang_execution_error`, `aggregate_error`
     ///
     /// **409 Conflict:**
-    /// `no_new_deploys`
+    /// `no_new_deploys`, `duplicate_deploy`
     ///
     /// **500 Internal Server Error:**
     /// `interpreter_internal_error`, `signing_error`, `replay_failure`,
@@ -102,7 +124,12 @@ pub struct ApiErrorResponse {
     /// `comm_error`, `external_service_error`
     ///
     /// **503 Service Unavailable:**
-    /// `observer_busy` — carries `Retry-After`
+    /// `observer_busy` — carries `Retry-After`; `deploy_pool_busy`,
+    /// `deploy_admission_busy`, `validator_not_bonded`,
+    /// `block_unavailable` — the DAG knows the hash but the body is
+    /// not in the store and the retention sweep has not advanced past
+    /// its height (LFS backfill horizon, pending-body race). Retry
+    /// may succeed.
     ///
     /// **504 Gateway Timeout:**
     /// `exploratory_timeout`
@@ -163,6 +190,30 @@ where E: Into<eyre::Error>
 
 /// Json extractor that returns rejection errors as JSON instead of plain text
 pub struct AppJson<T>(pub T);
+
+pub struct DeployJson(pub DeployRequest, DeployRequestPermit);
+
+impl FromRequest<AppState> for DeployJson {
+    type Rejection = Response;
+
+    async fn from_request(request: Request, state: &AppState) -> Result<Self, Self::Rejection> {
+        let permit = state
+            .deploy_limiter
+            .try_acquire()
+            .map_err(|error| AppError(error.into()).into_response())?;
+        if !state.deploy_limiter.is_limited() {
+            return AppJson::<DeployRequest>::from_request(request, &())
+                .await
+                .map(|AppJson(value)| Self(value, permit));
+        }
+        offload(move || async move {
+            let parsed = AppJson::<DeployRequest>::from_request(request, &()).await;
+            Ok(parsed.map(|AppJson(value)| Self(value, permit)))
+        })
+        .await
+        .map_err(|error| AppError(error).into_response())?
+    }
+}
 
 impl<T, S> FromRequest<S> for AppJson<T>
 where
@@ -252,14 +303,95 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         if let Some(ce) = cause.downcast_ref::<CasperError>() {
             return classify_casper_error(ce);
         }
-        if let Some(DeployError::DuplicateDeploy(_)) = cause.downcast_ref::<DeployError>() {
-            return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
+        match cause.downcast_ref::<DeployError>() {
+            Some(DeployError::ParsingError(_)) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "rholang_bad_term",
+                    cause.to_string(),
+                );
+            }
+            Some(DeployError::DuplicateDeploy(_)) => {
+                return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
+            }
+            Some(DeployError::SeedReuse(_)) => {
+                return (StatusCode::CONFLICT, "seed_reuse", cause.to_string());
+            }
+            Some(DeployError::PhloLimitAboveCap { .. }) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "illegal_argument",
+                    cause.to_string(),
+                );
+            }
+            _ => {}
+        }
+        if cause.downcast_ref::<DeployExpiredError>().is_some() {
+            return (StatusCode::BAD_REQUEST, "deploy_expired", cause.to_string());
+        }
+        if let Some(DeployError::InvalidFreshness) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::BAD_REQUEST,
+                "invalid_deploy_window",
+                cause.to_string(),
+            );
+        }
+        if let Some(DeployError::PoolBusy { .. }) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "deploy_pool_busy",
+                cause.to_string(),
+            );
+        }
+        if let Some(DeployError::RecordTooLarge { .. }) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "deploy_too_large",
+                cause.to_string(),
+            );
+        }
+        if let Some(DeployError::AdmissionBusy) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "deploy_admission_busy",
+                cause.to_string(),
+            );
+        }
+        if cause.downcast_ref::<DeployIngressBusy>().is_some() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "deploy_admission_busy",
+                cause.to_string(),
+            );
         }
         if cause.downcast_ref::<DeployNotFoundError>().is_some() {
             return (StatusCode::NOT_FOUND, "deploy_not_found", cause.to_string());
         }
         if cause.downcast_ref::<BlockNotFoundError>().is_some() {
             return (StatusCode::NOT_FOUND, "block_not_found", cause.to_string());
+        }
+        // `block_pruned` is distinct from `block_not_found`: the node knew
+        // the block at some point but has since deleted it under the #923
+        // retention sweep. HTTP 410 Gone carries exactly this meaning
+        // ("resource was intentionally removed, consult an archive"), and
+        // the typed body lets consumers walk /reporting/trace and tell a
+        // deleted block apart from a gap.
+        if cause.downcast_ref::<BlockPrunedError>().is_some() {
+            return (StatusCode::GONE, "block_pruned", cause.to_string());
+        }
+        // `block_unavailable` is the retry-eligible cousin of
+        // `block_pruned` (#1087): the DAG metadata lists the hash but
+        // the body is not in the store AND the retention sweep has not
+        // yet advanced past this height. Causes include LFS-restore
+        // backfill horizons, pending-body races, or storage
+        // inconsistency. HTTP 503 Service Unavailable signals a
+        // retry-eligible miss rather than a permanent gap.
+        if cause.downcast_ref::<BlockUnavailableError>().is_some() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "block_unavailable",
+                cause.to_string(),
+            );
         }
         if cause.downcast_ref::<InvalidHashError>().is_some() {
             return (StatusCode::BAD_REQUEST, "invalid_hash", cause.to_string());
@@ -300,6 +432,13 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
                 cause.to_string(),
             );
         }
+        if cause.downcast_ref::<ValidatorNotBondedError>().is_some() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "validator_not_bonded",
+                cause.to_string(),
+            );
+        }
         if cause.downcast_ref::<ProposeReadOnlyError>().is_some() {
             return (
                 StatusCode::BAD_REQUEST,
@@ -309,6 +448,25 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         }
         if cause.downcast_ref::<NoNewDeploysError>().is_some() {
             return (StatusCode::CONFLICT, "no_new_deploys", cause.to_string());
+        }
+        if let Some(e) = cause.downcast_ref::<ProposeRefusedError>() {
+            let (status, kind) = match e.refusal {
+                ProposeRefusal::NotBonded => (StatusCode::CONFLICT, "validator_not_bonded"),
+                ProposeRefusal::NotEnoughNewBlocks => {
+                    (StatusCode::CONFLICT, "not_enough_new_blocks")
+                }
+                ProposeRefusal::TooFarAheadOfLastFinalized => {
+                    (StatusCode::CONFLICT, "too_far_ahead_of_finalized")
+                }
+                ProposeRefusal::HistoryIncomplete => {
+                    (StatusCode::SERVICE_UNAVAILABLE, "history_incomplete")
+                }
+                ProposeRefusal::MissingBlock => (StatusCode::SERVICE_UNAVAILABLE, "missing_block"),
+                ProposeRefusal::FloorDistanceHold => {
+                    (StatusCode::SERVICE_UNAVAILABLE, "floor_distance_hold")
+                }
+            };
+            return (status, kind, cause.to_string());
         }
     }
 
@@ -337,6 +495,13 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
         // the same request may succeed once it has. 503 tells the caller to
         // retry; the 500 class would say the node is broken.
         BlockNotHeld(..) => (S::SERVICE_UNAVAILABLE, "block_not_held", err.to_string()),
+
+        // A hold until finality advances, not a node fault.
+        FloorDistanceExceeded { .. } => (
+            S::SERVICE_UNAVAILABLE,
+            "floor_distance_hold",
+            err.to_string(),
+        ),
 
         SigningError(_) => internal("signing_error"),
         KvStoreError(_) => internal("kv_store_error"),
@@ -384,6 +549,11 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
             "out_of_phlogistons",
             ie.to_string(),
         ),
+        NestingLimitExceeded { .. } => (
+            S::UNPROCESSABLE_ENTITY,
+            "nesting_limit_exceeded",
+            ie.to_string(),
+        ),
         HostWorkRejected => (
             S::UNPROCESSABLE_ENTITY,
             "host_work_rejected",
@@ -392,7 +562,9 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         UserAbortError => (S::UNPROCESSABLE_ENTITY, "user_abort", ie.to_string()),
 
         ReduceError(_)
+        | BitmaskBitsCleared { .. }
         | IfConditionTypeError { .. }
+        | UnknownUrnError { .. }
         | MethodNotDefined { .. }
         | MethodArgumentNumberMismatch { .. }
         | OperatorNotDefined { .. }
@@ -473,20 +645,28 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
     request_body = DeployRequest,
     responses(
         (status = 200, description = "Deploy accepted; returns the deploy ID (hex)", body = String),
-        (status = 400, description = "Malformed request body or invalid field value (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`)", body = ApiErrorResponse),
+        (status = 400, description = "Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, shard ID mismatch, forbidden key, or phlo price below minimum. A closed validity window or a past expiration timestamp causes `deploy_expired`. A validity height beyond the admission horizon causes `invalid_deploy_window`.", body = ApiErrorResponse),
         (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
-        (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
+        (status = 413, description = "Deploy record exceeds the configured pool byte limit (`deploy_too_large`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value, including deploy parameter names and values (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`)", body = ApiErrorResponse),
         (status = 502, description = "Upstream or peer communication failure (`comm_error`, `external_service_error`)", body = ApiErrorResponse),
+        (status = 503, description = "Retry later: the deploy pool is at its record or byte limit (`deploy_pool_busy`), admission changed during its attempts or the submission limit is reached (`deploy_admission_busy`), or the node's validator is not bonded (`validator_not_bonded`)", body = ApiErrorResponse),
     ),
     tag = "Deployment"
 )]
 pub async fn deploy_handler(
     State(app_state): State<AppState>,
-    AppJson(request): AppJson<DeployRequest>,
+    DeployJson(request, permit): DeployJson,
 ) -> Response {
     let web_api = app_state.web_api.clone();
-    match offload(move || async move { web_api.deploy(request).await }).await {
+    match offload(move || async move {
+        let _permit = permit;
+        web_api.deploy(request).await
+    })
+    .await
+    {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -500,7 +680,8 @@ pub async fn deploy_handler(
     responses(
         (status = 200, description = "Exploratory deploy executed; returns channel data", body = RhoDataResponse),
         (status = 400, description = "Malformed request body, invalid Rholang term, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `readonly_node_required`)", body = ApiErrorResponse),
-        (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
         (status = 502, description = "External service failure (`external_service_error`)", body = ApiErrorResponse),
         (status = 503, description = "Observer query capacity is occupied (`observer_busy`); carries `Retry-After`", body = ApiErrorResponse),
@@ -531,7 +712,8 @@ pub async fn explore_deploy_handler(
         (status = 200, description = "Exploratory deploy executed against the specified block; returns channel data", body = RhoDataResponse),
         (status = 400, description = "Malformed request body, invalid Rholang term, invalid block hash, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
-        (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
         (status = 502, description = "External service failure (`external_service_error`)", body = ApiErrorResponse),
         (status = 503, description = "Observer query capacity is occupied (`observer_busy`); carries `Retry-After`", body = ApiErrorResponse),
@@ -603,7 +785,9 @@ pub async fn get_blocks_handler(
         (status = 200, description = "Block information", body = BlockInfoSerde),
         (status = 400, description = "Hash is shorter than 6 characters or contains non-hex characters (`invalid_hash`)", body = ApiErrorResponse),
         (status = 404, description = "No block matches the given hash or prefix (`block_not_found`)", body = ApiErrorResponse),
+        (status = 410, description = "Block known to DAG but body deleted by retention sweep at or below `prune_floor` (`block_pruned`); consult an archive", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`, `history_error`)", body = ApiErrorResponse),
+        (status = 503, description = "Block known to DAG but body missing with `block_height > prune_floor` (`block_unavailable`); retry may succeed", body = ApiErrorResponse),
     ),
     tag = "Blocks"
 )]
@@ -698,16 +882,18 @@ mod tests {
 
     mod classification {
         use axum::http::StatusCode;
+        use axum::response::IntoResponse;
         use casper::rust::api::block_api::{
-            BlockNotFoundError, DeployNotFoundError, DeployValidationError,
-            ExploratoryDeployReadOnlyError, InvalidHashError, InvalidPublicKeyError,
-            LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
+            BlockNotFoundError, BlockPrunedError, BlockUnavailableError, DeployExpiredError,
+            DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
+            InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError,
+            ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError, ValidatorNotBondedError,
         };
         use casper::rust::casper::DeployError;
         use casper::rust::errors::CasperError;
         use rholang::rust::interpreter::errors::InterpreterError;
 
-        use super::super::classify_error;
+        use super::super::{classify_error, AppError};
 
         fn classify(err: impl std::error::Error + Send + Sync + 'static) -> (StatusCode, String) {
             let (status, kind, _message) = classify_error(&eyre::Report::new(err));
@@ -727,6 +913,34 @@ mod tests {
                     hash: "bb".to_string(),
                 }),
                 (StatusCode::NOT_FOUND, "block_not_found".to_string())
+            );
+            // A pruned block is deliberately 410 Gone, not 404 Not Found:
+            // the node held the block, the retention sweep has advanced
+            // past its height, and the body is gone. Consumers walking
+            // /reporting/trace can tell deleted history from a gap
+            // without probing an archive node first.
+            assert_eq!(
+                classify(BlockPrunedError {
+                    hash: "cc".to_string(),
+                    block_height: 42,
+                    prune_floor: 100,
+                }),
+                (StatusCode::GONE, "block_pruned".to_string())
+            );
+            // `block_unavailable` is the retry-eligible cousin: the DAG
+            // metadata names the hash but the body is absent and the
+            // retention sweep has NOT reached the height yet. HTTP 503
+            // signals "retry later" distinctly from 410 "gone forever".
+            assert_eq!(
+                classify(BlockUnavailableError {
+                    hash: "dd".to_string(),
+                    block_height: 150,
+                    prune_floor: 100,
+                }),
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "block_unavailable".to_string()
+                )
             );
             assert_eq!(
                 classify(InvalidHashError("bad hash".to_string())),
@@ -748,6 +962,19 @@ mod tests {
                     message: "bad deploy".to_string(),
                 }),
                 (StatusCode::BAD_REQUEST, "illegal_argument".to_string())
+            );
+            assert_eq!(
+                classify(DeployExpiredError {
+                    message: "window closed".to_string(),
+                }),
+                (StatusCode::BAD_REQUEST, "deploy_expired".to_string())
+            );
+            assert_eq!(
+                classify(ValidatorNotBondedError),
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "validator_not_bonded".to_string()
+                )
             );
             assert_eq!(
                 classify(ProposeReadOnlyError),
@@ -778,12 +1005,159 @@ mod tests {
         }
 
         #[test]
-        fn duplicate_deploy_is_conflict() {
+        fn duplicate_deploy_and_seed_reuse_are_conflicts() {
             let err = DeployError::duplicate_deploy(vec![1u8, 2].into());
             assert_eq!(
                 classify(err),
                 (StatusCode::CONFLICT, "duplicate_deploy".to_string())
             );
+            let err = DeployError::seed_reuse(vec![1u8, 2].into());
+            assert_eq!(
+                classify(err),
+                (StatusCode::CONFLICT, "seed_reuse".to_string())
+            );
+        }
+
+        #[test]
+        fn a_phlo_limit_above_the_cap_is_an_illegal_argument() {
+            assert_eq!(
+                classify(DeployError::PhloLimitAboveCap {
+                    phlo_limit: 20_000_001,
+                    max_phlo_limit: 20_000_000,
+                }),
+                (StatusCode::BAD_REQUEST, "illegal_argument".to_string())
+            );
+        }
+
+        #[test]
+        fn invalid_deploy_window_is_a_client_error() {
+            assert_eq!(
+                classify(DeployError::InvalidFreshness),
+                (StatusCode::BAD_REQUEST, "invalid_deploy_window".to_string())
+            );
+        }
+
+        #[tokio::test]
+        async fn deploy_parsing_errors_return_bad_term() {
+            let err = DeployError::parsing_error("unexpected end of input".into());
+            let response =
+                AppError(eyre::Report::new(err).wrap_err("deploy failed")).into_response();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "rholang_bad_term");
+            assert!(body["message"]
+                .as_str()
+                .unwrap()
+                .contains("unexpected end of input"));
+        }
+
+        #[tokio::test]
+        async fn a_record_above_the_pool_byte_limit_is_not_a_retryable_busy_error() {
+            let response = AppError(
+                DeployError::RecordTooLarge {
+                    record_bytes: 101,
+                    limit: 100,
+                }
+                .into(),
+            )
+            .into_response();
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "deploy_too_large");
+        }
+
+        #[tokio::test]
+        async fn deploy_pool_busy_returns_a_retryable_json_error() {
+            let response = AppError(
+                DeployError::PoolBusy {
+                    resource: "bytes",
+                    required: 250,
+                    limit: 200,
+                }
+                .into(),
+            )
+            .into_response();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "deploy_pool_busy");
+            assert!(body["message"].as_str().unwrap().contains("Retry later"));
+        }
+
+        #[tokio::test]
+        async fn deploy_admission_busy_returns_a_retryable_json_error() {
+            let response = AppError(DeployError::AdmissionBusy.into()).into_response();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "deploy_admission_busy");
+            let message = body["message"].as_str().unwrap();
+            assert!(message.contains("Deploy was not accepted"));
+            assert!(message.contains("Retry later"));
+        }
+
+        #[tokio::test]
+        async fn propose_refusals_map_to_stable_kinds() {
+            let cases = [
+                (
+                    ProposeRefusal::NotBonded,
+                    StatusCode::CONFLICT,
+                    "validator_not_bonded",
+                ),
+                (
+                    ProposeRefusal::NotEnoughNewBlocks,
+                    StatusCode::CONFLICT,
+                    "not_enough_new_blocks",
+                ),
+                (
+                    ProposeRefusal::TooFarAheadOfLastFinalized,
+                    StatusCode::CONFLICT,
+                    "too_far_ahead_of_finalized",
+                ),
+                (
+                    ProposeRefusal::HistoryIncomplete,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "history_incomplete",
+                ),
+                (
+                    ProposeRefusal::MissingBlock,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "missing_block",
+                ),
+                (
+                    ProposeRefusal::FloorDistanceHold,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "floor_distance_hold",
+                ),
+            ];
+            for (refusal, status, kind) in cases {
+                let message = format!("Failure: refused {:?} (seqNum 3)", refusal);
+                let error = eyre::Report::new(ProposeRefusedError {
+                    refusal,
+                    message: message.clone(),
+                });
+                let (got_status, got_kind, got_message) = classify_error(&error);
+                assert_eq!((got_status, got_kind), (status, kind));
+                assert_eq!(got_message, message);
+                let response = AppError(error).into_response();
+                assert_eq!(response.status(), status);
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["error"], kind);
+                assert_eq!(body["message"], message);
+            }
         }
 
         #[test]
@@ -1017,7 +1391,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert!(bad.status().is_client_error());
+            assert_eq!(bad.status(), StatusCode::UNPROCESSABLE_ENTITY);
             let json = body_json(bad).await;
             assert_eq!(json["error"], "invalid_request_body");
             assert!(json["message"].as_str().is_some());

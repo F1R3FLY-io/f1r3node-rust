@@ -12,6 +12,7 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::private_key::PrivateKey;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use shared::rust::shared::f1r3fly_event::DeployAdmission;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tracing;
 
@@ -23,7 +24,6 @@ use crate::rust::blocks::proposer::propose_result::{
     ProposeFailure, ProposeResult,
 };
 use crate::rust::casper::{Casper, CasperSnapshot};
-use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::multi_parent_casper::created_event;
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -52,7 +52,7 @@ pub trait ActiveValidatorChecker {
         &self,
         casper_snapshot: &CasperSnapshot,
         validator_identity: &ValidatorIdentity,
-    ) -> CheckProposeConstraintsResult;
+    ) -> Result<CheckProposeConstraintsResult, CasperError>;
 }
 
 #[allow(async_fn_in_trait)]
@@ -125,7 +125,11 @@ pub trait ProposeEffectHandler {
     ) -> Result<(), CasperError>;
 
     /// Publish BlockCreated event immediately after block creation (before validation).
-    fn publish_block_created(&self, block: &BlockMessage) -> Result<(), CasperError>;
+    fn publish_block_created(
+        &self,
+        block: &BlockMessage,
+        deploy_admission: Option<DeployAdmission>,
+    ) -> Result<(), CasperError>;
 }
 
 pub enum ProposerResult {
@@ -265,9 +269,15 @@ where
                 record_propose_steps(constraints_ms, create_ms, 0, 0);
                 Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None))
             }
-            BlockCreatorResult::Created(block, pre_state_hash, post_state_hash) => {
+            BlockCreatorResult::Created(
+                block,
+                pre_state_hash,
+                post_state_hash,
+                deploy_admission,
+            ) => {
                 // Publish BlockCreated event immediately after block is created (before validation)
-                self.propose_effect_handler.publish_block_created(&block)?;
+                self.propose_effect_handler
+                    .publish_block_created(&block, deploy_admission)?;
 
                 let step_start = std::time::Instant::now();
                 let validation_result = casper
@@ -302,7 +312,6 @@ where
                                 | BlockError::Invalid(InvalidBlock::JustificationRegression)
                                 | BlockError::Invalid(InvalidBlock::InvalidBondsCache)
                                 | BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
-                                | BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock)
                                 | BlockError::Invalid(InvalidBlock::ContainsExpiredDeploy)
                         ) {
                             let recoverable_reason = match &invalid_reason {
@@ -320,9 +329,6 @@ where
                                 }
                                 BlockError::Invalid(InvalidBlock::JustificationRegression) => {
                                     "justification_regression"
-                                }
-                                BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock) => {
-                                    "neglected_invalid_block"
                                 }
                                 BlockError::Invalid(InvalidBlock::ContainsExpiredDeploy) => {
                                     "contains_expired_deploy"
@@ -364,7 +370,7 @@ where
     ) -> Result<CheckProposeConstraintsResult, CasperError> {
         match self
             .active_validator_checker
-            .check_active_validator(casper_snapshot, &self.validator)
+            .check_active_validator(casper_snapshot, &self.validator)?
         {
             CheckProposeConstraintsResult::Failure(CheckProposeConstraintsFailure::NotBonded) => {
                 Ok(CheckProposeConstraintsResult::not_bonded())
@@ -640,9 +646,8 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
     dummy_deploy_opt: Option<(PrivateKey, String)>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
-    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    block_retriever: BlockRetriever<T>,
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
     conf: RPConf,
@@ -667,7 +672,6 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
         ProductionBlockValidator,
         ProductionProposeEffectHandler::new(
             block_store,
-            block_retriever,
             transport,
             connections_cell,
             conf,
@@ -693,23 +697,11 @@ impl ActiveValidatorChecker for ProductionActiveValidatorChecker {
         &self,
         casper_snapshot: &CasperSnapshot,
         validator_identity: &ValidatorIdentity,
-    ) -> CheckProposeConstraintsResult {
-        let in_committee = casper_snapshot
-            .parents
-            .first()
-            .map(|parent| {
-                parent
-                    .body
-                    .state
-                    .bonds
-                    .iter()
-                    .any(|bond| bond.validator == validator_identity.public_key.bytes)
-            })
-            .unwrap_or(false);
-        if in_committee {
-            CheckProposeConstraintsResult::success()
+    ) -> Result<CheckProposeConstraintsResult, CasperError> {
+        if casper_snapshot.is_validator_bonded(&validator_identity.public_key.bytes)? {
+            Ok(CheckProposeConstraintsResult::success())
         } else {
-            CheckProposeConstraintsResult::not_bonded()
+            Ok(CheckProposeConstraintsResult::not_bonded())
         }
     }
 }
@@ -749,7 +741,7 @@ impl HeightChecker for ProductionHeightChecker {
 }
 
 pub struct ProductionBlockCreator {
-    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
@@ -758,7 +750,7 @@ pub struct ProductionBlockCreator {
 
 impl ProductionBlockCreator {
     pub fn new(
-        deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+        deploy_storage: Arc<KeyValueDeployStorage>,
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         runtime_manager: RuntimeManager,
         block_store: KeyValueBlockStore,
@@ -814,7 +806,6 @@ impl BlockValidator for ProductionBlockValidator {
 
 pub struct ProductionProposeEffectHandler<T: TransportLayer + Send + Sync> {
     block_store: KeyValueBlockStore,
-    block_retriever: BlockRetriever<T>,
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
     conf: RPConf,
@@ -824,7 +815,6 @@ pub struct ProductionProposeEffectHandler<T: TransportLayer + Send + Sync> {
 impl<T: TransportLayer + Send + Sync> ProductionProposeEffectHandler<T> {
     pub fn new(
         block_store: KeyValueBlockStore,
-        block_retriever: BlockRetriever<T>,
         transport: Arc<T>,
         connections_cell: ConnectionsCell,
         conf: RPConf,
@@ -832,7 +822,6 @@ impl<T: TransportLayer + Send + Sync> ProductionProposeEffectHandler<T> {
     ) -> Self {
         Self {
             block_store,
-            block_retriever,
             transport,
             connections_cell,
             conf,
@@ -854,11 +843,6 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposeEffectHandler
 
         // save changes to Casper (publishes BlockAdded and BlockFinalised events)
         casper.handle_valid_block(block).await?;
-
-        // inform block retriever about block
-        self.block_retriever
-            .ack_in_casper(block.block_hash.clone())
-            .await?;
 
         // Broadcast hash to peers on a best-effort basis, but do not let network fan-out tail
         // block local propose completion latency.
@@ -883,10 +867,13 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposeEffectHandler
         Ok(())
     }
 
-    fn publish_block_created(&self, block: &BlockMessage) -> Result<(), CasperError> {
-        // Publish BlockCreated event
+    fn publish_block_created(
+        &self,
+        block: &BlockMessage,
+        deploy_admission: Option<DeployAdmission>,
+    ) -> Result<(), CasperError> {
         self.event_publisher
-            .publish(created_event(block))
+            .publish(created_event(block, deploy_admission))
             .map_err(Into::into)
     }
 }

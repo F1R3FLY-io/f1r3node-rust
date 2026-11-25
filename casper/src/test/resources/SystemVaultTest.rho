@@ -191,7 +191,10 @@ match (
           // Get unforgeable channel vault address
           VaultAddress!("fromUnforgeable", *unf, *unfVaultAddrCh) |
           for (@unfVaultAddress <- unfVaultAddrCh; genesisVault, genesisVaultKey <- genesisVaultCh) {
-            // Transfer initial funds to unforgeable vault
+            // Transfer initial funds to unforgeable vault in parallel with a direct
+            // `findOrCreate` on the same fresh address. `vaultMapLock` must make the
+            // two find-or-create paths agree on one vault; without it the transfer's
+            // `_deposit` lands on a different purse than the one `unfVault` names.
             genesisVault!("transfer", unfVaultAddress, 100, *genesisVaultKey, *initTransferCh) |
             // Teting transfer from unforgeable bound vault
             SystemVault!("findOrCreate", unfVaultAddress, *unfVaultCh) |

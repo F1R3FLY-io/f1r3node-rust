@@ -35,6 +35,7 @@ use std::os::fd::AsRawFd;
 use models::rhoapi::Par;
 use tokio::task::spawn_blocking;
 
+use super::fcntl_lock::{current_position, FcntlLockGuard};
 use crate::rust::interpreter::io::errors::{io_err_code, join_err_abort, FSERR_CLOSED};
 use crate::rust::interpreter::io::handle_table::FileHandleTable;
 use crate::rust::interpreter::io::path::io_msg_scrub;
@@ -62,11 +63,37 @@ pub async fn write_impl_via_table(
     };
     let result = spawn_blocking(move || {
         let raw_fd = file_arc.as_raw_fd();
+        // POSIX advisory-lock bracket: F_WRLCK on `[lock_offset,
+        // lock_offset + bytes.len())` for the duration of the
+        // syscall.  Lets a cooperating out-of-process reader (the
+        // Phase-B sidecar) see consistent bytes by taking an
+        // F_RDLCK on the same range.  Same-process callers do NOT
+        // contend here — fcntl locks are per-process; Rholang-side
+        // coordination lives in the in-memory `LockRegistry`.
+        //
+        // For positional writes, `lock_offset = off` directly.
+        // For sequential writes, query the current fd position
+        // via `lseek(fd, 0, SEEK_CUR)` — a non-mutating peek — so
+        // the lock range matches what `libc::write` will actually
+        // target.
+        let lock_offset = match offset {
+            Some(off) => off,
+            None => match current_position(raw_fd) {
+                Ok(p) => p,
+                Err(e) => return Err(e),
+            },
+        };
+        let _lock = match FcntlLockGuard::acquire_wrlck(raw_fd, lock_offset, bytes.len() as u64) {
+            Ok(g) => g,
+            Err(e) => return Err(e),
+        };
         // SAFETY: `file_arc` (an `Arc<File>`) is moved into this
         // closure and keeps `raw_fd` open for the duration.  `bytes`
         // is a live `Vec<u8>` owned by this scope.  pwrite/write
         // read up to `bytes.len()` bytes from the pointer and return
-        // the count written (or -1 on error).
+        // the count written (or -1 on error).  The `_lock` guard
+        // keeps the advisory write-lock held across the syscall
+        // and releases it on drop.
         let n = unsafe {
             if let Some(off) = offset {
                 libc::pwrite(raw_fd, bytes.as_ptr() as *const _, bytes.len(), off as i64)

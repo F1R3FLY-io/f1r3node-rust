@@ -1,54 +1,65 @@
 // Process-global cache of opened LMDB environments, keyed by directory path.
 //
-// Why this exists: heed 0.22 rejects duplicate env opens of the same directory
-// with EnvAlreadyOpened. Any code that opens the same path more than once must
-// share a single Env handle. The cache mediates this for all LMDB consumers in
-// the workspace (LmdbStoreManager, LmdbDirStoreManager,
-// get_or_create_rspace_store).
+// heed 0.22 rejects a second open of the same directory with EnvAlreadyOpened,
+// so every LMDB consumer in the workspace (LmdbStoreManager,
+// LmdbDirStoreManager, get_or_create_rspace_store) shares one Env per path
+// through this cache.
 //
-// Lifecycle (Weak-ref semantics): the cache stores Weak<Env> entries. Consumers
-// receive Arc<Env> clones. Once the last Arc<Env> for a given path drops, the
-// inner heed::Env releases its file handles and the cached Weak becomes dead.
-// The next lookup detects the dead Weak, evicts it, and opens a fresh env. This
-// gives bounded growth (one live entry per active path) without ever risking
-// EnvAlreadyOpened on outstanding clones.
+// The cache keeps each environment open until the process exits. Read
+// transactions use thread-local reader slots, and LMDB releases a slot from a
+// destructor that runs when its thread exits. Closing an environment while a
+// thread that once read from it is exiting lets that destructor write into the
+// unmapped reader table. An environment that is never closed cannot race a
+// thread exit.
 //
-// Map size is locked at first open per path. heed does not allow resizing the
-// mmap after env creation, so subsequent get_or_open_env calls for the same
-// path return the cached Env regardless of the requested map_size.
-//
-// Locking: a single StdMutex guards the HashMap. The critical section on the
-// hot path is HashMap::get + Weak::upgrade (an Arc bump if alive). The slow
-// path (env_builder.open) only runs on cache miss — once per unique path until
-// all consumers drop, then again. Per-path lock granularity would add
-// complexity without measurable benefit.
+// Map size and max_dbs are honored only on the first open of a path. heed does
+// not resize the map after creation, so later calls return the cached Env
+// regardless of the requested size.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
-use heed::{Env, EnvOpenOptions};
+use heed::{Env, EnvFlags, EnvOpenOptions};
 
-static ENV_CACHE: OnceLock<StdMutex<HashMap<PathBuf, Weak<Env>>>> = OnceLock::new();
+static ENV_CACHE: OnceLock<StdMutex<HashMap<PathBuf, Arc<Env>>>> = OnceLock::new();
 
-/// Open an LMDB environment for `dir_path`, or return a clone of the cached
-/// handle if one is already alive. Map size and max_dbs are honored only on
-/// the first open per path.
+/// Open the LMDB environment for `dir_path`, or return the cached handle. Map
+/// size and max_dbs are honored only on the first open of a path.
 pub fn get_or_open_env(
     dir_path: &Path,
     max_env_size: usize,
     max_dbs: u32,
 ) -> Result<Arc<Env>, heed::Error> {
+    open_cached(dir_path, max_env_size, max_dbs, false)
+}
+
+pub fn open_env_without_sync(
+    dir_path: &Path,
+    max_env_size: usize,
+    max_dbs: u32,
+) -> Result<Arc<Env>, heed::Error> {
+    open_cached(dir_path, max_env_size, max_dbs, true)
+}
+
+fn open_cached(
+    dir_path: &Path,
+    max_env_size: usize,
+    max_dbs: u32,
+    without_sync: bool,
+) -> Result<Arc<Env>, heed::Error> {
     let cache = ENV_CACHE.get_or_init(|| StdMutex::new(HashMap::new()));
     let mut cache_lock = cache.lock().expect("LMDB env cache mutex poisoned");
 
-    if let Some(weak) = cache_lock.get(dir_path) {
-        if let Some(arc) = weak.upgrade() {
-            return Ok(arc);
+    if let Some(env) = cache_lock.get(dir_path) {
+        if without_sync && env.get_flags()? & EnvFlags::NO_SYNC.bits() == 0 {
+            return Err(heed::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "the LMDB environment is already open with a durable sync",
+            )));
         }
-        // Last consumer dropped — evict the dead Weak and fall through to reopen.
-        cache_lock.remove(dir_path);
+        return Ok(env.clone());
     }
 
     fs::create_dir_all(dir_path)?;
@@ -56,6 +67,9 @@ pub fn get_or_open_env(
     env_builder.map_size(max_env_size);
     env_builder.max_dbs(max_dbs);
     env_builder.max_readers(2048);
+    if without_sync {
+        unsafe { env_builder.flags(EnvFlags::NO_SYNC) };
+    }
     // SAFETY: heed::EnvOpenOptions::open is unsafe because LMDB mmaps the
     // data file. Callers must guarantee that:
     //   1. No other process modifies the file while this Env is alive.
@@ -63,11 +77,67 @@ pub fn get_or_open_env(
     //      networked storage without explicit configuration).
     //   3. The same Env is not opened more than once in this process.
     // We uphold (3) via ENV_CACHE: this call only runs after a cache miss
-    // under the cache mutex, so no concurrent open of the same path is
-    // possible. (1) and (2) are responsibilities of the caller's deployment
+    // under the cache mutex, and cached environments are never evicted.
+    // (1) and (2) are responsibilities of the caller's deployment
     // configuration.
-    let env = unsafe { env_builder.open(dir_path)? };
-    let arc = Arc::new(env);
-    cache_lock.insert(dir_path.to_path_buf(), Arc::downgrade(&arc));
-    Ok(arc)
+    let env = Arc::new(unsafe { env_builder.open(dir_path)? });
+    cache_lock.insert(dir_path.to_path_buf(), env.clone());
+    Ok(env)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_environment_opened_without_sync_stays_without_sync_for_later_consumers() {
+        let dir = tempfile::tempdir().unwrap();
+        open_env_without_sync(dir.path(), 1 << 20, 4).unwrap();
+        let env = get_or_open_env(dir.path(), 1 << 20, 4).unwrap();
+        assert_ne!(env.get_flags().unwrap() & EnvFlags::NO_SYNC.bits(), 0);
+    }
+
+    #[test]
+    fn opening_without_sync_refuses_a_path_already_open_with_a_durable_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let durable = get_or_open_env(dir.path(), 1 << 20, 4).unwrap();
+        assert!(open_env_without_sync(dir.path(), 1 << 20, 4).is_err());
+        assert_eq!(durable.get_flags().unwrap() & EnvFlags::NO_SYNC.bits(), 0);
+    }
+
+    #[test]
+    fn concurrent_openings_without_sync_share_one_environment_without_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let envs: Vec<Arc<Env>> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || open_env_without_sync(&path, 1 << 20, 4).unwrap())
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert!(envs.iter().all(|env| Arc::ptr_eq(env, &envs[0])));
+        assert_ne!(envs[0].get_flags().unwrap() & EnvFlags::NO_SYNC.bits(), 0);
+    }
+
+    #[test]
+    fn an_environment_opened_normally_syncs_each_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = get_or_open_env(dir.path(), 1 << 20, 4).unwrap();
+        assert_eq!(env.get_flags().unwrap() & EnvFlags::NO_SYNC.bits(), 0);
+    }
+
+    #[test]
+    fn environment_stays_open_after_every_consumer_drops() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = get_or_open_env(dir.path(), 1 << 20, 4).unwrap();
+        let address = Arc::as_ptr(&first);
+        drop(first);
+
+        let second = get_or_open_env(dir.path(), 1 << 20, 4).unwrap();
+        assert_eq!(Arc::as_ptr(&second), address);
+        assert!(second.read_txn().is_ok());
+    }
 }

@@ -112,8 +112,8 @@ logic and is **not** needed on a fresh genesis (where no pollution exists).
 
 ### 12.2.1b BlockException → InvalidTransaction coercion (attribution caveat — FV audit #4)
 
-**Status: reachable; soundness depends on determinism.** `block_processor.rs`
-(`:357-376`) coerces a receiver-local `BlockException` (a runtime error raised
+**Status: reachable; soundness depends on determinism.** `Validation::judge`
+in `blocks/ingest/validation_worker.rs` coerces a receiver-local `BlockException` (a runtime error raised
 while the *receiver* validates a block) into the slashable variant
 `InvalidTransaction`, dispatched against the *sender* via the same
 record-creation path as a genuine invalid block. The coercion is now modelled in

@@ -80,15 +80,15 @@ async fn finalized_block_ft_should_not_change_with_dag_state() {
         let bonds = vec![
             Bond {
                 validator: v1.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
             Bond {
                 validator: v2.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
             Bond {
                 validator: v3.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
         ];
 
@@ -251,11 +251,11 @@ async fn clique_oracle_should_detect_finality_as_appropriate() {
         let v2 = generate_validator(Some("Validator Two"));
         let v1_bond = Bond {
             validator: v1.clone(),
-            stake: 2,
+            stake: 2.into(),
         };
         let v2_bond = Bond {
             validator: v2.clone(),
-            stake: 3,
+            stake: 3.into(),
         };
         let bonds = vec![v1_bond, v2_bond];
 
@@ -367,15 +367,15 @@ async fn clique_oracle_should_detect_possible_disagreements_appropriately() {
         let v3 = generate_validator(Some("Validator Three"));
         let v1_bond = Bond {
             validator: v1.clone(),
-            stake: 25,
+            stake: 25.into(),
         };
         let v2_bond = Bond {
             validator: v2.clone(),
-            stake: 20,
+            stake: 20.into(),
         };
         let v3_bond = Bond {
             validator: v3.clone(),
-            stake: 15,
+            stake: 15.into(),
         };
         let bonds = vec![v1_bond, v2_bond, v3_bond];
 
@@ -492,23 +492,23 @@ async fn clique_oracle_should_identify_no_majority_fork_safe_after_union() {
         let bonds = vec![
             Bond {
                 validator: v0.clone(),
-                stake: 500,
+                stake: 500.into(),
             },
             Bond {
                 validator: v1.clone(),
-                stake: 450,
+                stake: 450.into(),
             },
             Bond {
                 validator: v2.clone(),
-                stake: 600,
+                stake: 600.into(),
             },
             Bond {
                 validator: v3.clone(),
-                stake: 400,
+                stake: 400.into(),
             },
             Bond {
                 validator: v4.clone(),
-                stake: 525,
+                stake: 525.into(),
             },
         ];
 
@@ -680,7 +680,7 @@ async fn clique_oracle_growth_feedback_loop_stale_justification_chain() {
             .iter()
             .map(|validator| Bond {
                 validator: validator.clone(),
-                stake: 10,
+                stake: 10.into(),
             })
             .collect();
 
@@ -756,7 +756,7 @@ async fn clique_oracle_growth_feedback_loop_stale_justification_chain() {
                             .is_in_main_chain(&target_hash, &latest_hash)
                             .expect("main chain lookup should succeed");
                         if in_main_chain {
-                            agreeing_weight_map.insert(validator.clone(), *weight);
+                            agreeing_weight_map.insert(validator.clone(), weight.clone());
                         }
                     }
                 }
@@ -812,15 +812,15 @@ async fn orphaned_finalized_block_should_still_get_ft_updated() {
         let bonds = vec![
             Bond {
                 validator: v1.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
             Bond {
                 validator: v2.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
             Bond {
                 validator: v3.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
         ];
 
@@ -945,7 +945,7 @@ async fn conflicting_same_height_siblings_cannot_both_certify() {
             .iter()
             .map(|v| Bond {
                 validator: (*v).clone(),
-                stake: 100,
+                stake: 100.into(),
             })
             .collect();
 
@@ -1152,15 +1152,15 @@ async fn sound_certificates_form_on_both_fork_sides_across_time() {
         let bonds = vec![
             Bond {
                 validator: va.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
             Bond {
                 validator: vb.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
             Bond {
                 validator: vc.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
         ];
 
@@ -1328,15 +1328,15 @@ async fn a_coincidence_never_mutually_seen_must_not_certify() {
         let bonds = vec![
             Bond {
                 validator: v1.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
             Bond {
                 validator: v2.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
             Bond {
                 validator: v3.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
         ];
 
@@ -1494,7 +1494,7 @@ fn stage_spine_state_divergence(
         .iter()
         .map(|v| Bond {
             validator: (*v).clone(),
-            stake: 100,
+            stake: 100.into(),
         })
         .collect();
 

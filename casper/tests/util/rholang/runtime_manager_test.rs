@@ -25,9 +25,11 @@ use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{
     DeployData, ProcessedDeploy, ProcessedSystemDeploy,
 };
+use models::rust::utils::{new_elist_par, new_gint_par, new_gstring_par};
 use rholang::rust::interpreter::accounting::costs::{self, Cost};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
+use rholang::rust::interpreter::nesting::MAX_NESTING_DEPTH;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rholang::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
@@ -206,6 +208,392 @@ async fn comput_state_should_charge_for_deploys() {
     .unwrap()
 }
 
+fn bitmask_flags_deploy(body: &str) -> Signed<DeployData> {
+    construct_deploy::source_deploy_now_full(
+        format!(r#"new t(`rho:system:bitmaskMergeableTag`) in {{ {body} }}"#),
+        Some(1_000_000),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap()
+}
+
+async fn play_and_replay_bitmask_deploy(
+    runtime_manager: &mut RuntimeManager,
+    genesis_context: &GenesisContext,
+    body: &str,
+    state_hash: &StateHash,
+) -> (StateHash, bool) {
+    let (new_state_hash, processed_deploy) = compute_state(
+        runtime_manager,
+        genesis_context,
+        bitmask_flags_deploy(body),
+        state_hash,
+    )
+    .await;
+    let is_failed = processed_deploy.is_failed;
+    let replay_state_hash = replay_compute_state(
+        runtime_manager,
+        genesis_context,
+        processed_deploy,
+        state_hash,
+    )
+    .await
+    .unwrap();
+    assert_eq!(replay_state_hash, new_state_hash);
+    (new_state_hash, is_failed)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deploy_that_clears_bitmask_or_bits_fails_in_play_and_replay() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+            let rewrite = |value: i64| {
+                format!(r#"for (@_ <- @(*t, "flags-534")) {{ @(*t, "flags-534")!({value}) }}"#)
+            };
+
+            let (with_flags, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"@(*t, "flags-534")!(5)"#,
+                &gen_post_state,
+            )
+            .await;
+            assert!(!failed);
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                &rewrite(4),
+                &with_flags,
+            )
+            .await;
+            assert!(
+                failed,
+                "clearing bit 0 of a BitmaskOr channel must fail the deploy"
+            );
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                &rewrite(7),
+                &with_flags,
+            )
+            .await;
+            assert!(
+                !failed,
+                "setting bits on a BitmaskOr channel must still succeed"
+            );
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"@(*t, "own-534")!(5) | for (@_ <- @(*t, "own-534")) { @(*t, "own-534")!(4) }"#,
+                &with_flags,
+            )
+            .await;
+            assert!(!failed, "a deploy may clear bits it set itself");
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"for (@_ <- @(*t, "flags-534")) { Nil }"#,
+                &with_flags,
+            )
+            .await;
+            assert!(
+                failed,
+                "consuming a BitmaskOr value without putting it back must fail"
+            );
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"for (@_ <- @(*t, "flags-534")) { @(*t, "flags-534")!({"k": 1}) }"#,
+                &with_flags,
+            )
+            .await;
+            assert!(
+                failed,
+                "replacing a BitmaskOr value with non-numeric data must fail"
+            );
+
+            let (with_join, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"for (@_ <- @(*t, "flags-534") & @_ <- @"go-534") { Nil }"#,
+                &with_flags,
+            )
+            .await;
+            assert!(!failed);
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"@"go-534"!(Nil)"#,
+                &with_join,
+            )
+            .await;
+            assert!(
+                failed,
+                "draining a BitmaskOr value through a waiting join must fail"
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_value_at_the_nesting_limit_is_stored_read_back_and_replayed() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let store = construct_deploy::source_deploy_now_full(
+                format!(
+                    r#"new loop in {{
+                         contract loop(@x, @n) = {{
+                           if (n > 0) {{ loop!([x], n - 1) }} else {{ @"deep-value"!(x) }}
+                         }} |
+                         loop!(0, {})
+                       }}"#,
+                    MAX_NESTING_DEPTH - 8
+                ),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let read = construct_deploy::source_deploy_now_full(
+                r#"for (@x <- @"deep-value") { @"deep-value-read"!(x) }"#.to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+            let mut state = genesis_block.body.state.post_state_hash;
+            for deploy in [store, read] {
+                let (next, processed) =
+                    compute_state(&mut runtime_manager, &genesis_context, deploy, &state).await;
+                assert!(!processed.is_failed, "{:?}", processed.system_deploy_error);
+                let replayed =
+                    replay_compute_state(&mut runtime_manager, &genesis_context, processed, &state)
+                        .await
+                        .unwrap();
+                assert_eq!(replayed, next);
+                state = next;
+            }
+
+            let mut expected = new_gint_par(0, Vec::new(), false);
+            for _ in 0..MAX_NESTING_DEPTH - 8 {
+                expected =
+                    new_elist_par(vec![expected], Vec::new(), false, None, Vec::new(), false);
+            }
+            let read_back = runtime_manager
+                .get_data(
+                    state,
+                    &new_gstring_par("deep-value-read".to_string(), Vec::new(), false),
+                )
+                .await
+                .unwrap();
+            assert_eq!(read_back, vec![expected]);
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// `match { 0 | … | ints-1 | "s0" | … | "s9" } { { String | … | rest } => … }`
+/// with ten `String` connectives: each scans past every int, so the match
+/// needs work that grows with `ints` and the cost ten times over.
+fn ten_string_connectives_match(ints: usize) -> String {
+    let target = (0..ints)
+        .map(|i| i.to_string())
+        .chain((0..10).map(|i| format!("\"s{i}\"")))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let pattern = ["String"; 10].join(" | ");
+    format!(
+        r#"match {{ {target} }} {{ {{ {pattern} | rest }} => {{ @"matched"!(1) }} _ => {{ @"unmatched"!(1) }} }}"#
+    )
+}
+
+/// A `match` is charged per step: with the phlo for its steps it matches, and
+/// without it the deploy fails out of phlo; both replay identically.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_match_is_charged_per_step_and_replays_identically() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            for (phlo_limit, fails) in [(1_000_000, false), (100_000, true)] {
+                let state = genesis_block.body.state.post_state_hash.clone();
+                let deploy = construct_deploy::source_deploy_now_full(
+                    ten_string_connectives_match(1000),
+                    Some(phlo_limit),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+                let (next, processed) =
+                    compute_state(&mut runtime_manager, &genesis_context, deploy, &state).await;
+                assert_eq!(processed.is_failed, fails, "phlo limit {phlo_limit}");
+                let replayed =
+                    replay_compute_state(&mut runtime_manager, &genesis_context, processed, &state)
+                        .await
+                        .unwrap();
+                assert_eq!(replayed, next);
+                if !fails {
+                    let taken = runtime_manager
+                        .get_data(
+                            next,
+                            &new_gstring_par("matched".to_string(), Vec::new(), false),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(taken, vec![new_gint_par(1, Vec::new(), false)]);
+                }
+            }
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deploy_binding_an_unknown_urn_fails_for_the_work_done_and_replays_identically() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let state = genesis_block.body.state.post_state_hash;
+            let phlo_limit = 1_000_000;
+            for (term, full_limit) in [
+                ("new x(`rho:does:not:exist`) in { Nil }", false),
+                (
+                    "new x(`rho:does:not:exist`) in { Nil } | new y(`rho:also:missing`) in { Nil }",
+                    false,
+                ),
+                (
+                    "new x(`rho:does:not:exist`) in { Nil } | if (1) { Nil }",
+                    false,
+                ),
+                (
+                    "new x(`rho:does:not:exist`) in { Nil } | @0!(1 + \"a\")",
+                    true,
+                ),
+            ] {
+                let deploy = construct_deploy::source_deploy_now_full(
+                    term.to_string(),
+                    Some(phlo_limit),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+                let (next, processed) =
+                    compute_state(&mut runtime_manager, &genesis_context, deploy, &state).await;
+                assert!(processed.is_failed, "{term}");
+                if full_limit {
+                    assert_eq!(processed.cost.cost, phlo_limit as u64, "{term}");
+                } else {
+                    assert!(
+                        processed.cost.cost < 10_000,
+                        "{term}: charged {} of a {phlo_limit} limit",
+                        processed.cost.cost
+                    );
+                }
+                let replayed =
+                    replay_compute_state(&mut runtime_manager, &genesis_context, processed, &state)
+                        .await
+                        .unwrap();
+                assert_eq!(replayed, next, "{term}");
+            }
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploys_failing_on_the_nesting_limit_replay_identically() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let state = genesis_block.body.state.post_state_hash;
+            let too_deep_at_runtime = "new loop in { contract loop(@x, @n) = { if (n > 0) { loop!([x], n - 1) } else { @0!(x) } } | loop!(0, 1000) }".to_string();
+            let too_deep_to_compile = format!(
+                "@0!({}0{})",
+                "[".repeat(MAX_NESTING_DEPTH + 1),
+                "]".repeat(MAX_NESTING_DEPTH + 1)
+            );
+            for source in [too_deep_at_runtime, too_deep_to_compile] {
+                let deploy = construct_deploy::source_deploy_now_full(
+                    source, None, None, None, None, None,
+                )
+                .unwrap();
+                let (next, processed) =
+                    compute_state(&mut runtime_manager, &genesis_context, deploy, &state).await;
+                assert!(processed.is_failed);
+                let cost = processed.cost;
+                let replayed = replay_compute_state(
+                    &mut runtime_manager,
+                    &genesis_context,
+                    processed,
+                    &state,
+                )
+                .await
+                .unwrap();
+                assert_eq!(replayed, next, "replay of a deploy costing {cost:?}");
+            }
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bitmask_or_writes_that_keep_every_bit_still_succeed() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+
+            let (with_leaf, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"@(*t, "leaf-534")!(0)"#,
+                &gen_post_state,
+            )
+            .await;
+            assert!(!failed);
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"for (@_ <- @(*t, "leaf-534")) { @(*t, "leaf-534")!({"k": 1}) }"#,
+                &with_leaf,
+            )
+            .await;
+            assert!(!failed, "a zero bitmap may become a TreeHashMap leaf");
+
+            let (_, failed) = play_and_replay_bitmask_deploy(
+                &mut runtime_manager,
+                &genesis_context,
+                r#"new insert(`rho:registry:insertArbitrary`), uri in { insert!("value-534", *uri) }"#,
+                &gen_post_state,
+            )
+            .await;
+            assert!(!failed, "a registry insert must still succeed");
+        },
+    )
+    .await
+    .unwrap()
+}
+
 /// Builds three distinct, individually-cheap deploys for the play-budget tests.
 fn three_budget_probe_deploys() -> Vec<Signed<DeployData>> {
     [
@@ -236,7 +624,7 @@ async fn an_exhausted_play_budget_still_carries_exactly_one_deploy() {
             let deploys = three_budget_probe_deploys();
             let time_stamp = deploys[0].data.time_stamp;
 
-            let (_state, processed, _sys, _bonds) = runtime_manager
+            let (_state, processed, _sys, _bonds, _leaves) = runtime_manager
                 .compute_state_with_bonds(
                     &gen_post_state,
                     deploys,
@@ -274,7 +662,7 @@ async fn an_ample_play_budget_carries_the_whole_pool() {
             let deploys = three_budget_probe_deploys();
             let time_stamp = deploys[0].data.time_stamp;
 
-            let (_state, processed, _sys, _bonds) = runtime_manager
+            let (_state, processed, _sys, _bonds, _leaves) = runtime_manager
                 .compute_state_with_bonds(
                     &gen_post_state,
                     deploys,
@@ -447,12 +835,12 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                 &genesis_context,
                 &genesis_block.body.state.post_state_hash,
                 &mut PreChargeDeploy {
-                    charge_amount: 9000000,
+                    charge_amount: (9000000).into(),
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[0]),
                 },
                 &mut PreChargeDeploy {
-                    charge_amount: 9000000,
+                    charge_amount: (9000000).into(),
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[0]),
                 },
@@ -483,11 +871,11 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                 &genesis_context,
                 &state_hash_1,
                 &mut RefundDeploy {
-                    refund_amount: 9000000,
+                    refund_amount: (9000000).into(),
                     rand: Blake2b512Random::create_from_bytes(&[2]),
                 },
                 &mut RefundDeploy {
-                    refund_amount: 9000000,
+                    refund_amount: (9000000).into(),
                     rand: Blake2b512Random::create_from_bytes(&[2]),
                 },
                 |_| true,
@@ -2089,6 +2477,10 @@ async fn bridge_query_survives_multi_parent_merge() {
             dag_storage
                 .get_representation()
                 .expect("dag representation"),
+            dag_storage
+                .genesis_hash()
+                .expect("genesis hash")
+                .expect("genesis is held"),
         );
         snapshot.last_finalized_block = lfb.clone();
         let mut max_seq_nums: HashMap<prost::bytes::Bytes, u64> = HashMap::new();
@@ -2099,7 +2491,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         shard_conf.max_parent_depth = 0;
         shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(validator.clone(), 100);
+        bonds_map.insert(validator.clone(), 100.into());
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
             bonds_map,
@@ -2298,13 +2690,6 @@ async fn bridge_query_survives_multi_parent_merge() {
             .map(|record| hex::encode(&record.sig[..8.min(record.sig.len())]))
             .collect::<Vec<_>>()
     );
-    // Non-slash merge scenario must surface an empty rejected_slashes list so
-    // the block creator's dedup step runs as a no-op.
-    assert!(
-        merged.rejected_slashes.is_empty(),
-        "Merge rejected slashes unexpectedly populated: count={}",
-        merged.rejected_slashes.len()
-    );
 
     // --- Query getNonce from merged state ---
     let get_nonce_rho = format!(
@@ -2392,15 +2777,9 @@ in {{
 /// registry leaves from sibling branches. They genuinely RACE at the raw level —
 /// both read-modify-write the SAME shared TreeHashMap internal-node produce
 /// channels (`racesForSameIOEvent: produceRaces=2`) — yet because they touch
-/// DIFFERENT leaves the merge keeps BOTH: the keep-one / §3c discriminator
-/// classifies the shared-internal-node produces as mergeable, not a genuine
-/// single-value-cell conflict. The correct outcome is therefore `rejected == 0`
-/// with both contracts' data present in the merged state (verified below).
-///
-/// Historical note: this was `#[ignore]`d under an earlier premise that one insert
-/// "must be rejected"; the current keep-one design correctly merges these distinct
-/// leaves, so that premise no longer holds and the test is re-enabled. The genuine
-/// raw race is asserted (below) so `rejected == 0` is a real keep-one result, not a
+/// DIFFERENT leaves the merge keeps BOTH. The correct outcome is therefore
+/// `rejected == 0` with both contracts' data present in the merged state
+/// (verified below). The raw race is asserted so `rejected == 0` is not a
 /// vacuous merge of disjoint branches.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_registry_inserts_should_not_conflict() {
@@ -2470,6 +2849,10 @@ async fn concurrent_registry_inserts_should_not_conflict() {
             dag_storage
                 .get_representation()
                 .expect("dag representation"),
+            dag_storage
+                .genesis_hash()
+                .expect("genesis hash")
+                .expect("genesis is held"),
         );
         snapshot.last_finalized_block = lfb.clone();
         let mut max_seq_nums: HashMap<prost::bytes::Bytes, u64> = HashMap::new();
@@ -2480,7 +2863,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         shard_conf.max_parent_depth = 0;
         shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(validator.clone(), 100);
+        bonds_map.insert(validator.clone(), 100.into());
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
             bonds_map,
@@ -2694,7 +3077,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         tracing::info!("Racing produces: {}", racing_produces.len());
         // Non-vacuity: the two inserts must GENUINELY race on shared internal-node
         // produce channels, else `rejected == 0` below would be a trivial merge of
-        // disjoint branches rather than a real keep-one/exemption result.
+        // disjoint branches.
         assert!(
             !racing_produces.is_empty(),
             "expected a genuine shared-channel race between the two registry inserts \
@@ -2851,17 +3234,13 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         );
     }
 
-    // Key assertion: keep-one correctly keeps BOTH inserts (0 rejected). They
-    // raw-race on the shared TreeHashMap internal-node produce channels (asserted
-    // non-empty above), but write DISTINCT leaves, so the §3c discriminator
-    // classifies those shared-node produces as mergeable rather than a genuine
-    // single-value-cell conflict. A rejection here would be a real regression: a
-    // genuinely-mergeable race mis-rejected.
+    // They raw-race on the shared TreeHashMap internal-node produce channels
+    // (asserted non-empty above) but write DISTINCT leaves, so the merge must
+    // keep both inserts.
     assert!(
         merged.rejected_user.is_empty(),
         "concurrent insertArbitrary to DISTINCT registry leaves must merge with 0 \
-         rejected (they share TreeHashMap internal nodes, but the produces there are \
-         mergeable); got {} rejected — keep-one wrongly rejected a mergeable race.",
+         rejected; got {} rejected.",
         merged.rejected_user.len(),
     );
 
@@ -3000,7 +3379,7 @@ in {
                 uri
             );
             let (query_result, _) = runtime_manager
-                .play_exploratory_deploy(query_term, &post_state, None)
+                .play_exploratory_deploy(query_term, &post_state, None, Vec::new())
                 .await
                 .expect("query exploratory deploy");
             tracing::info!("Query with correct var name: {} pars", query_result.len());
@@ -3021,7 +3400,7 @@ in {
                 uri
             );
             let bad_result = runtime_manager
-                .play_exploratory_deploy(bad_term, &post_state, None)
+                .play_exploratory_deploy(bad_term, &post_state, None, Vec::new())
                 .await;
             assert!(
                 bad_result.is_err(),
@@ -3239,6 +3618,10 @@ async fn stale_diff_application_corrupts_merged_state() {
             dag_storage
                 .get_representation()
                 .expect("dag representation"),
+            dag_storage
+                .genesis_hash()
+                .expect("genesis hash")
+                .expect("genesis is held"),
         );
         snapshot.last_finalized_block = lfb.clone();
         let mut max_seq_nums: HashMap<prost::bytes::Bytes, u64> = HashMap::new();
@@ -3249,7 +3632,7 @@ async fn stale_diff_application_corrupts_merged_state() {
         shard_conf.max_parent_depth = 0;
         shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(validator.clone(), 100);
+        bonds_map.insert(validator.clone(), 100.into());
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
             bonds_map,
@@ -3686,10 +4069,11 @@ async fn fault_tolerance_threshold_ppm_round_trips_through_genesis() {
 }
 
 /// Consensus-parameters round-trip: genesis bakes (max-parent-depth,
-/// deploy-lifespan, min-phlo-price) into the PoS contract and any node can
-/// read them back from any post-state — the same shard-uniformity mechanism
-/// as the protocol FTT, extended to the parameters the validity rules
-/// (parent spread, expiry, repeat-deploy, phlo floor) fork on.
+/// deploy-lifespan, min-phlo-price, epoch-length, max-phlo-limit) into the PoS
+/// contract and any node can read them back from any post-state — the same
+/// shard-uniformity mechanism as the protocol FTT, extended to the parameters
+/// the validity rules (parent spread, expiry, repeat-deploy, phlo floor, phlo
+/// cap) fork on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_parameters_round_trip_through_genesis() {
     use crate::util::genesis_builder::GenesisBuilder;
@@ -3697,11 +4081,13 @@ async fn consensus_parameters_round_trip_through_genesis() {
         mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
     };
 
-    // Values the test-genesis defaults (15, 50, 0) can never produce by accident.
+    // Values the test-genesis defaults (15, 50, 0, 1000) can never produce by accident.
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
     parameters.2.proof_of_stake.max_parent_depth = 21;
     parameters.2.proof_of_stake.deploy_lifespan = 70;
-    parameters.2.proof_of_stake.min_phlo_price = 3;
+    parameters.2.proof_of_stake.min_phlo_price = (3).into();
+    parameters.2.proof_of_stake.epoch_length = 9;
+    parameters.2.proof_of_stake.max_phlo_limit = 7_000_000;
 
     let genesis_context = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
@@ -3724,7 +4110,13 @@ async fn consensus_parameters_round_trip_through_genesis() {
 
     assert_eq!(
         read,
-        Some((21, 70, 3)),
+        Some(casper::rust::rholang::runtime::ConsensusParameters {
+            max_parent_depth: 21,
+            deploy_lifespan: 70,
+            min_phlo_price: 3.into(),
+            epoch_length: 9,
+            max_phlo_limit: 7_000_000,
+        }),
         "genesis must bake the consensus parameters into the PoS contract and \
          expose them via getConsensusParameters"
     );
@@ -3767,6 +4159,41 @@ async fn consensus_parameters_read_rejects_out_of_range_values() {
     );
 }
 
+/// A chain whose phlo cap admits no deploy fails the strict read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consensus_parameters_read_rejects_a_non_positive_phlo_cap() {
+    use crate::util::genesis_builder::GenesisBuilder;
+    use crate::util::rholang::resources::{
+        mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
+    parameters.2.proof_of_stake.max_phlo_limit = 0;
+
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("genesis with a zero phlo cap");
+    let post_state = genesis_context
+        .genesis_block
+        .body
+        .state
+        .post_state_hash
+        .clone();
+
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) = mk_runtime_manager_with_history_at(&mut *kvm).await;
+
+    let err = runtime_manager
+        .get_consensus_parameters(&post_state)
+        .await
+        .expect_err("a zero maxPhloLimit must fail the strict read");
+    assert!(
+        err.to_string().contains("maxPhloLimit out of range"),
+        "the error must name the offending parameter, got: {err}"
+    );
+}
+
 /// The adoption gap this pins: a node whose LOCAL configuration diverges from
 /// the chain must still RUN the on-chain consensus parameters — local config
 /// is not a fork input. `hash_set_casper` is the single adoption point (the
@@ -3774,31 +4201,28 @@ async fn consensus_parameters_read_rejects_out_of_range_values() {
 /// blocks its peers reject (parent spread, expiry, repeat window, phlo floor).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
-    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer;
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::blocks::ingest::block_ingest::IngestHandle;
     use casper::rust::casper::{hash_set_casper, CasperShardConf, MultiParentCasper};
-    use casper::rust::engine::block_retriever::BlockRetriever;
     use casper::rust::estimator::Estimator;
-    use comm::rust::rp::connect::{Connections, ConnectionsCell};
-    use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
-    use crate::engine::setup;
     use crate::util::genesis_builder::GenesisBuilder;
     use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, casper_buffer_storage_from_dyn,
-        key_value_deploy_storage_from_dyn, mk_runtime_manager_with_history_at,
-        mk_test_rnode_store_manager_from_genesis,
+        block_dag_storage_from_dyn, key_value_deploy_storage_from_dyn,
+        mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
     };
 
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
     parameters.2.proof_of_stake.max_parent_depth = 21;
     parameters.2.proof_of_stake.deploy_lifespan = 70;
-    parameters.2.proof_of_stake.min_phlo_price = 3;
+    parameters.2.proof_of_stake.min_phlo_price = (3).into();
+    parameters.2.proof_of_stake.epoch_length = 9;
+    parameters.2.proof_of_stake.max_phlo_limit = 7_000_000;
 
     let genesis_context = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
@@ -3816,9 +4240,6 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     let deploy_storage = key_value_deploy_storage_from_dyn(&mut *kvm)
         .await
         .expect("deploy storage");
-    let casper_buffer = casper_buffer_storage_from_dyn(&mut *kvm)
-        .await
-        .expect("casper buffer");
     let mut buffer_kvm = InMemoryStoreManager::new();
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         KeyValueRejectedDeployBuffer::new(&mut buffer_kvm)
@@ -3826,25 +4247,19 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
             .expect("rejected buffer"),
     ));
 
-    let local_peer = setup::peer_node("adoption-local", 40400);
-    let rp_conf = create_rp_conf_ask(local_peer.clone(), None, None);
-    let block_retriever = BlockRetriever::new(
-        Arc::new(Mutex::new(HashMap::new())),
-        Arc::new(TransportLayerStub::new()),
-        ConnectionsCell {
-            peers: Arc::new(Mutex::new(Connections::from_vec(vec![local_peer]))),
-        },
-        rp_conf,
-    );
+    let (ingest, _ports) = IngestHandle::open(block_store.clone(), block_dag_storage.clone())
+        .expect("block ingest opens on a fresh DAG storage");
 
-    // Local conf diverges from the chain on all three values.
+    // Local conf diverges from the chain on every value.
     let mut local_conf = CasperShardConf::new();
     local_conf.max_parent_depth = 15;
     local_conf.deploy_lifespan = 50;
-    local_conf.min_phlo_price = 1;
+    local_conf.min_phlo_price = (1).into();
+    local_conf.epoch_length = 10000;
+    local_conf.max_phlo_limit = 20_000_000;
 
     let casper = hash_set_casper(
-        block_retriever,
+        ingest,
         F1r3flyEvents::new(),
         Arc::new(runtime_manager),
         Estimator::apply(),
@@ -3852,7 +4267,6 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
         block_dag_storage,
         deploy_storage,
         rejected_deploy_buffer,
-        casper_buffer,
         None,
         local_conf,
         genesis_context.genesis_block.clone(),
@@ -3866,9 +4280,11 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
         (
             adopted.max_parent_depth,
             adopted.deploy_lifespan,
-            adopted.min_phlo_price
+            adopted.min_phlo_price.clone(),
+            adopted.epoch_length,
+            adopted.max_phlo_limit
         ),
-        (21, 70, 3),
+        (21, 70, 3.into(), 9, 7_000_000),
         "the on-chain consensus parameters must be adopted over local configuration"
     );
 }
@@ -3995,6 +4411,7 @@ async fn recompute_materializes_mergeable_entry_for_own_block() {
             timestamp: 1,
             version: 1,
             extra_bytes: prost::bytes::Bytes::new(),
+            chain_id: prost::bytes::Bytes::new(),
         },
         body: Body {
             state: F1r3flyState {
@@ -4059,21 +4476,18 @@ async fn recompute_materializes_mergeable_entry_for_own_block() {
 /// evidence against the proposer of the block being validated.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
-    use std::collections::BTreeMap as StdBTreeMap;
     use std::sync::Arc;
 
-    use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-    use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::casper::CasperShardConf;
     use casper::rust::util::mergeable_channels_gc;
-    use models::rust::block_metadata::BlockMetadata;
     use models::rust::casper::protocol::casper_message::{
         BlockMessage, Body, F1r3flyState, Header,
     };
-    use parking_lot::RwLock as PlRwLock;
-    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
-    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use crate::util::rholang::resources::{
         mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
@@ -4146,6 +4560,7 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
             timestamp: 1,
             version: 1,
             extra_bytes: prost::bytes::Bytes::new(),
+            chain_id: prost::bytes::Bytes::new(),
         },
         body: Body {
             state: F1r3flyState {
@@ -4181,87 +4596,76 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
     // A linear finalized chain 0..=TIP by one validator. The block at
     // LAGGING_HEIGHT is the real one above; the rest are synthetic and absent
     // from the block store, so GC skips them.
-    let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-    let mut bms = BlockMetadataStore::new(metadata_store);
-    let chain_validator = prost::bytes::Bytes::from(vec![0xEEu8; 65]);
-
-    let mut dag_set = imbl::HashSet::new();
-    let mut block_number_map = imbl::HashMap::new();
-    let mut main_parent_map = imbl::HashMap::new();
-    let mut child_map: imbl::HashMap<prost::bytes::Bytes, imbl::HashSet<prost::bytes::Bytes>> =
-        imbl::HashMap::new();
-    let mut height_map: imbl::OrdMap<i64, imbl::HashSet<prost::bytes::Bytes>> = imbl::OrdMap::new();
-    let mut finalized_blocks_set = imbl::HashSet::new();
-
+    let mut dag_manager = InMemoryStoreManager::new();
+    let dag_storage = BlockDagKeyValueStorage::new_with_hot_window(&mut dag_manager, 2)
+        .await
+        .expect("DAG storage");
     for n in 0..=TIP {
-        let h = chain_hash(n);
-        dag_set.insert(h.clone());
-        block_number_map.insert(h.clone(), n as i64);
-        finalized_blocks_set.insert(h.clone());
-        let mut at_height = imbl::HashSet::new();
-        at_height.insert(h.clone());
-        height_map.insert(n as i64, at_height);
-
-        let parents = if n == 0 {
-            Vec::new()
+        let mut block = lagging_block.clone();
+        block.block_hash = chain_hash(n);
+        block.body.state.block_number = n as i64;
+        block.seq_num = n as i32 + seq_num - LAGGING_HEIGHT as i32;
+        block.header.parents_hash_list = if n == 0 {
+            vec![]
         } else {
-            let parent = chain_hash(n - 1);
-            main_parent_map.insert(h.clone(), parent.clone());
-            let mut kids = child_map.get(&parent).cloned().unwrap_or_default();
-            kids.insert(h.clone());
-            child_map.insert(parent.clone(), kids);
-            vec![parent]
+            vec![chain_hash(n - 1)]
         };
-
-        // The block at LAGGING_HEIGHT carries the REAL sender and seq, so the
-        // key GC derives for deletion is the key the propose path wrote.
-        let (meta_sender, meta_seq) = if n == LAGGING_HEIGHT {
-            (sender.bytes.clone(), seq_num)
-        } else {
-            (chain_validator.clone(), n as i32)
-        };
-
-        bms.add(BlockMetadata {
-            block_hash: h.clone(),
-            parents,
-            sender: meta_sender,
-            justifications: vec![],
-            weight_map: StdBTreeMap::new(),
-            block_number: n as i64,
-            sequence_number: meta_seq,
-            invalid: false,
-            directly_finalized: true,
-            finalized: true,
-            fault_tolerance_value: 1.0,
-            merge_base: prost::bytes::Bytes::new(),
-        })
-        .expect("add metadata");
+        if n != LAGGING_HEIGHT {
+            block.body.deploys.clear();
+            block.body.system_deploys.clear();
+        }
+        drop(
+            dag_storage
+                .insert(
+                    &block,
+                    if n == 0 {
+                        InsertMode::Approved
+                    } else {
+                        InsertMode::Normal
+                    },
+                )
+                .expect("publish chain block"),
+        );
     }
+    dag_storage
+        .record_directly_finalized(chain_hash(TIP), 1.0, |_| async { Ok(()) })
+        .await
+        .expect("finalize synthetic chain");
+    let dag = dag_storage.get_representation().expect("DAG view");
+    assert!(dag.resident_counts().blocks < usize::from(TIP));
+    assert!(dag
+        .contains(&chain_hash(LAGGING_HEIGHT))
+        .expect("cold membership"));
 
-    let mut latest_messages_map = imbl::HashMap::new();
-    latest_messages_map.insert(chain_validator, chain_hash(TIP));
-
-    let dag = KeyValueDagRepresentation {
-        dag_set,
-        latest_messages_map,
-        child_map,
-        height_map,
-        block_number_map,
-        main_parent_map,
-        self_justification_map: imbl::HashMap::new(),
-        invalid_blocks_set: imbl::HashSet::new(),
-        last_finalized_block_hash: chain_hash(TIP),
-        finalized_blocks_set,
-        block_metadata_index: Arc::new(PlRwLock::new(bms)),
-        floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
-        frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
-        lifecycle: Arc::new(PlRwLock::new(
-            block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
-        )),
-        carrier_index: Arc::new(PlRwLock::new(
-            block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
-        )),
-    };
+    let mut conf = CasperShardConf::new();
+    conf.max_parent_depth = 3;
+    conf.mergeable_channels_gc_depth_buffer = 1;
+    let mut gc_sweep = mergeable_channels_gc::GcSweep::new();
+    let effective_anchor = std::sync::atomic::AtomicI64::new(0);
+    assert_eq!(
+        mergeable_channels_gc::collect_garbage(
+            &mut gc_sweep,
+            &dag_storage,
+            &block_store,
+            &rm,
+            &conf,
+            &effective_anchor,
+        )
+        .await
+        .unwrap(),
+        mergeable_channels_gc::GcProgress::Complete {
+            deleted: 0,
+            blocks_deleted: 0,
+        }
+    );
+    assert!(rm.has_mergeable_entry(&lagging_block).unwrap());
+    assert!(dag.get_cached_floor(&chain_hash(TIP)).unwrap().is_none());
+    assert!(dag_storage
+        .gc_store()
+        .discovery_state()
+        .unwrap()
+        .claimed_ceiling
+        .is_none());
 
     // The node's live floor is the chain tip. Seeding the persisted floor cache
     // is how a node that already derived this floor answers — GC reads it
@@ -4269,17 +4673,49 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
     dag.put_cached_floor(chain_hash(TIP), chain_hash(TIP))
         .expect("seed the live floor");
 
-    let mut conf = CasperShardConf::new();
-    conf.max_parent_depth = 3;
-    conf.mergeable_channels_gc_depth_buffer = 1;
+    // The active-validator filter in `collect_garbage` reads the floor block's
+    // post-state hash to resolve the PoS bonded committee, so the tip block
+    // must be in the block store. The synthetic chain re-uses the lagging
+    // block's post-state at every height, which is the real genesis state
+    // (no state advance in this test), so the genesis bonds are the active
+    // committee and the chain validator (`sender`) stays in the filter set.
+    let mut tip_block = lagging_block.clone();
+    tip_block.block_hash = chain_hash(TIP);
+    tip_block.body.state.block_number = TIP as i64;
+    tip_block.seq_num = TIP as i32 + seq_num - LAGGING_HEIGHT as i32;
+    tip_block.header.parents_hash_list = vec![chain_hash(TIP - 1)];
+    tip_block.body.deploys.clear();
+    tip_block.body.system_deploys.clear();
+    block_store
+        .put(tip_block.block_hash.clone(), &tip_block)
+        .expect("store the synthetic tip block so GC can resolve its post-state");
 
     // Production GC: the block sits 15 below the live floor, past the 4-block
     // allowance, so its data is released.
-    let mut gc_sweep = mergeable_channels_gc::GcSweep::new();
-    let deleted =
-        mergeable_channels_gc::collect_garbage(&mut gc_sweep, &dag, &block_store, &rm, &conf)
-            .await
-            .expect("collect_garbage");
+    drop(dag);
+    let mut deleted = 0;
+    let mut completed = false;
+    for _ in 0..100 {
+        match mergeable_channels_gc::collect_garbage(
+            &mut gc_sweep,
+            &dag_storage,
+            &block_store,
+            &rm,
+            &conf,
+            &effective_anchor,
+        )
+        .await
+        .expect("collect_garbage")
+        {
+            mergeable_channels_gc::GcProgress::Yielded { deleted: count, .. } => deleted += count,
+            mergeable_channels_gc::GcProgress::Complete { deleted: count, .. } => {
+                deleted += count;
+                completed = true;
+                break;
+            }
+        }
+    }
+    assert!(completed, "resumable GC must complete this bounded chain");
     assert_eq!(
         deleted,
         1,

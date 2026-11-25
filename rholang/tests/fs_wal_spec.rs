@@ -61,11 +61,18 @@ mod tests {
         // Slice 31: disable the fs-native URN filter so tests can bind
         // rho:io:fs:native:1.0.0/* URNs directly.
         runtime.disable_fs_native_urn_filter();
-        // X-6c M-04 note: fileio enabled a test-permissive knob on
-        // `root_registry` here to let the gated resolver fall through
-        // for raw tempdir roots.  Triage has not landed the gated
-        // resolver nor the test-permissive flag; the resolver already
-        // falls through permissively, so no bypass is needed.
+        // M-04: the mutation handlers (fs_chmod / fs_rename /
+        // fs_remove_file / fs_chown) are now gated through
+        // `resolve_or_identity_gated_for_consensus`, which rejects
+        // Consensus-mode calls on unregistered logical roots with
+        // FSERR_UNSUPPORTED.  Mutation tests here use raw tempdir
+        // roots (not `/@bundle/<X>`) in consensus mode, so flip the
+        // registry's test-permissive flag to let the gated resolver
+        // fall through to identity for unregistered roots.
+        // Production boot populates `/@bundle/<X>` registrations via
+        // `node::rust::runtime::setup::register_consensus_bundle_roots`
+        // so the permissive flag stays off in production.
+        runtime.fs_handles.root_registry.set_test_permissive(true);
         runtime
     }
 
@@ -219,8 +226,14 @@ mod tests {
         follower.cost.set(Cost::unsafe_max());
         leader.disable_fs_native_urn_filter();
         follower.disable_fs_native_urn_filter();
-        // X-6c M-04: see create_runtime for the rationale (not needed on
-        // triage: no gated resolver + no test-permissive flag).
+        // M-04: see create_runtime for the rationale.  Mutation
+        // handlers (fs_chmod / fs_rename / fs_remove_file /
+        // fs_chown) are gated via resolve_or_identity_gated_for_consensus;
+        // raw-tempdir roots in consensus mode need the test-permissive
+        // bypass on BOTH leader and follower so the gated resolver
+        // falls through to identity.
+        leader.fs_handles.root_registry.set_test_permissive(true);
+        follower.fs_handles.root_registry.set_test_permissive(true);
         (leader, follower)
     }
 

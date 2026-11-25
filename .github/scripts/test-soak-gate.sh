@@ -1,0 +1,410 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WORKFLOW="$ROOT/.github/workflows/merge-recovery-soak.yml"
+REPORT="$ROOT/.github/scripts/report-soak-gate.sh"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+fail() {
+	printf 'FAIL: %s\n' "$*" >&2
+	exit 1
+}
+
+SHA=1111111111111111111111111111111111111111
+OTHER=2222222222222222222222222222222222222222
+
+ruby -ryaml -e '
+  doc = YAML.load_file(ARGV[0])
+  step = doc.dig("jobs", "schedule_gate", "steps").find { |item| item["id"] == "resolve" }
+  abort "schedule gate not found" unless step && step["run"].is_a?(String)
+  File.write(ARGV[1], step["run"])
+  jobs = doc["jobs"]
+  wiring = {
+    "launch_group" => jobs.dig("launch_runner", "concurrency", "group"),
+    "soak_group" => jobs.dig("soak", "concurrency", "group"),
+    "launch_label" => jobs.dig("launch_runner", "env", "SOAK_LABEL"),
+    "soak_runs_on" => jobs.dig("soak", "runs-on").join(","),
+    "perf_if" => jobs.dig("perf_report", "if"),
+    "pending_if" => jobs.dig("soak_gate_pending", "if"),
+    "finalize_if" => jobs.dig("soak_gate_finalize", "if"),
+    "finalize_needs" => jobs.dig("soak_gate_finalize", "needs").join(","),
+    "final_deadline" => jobs.dig("soak", "steps").find { |s| s["name"] == "Soak final segment" }.dig("with", "deadline_epoch"),
+    "verdict_output" => jobs.dig("soak", "outputs", "verdict"),
+    "retry_run" => jobs.dig("retry_within_window", "steps", 0, "run"),
+    "retry_script" => jobs.dig("retry_within_window", "steps", 0, "run"),
+    "run_name" => doc["run-name"],
+  }
+  wiring.each { |k, v| abort "#{k} not found" if v.nil? || v.to_s.empty?; File.write(File.join(ARGV[2], k), v.to_s) }
+' "$WORKFLOW" "$TMP/gate.sh" "$TMP"
+
+contains() {
+	grep -Fq -- "$2" "$TMP/$1" || fail "$1 does not contain $2: $(cat "$TMP/$1")"
+}
+for group in launch_group soak_group; do
+	contains "$group" "gate == 'ca-item' && format('ca-item-{0}', needs.schedule_gate.outputs.gate_pr)"
+	contains "$group" "gate == 'ca-release' && 'ca-release'"
+	contains "$group" "|| needs.schedule_gate.outputs.kind }}"
+done
+contains launch_label "gate != '' && format('f1r3fly-rust-soak-run-{0}', github.run_id) || 'f1r3fly-rust-soak'"
+contains soak_runs_on "needs.launch_runner.outputs.runner_label"
+contains perf_if "needs.schedule_gate.outputs.gate == ''"
+contains pending_if "needs.schedule_gate.outputs.gate != ''"
+contains finalize_if "always()"
+contains finalize_if "needs.schedule_gate.outputs.gate != ''"
+contains finalize_needs "soak"
+contains final_deadline "needs.schedule_gate.outputs.gate == ''"
+contains final_deadline "needs.schedule_gate.outputs.late_start == 'true'"
+contains verdict_output "steps.verdict.outputs.verdict"
+contains retry_run '-f gate="$GATE"'
+contains run_name "format('Merge Recovery Soak [ca-item:#{0}]', inputs.gate_pr)"
+
+mkdir -p "$TMP/bin"
+# The clock puts one Pacific 13:00 checkpoint one hour after the start, so a
+# run without a gate has a checkpoint and a gate run must clear it.
+cat >"$TMP/bin/date" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "-u +%s") printf '1785810600\n' ;;
+  *" +%F") printf '2026-01-01\n' ;;
+  *"2026-01-01 13:00 +%s") printf '1785814200\n' ;;
+  *" +%s") printf '0\n' ;;
+  *) printf '2026-01-01T00:00:00Z\n' ;;
+esac
+SH
+cat >"$TMP/bin/gh" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *"/commits/"*) printf '%s\n' "$SHA" ;;
+  *) printf 'unexpected gh invocation: %s\n' "\$*" >&2; exit 1 ;;
+esac
+SH
+chmod +x "$TMP/bin/date" "$TMP/bin/gh"
+
+# run_gate GATE GATE_PR DURATION TARGET [NAME=VALUE...]: sets status and out.
+run_gate() {
+	local gate="$1" gate_pr="$2" duration="$3" target="$4"
+	shift 4
+	: >"$TMP/output"
+	set +e
+	out="$(env PATH="$TMP/bin:$PATH" EVENT_NAME=workflow_dispatch EVENT_SCHEDULE="" INPUT_SCHEDULED_SLOT="" \
+		INPUT_DURATION="$duration" INPUT_TARGET_REF="$target" INPUT_WINDOW_END="" INPUT_SERIES="" \
+		INPUT_RETRY_ATTEMPT=0 INPUT_CANARY=false INPUT_PREFLIGHT_ONLY=false INPUT_SKIP_PREFLIGHT=false \
+		INPUT_INJECT_PROTECTION_BREACH=false INPUT_CANDIDATE_TAG="" INPUT_GATE="$gate" INPUT_GATE_PR="$gate_pr" \
+		GH_TOKEN=test GITHUB_REPOSITORY=example/repo GITHUB_RUN_ID=999 GITHUB_OUTPUT="$TMP/output" \
+		GITHUB_STEP_SUMMARY="$TMP/summary" "$@" bash -euo pipefail "$TMP/gate.sh" 2>&1)"
+	status=$?
+	set -e
+}
+
+run_gate ca-item 12 daily-24h "$SHA"
+[ "$status" -eq 0 ] || fail "a ca-item gate run was refused: $out"
+for line in gate=ca-item gate_pr=12 kind=daily duration_seconds=79200 "target_sha=$SHA" checkpoint_1=1785814200 should_run=true; do
+	grep -qx "$line" "$TMP/output" || fail "the ca-item gate run has no $line: $(cat "$TMP/output")"
+done
+
+run_gate ca-release "" weekend-60h "$SHA"
+[ "$status" -eq 0 ] || fail "a ca-release gate run was refused: $out"
+for line in gate=ca-release gate_pr= kind=weekend duration_seconds=216000 checkpoint_1=1785814200; do
+	grep -qx "$line" "$TMP/output" || fail "the ca-release gate run has no $line: $(cat "$TMP/output")"
+done
+
+run_gate ca-item 12 daily-24h "$SHA" INPUT_RETRY_ATTEMPT=1
+[ "$status" -eq 0 ] || fail "the restart of a ca-item gate run was refused: $out"
+grep -qx retry_attempt=1 "$TMP/output" || fail "the gate restart lost its retry attempt: $(cat "$TMP/output")"
+
+run_gate "" "" daily-24h dev
+[ "$status" -eq 0 ] || fail "a manual run without a gate was refused: $out"
+grep -qx gate= "$TMP/output" || fail "a run without a gate reported a gate: $(cat "$TMP/output")"
+grep -qx checkpoint_1=1785814200 "$TMP/output" || fail "the fake clock gave a run without a gate no checkpoint: $(cat "$TMP/output")"
+
+refuse() {
+	local reason="$1"
+	shift
+	run_gate "$@"
+	[ "$status" -ne 0 ] || fail "$reason was accepted"
+	[[ ! -s "$TMP/output" ]] || fail "$reason still wrote outputs: $(cat "$TMP/output")"
+}
+refuse "a gate_pr without a gate" "" 12 daily-24h "$SHA"
+refuse "an unknown gate" ca-other 12 daily-24h "$SHA"
+refuse "a gate with a branch name as target" ca-item 12 daily-24h ca/item
+refuse "a gate with a short SHA" ca-item 12 daily-24h 111111111
+refuse "a ca-item gate without gate_pr" ca-item "" daily-24h "$SHA"
+refuse "a ca-item gate with a bad gate_pr" ca-item 12a daily-24h "$SHA"
+refuse "a ca-item gate for 60 hours" ca-item 12 weekend-60h "$SHA"
+refuse "a ca-release gate for 22 hours" ca-release "" daily-24h "$SHA"
+refuse "a ca-release gate with gate_pr" ca-release 12 weekend-60h "$SHA"
+refuse "a gate canary" ca-item 12 daily-24h "$SHA" INPUT_CANARY=true
+refuse "a gate preflight-only run" ca-item 12 daily-24h "$SHA" INPUT_PREFLIGHT_ONLY=true
+refuse "a gate without the preflight" ca-item 12 daily-24h "$SHA" INPUT_SKIP_PREFLIGHT=true
+refuse "a gate window restart" ca-item 12 daily-24h "$SHA" INPUT_WINDOW_END=1785900000 INPUT_SERIES=daily
+refuse "a gate candidate" ca-release "" weekend-60h "$SHA" INPUT_CANDIDATE_TAG=v1.0.0-canary.1
+refuse "a scheduled gate" ca-item 12 daily-24h "$SHA" INPUT_SCHEDULED_SLOT=1785810600
+refuse "a gate on a cron event" ca-item 12 daily-24h "$SHA" EVENT_NAME=schedule
+
+GNU_DATE="$(command -v gdate || command -v date)"
+mkdir -p "$TMP/cronbin"
+cat >"$TMP/cronbin/date" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  "-u +%s") printf '%s\n' "\$FAKE_NOW" ;;
+  "-u +%F") "$GNU_DATE" -u -d "@\$FAKE_NOW" +%F ;;
+  *"-d "*) exec "$GNU_DATE" "\$@" ;;
+  *) printf 'unexpected clock read: date %s\n' "\$*" >&2; exit 1 ;;
+esac
+SH
+cat >"$TMP/cronbin/gh" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *"/runs?event=workflow_dispatch"*) printf '{"workflow_runs":[]}\n' ;;
+  *"/commits?sha="*) printf '3\n' ;;
+  *"/commits/"*) printf '%s\n' "$SHA" ;;
+  *) printf 'unexpected gh invocation: %s\n' "\$*" >&2; exit 1 ;;
+esac
+SH
+chmod +x "$TMP/cronbin/date" "$TMP/cronbin/gh"
+
+run_cron() {
+	: >"$TMP/output"
+	: >"$TMP/summary"
+	set +e
+	out="$(env PATH="$TMP/cronbin:$PATH" FAKE_NOW="$1" EVENT_NAME=schedule EVENT_SCHEDULE="$2" INPUT_SCHEDULED_SLOT="" \
+		INPUT_DURATION="" INPUT_TARGET_REF="" INPUT_WINDOW_END="" INPUT_SERIES="" \
+		INPUT_RETRY_ATTEMPT=0 INPUT_CANARY=false INPUT_PREFLIGHT_ONLY=false INPUT_SKIP_PREFLIGHT=false \
+		INPUT_INJECT_PROTECTION_BREACH=false INPUT_CANDIDATE_TAG="" INPUT_GATE="" INPUT_GATE_PR="" \
+		GH_TOKEN=test GITHUB_REPOSITORY=example/repo GITHUB_RUN_ID=999 GITHUB_OUTPUT="$TMP/output" \
+		GITHUB_STEP_SUMMARY="$TMP/summary" bash -euo pipefail "$TMP/gate.sh" 2>&1)"
+	status=$?
+	set -e
+}
+has() {
+	grep -qx "$1" "$TMP/output" || fail "$2 has no $1: $(cat "$TMP/output")"
+}
+WEEKEND_SLOT=1794627000
+WEEKEND_END=$((WEEKEND_SLOT + 216000))
+
+run_cron $((WEEKEND_SLOT + 600)) "30 3 * * *"
+[ "$status" -eq 0 ] || fail "an on-time weekend cron fallback failed: $out"
+for line in should_run=true kind=weekend duration_seconds=216000 "end_epoch=$WEEKEND_END" late_start=false; do
+	has "$line" "the on-time weekend cron fallback"
+done
+
+LATE_NOW=1794653100
+run_cron "$LATE_NOW" "30 3 * * *"
+[ "$status" -eq 0 ] || fail "a late weekend cron fallback failed: $out"
+for line in should_run=true kind=weekend "duration_seconds=$((WEEKEND_END - LATE_NOW))" "end_epoch=$WEEKEND_END" late_start=true; do
+	has "$line" "the late weekend cron fallback"
+done
+for n in 1 2 3 4 5; do
+	cp="$(sed -n "s/^checkpoint_${n}=//p" "$TMP/output")"
+	[ -z "$cp" ] || [ "$cp" -gt "$LATE_NOW" ] || fail "the late weekend cron fallback kept checkpoint $cp before its start"
+done
+
+DAILY_SLOT=1794886200
+run_cron $((DAILY_SLOT + 75600)) "30 3 * * *"
+[ "$status" -eq 0 ] || fail "a daily cron fallback 21h late failed: $out"
+for line in should_run=false late_start=false; do
+	has "$line" "the daily cron fallback 21h late"
+done
+grep -q "skipped (window nearly over)" "$TMP/summary" || fail "the daily cron fallback 21h late gave no skip summary"
+
+run_cron $((DAILY_SLOT + 10800)) "30 3 * * *"
+[ "$status" -eq 0 ] || fail "a daily cron fallback 3h late failed: $out"
+for line in should_run=true kind=daily duration_seconds=68400 late_start=true; do
+	has "$line" "the daily cron fallback 3h late"
+done
+
+# The restart of a gate run dispatches a full new window: no window_end_epoch,
+# no series, and the gate inputs of the failed run.
+retry() {
+	: >"$TMP/retry.log"
+	env PATH="$TMP/bin:$PATH" GH_LOG="$TMP/retry.log" END_EPOCH=1785900000 KIND="$1" TARGET_REF="$SHA" \
+		SKIP_PREFLIGHT=false CANDIDATE_TAG="" GATE="$2" GATE_PR="$3" WORKFLOW_REF=master GITHUB_RUN_ID=999 \
+		bash -euo pipefail "$TMP/retry_script" >/dev/null
+}
+cat >"$TMP/bin/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$GH_LOG"
+SH
+cat >"$TMP/bin/date" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "-u +%s") printf '1785810600\n' ;;
+  *) printf '2026-01-01T00:00:00Z\n' ;;
+esac
+SH
+chmod +x "$TMP/bin/gh" "$TMP/bin/date"
+retry daily ca-item 12
+grep -Fxq "workflow run merge-recovery-soak.yml --ref master -f target_ref=$SHA -f duration=daily-24h -f gate=ca-item -f gate_pr=12 -f retry_attempt=1" "$TMP/retry.log" ||
+	fail "the ca-item restart is not a full new window: $(cat "$TMP/retry.log")"
+retry weekend ca-release ""
+grep -Fxq "workflow run merge-recovery-soak.yml --ref master -f target_ref=$SHA -f duration=weekend-60h -f gate=ca-release -f gate_pr= -f retry_attempt=1" "$TMP/retry.log" ||
+	fail "the ca-release restart is not a full new window: $(cat "$TMP/retry.log")"
+retry daily "" ""
+grep -q -- "-f window_end_epoch=1785900000 -f series=daily" "$TMP/retry.log" ||
+	fail "the restart of a run without a gate no longer soaks the rest of its window: $(cat "$TMP/retry.log")"
+
+cat >"$TMP/bin/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$GH_LOG"
+case "$*" in
+  *"/commits/"*"/status"*) printf '%s\n' "${FAKE_CURRENT_URL:-}" ;;
+  *"/pulls/"*)
+    [ "${FAKE_PR_FAIL:-0}" = 1 ] && exit 1
+    reads=$(($(cat "$PR_READS") + 1))
+    printf '%s\n' "$reads" >"$PR_READS"
+    # FAKE_PR_AFTER is the pull request after the first read.
+    if [ "$reads" -gt 1 ] && [ -n "${FAKE_PR_AFTER:-}" ]; then printf '%s\n' "$FAKE_PR_AFTER"; else printf '%s\n' "${FAKE_PR:-}"; fi
+    ;;
+  *"/statuses/"* | *"/labels"*) ;;
+  *) printf 'unexpected gh invocation: %s\n' "$*" >&2; exit 1 ;;
+esac
+SH
+chmod +x "$TMP/bin/gh"
+
+RUN_URL=https://github.com/example/repo/actions/runs/500/attempts/1
+
+# report MODE [NAME=VALUE...]: sets status, out, and gh.log.
+report() {
+	local mode="$1"
+	shift
+	: >"$TMP/gh.log"
+	printf '0\n' >"$TMP/pr_reads"
+	set +e
+	out="$(env PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" PR_READS="$TMP/pr_reads" GH_REPO=example/repo GATE=ca-item GATE_PR=12 \
+		TARGET_SHA="$SHA" RUN_URL="$RUN_URL" GITHUB_SERVER_URL=https://github.com \
+		FAKE_PR="$(printf 'open\t%s\tca-canary' "$SHA")" "$@" bash "$REPORT" "$mode" 2>&1)"
+	status=$?
+	set -e
+}
+posted() {
+	grep -q "^api --method POST repos/example/repo/statuses/$SHA -f state=$1 -f context=$2 " "$TMP/gh.log" ||
+		fail "no $1 status for $2: $(cat "$TMP/gh.log")"
+}
+labelled() { grep -q 'issues/12/labels -f labels\[\]=ca-soaked' "$TMP/gh.log"; }
+unlabelled() { grep -Fq "api --method DELETE repos/example/repo/issues/12/labels/ca-soaked" "$TMP/gh.log"; }
+PASS=(SOAK_RESULT=success COMPLETED=true PREFLIGHT=passed VERDICT=pass LAUNCH_RESULT=success)
+
+report pending
+[ "$status" -eq 0 ] || fail "the pending report failed: $out"
+posted pending 'Soak Gate (22h)'
+! labelled || fail "a pending report added ca-soaked"
+if unlabelled || grep -q ./pulls/. "$TMP/gh.log"; then fail "a pending report changed the labels: $(cat "$TMP/gh.log")"; fi
+
+report final "${PASS[@]}"
+[ "$status" -eq 0 ] || fail "the passing report failed: $out"
+posted success 'Soak Gate (22h)'
+labelled || fail "a passed soak did not add ca-soaked: $(cat "$TMP/gh.log")"
+! unlabelled || fail "a passed soak removed ca-soaked: $(cat "$TMP/gh.log")"
+
+report final "${PASS[@]}" GATE=ca-release GATE_PR=
+posted success 'Soak Gate (60h)'
+! labelled || fail "a ca-release gate added a label"
+if grep -q '/pulls/' "$TMP/gh.log"; then fail "a ca-release gate read a pull request"; fi
+
+for broken in SOAK_RESULT=failure COMPLETED= PREFLIGHT=failed VERDICT=regress VERDICT= SOAK_RESULT=skipped; do
+	report final "${PASS[@]}" "$broken"
+	[ "$status" -eq 0 ] || fail "the report with $broken failed: $out"
+	posted failure 'Soak Gate (22h)'
+	! labelled || fail "a soak with $broken added ca-soaked"
+	unlabelled || fail "a soak with $broken kept ca-soaked: $(cat "$TMP/gh.log")"
+done
+
+report final "${PASS[@]}" SOAK_RESULT=cancelled
+posted error 'Soak Gate (22h)'
+unlabelled || fail "a cancelled soak kept ca-soaked: $(cat "$TMP/gh.log")"
+report final "${PASS[@]}" SOAK_RESULT=skipped LAUNCH_RESULT=cancelled
+posted error 'Soak Gate (22h)'
+
+report final "${PASS[@]}" FAKE_PR="$(printf 'open\t%s\tca-canary' "$OTHER")"
+posted success 'Soak Gate (22h)'
+! labelled || fail "ca-soaked was added after the head moved"
+[[ "$out" == *"ca-soaked is not changed"* ]] || fail "a moved head was not reported: $out"
+report final "${PASS[@]}" FAKE_PR="$(printf 'closed\t%s\tca-canary' "$SHA")"
+! labelled || fail "ca-soaked was added to a closed pull request"
+report final "${PASS[@]}" FAKE_PR="$(printf 'open\t%s\tdev' "$SHA")"
+! labelled || fail "ca-soaked was added to a pull request into dev"
+
+report final "${PASS[@]}" FAKE_PR_AFTER="$(printf 'open\t%s\tca-canary' "$OTHER")"
+[ "$status" -eq 0 ] || fail "the report with a head that moved during the label add failed: $out"
+labelled && unlabelled || fail "a head that moved during the label add kept ca-soaked: $(cat "$TMP/gh.log")"
+[ "$(grep -n 'labels -f labels' "$TMP/gh.log" | cut -d: -f1)" -lt "$(grep -n 'DELETE' "$TMP/gh.log" | cut -d: -f1)" ] ||
+	fail "ca-soaked was removed before it was added: $(cat "$TMP/gh.log")"
+[[ "$out" == *"after the label was added"* ]] || fail "a head that moved during the label add was not reported: $out"
+
+report final "${PASS[@]}" SOAK_RESULT=failure FAKE_PR="$(printf 'open\t%s\tca-canary' "$OTHER")"
+! unlabelled || fail "a failed soak of an older commit removed the label of the new head"
+report final "${PASS[@]}" FAKE_PR_FAIL=1
+[ "$status" -ne 0 ] || fail "a failed pull request read was ignored: $out"
+! labelled || fail "ca-soaked was added without a pull request read"
+report final "${PASS[@]}" GATE=ca-release GATE_PR= SOAK_RESULT=failure
+! unlabelled || fail "a failed ca-release gate removed a label"
+if grep -q '/pulls/' "$TMP/gh.log"; then fail "a failed ca-release gate read a pull request"; fi
+
+report final "${PASS[@]}" FAKE_CURRENT_URL=https://github.com/example/repo/actions/runs/501/attempts/1
+[ "$status" -eq 0 ] || fail "the report under a newer run failed: $out"
+if grep -q "repos/example/repo/statuses/" "$TMP/gh.log" || labelled || unlabelled; then fail "a run replaced the status of a newer run: $(cat "$TMP/gh.log")"; fi
+report final "${PASS[@]}" FAKE_CURRENT_URL=https://github.com/example/repo/actions/runs/499/attempts/2
+posted success 'Soak Gate (22h)'
+
+printf '%s\n' '{"run":{"elapsed_seconds":43200,"duration_seconds":216000},"passive":{"iterations":812,"failures":0}}' >"$TMP/checkpoint.json"
+report checkpoint GATE=ca-release GATE_PR= CHECKPOINT_SUMMARY="$TMP/checkpoint.json"
+[ "$status" -eq 0 ] || fail "the checkpoint report failed: $out"
+grep -Fq "api --method POST repos/example/repo/statuses/$SHA -f state=pending -f context=Soak Gate (60h) -f description=Checkpoint: 12h of 60h soaked, 812 iterations, 0 failed. " "$TMP/gh.log" ||
+	fail "the checkpoint report did not post its progress: $(cat "$TMP/gh.log")"
+if labelled || unlabelled || grep -q '/pulls/' "$TMP/gh.log"; then fail "a checkpoint report changed the labels: $(cat "$TMP/gh.log")"; fi
+report checkpoint CHECKPOINT_SUMMARY="$TMP/missing.json"
+[ "$status" -eq 0 ] || fail "the checkpoint report without a summary failed: $out"
+grep -Fq -- "-f state=pending -f context=Soak Gate (22h) -f description=The soak is running. " "$TMP/gh.log" ||
+	fail "a checkpoint without a summary did not fall back to the pending text: $(cat "$TMP/gh.log")"
+if labelled || unlabelled || grep -q '/pulls/' "$TMP/gh.log"; then fail "a ca-item checkpoint report changed the labels: $(cat "$TMP/gh.log")"; fi
+for bad in '"elapsed_seconds":-3600,"duration_seconds":79200' '"elapsed_seconds":3600,"duration_seconds":0'; do
+	printf '{"run":{%s},"passive":{"iterations":1,"failures":0}}\n' "$bad" >"$TMP/bad-checkpoint.json"
+	report checkpoint CHECKPOINT_SUMMARY="$TMP/bad-checkpoint.json"
+	[ "$status" -eq 0 ] || fail "the checkpoint report with $bad failed: $out"
+	grep -Fq -- "-f description=The soak is running. " "$TMP/gh.log" ||
+		fail "a checkpoint with $bad did not fall back to the pending text: $(cat "$TMP/gh.log")"
+done
+printf '%s\n' '{"run":{"elapsed_seconds":3600,"duration_seconds":79200},"passive":{"iterations":-1,"failures":-2}}' >"$TMP/bad-checkpoint.json"
+report checkpoint CHECKPOINT_SUMMARY="$TMP/bad-checkpoint.json"
+grep -Fq -- "-f description=The soak is running. " "$TMP/gh.log" ||
+	fail "a checkpoint with negative counts did not fall back to the pending text: $(cat "$TMP/gh.log")"
+report checkpoint CHECKPOINT_SUMMARY="$TMP/checkpoint.json" FAKE_CURRENT_URL=https://github.com/example/repo/actions/runs/501/attempts/1
+if grep -q "repos/example/repo/statuses/" "$TMP/gh.log"; then fail "a checkpoint replaced the status of a newer run: $(cat "$TMP/gh.log")"; fi
+
+ruby -ryaml -e '
+  soak = YAML.load_file(ARGV[0])["jobs"]["soak"]["steps"]
+  (1..5).each do |n|
+    seg = soak.find { |s| s["name"] == "Soak segment #{n}" } or abort "Soak segment #{n} not found"
+    abort "segment #{n} does not pass the gate" unless seg.dig("with", "gate") == "${{ needs.schedule_gate.outputs.gate }}"
+    abort "segment #{n} does not pass the gate pull request" unless seg.dig("with", "gate_pr") == "${{ needs.schedule_gate.outputs.gate_pr }}"
+  end
+  jobs = YAML.load_file(ARGV[1])["jobs"]
+  abort "the checkpoint Pages publish runs for gate runs" unless jobs.dig("publish", "if") == "inputs.gate == '"''"'"
+  abort "the gate checkpoint job does not run for gate runs" unless jobs.dig("gate_status", "if") == "inputs.gate != '"''"'"
+  abort "the gate checkpoint job cannot post statuses" unless jobs.dig("gate_status", "permissions", "statuses") == "write"
+  abort "the gate checkpoint job may deploy Pages" if jobs.dig("gate_status", "permissions", "pages")
+' "$WORKFLOW" "$ROOT/.github/workflows/soak-checkpoint-publish.yml" || fail "the gate checkpoint wiring is wrong"
+gate_kind_check="$(ruby -ryaml -e '
+  step = YAML.load_file(ARGV[0])["jobs"]["gate_status"]["steps"].find { |s| s["name"] == "Download checkpoint" } or abort "no Download checkpoint step"
+  abort "the step has no GATE" unless step.dig("env", "GATE") == "${{ inputs.gate }}"
+  check = step["run"][/^ *case "\$GATE:\$KIND" in\n.*?^ *esac\n/m] or abort "the step does not check the gate against the series"
+  print check
+' "$ROOT/.github/workflows/soak-checkpoint-publish.yml")" || fail "the gate checkpoint does not check the gate against the series"
+for pair in ca-item:daily:0 ca-release:weekend:0 ca-item:weekend:1 ca-release:daily:1 ca-other:daily:1 :daily:1; do
+	IFS=: read -r g k want <<<"$pair"
+	got=0
+	GATE="$g" KIND="$k" bash -euo pipefail -c "$gate_kind_check" >/dev/null 2>&1 || got=1
+	[ "$got" = "$want" ] || fail "the gate checkpoint series check gave $got for gate '$g' and series $k"
+done
+grep -Fq '(if $gate == "" then {} else {gate:$gate,gate_pr:$gate_pr,target_sha:$target_sha} end)' "$ROOT/.github/actions/soak-segment/action.yml" ||
+	fail "the segment checkpoint dispatch does not send the gate inputs only for a gate run"
+
+for bad in GATE= GATE=ca-other TARGET_SHA=main GATE_PR=x RUN_URL=https://github.com/other/repo/actions/runs/1; do
+	report final "${PASS[@]}" "$bad"
+	[ "$status" -eq 2 ] || fail "the report accepted $bad: $out"
+	[[ ! -s "$TMP/gh.log" ]] || fail "the report with $bad still called gh: $(cat "$TMP/gh.log")"
+done
+
+printf 'PASS: a gate run needs a manual dispatch, a commit SHA, and the 22h ca-item or 60h ca-release duration, and refuses canary, preflight-only, skipped preflight, window restart, candidate, and scheduled inputs. Gate runs have their own concurrency group and runner label, publish no series, report each checkpoint as progress on the pending Soak Gate status, and restart with a full window. Soak Gate is success only for a completed soak with a passed preflight and a pass verdict, error for a cancelled soak, and failure otherwise. ca-soaked is added only to an open ca-canary pull request whose head is the soaked commit, and it is removed when the head moves during the label add. A final failure, error, or cancellation of the soaked head removes ca-soaked, and a run never replaces the status of a newer run.\n'

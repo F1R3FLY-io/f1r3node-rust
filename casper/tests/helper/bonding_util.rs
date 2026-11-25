@@ -13,16 +13,17 @@ use models::rust::casper::protocol::casper_message::DeployData;
 /// honors it, so a spec can choose a stake geometry. Every existing caller
 /// passes 1000, so their behavior is unchanged.
 pub fn bonding_deploy(
-    amount: i64,
+    amount: impl Into<num_bigint::BigInt>,
     private_key: &PrivateKey,
     shard_id: Option<String>,
 ) -> Result<Signed<DeployData>, CasperError> {
+    let amount = amount.into();
     let source = format!(
         r#"
 new retCh, PoSCh, rl(`rho:registry:lookup`), stdout(`rho:io:stdout`), deployerId(`rho:system:deployerId`) in {{
   rl!(`rho:system:pos`, *PoSCh) |
   for(@(_, PoS) <- PoSCh) {{
-    @PoS!("bond", *deployerId, {amount}, *retCh)
+    @PoS!("bond", *deployerId, {amount}n, *retCh)
   }}
 }}
 "#

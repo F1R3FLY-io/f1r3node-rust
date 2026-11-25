@@ -15,10 +15,13 @@ use casper::rust::validator_identity::ValidatorIdentity;
 use casper::rust::ValidBlockProcessing;
 use crypto::rust::private_key::PrivateKey;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use shared::rust::shared::f1r3fly_event::DeployAdmission;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::util::genesis_builder::DEFAULT_VALIDATOR_SKS;
-use crate::util::rholang::resources::{mk_dummy_casper_snapshot, mk_runtime_manager};
+use crate::util::rholang::resources::{
+    mk_dummy_casper_snapshot, mk_runtime_manager, new_key_value_dag_representation,
+};
 
 // Test implementations for different scenarios
 pub struct TestCasperSnapshotProvider;
@@ -51,8 +54,8 @@ impl ActiveValidatorChecker for AlwaysNotActiveChecker {
         &self,
         _: &CasperSnapshot,
         _: &ValidatorIdentity,
-    ) -> CheckProposeConstraintsResult {
-        CheckProposeConstraintsResult::not_bonded()
+    ) -> Result<CheckProposeConstraintsResult, CasperError> {
+        Ok(CheckProposeConstraintsResult::not_bonded())
     }
 }
 
@@ -62,8 +65,8 @@ impl ActiveValidatorChecker for AlwaysActiveChecker {
         &self,
         _: &CasperSnapshot,
         _: &ValidatorIdentity,
-    ) -> CheckProposeConstraintsResult {
-        CheckProposeConstraintsResult::success()
+    ) -> Result<CheckProposeConstraintsResult, CasperError> {
+        Ok(CheckProposeConstraintsResult::success())
     }
 }
 
@@ -126,6 +129,7 @@ impl BlockCreator for SelectionRecordingBlockCreator {
             get_random_block_default(),
             prost::bytes::Bytes::new(),
             prost::bytes::Bytes::new(),
+            None,
         ))
     }
 }
@@ -144,6 +148,7 @@ impl BlockCreator for TestBlockCreator {
             get_random_block_default(),
             prost::bytes::Bytes::new(),
             prost::bytes::Bytes::new(),
+            None,
         ))
     }
 }
@@ -186,7 +191,13 @@ impl ProposeEffectHandler for TestProposeEffectHandler {
         Ok(())
     }
 
-    fn publish_block_created(&self, _: &BlockMessage) -> Result<(), CasperError> { Ok(()) }
+    fn publish_block_created(
+        &self,
+        _: &BlockMessage,
+        _: Option<DeployAdmission>,
+    ) -> Result<(), CasperError> {
+        Ok(())
+    }
 }
 
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -212,7 +223,13 @@ impl ProposeEffectHandler for TrackingProposeEffectHandler {
         Ok(())
     }
 
-    fn publish_block_created(&self, _: &BlockMessage) -> Result<(), CasperError> { Ok(()) }
+    fn publish_block_created(
+        &self,
+        _: &BlockMessage,
+        _: Option<DeployAdmission>,
+    ) -> Result<(), CasperError> {
+        Ok(())
+    }
 }
 
 fn get_propose_effect_var() -> i32 { PROPOSE_EFFECT_VAR.load(Ordering::SeqCst) }
@@ -225,7 +242,7 @@ fn dummy_validator_identity() -> ValidatorIdentity {
 
 #[tokio::test]
 async fn proposer_should_reject_to_propose_if_proposer_is_not_active_validator() {
-    with_storage(|block_store, block_dag_storage| async move {
+    with_storage(|block_store, _block_dag_storage| async move {
         let runtime_manager = mk_runtime_manager("block-query-response-api-test", None).await;
         let validator_identity = Arc::new(dummy_validator_identity());
 
@@ -246,9 +263,7 @@ async fn proposer_should_reject_to_propose_if_proposer_is_not_active_validator()
 
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 
-        let dag_representation = block_dag_storage
-            .get_representation()
-            .expect("dag representation");
+        let dag_representation = new_key_value_dag_representation();
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
@@ -292,7 +307,7 @@ async fn proposer_should_reject_to_propose_if_proposer_is_not_active_validator()
 /// must read as one.
 #[tokio::test]
 async fn proposer_should_reject_to_propose_if_its_history_is_incomplete() {
-    with_storage(|block_store, block_dag_storage| async move {
+    with_storage(|block_store, _block_dag_storage| async move {
         let runtime_manager = mk_runtime_manager("block-query-response-api-test", None).await;
         let validator_identity = Arc::new(dummy_validator_identity());
 
@@ -313,9 +328,7 @@ async fn proposer_should_reject_to_propose_if_its_history_is_incomplete() {
 
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 
-        let dag_representation = block_dag_storage
-            .get_representation()
-            .expect("dag representation");
+        let dag_representation = new_key_value_dag_representation();
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
@@ -358,7 +371,7 @@ async fn proposer_should_reject_to_propose_if_its_history_is_incomplete() {
 
 #[tokio::test]
 async fn proposer_should_reject_to_propose_if_synchrony_constraint_not_met() {
-    with_storage(|block_store, block_dag_storage| async move {
+    with_storage(|block_store, _block_dag_storage| async move {
         let runtime_manager = mk_runtime_manager("block-query-response-api-test", None).await;
         let validator_identity = Arc::new(dummy_validator_identity());
 
@@ -379,9 +392,7 @@ async fn proposer_should_reject_to_propose_if_synchrony_constraint_not_met() {
 
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 
-        let dag_representation = block_dag_storage
-            .get_representation()
-            .expect("dag representation");
+        let dag_representation = new_key_value_dag_representation();
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
@@ -443,14 +454,18 @@ async fn lag_past_the_height_threshold_still_mints_recovery() {
                 weight_map: std::collections::BTreeMap::new(),
                 block_number: number,
                 sequence_number: number as i32,
-                invalid: false,
+                equivocates: None,
                 directly_finalized: finalized,
                 finalized,
                 fault_tolerance_value: 1.0,
                 merge_base: prost::bytes::Bytes::new(),
             };
-            snapshot.dag.dag_set.insert(hash.clone());
-            snapshot.dag.block_number_map.insert(hash.clone(), number);
+            snapshot.dag.fixture_mut().dag_set.insert(hash.clone());
+            snapshot
+                .dag
+                .fixture_mut()
+                .block_number_map
+                .insert(hash.clone(), number);
             snapshot
                 .dag
                 .block_metadata_index
@@ -466,7 +481,11 @@ async fn lag_past_the_height_threshold_still_mints_recovery() {
             117_766,
             true,
         );
-        snapshot.dag.finalized_blocks_set.insert(lfb.clone());
+        snapshot
+            .dag
+            .fixture_mut()
+            .finalized_blocks_set
+            .insert(lfb.clone());
         snapshot.dag.last_finalized_block_hash = lfb.clone();
         snapshot.last_finalized_block = lfb;
 
@@ -478,6 +497,7 @@ async fn lag_past_the_height_threshold_still_mints_recovery() {
         );
         snapshot
             .dag
+            .fixture_mut()
             .latest_messages_map
             .insert(validator_id.clone(), own_latest);
 
@@ -519,7 +539,7 @@ async fn lag_past_the_height_threshold_still_mints_recovery() {
         }
     }
 
-    with_storage(|block_store, block_dag_storage| async move {
+    with_storage(|block_store, _block_dag_storage| async move {
         let runtime_manager = mk_runtime_manager("block-query-response-api-test", None).await;
         let recorded = Arc::new(std::sync::Mutex::new(None));
 
@@ -542,9 +562,7 @@ async fn lag_past_the_height_threshold_still_mints_recovery() {
 
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 
-        let dag_representation = block_dag_storage
-            .get_representation()
-            .expect("dag representation");
+        let dag_representation = new_key_value_dag_representation();
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
@@ -583,7 +601,7 @@ async fn lag_past_the_height_threshold_still_mints_recovery() {
 /// mint instead of a failure.
 #[tokio::test]
 async fn height_constraint_degrades_to_an_empty_recovery_mint_on_the_recovery_lane() {
-    with_storage(|block_store, block_dag_storage| async move {
+    with_storage(|block_store, _block_dag_storage| async move {
         let runtime_manager = mk_runtime_manager("block-query-response-api-test", None).await;
         let validator_identity = Arc::new(dummy_validator_identity());
         let recorded = Arc::new(std::sync::Mutex::new(None));
@@ -605,9 +623,7 @@ async fn height_constraint_degrades_to_an_empty_recovery_mint_on_the_recovery_la
 
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 
-        let dag_representation = block_dag_storage
-            .get_representation()
-            .expect("dag representation");
+        let dag_representation = new_key_value_dag_representation();
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
@@ -633,7 +649,7 @@ async fn height_constraint_degrades_to_an_empty_recovery_mint_on_the_recovery_la
 
 #[tokio::test]
 async fn proposer_should_reject_to_propose_if_last_finalized_height_constraint_not_met() {
-    with_storage(|block_store, block_dag_storage| async move {
+    with_storage(|block_store, _block_dag_storage| async move {
         let runtime_manager = mk_runtime_manager("block-query-response-api-test", None).await;
         let validator_identity = Arc::new(dummy_validator_identity());
 
@@ -654,9 +670,7 @@ async fn proposer_should_reject_to_propose_if_last_finalized_height_constraint_n
 
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 
-        let dag_representation = block_dag_storage
-            .get_representation()
-            .expect("dag representation");
+        let dag_representation = new_key_value_dag_representation();
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
@@ -693,7 +707,7 @@ async fn proposer_should_reject_to_propose_if_last_finalized_height_constraint_n
 
 #[tokio::test]
 async fn proposer_should_shut_down_the_node_if_block_created_is_not_successfully_replayed() {
-    with_storage(|block_store, block_dag_storage| async move {
+    with_storage(|block_store, _block_dag_storage| async move {
         let runtime_manager = mk_runtime_manager("block-query-response-api-test", None).await;
         let validator_identity = Arc::new(dummy_validator_identity());
 
@@ -714,9 +728,7 @@ async fn proposer_should_shut_down_the_node_if_block_created_is_not_successfully
 
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 
-        let dag_representation = block_dag_storage
-            .get_representation()
-            .expect("dag representation");
+        let dag_representation = new_key_value_dag_representation();
         let casper = Arc::new(NoOpsCasperEffect::new_with_self_created_validation_failure(
             Some(HashMap::new()),
             None,
@@ -741,7 +753,7 @@ async fn proposer_should_shut_down_the_node_if_block_created_is_not_successfully
 
 #[tokio::test]
 async fn proposer_should_execute_propose_effects_if_block_created_successfully_replayed() {
-    with_storage(|block_store, block_dag_storage| async move {
+    with_storage(|block_store, _block_dag_storage| async move {
         // Reset the effect variable before test
         reset_propose_effect_var();
 
@@ -765,9 +777,7 @@ async fn proposer_should_execute_propose_effects_if_block_created_successfully_r
 
         use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 
-        let dag_representation = block_dag_storage
-            .get_representation()
-            .expect("dag representation");
+        let dag_representation = new_key_value_dag_representation();
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,

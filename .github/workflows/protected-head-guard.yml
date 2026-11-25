@@ -1,6 +1,7 @@
 name: Protected Head Guard
 
-# Closes a pull request from this repository whose head is master or dev.
+# Closes a pull request from this repository whose head is master, dev,
+# ca-canary, or ca-release.
 #
 # "Update branch" on such a pull request merges the base into the protected
 # head through the admin bypass of the ruleset. On #747 (head master, base dev)
@@ -23,7 +24,8 @@ jobs:
     name: Protected Head Guard
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
-      (github.head_ref == 'master' || github.head_ref == 'dev')
+      (github.head_ref == 'master' || github.head_ref == 'dev' ||
+       github.head_ref == 'ca-canary' || github.head_ref == 'ca-release')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

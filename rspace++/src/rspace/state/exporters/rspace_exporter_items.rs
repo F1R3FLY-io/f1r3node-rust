@@ -4,6 +4,7 @@ use shared::rust::{Byte, ByteVector};
 
 use crate::rspace::errors::RadixTreeError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::shared::trie_exporter::{NodePath, TrieNode};
 use crate::rspace::state::rspace_exporter::RSpaceExporter;
 
 //See rspace/src/main/scala/coop/rchain/rspace/state/exporters/
@@ -28,7 +29,7 @@ impl RSpaceExporterItems {
         // Traverse and collect tuple space nodes
         let nodes = exporter.get_nodes(start_path, skip, take)?;
 
-        let Some(last_entry) = nodes.last() else {
+        let Some(last_path) = Self::last_path(&nodes) else {
             return Err(RadixTreeError::KeyNotFound(
                 "RSpace Exporter: empty history for the requested start path".to_string(),
             ));
@@ -57,20 +58,22 @@ impl RSpaceExporterItems {
             .get_data_items(data_keys)
             .map_err(RadixTreeError::KvStoreError)?;
 
-        let mut history_last_path = last_entry.path.clone();
-        history_last_path.push((last_entry.hash.clone(), None));
         let history = StoreItems {
             items: history_items,
-            last_path: history_last_path,
+            last_path: last_path.clone(),
         };
-
-        let mut data_last_path = last_entry.path.clone();
-        data_last_path.push((last_entry.hash.clone(), None));
         let data = StoreItems {
             items: data_items,
-            last_path: data_last_path,
+            last_path,
         };
 
         Ok((history, data))
+    }
+
+    pub fn last_path(nodes: &[TrieNode<Blake2b256Hash>]) -> Option<NodePath> {
+        let last_entry = nodes.last()?;
+        let mut last_path = last_entry.path.clone();
+        last_path.push((last_entry.hash.clone(), None));
+        Some(last_path)
     }
 }

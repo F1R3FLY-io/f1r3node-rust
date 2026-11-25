@@ -53,15 +53,31 @@ COMMON_ENV=(
   CI=
   GITLAB_CI=
   GITHUB_ACTIONS=
+  # The point of this test is to observe the cargo-nextest invocation the
+  # hook makes for the casper crate. An outer SKIP_TESTS=1 (common when a
+  # developer uses that flag to shortcut their own push) would leak into
+  # `env` and make the inner hook skip the invocation, so clear it here
+  # along with the other skip knobs the hook recognizes.
+  SKIP_TESTS=
+  QUICK=
   SKIP_CLIPPY=1
   SKIP_DENY=1
   SKIP_CI_TESTS=1
+  SKIP_TEST_LOCK=1
   TEST_CRATES=casper
+  # Shadow any inherited SKIP_* / QUICK the caller set so this harness is
+  # self-contained: when the parent push used e.g. SKIP_TESTS=1, the inner
+  # hook would otherwise also skip tests and the "casper PASS" grep below
+  # would fail.
+  SKIP_TESTS=
+  SKIP_FMT=
+  QUICK=
+  VERBOSE=
 )
 
 printf '%s\n' "$PUSH_INPUT" |
   "${COMMON_ENV[@]}" bash "$HOOK" origin fake >"$HARNESS/normal.out" 2>&1
-grep -q '^1800 cargo nextest run --release -p casper --no-tests=pass$' "$HARNESS/timeouts"
+grep -q '^3600 cargo nextest run --release -p casper --no-tests=pass$' "$HARNESS/timeouts"
 grep -Eq '\[test\].*casper.*PASS.*\([0-9]+s\)' "$HARNESS/normal.out"
 grep -Eq 'Nextest test time: [0-9]+s' "$HARNESS/normal.out"
 if find "$HARNESS/tmp" -mindepth 1 -print -quit | grep -q .; then
@@ -84,7 +100,7 @@ grep -q 'cargo install cargo-nextest --locked' "$HARNESS/missing.out"
 : >"$HARNESS/cargo"
 printf '%s\n' "$PUSH_INPUT" |
   "${COMMON_ENV[@]}" TEST_RUNNER=cargo bash "$HOOK" origin fake >"$HARNESS/cargo-runner.out" 2>&1
-grep -q '^1800 cargo test --release -p casper$' "$HARNESS/timeouts"
+grep -q '^3600 cargo test --release -p casper$' "$HARNESS/timeouts"
 if grep -q 'nextest run' "$HARNESS/cargo"; then
   echo "cargo runner invoked nextest" >&2
   exit 1

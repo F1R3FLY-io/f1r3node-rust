@@ -33,9 +33,8 @@ use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::vault_parser::VaultParser;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
 use comm::rust::test_instances::{LogStub, LogicalTime};
-use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
+use crypto::rust::signatures::signed::Signed;
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, DeployData};
 use models::rust::string_ops::StringOps;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
@@ -108,6 +107,7 @@ fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Default::default(),
         rejected_in_scope: Default::default(),
+        seeds_in_scope: Default::default(),
         max_block_num: 0,
         max_seq_nums: Default::default(),
         on_chain_state: OnChainCasperState {
@@ -115,6 +115,7 @@ fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
             bonds_map: HashMap::new(),
             active_validators: Vec::new(),
         },
+        chain_id: Bytes::new(),
     }
 }
 
@@ -122,11 +123,11 @@ fn validators() -> Vec<(String, usize)> {
     vec![
         (
             "299670c52849f1aa82e8dfe5be872c16b600bf09cc8983e04b903411358f2de6".to_string(),
-            0,
+            1,
         ),
         (
             "6bf1b2753501d02d386789506a6d93681d2299c6edfd4455f596b97bc5725968".to_string(),
-            1,
+            2,
         ),
     ]
 }
@@ -146,8 +147,8 @@ struct FromInputFilesParams<'a> {
     maybe_bonds_path: Option<&'a str>,
     autogen_shard_size: usize,
     maybe_vaults_path: Option<&'a str>,
-    minimum_bond: i64,
-    maximum_bond: i64,
+    minimum_bond: u64,
+    maximum_bond: u64,
     epoch_length: i32,
     quarantine_length: i32,
     number_of_active_validators: u32,
@@ -163,7 +164,7 @@ impl Default for FromInputFilesParams<'_> {
             autogen_shard_size: AUTOGEN_SHARD_SIZE,
             maybe_vaults_path: None,
             minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            maximum_bond: i64::MAX as u64,
             epoch_length: 10000,
             quarantine_length: 50000,
             number_of_active_validators: 100,
@@ -221,7 +222,7 @@ async fn from_input_files(
         .iter()
         .map(|(pk, stake)| Validator {
             pk: pk.clone(),
-            stake: *stake,
+            stake: stake.clone(),
         })
         .collect();
 
@@ -229,21 +230,22 @@ async fn from_input_files(
         shard_id: params.shard_id,
         timestamp,
         proof_of_stake: ProofOfStake {
-            minimum_bond: params.minimum_bond,
-            maximum_bond: params.maximum_bond,
+            minimum_bond: params.minimum_bond.into(),
+            maximum_bond: params.maximum_bond.into(),
             epoch_length: params.epoch_length,
             quarantine_length: params.quarantine_length,
             number_of_active_validators: params.number_of_active_validators,
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            min_phlo_price: (0).into(),
+            max_phlo_limit: 20_000_000,
             validators,
             pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
             pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
         },
         vaults,
-        supply: i64::MAX,
+        supply: (i64::MAX as u64).into(),
         block_number: params.block_number,
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
@@ -364,7 +366,7 @@ async fn genesis_from_input_files_should_create_a_genesis_block_with_the_right_b
                     let pk_bytes = StringOps::decode_hex(v.clone()).expect("Failed to decode hex");
                     Bond {
                         validator: pk_bytes.into(),
-                        stake: *i as i64,
+                        stake: (*i as u64).into(),
                     }
                 })
                 .collect();
@@ -468,7 +470,7 @@ async fn genesis_from_input_files_should_detect_an_existing_bonds_file_in_the_de
                     let pk_bytes = StringOps::decode_hex(v.clone()).expect("Failed to decode hex");
                     Bond {
                         validator: pk_bytes.into(),
-                        stake: *i as i64,
+                        stake: (*i as u64).into(),
                     }
                 })
                 .collect();
@@ -513,11 +515,9 @@ new ret, rl(`rho:registry:lookup`), RevVaultCh, vaultCh, balanceCh in {
 // spec proves the read needs > 3000) while staying below the 9_000_000 default deployer vault.
 const BALANCE_QUERY_PHLO_LIMIT: i64 = 4_000_000;
 
-// Reconstructs the unforgeable id of the first `new`-bound name of a deploy signed by DEFAULT_SEC.
-fn calculate_unforgeable_name(timestamp: i64) -> String {
-    let secp256k1 = Secp256k1;
-    let public_key = secp256k1.to_public(&construct_deploy::DEFAULT_SEC);
-    let unforgeable_id = Tools::unforgeable_name_rng(&public_key, timestamp).next();
+// Reconstructs the unforgeable id of the first `new`-bound name of a deploy.
+fn calculate_unforgeable_name(deploy: &Signed<DeployData>) -> String {
+    let unforgeable_id = Tools::deploy_name_rng(deploy).next();
     let unforgeable_id_u8: Vec<u8> = unforgeable_id.iter().map(|&b| b as u8).collect();
     hex::encode(unforgeable_id_u8)
 }
@@ -543,7 +543,7 @@ async fn rev_vault_balance(node: &mut TestNode, shard_id: &str, rev_address: &st
 
     let data = rspace_util::get_data_at_private_channel(
         &block,
-        &calculate_unforgeable_name(deploy.data.time_stamp),
+        &calculate_unforgeable_name(&deploy),
         &node.runtime_manager,
     )
     .await;

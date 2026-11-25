@@ -85,7 +85,7 @@ async fn key_landed(node: &TestNode, state_hash: &prost::bytes::Bytes, key: &str
     );
     match node
         .runtime_manager
-        .play_exploratory_deploy(term, state_hash, None)
+        .play_exploratory_deploy(term, state_hash, None, Vec::new())
         .await
     {
         Ok((res, _)) => res.first().and_then(par_to_i64) != Some(-999),

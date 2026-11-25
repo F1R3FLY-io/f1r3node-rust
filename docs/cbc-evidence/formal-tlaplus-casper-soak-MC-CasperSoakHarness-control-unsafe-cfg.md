@@ -1,1 +1,0 @@
-../casper/cbc-evidence/formal-tlaplus-casper-soak-MC-CasperSoakHarness-control-unsafe-cfg.md

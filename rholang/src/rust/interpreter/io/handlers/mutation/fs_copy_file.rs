@@ -48,12 +48,15 @@
 // fs_chmod (boxing the inline-Par Err adds an alloc per failed
 // syscall without improving hazard-avoidance semantics).
 //
-// # Shape-A root gating (deferred)
+// # Shape-A root gating
 //
-// Uses the ungated `resolve_or_identity` for both endpoints —
-// same deferral as fs_chmod / fs_rename / fs_chown / fs_remove_file.
-// Coordinated migration when `resolve_or_identity_gated_for_consensus`
-// lands.
+// Both endpoints route through
+// `resolve_or_identity_gated_for_consensus` with the single
+// caller-supplied `cmode`.  A Consensus-mode copy against an
+// unregistered `/@bundle/<X>` on either endpoint short-circuits
+// with `FSERR_UNSUPPORTED`.  Oracular calls pass through to
+// identity on both endpoints.  Matches the fs_rename two-endpoint
+// gating discipline.
 //
 // # std::io::copy under spawn_blocking
 //
@@ -193,15 +196,31 @@ impl FsHandler for FsCopyFileHandler {
         args: FsCopyFileArgs,
     ) -> Pin<Box<dyn Future<Output = HandlerReply> + Send + 'a>> {
         Box::pin(async move {
-            // BACKLOG: coordinated migration with the other seven
-            // path-based handlers waiting on
-            // resolve_or_identity_gated_for_consensus.
+            // Shape-A gating: BOTH endpoints route through
+            // `resolve_or_identity_gated_for_consensus` with the
+            // single caller-supplied `cmode`.  A Consensus-mode
+            // copy against an unregistered `/@bundle/<X>` on
+            // either endpoint short-circuits with
+            // `FSERR_UNSUPPORTED` before any safe_open walk.
+            // Matches the fs_rename two-endpoint gating pattern.
             let from_logical = PathBuf::from(&args.from_root);
-            let (from_root_pb, from_expected_id) =
-                ctx.handles.root_registry.resolve_or_identity(&from_logical);
+            let (from_root_pb, from_expected_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&from_logical, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::err(c, m),
+            };
             let to_logical = PathBuf::from(&args.to_root);
-            let (to_root_pb, to_expected_id) =
-                ctx.handles.root_registry.resolve_or_identity(&to_logical);
+            let (to_root_pb, to_expected_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&to_logical, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::err(c, m),
+            };
             let from_rel = args.from_rel;
             let to_rel = args.to_rel;
             #[allow(clippy::result_large_err)]

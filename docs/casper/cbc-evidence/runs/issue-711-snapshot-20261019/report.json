@@ -1,0 +1,140 @@
+{
+  "task": "TASK-012-32",
+  "issue": "https://github.com/F1R3FLY-io/f1r3node-rust/issues/711",
+  "status": "pending_maintainer_review",
+  "base_commit": "1ea5336848c392d73ee3cd831ffae34b1d3306c5",
+  "source_identity": "sha256 of the tested working tree files",
+  "sources": [
+    {
+      "path": "casper/src/rust/blocks/proposer/block_creator.rs",
+      "sha256": "48658025330d8218cd1c3d95d8fae69f57a9fa048e77822a3d7600e3f340dc09"
+    },
+    {
+      "path": "casper/tests/blocks/block_creator_spec.rs",
+      "sha256": "d7758f55e3594d9c4533a6c0f00b69f52e7b338196393f135610983b7e01eeea"
+    },
+    {
+      "path": "docs/casper/cbc-evidence/runs/issue-711-snapshot-20261019/pool_read_benchmark.rs",
+      "sha256": "264bb8e06e74001e9acbb574bc57d715ac5889b47a0522dfb0b74ff62ebb8f72"
+    }
+  ],
+  "environment": {
+    "platform": "Ubuntu-24.04 under WSL2",
+    "toolchain": "nightly-2026-02-09",
+    "target": "x86_64-unknown-linux-gnu",
+    "cmake": "3.28.3, portable, used for clippy",
+    "full_suite_test_threads": 2,
+    "clippy_build_jobs": 2
+  },
+  "checks": [
+    {
+      "name": "format",
+      "command": "cargo fmt --all -- --check",
+      "status": "passed"
+    },
+    {
+      "name": "focused_unit",
+      "command": "cargo test --offline --release -p casper --lib block_creator --no-fail-fast",
+      "status": "passed",
+      "passed": 72,
+      "failed": 0
+    },
+    {
+      "name": "focused_integration",
+      "command": "cargo test --offline --locked --release -p casper --test mod block_creator_spec --no-fail-fast",
+      "status": "passed",
+      "passed": 15,
+      "failed": 0
+    },
+    {
+      "name": "full_release",
+      "command": "cargo test --offline --locked --release -p casper -p block-storage --no-fail-fast -- --test-threads=2",
+      "status": "running"
+    },
+    {
+      "name": "clippy",
+      "command": "cargo clippy --offline --locked --workspace --all-targets -- -D warnings",
+      "status": "passed"
+    },
+    {
+      "name": "cargo_deny",
+      "status": "not_run",
+      "reason": "cargo-deny is not installed. CI must run this check."
+    },
+    {
+      "name": "coverage",
+      "status": "not_run",
+      "reason": "cargo-llvm-cov, nextest, and just are not installed. CI must run this check."
+    },
+    {
+      "name": "live_shard_load_and_soak",
+      "status": "not_run",
+      "reason": "Local evidence covers storage scans and regression tests. Hosted integration evidence remains open."
+    }
+  ],
+  "benchmark": {
+    "source": "pool_read_benchmark.rs",
+    "results": "pool-read-results.csv",
+    "command": "cargo run --offline --locked --release -p casper --example issue711_read_benchmark",
+    "storage": "InMemoryKeyValueStore",
+    "payload": "Nil",
+    "scope": "scan and decode cost for the old and new read sequences",
+    "pr_730_included": false,
+    "measurements": [
+      {
+        "pool_size": 2100,
+        "scope_match": true,
+        "repetitions": 3,
+        "old_mean_ms": 949.597,
+        "new_mean_ms": 230.97,
+        "ratio": 4.111,
+        "old_full_reads": 4,
+        "new_full_reads": 1
+      },
+      {
+        "pool_size": 2100,
+        "scope_match": false,
+        "repetitions": 3,
+        "old_mean_ms": 918.639,
+        "new_mean_ms": 445.028,
+        "ratio": 2.064,
+        "old_full_reads": 4,
+        "new_full_reads": 1
+      },
+      {
+        "pool_size": 15100,
+        "scope_match": true,
+        "repetitions": 3,
+        "old_mean_ms": 7111.968,
+        "new_mean_ms": 1695.453,
+        "ratio": 4.195,
+        "old_full_reads": 4,
+        "new_full_reads": 1
+      },
+      {
+        "pool_size": 15100,
+        "scope_match": false,
+        "repetitions": 3,
+        "old_mean_ms": 6845.367,
+        "new_mean_ms": 3299.509,
+        "ratio": 2.075,
+        "old_full_reads": 4,
+        "new_full_reads": 1
+      }
+    ]
+  },
+  "claims": [
+    {
+      "id": "CLAIM-CASPER-FRESH-ADMISSION-CAP-001",
+      "status": "pending",
+      "statements": "S1 through S8 remain unchanged"
+    },
+    {
+      "id": "CLAIM-CASPER-STAGE-METRICS-001",
+      "status": "pending",
+      "statements": "Existing names, labels, units, and preparation timer sample counts remain unchanged"
+    }
+  ],
+  "recorded_at": "2026-10-19T12:10:23Z",
+  "record_scope": "Validation state before the authorized commit. Later CI and full release results belong to the pull request."
+}

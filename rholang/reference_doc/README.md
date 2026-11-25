@@ -20,4 +20,4 @@ Table of contents are preliminary and subject to change.
 
 ## Related Resources
 * Rholang's Formal Semantics in K-Framework.
-* A gentler [rholang tutorial](https://github.com/JoshOrndorff/LearnRholangByExample)
+* A gentler [rholang tutorial](https://github.com/rhovision-org/LearnRholangByExample)

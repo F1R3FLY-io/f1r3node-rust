@@ -4,6 +4,9 @@
 # Single-node mode for local development and testing.
 # Instant finalization, no network peers required.
 #
+# Clients deploy through the deploy queue, which owns host ports 40401 (gRPC)
+# and 40403 (HTTP) and sends every other request on to the node.
+#
 # Usage:
 #   docker compose -f standalone.yml up -d
 #   docker compose -f standalone.yml logs -f
@@ -24,16 +27,14 @@ services:
       - --host=${STANDALONE_HOST:-rnode.standalone}
       - >-
         --validator-private-key=${STANDALONE_PRIVATE_KEY:?STANDALONE_PRIVATE_KEY
-        must be set}
+        must be set, copy docker/.env.example to docker/.env}
       - --allow-private-addresses
       - --native-token-name=${NATIVE_TOKEN_NAME:-F1R3CAP}
       - --native-token-symbol=${NATIVE_TOKEN_SYMBOL:-F1R3}
       - --native-token-decimals=${NATIVE_TOKEN_DECIMALS:-8}
     ports:
       - "40400:40400"
-      - "40401:40401"
       - "40402:40402"
-      - "40403:40403"
       - "40404:40404"
       - "40405:40405"
     volumes:
@@ -58,8 +59,42 @@ services:
       retries: 5
       start_period: 120s
 
+  deploy-queue:
+    image: ${F1R3FLY_RUST_IMAGE:-f1r3flyindustries/f1r3fly-rust:latest}
+    user: root
+    restart: always
+    networks:
+      - f1r3fly-standalone
+    container_name: rnode.deploy-queue
+    entrypoint: ["/opt/docker/bin/deploy-queue"]
+    command:
+      - --node-grpc=http://${STANDALONE_HOST:-rnode.standalone}:40401
+      - --node-http=http://${STANDALONE_HOST:-rnode.standalone}:40403
+      - --data-dir=/var/lib/deploy-queue
+    depends_on:
+      - standalone
+    ports:
+      - "40401:40401"
+      - "40403:40403"
+    volumes:
+      - deploy-queue-data:/var/lib/deploy-queue
+    environment:
+      - RUST_LOG
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:40403/queue/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
 volumes:
   standalone-data:
+  deploy-queue-data:
 
 networks:
   f1r3fly-standalone:

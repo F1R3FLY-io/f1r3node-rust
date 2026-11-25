@@ -8,10 +8,15 @@ use models::casper::{ApprovedBlockProto, BlockMessageProto};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
+use prost::bytes::Bytes;
 use prost::Message;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::soak_snapshot::SnapshotError;
+
+use crate::rust::pending_blocks::{
+    PendingBlockLimits, PendingBlocks, PendingClass, PendingInsert, PendingUsage,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockDecodeLimits {
@@ -50,6 +55,7 @@ pub struct KeyValueBlockStore {
     store: Arc<dyn KeyValueStore>,
     store_approved_block: Arc<dyn KeyValueStore>,
     approved_block_key: [u8; 1],
+    pending: Arc<PendingBlocks>,
 }
 
 thread_local! {
@@ -68,10 +74,19 @@ impl KeyValueBlockStore {
         store: Arc<dyn KeyValueStore>,
         store_approved_block: Arc<dyn KeyValueStore>,
     ) -> Self {
+        Self::with_pending_limits(store, store_approved_block, PendingBlockLimits::default())
+    }
+
+    pub fn with_pending_limits(
+        store: Arc<dyn KeyValueStore>,
+        store_approved_block: Arc<dyn KeyValueStore>,
+        pending_limits: PendingBlockLimits,
+    ) -> Self {
         Self {
             store,
             store_approved_block,
             approved_block_key: [42],
+            pending: Arc::new(PendingBlocks::new(pending_limits)),
         }
     }
 
@@ -92,7 +107,7 @@ impl KeyValueBlockStore {
     pub fn get(&self, block_hash: &BlockHash) -> Result<Option<BlockMessage>, KvStoreError> {
         let bytes = self.store.get_one(&block_hash.to_vec())?;
         if bytes.is_none() {
-            return Ok(None);
+            return Ok(self.pending.get(block_hash));
         }
         let bytes = bytes.unwrap();
         let block_proto = Self::bytes_to_block_proto(&bytes)?;
@@ -103,6 +118,18 @@ impl KeyValueBlockStore {
                 block_hash.clone(),
                 err.to_string(),
             ))),
+        }
+    }
+
+    /// The protobuf encoding of a block, read from the stored bytes without
+    /// decoding the block.
+    pub fn get_encoded(&self, block_hash: &BlockHash) -> Result<Option<Vec<u8>>, KvStoreError> {
+        match self.store.get_one(&block_hash.to_vec())? {
+            Some(bytes) => Self::decompress_block_bytes(&bytes).map(Some),
+            None => Ok(self
+                .pending
+                .get_encoded(block_hash)
+                .map(|encoded| encoded.to_vec())),
         }
     }
 
@@ -161,40 +188,11 @@ impl KeyValueBlockStore {
         if deploy_sigs.is_empty() {
             return Ok(Some(false));
         }
-        let key = block_hash.to_vec();
-        if let Some(has_any) = Self::cached_has_any_deploy_sig(&key, deploy_sigs) {
-            return Ok(Some(has_any));
-        }
-
-        let bytes = match self.store.get_one(&key)? {
-            Some(bytes) => bytes,
-            None => return Ok(None),
-        };
-
-        let body = Self::decode_block_deploy_sigs(&bytes)?;
-        let mut block_deploy_sigs = Vec::with_capacity(body.deploys.len());
-        let mut has_any = false;
-        for processed_deploy in body.deploys {
-            let deploy = processed_deploy.deploy.ok_or_else(|| {
-                KvStoreError::SerializationError(Self::error_block(
-                    block_hash.clone(),
-                    "Missing deploy field".to_string(),
-                ))
-            })?;
-            let sig = deploy.sig;
-            if sig.len() < Self::MIN_DEPLOY_SIG_BYTES {
-                return Err(KvStoreError::SerializationError(Self::error_block(
-                    block_hash.clone(),
-                    format!("Invalid deploy signature length: {}", sig.len()),
-                )));
-            }
-            if deploy_sigs.contains(&sig) {
-                has_any = true;
-            }
-            block_deploy_sigs.push(sig);
-        }
-        Self::cache_deploy_sigs(key, block_deploy_sigs);
-        Ok(Some(has_any))
+        Ok(self.deploy_identities(block_hash)?.map(|identities| {
+            identities
+                .iter()
+                .any(|identity| deploy_sigs.contains(&identity.sig))
+        }))
     }
 
     /// Fetch KEPT rejected deploy signatures for a block without decoding a
@@ -228,46 +226,165 @@ impl KeyValueBlockStore {
         &self,
         block_hash: &BlockHash,
     ) -> Result<Option<Vec<Vec<u8>>>, KvStoreError> {
+        Ok(self.deploy_identities(block_hash)?.map(|identities| {
+            identities
+                .iter()
+                .map(|identity| identity.sig.clone())
+                .collect()
+        }))
+    }
+
+    /// Each deploy's signature, unforgeable-name seed and valid-after block,
+    /// without decoding a full BlockMessage. Served from a bounded shared
+    /// cache.
+    pub fn deploy_identities(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<Option<Arc<Vec<DeployIdentity>>>, KvStoreError> {
         let key = block_hash.to_vec();
-        if let Some(cached) = Self::cached_deploy_sigs(&key) {
+        if let Some(cached) = Self::cached_deploy_identities(&key) {
             return Ok(Some(cached));
         }
-
         let bytes = match self.store.get_one(&key)? {
             Some(bytes) => bytes,
             None => return Ok(None),
         };
+        let identities = Arc::new(Self::decode_deploy_identities(block_hash, &bytes)?);
+        Self::cache_deploy_identities(key, identities.clone());
+        Ok(Some(identities))
+    }
 
-        let body = Self::decode_block_deploy_sigs(&bytes)?;
-        let mut block_deploy_sigs = Vec::with_capacity(body.deploys.len());
-        for processed_deploy in body.deploys {
-            let deploy = processed_deploy.deploy.ok_or_else(|| {
-                KvStoreError::SerializationError(Self::error_block(
-                    block_hash.clone(),
-                    "Missing deploy field".to_string(),
-                ))
-            })?;
-            if deploy.sig.len() < Self::MIN_DEPLOY_SIG_BYTES {
-                return Err(KvStoreError::SerializationError(Self::error_block(
-                    block_hash.clone(),
-                    format!("Invalid deploy signature length: {}", deploy.sig.len()),
-                )));
-            }
-            block_deploy_sigs.push(deploy.sig);
-        }
-
-        Self::cache_deploy_sigs(key, block_deploy_sigs.clone());
-        Ok(Some(block_deploy_sigs))
+    fn decode_deploy_identities(
+        block_hash: &BlockHash,
+        bytes: &[u8],
+    ) -> Result<Vec<DeployIdentity>, KvStoreError> {
+        let body = Self::decode_block_deploy_sigs(bytes)?;
+        body.deploys
+            .into_iter()
+            .map(|processed_deploy| {
+                let deploy = processed_deploy.deploy.ok_or_else(|| {
+                    KvStoreError::SerializationError(Self::error_block(
+                        block_hash.clone(),
+                        "Missing deploy field".to_string(),
+                    ))
+                })?;
+                if deploy.sig.len() < Self::MIN_DEPLOY_SIG_BYTES {
+                    return Err(KvStoreError::SerializationError(Self::error_block(
+                        block_hash.clone(),
+                        format!("Invalid deploy signature length: {}", deploy.sig.len()),
+                    )));
+                }
+                let seed = models::rust::deploy_seed::name_seed(
+                    &deploy.deployer,
+                    deploy.timestamp,
+                    deploy.valid_after_block_number,
+                );
+                Ok(DeployIdentity {
+                    sig: deploy.sig,
+                    seed,
+                    valid_after_block_number: deploy.valid_after_block_number,
+                })
+            })
+            .collect()
     }
 
     pub fn put(&self, block_hash: BlockHash, block: &BlockMessage) -> Result<(), KvStoreError> {
         let block_proto = block.to_proto();
         let bytes = Self::block_proto_to_bytes(&block_proto);
-        self.store.put_one(block_hash.to_vec(), bytes)
+        self.store.put_one(block_hash.to_vec(), bytes)?;
+        self.pending.remove(&block_hash);
+        Ok(())
     }
 
     pub fn put_block_message(&self, block: &BlockMessage) -> Result<(), KvStoreError> {
         self.put(block.block_hash.clone(), block)
+    }
+
+    pub fn remove_if_matches(&self, expected: &BlockMessage) -> Result<bool, KvStoreError> {
+        let key = expected.block_hash.to_vec();
+        let Some(bytes) = self.store.get_one(&key)? else {
+            return Ok(false);
+        };
+        let actual = BlockMessage::from_proto(Self::bytes_to_block_proto(&bytes)?)
+            .map_err(KvStoreError::SerializationError)?;
+        if actual != *expected || !self.store.delete_if_value(&key, &bytes)? {
+            return Ok(false);
+        }
+        if let Ok(mut cache) = Self::deploy_sig_cache().lock() {
+            cache.entries.remove(&key);
+            cache.order.retain(|hash| hash != &key);
+        }
+        Ok(true)
+    }
+
+    /// Hold `block` in the pending area as `encoded`, its encoding.
+    pub fn put_pending(
+        &self,
+        block: &BlockMessage,
+        encoded: Bytes,
+        class: PendingClass,
+    ) -> Result<PendingInsert, KvStoreError> {
+        let outcome = self.pending.insert(block, encoded, class);
+        // `put` writes the body before it removes the pending copy, so whichever
+        // of the two runs second removes it.
+        if self.disk_contains(&block.block_hash)? {
+            self.pending.remove(&block.block_hash);
+            return Ok(PendingInsert::Accepted);
+        }
+        Ok(outcome)
+    }
+
+    pub fn persist_block(&self, block: &BlockMessage) -> Result<(), KvStoreError> {
+        if self.disk_contains(&block.block_hash)? {
+            self.pending.remove(&block.block_hash);
+            return Ok(());
+        }
+        self.put(block.block_hash.clone(), block)
+    }
+
+    pub fn discard_pending(&self, block_hash: &BlockHash) -> bool {
+        self.pending.remove(block_hash)
+    }
+
+    pub fn discard_copy(&self, block: &BlockMessage) -> Result<bool, KvStoreError> {
+        let key = block.block_hash.to_vec();
+        let Some(bytes) = self.store.get_one(&key)? else {
+            return Ok(self.pending.get(&block.block_hash).as_ref() == Some(block)
+                && self.pending.remove(&block.block_hash));
+        };
+        let stored = BlockMessage::from_proto(Self::bytes_to_block_proto(&bytes)?).ok();
+        if stored.as_ref() != Some(block) {
+            return Ok(false);
+        }
+        self.store.delete_if_value(&key, &bytes)
+    }
+
+    /// Delete the body stored on disk for `block_hash`, if there is one. The
+    /// delete compares against the bytes just read, so a body rewritten in
+    /// between stays.
+    pub fn discard_stored(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
+        let key = block_hash.to_vec();
+        let Some(bytes) = self.store.get_one(&key)? else {
+            return Ok(false);
+        };
+        self.store.delete_if_value(&key, &bytes)
+    }
+
+    pub fn is_pending(&self, block_hash: &BlockHash) -> bool { self.pending.contains(block_hash) }
+
+    pub fn pending_blocks(&self) -> &PendingBlocks { &self.pending }
+
+    pub fn set_pending_limits(&self, limits: PendingBlockLimits) { self.pending.set_limits(limits) }
+
+    pub fn pending_usage(&self) -> PendingUsage { self.pending.usage() }
+
+    fn disk_contains(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
+        Ok(self
+            .store
+            .contains(&vec![block_hash.to_vec()])?
+            .first()
+            .copied()
+            .unwrap_or(false))
     }
 
     pub fn contains(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
@@ -283,12 +400,7 @@ impl KeyValueBlockStore {
     /// The cheap availability probe for callers revalidating cached
     /// per-block facts against THIS store.
     pub fn contains_key(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
-        Ok(self
-            .store
-            .contains(&vec![block_hash.to_vec()])?
-            .first()
-            .copied()
-            .unwrap_or(false))
+        Ok(self.disk_contains(block_hash)? || self.pending.contains(block_hash))
     }
 
     fn error_approved_block(cause: String) -> String {
@@ -416,6 +528,30 @@ impl KeyValueBlockStore {
         })
     }
 
+    fn decompress_block_bytes(bytes: &[u8]) -> Result<Vec<u8>, KvStoreError> {
+        use std::io::Cursor;
+
+        use prost::encoding::decode_varint;
+
+        let mut cursor = Cursor::new(bytes);
+        let decompressed_length = decode_varint(&mut cursor).map_err(|err| {
+            KvStoreError::SerializationError(format!(
+                "Failed to decode varint length prefix: {err}"
+            ))
+        })? as usize;
+        let mut output = vec![0u8; decompressed_length];
+        let written = lz4_flex::decompress_into(&bytes[cursor.position() as usize..], &mut output)
+            .map_err(|err| {
+                KvStoreError::SerializationError(format!("Decompress of block failed: {err}"))
+            })?;
+        if written != decompressed_length {
+            return Err(KvStoreError::SerializationError(format!(
+                "Decompressed block is {written} bytes, its prefix declares {decompressed_length}"
+            )));
+        }
+        Ok(output)
+    }
+
     fn decode_block_deploy_sigs(bytes: &[u8]) -> Result<BlockDeploySigsBody, KvStoreError> {
         use std::io::Cursor;
 
@@ -462,23 +598,12 @@ impl KeyValueBlockStore {
         Self::compress_bytes(&block_proto.encode_to_vec())
     }
 
-    fn cached_has_any_deploy_sig(
-        block_hash: &[u8],
-        deploy_sigs: &HashSet<Vec<u8>>,
-    ) -> Option<bool> {
-        let cache = Self::deploy_sig_cache().lock().ok()?;
-        cache
-            .entries
-            .get(block_hash)
-            .map(|cached_sigs| cached_sigs.iter().any(|sig| deploy_sigs.contains(sig)))
-    }
-
-    fn cached_deploy_sigs(block_hash: &[u8]) -> Option<Vec<Vec<u8>>> {
+    fn cached_deploy_identities(block_hash: &[u8]) -> Option<Arc<Vec<DeployIdentity>>> {
         let cache = Self::deploy_sig_cache().lock().ok()?;
         cache.entries.get(block_hash).cloned()
     }
 
-    fn cache_deploy_sigs(block_hash: Vec<u8>, deploy_sigs: Vec<Vec<u8>>) {
+    fn cache_deploy_identities(block_hash: Vec<u8>, identities: Arc<Vec<DeployIdentity>>) {
         let max_entries = Self::max_deploy_sig_cache_entries();
         if max_entries == 0 {
             return;
@@ -492,7 +617,7 @@ impl KeyValueBlockStore {
                     }
                 }
             }
-            cache.entries.insert(block_hash, deploy_sigs);
+            cache.entries.insert(block_hash, identities);
         }
     }
 
@@ -524,9 +649,18 @@ impl KeyValueBlockStore {
     }
 }
 
+/// What identifies a deploy carried in a block: its signature, and the
+/// unforgeable-name seed it shares with any deploy creating the same names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployIdentity {
+    pub sig: Vec<u8>,
+    pub seed: Vec<u8>,
+    pub valid_after_block_number: i64,
+}
+
 #[derive(Default)]
 struct DeploySigCache {
-    entries: HashMap<Vec<u8>, Vec<Vec<u8>>>,
+    entries: HashMap<Vec<u8>, Arc<Vec<DeployIdentity>>>,
     order: VecDeque<Vec<u8>>,
 }
 
@@ -552,8 +686,14 @@ struct BlockDeploySigsProcessedDeploy {
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 struct BlockDeploySigsDeploy {
+    #[prost(bytes = "vec", tag = "1")]
+    deployer: Vec<u8>,
+    #[prost(int64, tag = "3")]
+    timestamp: i64,
     #[prost(bytes = "vec", tag = "4")]
     sig: Vec<u8>,
+    #[prost(int64, tag = "10")]
+    valid_after_block_number: i64,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -578,6 +718,8 @@ mod tests {
     use shared::rust::{ByteBuffer, ByteString};
 
     use super::*;
+
+    fn encoded(block: &BlockMessage) -> Bytes { Bytes::from(block.to_proto().encode_to_vec()) }
 
     struct MockKeyValueStore {
         get_result: Option<ByteString>,
@@ -632,6 +774,13 @@ mod tests {
             }
             self.put(vec![(key, value)])?;
             Ok(true)
+        }
+
+        fn delete_if_value(&self, key: &Vec<u8>, expected: &Vec<u8>) -> Result<bool, KvStoreError> {
+            let _ = (key, expected);
+            Err(KvStoreError::InvalidArgument(
+                "conditional deletion is not supported by this test store".to_string(),
+            ))
         }
 
         fn delete(&self, _keys: Vec<shared::rust::ByteBuffer>) -> Result<usize, KvStoreError> {
@@ -692,6 +841,13 @@ mod tests {
             _value: ByteBuffer,
         ) -> Result<bool, KvStoreError> {
             todo!()
+        }
+
+        fn delete_if_value(&self, key: &Vec<u8>, expected: &Vec<u8>) -> Result<bool, KvStoreError> {
+            let _ = (key, expected);
+            Err(KvStoreError::InvalidArgument(
+                "conditional deletion is not supported by this test store".to_string(),
+            ))
         }
 
         fn delete(&self, _keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> { todo!() }
@@ -1106,6 +1262,60 @@ mod tests {
     }
 
     #[test]
+    fn deploy_identities_pair_each_sig_with_its_name_seed() {
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut TestRunner::default())
+            .unwrap()
+            .current();
+        let block = block_element_gen(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+        )
+        .new_tree(&mut TestRunner::default())
+        .unwrap()
+        .current();
+        let block_bytes = KeyValueBlockStore::block_proto_to_bytes(&block.to_proto());
+        let bs = KeyValueBlockStore::new(
+            Arc::new(MockKeyValueStore::new(Some(block_bytes))),
+            Arc::new(NotImplementedKV),
+        );
+
+        assert_eq!(
+            bs.deploy_identities(&block.block_hash)
+                .unwrap()
+                .map(|identities| identities.as_ref().clone()),
+            Some(vec![DeployIdentity {
+                sig: deploy.deploy.sig.to_vec(),
+                seed: models::rust::deploy_seed::deploy_name_seed(&deploy.deploy),
+                valid_after_block_number: deploy.deploy.data.valid_after_block_number,
+            }])
+        );
+
+        let missing_store = KeyValueBlockStore::new(
+            Arc::new(MockKeyValueStore::new(None)),
+            Arc::new(NotImplementedKV),
+        );
+        assert_eq!(
+            missing_store
+                .deploy_identities(&BlockHash::from(vec![0xD6; 32]))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn rejected_deploy_sigs_keeps_only_non_duplicate_records() {
         use models::rust::casper::protocol::casper_message::RejectedDeploy;
 
@@ -1193,6 +1403,208 @@ mod tests {
             bs.deploy_sigs(&block.block_hash),
             Err(KvStoreError::SerializationError(_))
         ));
+    }
+
+    fn in_mem_store() -> (KeyValueBlockStore, Arc<dyn KeyValueStore>) {
+        let disk: Arc<dyn KeyValueStore> = Arc::new(
+            rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+        );
+        let approved: Arc<dyn KeyValueStore> = Arc::new(
+            rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+        );
+        (KeyValueBlockStore::new(disk.clone(), approved), disk)
+    }
+
+    #[test]
+    fn remove_if_matches_preserves_a_replacement_and_removes_the_expected_copy() {
+        let (store, disk) = in_mem_store();
+        let original = models::rust::block_implicits::get_random_block_default();
+        let mut damaged = original.clone();
+        damaged.extra_bytes = prost::bytes::Bytes::from_static(b"corrupt copy");
+
+        assert!(!store.remove_if_matches(&damaged).unwrap());
+        store.put_block_message(&original).unwrap();
+        assert!(!store.remove_if_matches(&damaged).unwrap());
+        assert_eq!(
+            store.get(&original.block_hash).unwrap(),
+            Some(original.clone())
+        );
+        store.put_block_message(&damaged).unwrap();
+        assert!(store.remove_if_matches(&damaged).unwrap());
+        assert!(disk
+            .get_one(&original.block_hash.to_vec())
+            .unwrap()
+            .is_none());
+        assert!(store.get(&original.block_hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn get_encoded_returns_the_encoding_of_a_stored_or_pending_block() {
+        let (bs, _) = in_mem_store();
+        let stored = models::rust::block_implicits::get_random_block_default();
+        let pending = models::rust::block_implicits::get_random_block_default();
+        bs.put_block_message(&stored).unwrap();
+        bs.put_pending(&pending, encoded(&pending), PendingClass::Unsolicited)
+            .unwrap();
+
+        for block in [&stored, &pending] {
+            let encoded = bs
+                .get_encoded(&block.block_hash)
+                .unwrap()
+                .expect("block present");
+            assert_eq!(encoded, block.to_proto().encode_to_vec());
+        }
+        assert_eq!(bs.get_encoded(&BlockHash::from(vec![1; 32])).unwrap(), None);
+    }
+
+    #[test]
+    fn get_encoded_reports_a_serialization_error_for_corrupt_stored_bytes() {
+        let mut bytes = Vec::new();
+        prost::encoding::encode_varint(100, &mut bytes);
+        bytes.extend_from_slice(&[0xFF, 0x00, 0xAB]);
+        let kv = MockKeyValueStore::new(Some(bytes));
+        let bs = KeyValueBlockStore::new(Arc::new(kv), Arc::new(NotImplementedKV));
+
+        assert!(matches!(
+            bs.get_encoded(&BlockHash::from(vec![0xD1; 32])),
+            Err(KvStoreError::SerializationError(_))
+        ));
+    }
+
+    #[test]
+    fn pending_block_is_readable_but_not_written_to_disk() {
+        let (bs, disk) = in_mem_store();
+        let block = models::rust::block_implicits::get_random_block_default();
+        let hash = block.block_hash.clone();
+
+        assert_eq!(
+            bs.put_pending(&block, encoded(&block), PendingClass::Unsolicited)
+                .unwrap(),
+            PendingInsert::Accepted
+        );
+
+        assert!(disk.get_one(&hash.to_vec()).unwrap().is_none());
+        assert_eq!(bs.get(&hash).unwrap(), Some(block.clone()));
+        assert!(bs.contains(&hash).unwrap());
+        assert!(bs.contains_key(&hash).unwrap());
+        assert!(bs.is_pending(&hash));
+        assert!(bs.clone().is_pending(&hash));
+    }
+
+    #[test]
+    fn persist_block_moves_a_pending_block_to_disk() {
+        let (bs, disk) = in_mem_store();
+        let block = models::rust::block_implicits::get_random_block_default();
+        let hash = block.block_hash.clone();
+        bs.put_pending(&block, encoded(&block), PendingClass::Solicited)
+            .unwrap();
+
+        bs.persist_block(&block).unwrap();
+
+        assert!(disk.get_one(&hash.to_vec()).unwrap().is_some());
+        assert!(!bs.is_pending(&hash));
+        assert_eq!(bs.get(&hash).unwrap(), Some(block.clone()));
+        bs.persist_block(&block).unwrap();
+        assert_eq!(bs.get(&hash).unwrap(), Some(block));
+    }
+
+    #[test]
+    fn persist_block_writes_a_block_that_the_pending_area_no_longer_holds() {
+        let (bs, disk) = in_mem_store();
+        let discarded = models::rust::block_implicits::get_random_block_default();
+        bs.put_pending(&discarded, encoded(&discarded), PendingClass::Unsolicited)
+            .unwrap();
+        assert!(bs.discard_pending(&discarded.block_hash));
+        assert!(bs.get(&discarded.block_hash).unwrap().is_none());
+
+        bs.persist_block(&discarded).unwrap();
+
+        assert!(disk
+            .get_one(&discarded.block_hash.to_vec())
+            .unwrap()
+            .is_some());
+        assert_eq!(bs.get(&discarded.block_hash).unwrap(), Some(discarded));
+    }
+
+    #[test]
+    fn pending_usage_reports_the_area_totals() {
+        let (bs, _disk) = in_mem_store();
+        let block = models::rust::block_implicits::get_random_block_default();
+        bs.put_pending(&block, encoded(&block), PendingClass::Unsolicited)
+            .unwrap();
+        let usage = bs.pending_usage();
+        assert_eq!(usage.blocks, 1);
+        assert_eq!(usage.bytes, bs.pending_blocks().bytes());
+        assert_eq!(usage.by_sender.get(&block.sender), Some(&1));
+    }
+
+    #[test]
+    fn put_and_discard_clear_the_pending_entry() {
+        let (bs, disk) = in_mem_store();
+        let stored = models::rust::block_implicits::get_random_block_default();
+        bs.put_pending(&stored, encoded(&stored), PendingClass::Unsolicited)
+            .unwrap();
+        bs.put_block_message(&stored).unwrap();
+        assert!(!bs.is_pending(&stored.block_hash));
+        assert!(disk.get_one(&stored.block_hash.to_vec()).unwrap().is_some());
+
+        let dropped = models::rust::block_implicits::get_random_block_default();
+        bs.put_pending(&dropped, encoded(&dropped), PendingClass::Unsolicited)
+            .unwrap();
+        assert!(bs.discard_pending(&dropped.block_hash));
+        assert!(bs.get(&dropped.block_hash).unwrap().is_none());
+        assert!(!bs.contains_key(&dropped.block_hash).unwrap());
+    }
+
+    #[test]
+    fn a_block_already_on_disk_is_not_held_as_pending() {
+        let (bs, _disk) = in_mem_store();
+        let block = models::rust::block_implicits::get_random_block_default();
+        bs.put_block_message(&block).unwrap();
+        assert_eq!(
+            bs.put_pending(&block, encoded(&block), PendingClass::Unsolicited)
+                .unwrap(),
+            PendingInsert::Accepted
+        );
+        assert!(!bs.is_pending(&block.block_hash));
+    }
+
+    #[test]
+    fn a_block_already_on_disk_is_accepted_when_the_pending_area_is_full() {
+        let (bs, _disk) = in_mem_store();
+        let block = models::rust::block_implicits::get_random_block_default();
+        bs.put_block_message(&block).unwrap();
+        bs.set_pending_limits(PendingBlockLimits {
+            max_blocks: 0,
+            max_bytes: 0,
+            max_per_sender: 0,
+        });
+        assert_eq!(
+            bs.put_pending(&block, encoded(&block), PendingClass::Solicited)
+                .unwrap(),
+            PendingInsert::Accepted
+        );
+        assert!(!bs.is_pending(&block.block_hash));
+        assert_eq!(bs.pending_usage().blocks, 0);
+    }
+
+    #[test]
+    fn discard_copy_removes_only_the_matching_body() {
+        let (bs, _disk) = in_mem_store();
+        let stored = models::rust::block_implicits::get_random_block_default();
+        bs.put_block_message(&stored).unwrap();
+        let mut other = stored.clone();
+        other.seq_num += 1;
+        assert!(!bs.discard_copy(&other).unwrap());
+        assert_eq!(bs.get(&stored.block_hash).unwrap(), Some(stored.clone()));
+        assert!(bs.discard_copy(&stored).unwrap());
+        assert_eq!(bs.get(&stored.block_hash).unwrap(), None);
+
+        let pending = models::rust::block_implicits::get_random_block_default();
+        bs.put_pending(&pending, encoded(&pending), PendingClass::Unsolicited)
+            .unwrap();
+        assert!(bs.discard_copy(&pending).unwrap());
+        assert!(!bs.is_pending(&pending.block_hash));
     }
 }
 

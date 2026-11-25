@@ -1,0 +1,178 @@
+# Block ingest
+
+Block ingest takes a block from its arrival until the block is in the DAG. A block arrives as a peer's push, as a reply to a request, or from the local block store. The code is in `casper/src/rust/blocks/ingest/`.
+
+## One owner
+
+One task, the owner, keeps every record of what the node holds and what it needs. No other component keeps a copy of these records. The owner never waits on the network or on validation.
+
+| Component | File | Role |
+|---|---|---|
+| `IngestState` | `ingest_state.rs` | The owner's state machine. It handles one input at a time and returns effects. It does no I/O. |
+| `DependencyTracker` | `dependency_tracker.rs` | Held blocks, the blocks each one waits on, the ready set in height order, and the validation-failure ledger. |
+| `FetchScheduler` | `fetch_scheduler.rs` | Needed blocks and state roots, the peers known to hold each block, and the re-request pacing. |
+| `PeerReputation` | `peer_reputation.rs` | Strikes per peer and the list of ignored peers. |
+| `IngestView` | `ingest_view.rs` | Read-only answers for other tasks. Each record writes its own entries. |
+| `CheckedBlock` | `checked_block.rs` | A block whose fields, signature and hash match its contents. `CheckedBlock::check` is the only way to get one. |
+| Intake | `intake_worker.rs` | Checks a block and stores it. It runs outside the owner. |
+| Validation | `validation_worker.rs` | Validates a block or admits settled history. It also announces the block hash to peers. |
+| `BlockIngest` | `block_ingest.rs` | Starts the tasks and gives producers an `IngestHandle`. |
+| `IngestStep` | `ingest_step.rs` | Stage timing for storage, validation setup and validation. |
+
+The node supervises the ingest tasks as one critical task. If one of them stops, the node shuts down.
+
+## Flow
+
+```mermaid
+flowchart LR
+    N[Running: BlockMessage] -->|deliver| L[Intake lanes]
+    A[Running: hash or HasBlock] -->|announce| O
+    P[Proposer, heartbeat] -->|need| O
+    L --> I[Intake tasks]
+    I -->|Received or IntakeRefused| O[Owner]
+    O -->|ready block| V[Validation workers]
+    V -->|outcome| O
+    V -->|DAG insert| D[(DAG)]
+    D -->|insert observer| O
+    O -->|requests| S[Request sender]
+    S --> T[Transport]
+```
+
+1. `Running` drops a block that the node already holds. It then checks the block's integrity off the async runtime: fields, signature, and the hash against the contents. A block that fails is dropped, the sending peer gets a `Malformed` or `HashMismatch` strike, and nothing keyed by the claimed hash changes. `Running` gives a checked block to an intake lane. It does not wait. If the lane is full, the node drops the block. The node asks for a needed block again later.
+2. An intake task checks interest and sender authorization. It then stores the block. An authorized block goes to the block store. A block with unknown authorization goes to the pending area. A block that intake reads from the block store is checked for integrity first. A stored copy that fails is deleted only if it is the same body (compare-and-delete), and the node asks peers for the block.
+3. The owner classifies the block. A block with all dependencies in the DAG is ready. Other blocks wait, and each missing dependency becomes a need.
+4. The owner gives ready blocks to the validation workers, lowest height first. It dispatches only when a worker is free.
+5. The DAG reports each insert to the owner. The owner then releases the blocks that waited on the inserted block.
+
+A dependency is satisfied when it is in the DAG or recorded as an equivocation.
+
+## Intake lanes
+
+Intake reads three bounded lanes, in this order:
+
+| Lane | Capacity | Content |
+|---|---:|---|
+| Awaited | 512 | Blocks that the node asked for, not those only announced |
+| Local | 256 | Blocks that the owner reads from the block store for a need |
+| Unsolicited | 1,024 | All other pushed blocks |
+
+Four intake tasks share the lanes. Intake sends its reports to the owner and waits for room. A lost report would leave a stored body with no owner record.
+
+## Needs and requests
+
+A need exists while a held block waits on it. A need also exists when the proposer or the heartbeat asks for a block, or when a peer announces a block. A need leaves when its last waiter leaves.
+
+- The owner first looks for a needed block in the local block store.
+- Next, it asks a peer that announced the block. Without such a peer, it asks the first four connected peers in turn and then broadcasts a `HasBlockRequest`.
+- At most 256 requests are outstanding. Needs that trusted blocks cite go first, then the lowest height.
+- Re-requests start at 500 ms. The interval grows until the 32nd attempt and then stays at 4 s. Pacing never ends a need.
+- A peer that announces a needed block is asked next, also if the node asked it before. Announcements never make the node ask for a block sooner than 500 ms after its last request for that block.
+- At most 4,096 needs that no held block cites are kept. Announced-only needs leave first.
+
+A held block cites every missing dependency when its parents and justifications fit the rules a valid block meets: no validator named twice, no more parents than `max-number-of-parents`, and the named validators equal to the bonds of its main parent. Before the main parent is in the DAG, the named validators must be bonded in the last finalized block. A block that does not fit cites only its main parent. When the main parent arrives, the owner checks the block again: a block that now fits cites the rest, and any other block goes to validation, which judges it. So a block creates at most one need per bonded validator plus its parents.
+
+A need ends early only when waiting cannot help. A block that is too large for the pending area ends its need. A state root ends its need when the state requester exhausts its budget. The blocks that waited on it then leave.
+
+A separate task sends the requests, 16 at a time. Its queue holds 1,024 requests. The task skips a request for a block that the node no longer needs. When the queue is full, the request is dropped and the pacing sends it again later.
+
+## Pending area
+
+The pending area holds blocks with unknown sender authorization. It has these limits: 8,192 blocks, 256 MiB, and 2,048 blocks for each sender.
+
+Intake gives each block a class. A requested block is `Solicited`. Another block from a known sender is `KnownSender`: its signature checked, and its sender is bonded in the last finalized block. Any other block is `Unsolicited`.
+
+- A `Solicited` block is refused only at these limits.
+- A `KnownSender` block is refused above 90 percent of a limit. The top 10 percent is kept for requested blocks.
+- An `Unsolicited` block is refused above 80 percent of the block and byte limits, and above 90 percent of its sender's limit. New sender keys cannot use the room that known senders use.
+- The area never evicts. The owner decides what leaves.
+
+The owner evicts in two passes. The proactive pass runs on each tick and after each pending block arrives. It evicts unsolicited blocks from unknown senders down to 80 percent of each limit, then any unsolicited block down to 90 percent. The reactive pass runs when the area refuses a requested block because it is full. It evicts unsolicited blocks first. Then it evicts requested blocks that are higher than the refused block, never lower ones, so the blocks nearest the DAG keep their room. A block that another held block waits on counts as requested. Untrusted blocks leave before trusted blocks, and higher blocks leave first.
+
+A requested block that the area refuses because its sender is at its limit takes slots from that sender's blocks: first the sender's unsolicited blocks, then the sender's requested blocks that wait on it, directly or through other held blocks. The refused block stays needed and is asked for again after one base interval.
+
+When either pass makes room for a refused block, the area reserves that room for it before the evictions free it. Every other block counts the reserved room as taken. The reservation ends when the block arrives or when the node no longer needs it.
+
+An evicted block that others wait on becomes a need again. It keeps the peer that pushed it.
+
+## Bodies on disk
+
+When more held blocks have a body on disk than the bound allows, the owner evicts from the sender that holds the most of them. Within that sender, unsolicited blocks leave first, then untrusted ones, then the highest. One sender cannot push out the blocks of other senders.
+
+## Failed validations
+
+A validation that ends without a verdict is retried after 500 ms. Each further failure doubles the wait, up to 120 s. After 32 failures the owner stops holding the block and quarantines it for 120 s. The blocks that wait on it keep waiting, and the node asks for it again when the quarantine ends. A panic during validation counts as a failure. A validation still running after 10 minutes is logged once as a warning, because it holds one validation slot.
+
+## Bounds
+
+| Bound | Value |
+|---|---:|
+| Held blocks with a body on disk | 65,536 |
+| Validation failures before the block is quarantined | 32 |
+| Quarantine after the failure limit | 120 s |
+| Settled-history admissions for the node's lifetime | 512 |
+| Block-hash announces in flight | 128 |
+| Judged blocks between `malloc_trim(0)` calls (Linux, glibc) | 64 |
+
+Validation width is the number of CPU cores minus two, with a minimum of three.
+
+## Peer reputation
+
+The owner strikes a peer when an unsolicited block from that peer fails one of these checks:
+
+- the sender has no stake in the main parent
+- validation finds an invalid sender
+
+These checks are about the block's sender, so a requested block never causes them to strike. A block message that fails the integrity check strikes its peer always, requested or not, because the peer sent a body that does not match its hash or signature. The 16th strike in 10 minutes makes the node ignore the peer's block traffic for one hour. `Running` still accepts a block or a `HasBlock` that the node asked for. Each table tracks at most 1,024 peers.
+
+## Startup
+
+The owner starts empty. The pending area also starts empty, because it is not persisted. At startup the node asks peers for their fork-choice tips. The tips arrive as announcements. The node then resolves their ancestors from the block store first and from peers next.
+
+## Metrics
+
+The names that monitoring rules read keep their earlier source labels:
+
+- `f1r3fly.casper.block-processor`: `block.validation.time`, `block.processing.stage.validation-setup.time`, `block.processing.stage.storage.time`, `block.size`, `block.validation.success`, `block.validation.failed`
+- `f1r3fly.casper.block-retriever`: `block.requests.total`, `block.requests.retries`, `block.download.end-to-end-time`
+
+The block-processing gauges that shard monitors and soak scripts read also keep their names and the source `f1r3fly.casper.block-processor`:
+
+- `block-processing.active`: validations that run now.
+- `block-processing.queue.pending`: held blocks that are ready and wait for a validation slot.
+- `block-processing.in-flight`: the sum of the two gauges above.
+- `block-processing.in-flight.oldest-age-seconds`: how long the oldest running validation has run, or zero when none runs. A value that grows past ten minutes marks a stuck validation.
+- `block-processing.parallel-limit`: the number of validation slots.
+
+Block ingest adds gauges and counters with the source `f1r3fly.casper.block-ingest`:
+
+- `block.ingest.held` and `block.ingest.disk-entries`
+- `block.ingest.needs`, `block.ingest.uncited-needs`, `block.ingest.root-needs` and `block.ingest.requests.outstanding`
+- `block.ingest.inserts-pending`
+- `block.ingest.evictions`, by `reason`: `pending-area`, `sender-share`, `room-for-requested`, `disk-bound` or `give-up`
+- `block.ingest.dropped`, the blocks that left with a dropped block, by `reason`: `invalid`, `too-large` or `state-unavailable`
+- `block.ingest.needs.dropped`, by `reason`: `uncited` (no held block waits on it) or `uncited-bound`
+- `block.ingest.lane-drops` and `block.ingest.outbound-drops`
+- `block.ingest.peer-reputation.strikes`, `block.ingest.peer-reputation.ignored-peers` and `block.ingest.peer-reputation.dropped-messages`
+
+`block.integrity.rejected` counts block messages that fail the integrity check, by `reason` (`malformed` or `hash-mismatch`).
+
+The buffer, retriever and in-flight-cap metrics of the earlier block processor are gone with the components that they measured. The gauges above replace them.
+
+## Logs
+
+The owner logs each decision with the target `f1r3fly.casper.block-ingest`. Set `f1r3fly.casper.block-ingest=debug` in the log filter to see the full path of each block. Each event names the block by its short hash in the `block` field.
+
+- Debug: a block held, with the blocks it waits on; a block needed, with the reason; each request to a peer and each broadcast, with the attempt number; a block inserted, with the blocks that it released; each eviction, with its reason; each retry after a failed validation; a validation that waits on a block or a state root; a need dropped because uncited needs exceed their bound.
+- Info: a block that a held block or the proposer needs and that is still missing when its requests reach the slowest interval (once for each block); an invalid block dropped with the blocks that wait on it. Events that peers can cause at will, such as announcements of hashes that do not exist, stay at debug.
+- Warn: a block given up after repeated failed validations; a block dropped as too large or because its state root cannot be fetched; a validation still running after ten minutes.
+
+The validation worker logs `Block … processing started.` when it takes a block and `Block … validated …` with the verdict, at info level.
+
+## Tests
+
+- `ingest_state_tests.rs` tests each transition. Property tests check convergence under any delivery order, drops, duplicates and restarts.
+- `node/tests/block_queue_livelock.rs` runs a node with real ingest tasks and stubbed execution. It checks that blocks that wait on missing ancestors never stop the node from admitting other blocks.
+- `casper/tests/blocks/block_ingest_spec.rs` checks that ingest continues while every outbound send is stuck, and that no request goes out once every needed block has arrived.
+- Casper integration tests run ingest inline through `casper/tests/helper/inline_ingest.rs`.
+
+[← Back to Casper docs](./README.md)

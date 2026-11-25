@@ -8,10 +8,8 @@
 // verified chunk bytes ready for assembly into the reconstructed
 // snapshot.
 //
-// Mirrors the shape of `BlockRetriever` at
-// `casper/src/rust/engine/block_retriever.rs` but scoped to the
-// per-chunk problem: a snapshot is many chunks, each fetched
-// independently, each verified independently.  Under partial
+// A snapshot is many chunks, each fetched independently, each
+// verified independently.  Under partial
 // success (M of N chunks arrive, one is byzantine) we accept
 // the M and re-request the failing index without discarding
 // progress.
@@ -59,9 +57,8 @@ pub struct ChunkRequestState {
     pub initial_request_ms: u64,
     /// Peers we've asked so far.  Used to rotate through peers
     /// on retry rather than re-asking the same node.  Represented
-    /// as opaque `Vec<u8>` peer identifiers (matches
-    /// `BlockRetriever`'s `HashSet<PeerNode>`; kept as bytes here
-    /// to avoid pulling in comm types).
+    /// as opaque `Vec<u8>` peer identifiers, to avoid pulling in comm
+    /// types.
     pub peers_tried: Vec<Vec<u8>>,
     /// Number of retry attempts across peers.  Increments on
     /// each timeout without a valid response.  Retriever gives

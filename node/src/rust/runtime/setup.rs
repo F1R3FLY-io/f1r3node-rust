@@ -5,17 +5,12 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use casper::rust::blocks::block_processor::{
-    BlockProcessor, BlockQueueItem, InFlightBlocks, IN_FLIGHT_MARKER_MAX_WARN_AGE,
-};
+use casper::rust::blocks::ingest::block_ingest::{self, IngestSetup};
 use casper::rust::blocks::proposer::proposer::{ProductionProposer, ProposerResult};
 use casper::rust::casper::{Casper, MultiParentCasper};
-use casper::rust::engine::block_retriever::BlockRetriever;
 use casper::rust::engine::casper_launch::CasperLaunch;
 use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
-    BLOCK_PROCESSING_IN_FLIGHT_METRIC, BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC,
-    BLOCK_PROCESSING_QUEUE_PENDING_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE,
     PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
 };
 use casper::rust::state::instances::ProposerState;
@@ -24,26 +19,21 @@ use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::p2p::packet_handler::PacketHandler;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::transport::transport_layer::TransportLayer;
-use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::ApprovedBlock;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::task::JoinSet;
 use tracing::{debug, info, trace, warn};
 
 use crate::rust::api::admin_web_api::AdminWebApi;
 use crate::rust::api::web_api::WebApi;
 use crate::rust::configuration::NodeConf;
+use crate::rust::instances::validation_width::resolve_validation_width;
 use crate::rust::runtime::api_servers::APIServers;
 use crate::rust::runtime::node_runtime::{CasperLoop, EngineInit};
 use crate::rust::web::reporting_routes::{ReportingHttpRoutes, ReportingRoutes};
 
 const PROPOSER_QUEUE_MAX_PENDING: usize = 1_024;
-const BLOCK_PROCESSOR_QUEUE_MAX_PENDING: usize = 2_048;
-
-const _: () = assert!(
-    casper::rust::blocks::block_processor::MAX_BLOCKS_IN_PROCESSING
-        <= BLOCK_PROCESSOR_QUEUE_MAX_PENDING
-);
 
 type ProposerQueueEntry = (
     Arc<dyn Casper + Send + Sync>,
@@ -54,17 +44,254 @@ type ProposerQueueEntry = (
 
 fn proposer_queue_max_pending() -> usize { PROPOSER_QUEUE_MAX_PENDING }
 
-fn block_processor_queue_max_pending() -> usize { BLOCK_PROCESSOR_QUEUE_MAX_PENDING }
-
 fn block_report_prewarm_enabled(is_node_read_only: bool, dev_mode: bool) -> bool {
     is_node_read_only || dev_mode
+}
+
+/// Populate the `RootIdentityRegistry` from the operator's consensus-mode
+/// static-provisioning entries so `/@bundle/<logical>` -> on-disk root
+/// resolution works at Rholang-handler syscall time.
+///
+/// Composed Fs-genesis source (`format_bundle_for_rholang`, Shape A) emits
+/// `BUNDLE_ROOT_PREFIX` ("/@bundle") for every consensus bundle entry's
+/// Rholang-visible root.  `safe_descend`'s
+/// `resolve_or_identity_gated_for_consensus` consults the registry to
+/// map that virtual root to a real on-disk path.  Without this
+/// registration, every consensus-mode cap read/write fails at
+/// `identity.rs:315` with FSERR_UNSUPPORTED.
+///
+/// Mirrors `casper/tests/helper/rho_spec.rs:429-523` structurally so the
+/// test-harness coverage transfers.
+///
+/// Convention:
+///   * Dir entries: `/@bundle/<logical>` -> `Root::capture(operator_path)`.
+///     The operator-declared directory IS the root; no staging.
+///   * File entries: stage the operator-declared file at
+///     `<data_dir>/fs_bundle_staging/<logical>`; register
+///     `/@bundle` or `/@bundle/<parent-segs>` -> `Root::capture(<staging
+///     dir>)`.  Multiple files sharing a parent segment collapse to one
+///     registration via a BTreeMap dedupe.
+///
+/// Oracular entries bypass this path entirely (the resolver
+/// short-circuits on `BundleConsensusMode::Oracular`).
+///
+/// # Preconditions
+///
+///   * **One node per `data_dir`.**  The staging layer writes
+///     `<data_dir>/fs_bundle_staging/<logical>.partial` and renames
+///     to the final path.  Two nodes sharing the same `data_dir`
+///     would race on the same rename target — last writer wins,
+///     and a crash mid-write can leave a `.partial` from one node
+///     that the other overwrites next boot.  Each node must own
+///     its own `data_dir`; this matches the single-validator-per-
+///     host deployment model Casper CBC assumes anyway.
+///   * **Local POSIX filesystem for `data_dir`.**  The Wave-B
+///     fcntl bracket around read/write syscalls relies on POSIX
+///     advisory-lock semantics; NFS and some shared-storage setups
+///     have well-known fcntl gaps.  On those, a cooperating
+///     sidecar reader can observe torn writes.
+pub(crate) async fn register_consensus_bundle_roots(
+    manager: &casper::rust::util::rholang::runtime_manager::RuntimeManager,
+    provisioning: &crate::rust::configuration::file_io_provisioning::FileIoProvisioning,
+    data_dir: &std::path::Path,
+) -> Result<(), CasperError> {
+    // Thin wrapper over the testable core: snapshot the manager's
+    // registry and feed `register_consensus_static_root` back as the
+    // allowed-roots callback.  Keeping the registry + callback as
+    // explicit params lets the test module exercise the stage-and-
+    // register logic without constructing a full `RuntimeManager`.
+    let mut allowed_roots: Vec<std::path::PathBuf> = Vec::new();
+    register_consensus_bundle_roots_core(
+        &manager.root_registry,
+        &mut allowed_roots,
+        provisioning,
+        data_dir,
+    )?;
+    // Log registry state at boot.  Operators diagnosing an
+    // `FSERR_UNSUPPORTED: unregistered logical root` at deploy
+    // time can grep for `consensus bundle root` in the node log
+    // to see what IS registered.  Sort before iterating so the
+    // log order is stable across nodes with identical config —
+    // defense against the HashMap-iteration non-determinism in
+    // the parent helper (file-staging dedupe uses a BTreeMap for
+    // its own correctness, but Dir entries push in HashMap order).
+    let mut sorted_roots = allowed_roots.clone();
+    sorted_roots.sort();
+    for root in &sorted_roots {
+        tracing::info!(
+            target: "f1r3fly.node.setup",
+            on_disk_root = %root.display(),
+            "consensus bundle root registered"
+        );
+    }
+    tracing::info!(
+        target: "f1r3fly.node.setup",
+        count = allowed_roots.len(),
+        file_entries = provisioning.consensus_static_files.len(),
+        dir_entries = provisioning.consensus_static_dirs.len(),
+        "register_consensus_bundle_roots: boot registration complete"
+    );
+    for root in allowed_roots {
+        manager.register_consensus_static_root(root).await;
+    }
+    Ok(())
+}
+
+/// Testable core of `register_consensus_bundle_roots`.  Writes staging
+/// files + registrations into the supplied `registry`; appends each
+/// manager-visible consensus-static root (the staging dir for file
+/// entries, the operator path for dir entries) to `allowed_roots`.
+///
+/// Separated from the manager-side wrapper so tests can drive it with
+/// a bare `RootIdentityRegistry` + a `Vec` collector — constructing a
+/// full `RuntimeManager` in a unit test is prohibitively expensive.
+pub(crate) fn register_consensus_bundle_roots_core(
+    registry: &rholang::rust::interpreter::io::path::identity::RootIdentityRegistry,
+    allowed_roots: &mut Vec<std::path::PathBuf>,
+    provisioning: &crate::rust::configuration::file_io_provisioning::FileIoProvisioning,
+    data_dir: &std::path::Path,
+) -> Result<(), CasperError> {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    use casper::rust::genesis::contracts::fs_genesis::BUNDLE_ROOT_PREFIX;
+    use rholang::rust::interpreter::io::path::identity::Root;
+
+    if provisioning.consensus_static_dirs.is_empty()
+        && provisioning.consensus_static_files.is_empty()
+    {
+        info!(
+            target: "f1r3fly.setup.consensus_bundle_roots",
+            "no consensus-mode bundle entries; skipping registration"
+        );
+        return Ok(());
+    }
+
+    let staging_root = data_dir.join("fs_bundle_staging");
+
+    // Dir entries: register operator path directly.
+    for (logical_name, entry) in &provisioning.consensus_static_dirs {
+        let logical = PathBuf::from(format!("{BUNDLE_ROOT_PREFIX}/{logical_name}"));
+        let captured = Root::capture(&entry.path).map_err(|e| {
+            CasperError::Other(format!(
+                "register_consensus_bundle_roots: capture Dir root {:?} \
+                 for logical `{logical_name}` failed: {e:?}",
+                entry.path
+            ))
+        })?;
+        registry.register(logical, captured);
+        allowed_roots.push(entry.path.clone());
+        info!(
+            target: "f1r3fly.setup.consensus_bundle_roots",
+            logical = %logical_name,
+            on_disk = ?entry.path,
+            kind = "dir",
+            "registered consensus bundle root"
+        );
+    }
+
+    // File entries: stage then register.  Build a dedupe map keyed on
+    // the logical_root string so N files sharing a parent collapse to
+    // one registration (matches rho_spec.rs:508 BTreeMap behavior).
+    if !provisioning.consensus_static_files.is_empty() {
+        std::fs::create_dir_all(&staging_root).map_err(|e| {
+            CasperError::Other(format!(
+                "register_consensus_bundle_roots: create staging root {:?} failed: {e}",
+                staging_root
+            ))
+        })?;
+
+        let mut registrations: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
+
+        for (logical_name, entry) in &provisioning.consensus_static_files {
+            let on_disk_target = staging_root.join(logical_name);
+            if let Some(parent) = on_disk_target.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    CasperError::Other(format!(
+                        "register_consensus_bundle_roots: create staging parent {:?} \
+                         for logical `{logical_name}` failed: {e}",
+                        parent
+                    ))
+                })?;
+            }
+            // Atomic copy: write to .partial then rename.  A crash
+            // mid-copy leaves a `.partial` sidecar (operator-visible)
+            // rather than a torn staging file.
+            let partial = on_disk_target.with_extension({
+                let mut e = on_disk_target
+                    .extension()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if !e.is_empty() {
+                    e.push('.');
+                }
+                e.push_str("partial");
+                e
+            });
+            std::fs::copy(&entry.path, &partial).map_err(|e| {
+                CasperError::Other(format!(
+                    "register_consensus_bundle_roots: copy {:?} -> {:?} for \
+                     logical `{logical_name}` failed: {e}",
+                    entry.path, partial
+                ))
+            })?;
+            std::fs::rename(&partial, &on_disk_target).map_err(|e| {
+                CasperError::Other(format!(
+                    "register_consensus_bundle_roots: rename {:?} -> {:?} failed: {e}",
+                    partial, on_disk_target
+                ))
+            })?;
+
+            // Mirror format_bundle_for_rholang's (root, rel) split:
+            // bare logical name -> ("/@bundle", <staging_root>);
+            // nested "cfg/x" -> ("/@bundle/cfg", <staging_root>/cfg).
+            let logical_path = std::path::Path::new(logical_name);
+            let parent_rel = logical_path.parent().and_then(|p| p.to_str()).unwrap_or("");
+            let (logical_root, on_disk_root) = if parent_rel.is_empty() {
+                (PathBuf::from(BUNDLE_ROOT_PREFIX), staging_root.clone())
+            } else {
+                (
+                    PathBuf::from(format!("{BUNDLE_ROOT_PREFIX}/{parent_rel}")),
+                    staging_root.join(parent_rel),
+                )
+            };
+            registrations.insert(logical_root, on_disk_root);
+            info!(
+                target: "f1r3fly.setup.consensus_bundle_roots",
+                logical = %logical_name,
+                source = ?entry.path,
+                staged = ?on_disk_target,
+                kind = "file",
+                "staged consensus bundle file"
+            );
+        }
+
+        for (logical, on_disk) in registrations {
+            let captured = Root::capture(&on_disk).map_err(|e| {
+                CasperError::Other(format!(
+                    "register_consensus_bundle_roots: capture File staging root \
+                     {:?} failed: {e:?}",
+                    on_disk
+                ))
+            })?;
+            registry.register(logical.clone(), captured);
+            allowed_roots.push(on_disk.clone());
+            info!(
+                target: "f1r3fly.setup.consensus_bundle_roots",
+                logical_root = ?logical,
+                on_disk_root = ?on_disk,
+                "registered consensus bundle file-staging root"
+            );
+        }
+    }
+
+    Ok(())
 }
 
 pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'static>(
     rp_connections: ConnectionsCell,
     rp_conf_cell: comm::rust::rp::rp_conf::RPConfCell,
     transport_layer: Arc<T>,
-    block_retriever: BlockRetriever<T>,
     conf: NodeConf,
     event_publisher: F1r3flyEvents,
     node_discovery: Arc<dyn NodeDiscovery + Send + Sync>,
@@ -87,10 +314,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         Arc<AtomicUsize>,
         usize,
         Option<Arc<RwLock<ProposerState>>>,
-        BlockProcessor<T>,
-        Arc<InFlightBlocks>,
-        mpsc::Sender<BlockQueueItem>,
-        mpsc::Receiver<BlockQueueItem>,
+        JoinSet<()>,
         Option<Arc<ProposeFunction>>,
         Arc<casper::rust::api::block_report_api::BlockReportAPI>,
         block_storage::rust::key_value_block_store::KeyValueBlockStore,
@@ -107,6 +331,11 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 > {
     info!(data_dir = ?conf.storage.data_dir, "Initializing key-value store manager");
 
+    // Clone before moving conf.storage.data_dir into the kv-store manager —
+    // register_consensus_bundle_roots (post-RuntimeManager-build) needs the
+    // path to compute the staging root `<data_dir>/fs_bundle_staging/`.
+    let data_dir_for_bundle_staging = conf.storage.data_dir.clone();
+
     // RNode key-value store manager / manages LMDB databases
     let mut rnode_store_manager = {
         use casper::rust::storage::rnode_key_value_store_manager::new_key_value_store_manager;
@@ -121,34 +350,39 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         KeyValueBlockStore::create_from_kvm(&mut rnode_store_manager).await?
     };
 
-    // Last finalized Block storage
-    let last_finalized_storage = {
-        use block_storage::rust::finality::LastFinalizedKeyValueStorage;
-
-        LastFinalizedKeyValueStorage::create_from_kvm(&mut rnode_store_manager).await?
-    };
-
-    // Migrate LastFinalizedStorage to BlockDagStorage
-    let lfb_require_migration = last_finalized_storage.require_migration()?;
-    if lfb_require_migration {
-        use tracing::info;
-
-        info!("Migrating LastFinalizedStorage to BlockDagStorage.");
-        last_finalized_storage
-            .migrate_lfb(&mut rnode_store_manager, &block_store)
-            .await?;
-    }
-    info!(
-        lfb_migration = lfb_require_migration,
-        "LastFinalized storage checked"
-    );
-
     // Block DAG storage
     let block_dag_storage = {
         use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 
-        BlockDagKeyValueStorage::new(&mut rnode_store_manager).await?
+        BlockDagKeyValueStorage::new_with_hot_window(
+            &mut rnode_store_manager,
+            conf.casper.dag_hot_window_depth,
+        )
+        .await?
     };
+
+    // This node's chain identity, as far as storage knows it. A node that
+    // restarts on existing data has its genesis already, so the guard against
+    // peers of a previous chain is live from the first message rather than
+    // only once Casper reaches the running state. A fresh node gets nothing
+    // here and learns its identity during bootstrap.
+    {
+        let conf = rp_conf_cell
+            .read()
+            .map_err(|e| CasperError::RuntimeError(format!("Failed to read RPConf: {}", e)))?;
+        match block_dag_storage.genesis_hash()? {
+            Some(genesis) => {
+                conf.chain_id.set_once(genesis.clone()).map_err(|e| {
+                    CasperError::RuntimeError(format!("Failed to publish chain identity: {}", e))
+                })?;
+                info!(
+                    genesis = %models::rust::casper::pretty_printer::PrettyPrinter::build_string_bytes(&genesis),
+                    "Chain identity seeded from storage"
+                );
+            }
+            None => info!("Chain identity not known yet; it is learned during bootstrap"),
+        }
+    }
 
     // Repeat-deploy carrier-index watermark (same pattern as the LFB
     // migration above): the height since which every insert records carriers,
@@ -160,20 +394,12 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         "repeat-deploy carrier index checked"
     );
 
-    // Casper requesting blocks cache
-    let casper_buffer_storage = {
-        use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-
-        CasperBufferKeyValueStorage::new_from_kvm(&mut rnode_store_manager).await?
-    };
-
     // Deploy storage
     let (deploy_storage, deploy_storage_arc) = {
         use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 
         let deploy_storage = KeyValueDeployStorage::new(&mut rnode_store_manager).await?;
-        // Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
-        let deploy_storage_arc = Arc::new(parking_lot::Mutex::new(deploy_storage.clone()));
+        let deploy_storage_arc = Arc::new(deploy_storage.clone());
         (deploy_storage, deploy_storage_arc)
     };
 
@@ -245,10 +471,11 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     };
 
     // Runtime manager (play and replay runtimes)
+    let validation_width = resolve_validation_width();
     let (runtime_manager, history_repo) = {
         use casper::rust::genesis::genesis::Genesis;
         use casper::rust::util::rholang::runtime_manager::{
-            ExploratoryDeployConfig, RuntimeManager,
+            ExploratoryDeployConfig, ReplayLock, RuntimeManager,
         };
         use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
@@ -277,10 +504,25 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 );
                 exploratory
             },
+            Arc::new(ReplayLock::with_permits(validation_width + 2)),
         );
         tracing::debug!("[Setup] RuntimeManager created successfully");
         result
     };
+
+    // Populate the RootIdentityRegistry from the operator's
+    // consensus-mode static-provisioning entries BEFORE anything that
+    // spawns a runtime (CasperLaunch below spawns via spawn_runtime,
+    // which snapshots the manager's registry into each spawn via
+    // broadcast_fs_slots).  Oracular entries bypass the registry;
+    // observer nodes with no consensus provisioning fast-path through
+    // the empty-input branch of the helper.
+    register_consensus_bundle_roots(
+        &runtime_manager,
+        &conf.storage.file_io_provisioning,
+        &data_dir_for_bundle_staging,
+    )
+    .await?;
 
     // Reporting runtime
     let reporting_runtime = {
@@ -295,7 +537,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 .map_err(|e| CasperError::Other(format!("Failed to get rspace stores: {}", e)))?;
             reporting_casper::rho_reporter(
                 &rspace_stores,
-                &block_dag_storage,
                 runtime_manager.replay_lock(),
                 rholang::rust::interpreter::external_services::ExternalServices::noop(),
             )
@@ -324,69 +565,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         }
     };
 
-    // Block processor queue - mpsc channel connecting producers (CasperLaunch, Running)
-    // to consumer (BlockProcessorInstance)
-    let block_processor_queue_max_pending = block_processor_queue_max_pending();
-    let (block_processor_queue_tx, block_processor_queue_rx) =
-        mpsc::channel::<BlockQueueItem>(block_processor_queue_max_pending);
-
-    // Queue depth is where memory pressure moves when parallel drain is
-    // bounded, so it must be observable alongside block-processing.active.
-    // Sampled from the channel's own permit accounting via a WeakSender so
-    // the sampler can never hold the queue open past the last real producer.
-    metrics::gauge!(
-        BLOCK_PROCESSING_QUEUE_PENDING_METRIC,
-        "source" => BLOCK_PROCESSOR_METRICS_SOURCE
-    )
-    .set(0.0);
-    let block_processor_queue_watch = block_processor_queue_tx.downgrade();
-
-    // Block processing state - set of items currently in processing.
-    // Sampled next to the queue depth: a marker that is neither queued nor
-    // processing is leaked, and leaks wedge the node at the in-flight cap.
-    let block_processor_state_ref = Arc::new(InFlightBlocks::new());
-    let block_processor_state_watch = Arc::downgrade(&block_processor_state_ref);
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            interval.tick().await;
-            let Some(queue_tx) = block_processor_queue_watch.upgrade() else {
-                break;
-            };
-            let pending = queue_tx.max_capacity().saturating_sub(queue_tx.capacity());
-            metrics::gauge!(
-                BLOCK_PROCESSING_QUEUE_PENDING_METRIC,
-                "source" => BLOCK_PROCESSOR_METRICS_SOURCE
-            )
-            .set(pending as f64);
-            if let Some(in_flight) = block_processor_state_watch.upgrade() {
-                metrics::gauge!(
-                    BLOCK_PROCESSING_IN_FLIGHT_METRIC,
-                    "source" => BLOCK_PROCESSOR_METRICS_SOURCE
-                )
-                .set(in_flight.len() as f64);
-                let now = std::time::Instant::now();
-                let oldest = in_flight.oldest(now);
-                metrics::gauge!(
-                    BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC,
-                    "source" => BLOCK_PROCESSOR_METRICS_SOURCE
-                )
-                .set(oldest.as_ref().map_or(0.0, |(_, age)| age.as_secs_f64()));
-                if let Some((hash, age)) = oldest {
-                    if age > IN_FLIGHT_MARKER_MAX_WARN_AGE {
-                        warn!(
-                            block = %PrettyPrinter::build_string_bytes(&hash),
-                            age_secs = age.as_secs(),
-                            in_flight = in_flight.len(),
-                            "in-flight block marker is older than the warning age"
-                        );
-                    }
-                }
-            }
-        }
-    });
-
     // Read RPConf once for use in multiple places
     let rp_conf = rp_conf_cell
         .read()
@@ -394,9 +572,9 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
     // Runtime state requester: fetches rspace roots named as missing while the
     // node runs — the state a settled-history admission arrives without, and
-    // the state a deferred replay is waiting on. The processor names roots on
-    // `fetch_tx`; Running routes incoming StoreItemsMessage chunks to
-    // `items_tx`.
+    // the state a deferred replay is waiting on. Block ingest names roots on
+    // `fetch_tx` and hears each fetch's outcome on `results`; Running routes
+    // incoming StoreItemsMessage chunks to `items_tx`.
     let state_requester_handles = {
         let has_root_rm = runtime_manager.clone();
         let has_root: casper::rust::engine::lfs_horizon_requester::HasRootFn =
@@ -409,17 +587,17 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         )
     };
 
-    // Block processor
-    let block_processor = casper::rust::blocks::block_processor::new_block_processor(
-        block_store.clone(),
-        casper_buffer_storage.clone(),
-        block_dag_storage.clone(),
-        block_retriever.clone(),
-        transport_layer.clone(),
-        rp_connections.clone(),
-        rp_conf.clone(),
-        Some(state_requester_handles.fetch_tx.clone()),
-    );
+    let (ingest, ingest_tasks) = block_ingest::spawn(IngestSetup {
+        block_store: block_store.clone(),
+        dag: block_dag_storage.clone(),
+        transport: transport_layer.clone(),
+        connections: rp_connections.clone(),
+        conf: rp_conf.clone(),
+        validation_width,
+        max_number_of_parents: conf.casper.max_number_of_parents,
+        state_root_fetch_tx: Some(state_requester_handles.fetch_tx.clone()),
+        state_root_results: Some(state_requester_handles.results),
+    })?;
 
     // Proposer instance
     let validator_identity_opt = {
@@ -455,7 +633,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             block_store.clone(),
             deploy_storage_arc.clone(),
             rejected_deploy_buffer_arc.clone(),
-            block_retriever.clone(),
             transport_layer.clone(),
             rp_connections.clone(),
             rp_conf.clone(),
@@ -563,12 +740,10 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
     let casper_launch = {
         // Determine which propose function to use based on autopropose config
-        let propose_f_for_launch = if conf.autopropose {
-            trigger_propose_f_opt.clone()
-        } else {
-            None
-        };
-
+        // Startup-propose on direct-to-Running path was tied to the former
+        // `connect_to_existing_network`; removed in #1059 as part of the
+        // unified Initializing resume. Validators still propose at their
+        // regular heartbeat cadence once Running.
         info!(
             autopropose = conf.autopropose,
             heartbeat = conf.casper.heartbeat_conf.enabled,
@@ -583,20 +758,16 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             rp_connections.clone(),
             last_approved_block,
             event_publisher.clone(),
-            block_retriever.clone(),
             Arc::new(engine_cell.clone()),
             block_store.clone(),
             block_dag_storage.clone(),
             deploy_storage,
             rejected_deploy_buffer_arc.clone(),
-            casper_buffer_storage.clone(),
             rspace_state_manager,
             Arc::new(runtime_manager.clone()),
             estimator.clone(),
             // Explicit parameters
-            block_processor_queue_tx.clone(),
-            block_processor_state_ref.clone(),
-            propose_f_for_launch,
+            ingest,
             conf.casper.clone(),
             !conf.protocol_client.disable_lfs,
             conf.protocol_server.disable_state_exporter,
@@ -605,21 +776,21 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             {
                 // Project the merged FileIoProvisioning into the
                 // bundle format `fs_generator` consumes.  Combines
-                // config-file entries with (future ops-9) CLI
-                // `--*-static-*` flags and runs boot-time invariants
-                // (canonicity, mode whitelist, PB-M-16 bucket
-                // disjointness, forbidden chars, cross-source name
-                // conflicts).  On validation failure we panic: an
-                // invalid provisioning would yield a genesis block
-                // no validator could accept, so failing loud at boot
-                // is the correct outcome.  CLI vecs are empty until
-                // ops-9 lands the clap wire-up.
+                // config-file entries with CLI `--*-static-*` flags
+                // (threaded through `conf.storage.cli_*` by
+                // `ConfigMapper::override_config_values`) and runs
+                // boot-time invariants (canonicity, mode whitelist,
+                // PB-M-16 bucket disjointness, forbidden chars,
+                // cross-source name conflicts).  On validation
+                // failure we panic: an invalid provisioning would
+                // yield a genesis block no validator could accept,
+                // so failing loud at boot is the correct outcome.
                 let merged = crate::rust::configuration::provisioning_merge::merge_and_validate(
                     conf.storage.file_io_provisioning.clone(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
+                    conf.storage.cli_oracle_static_files.clone(),
+                    conf.storage.cli_oracle_static_dirs.clone(),
+                    conf.storage.cli_consensus_static_files.clone(),
+                    conf.storage.cli_consensus_static_dirs.clone(),
                 )
                 .unwrap_or_else(|errs| {
                     let msg = errs
@@ -659,7 +830,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         block_store.clone(),
         oracle,
         conf.dev_mode,
-    );
+    )
+    .with_report_cache_retention(conf.api_server.report_cache_retention_blocks);
 
     // API Servers - gRPC services for REPL, Deploy, Propose, and LSP
     let is_node_read_only = conf.casper.validator_private_key.is_none();
@@ -720,7 +892,23 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         });
 
         tokio::spawn(async move {
-            while let Some(event) = event_stream.next().await {
+            while let Some(item) = event_stream.next().await {
+                let event = match item {
+                    Ok(event) => event,
+                    Err(lagged) => {
+                        metrics::counter!(
+                            "node.event_consumer.lagged_events",
+                            "source" => "node"
+                        )
+                        .increment(lagged.0);
+                        tracing::warn!(
+                            skipped = lagged.0,
+                            "Node event consumer lagged; the skipped events are lost to \
+                             report prewarm and readiness tracking"
+                        );
+                        continue;
+                    }
+                };
                 match &event {
                     F1r3flyEvent::BlockFinalised(finalized) if prewarm_enabled => {
                         if report_tx.send(finalized.clone()).await.is_err() {
@@ -766,7 +954,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         transfer_unforgeable.clone(),
         conf.protocol_server.network_id.clone(),
         conf.casper.shard_name.clone(),
-        conf.casper.min_phlo_price,
+        conf.casper.min_phlo_price.clone(),
         conf.casper.genesis_block_data.native_token_name.clone(),
         conf.casper.genesis_block_data.native_token_symbol.clone(),
         conf.casper.genesis_block_data.native_token_decimals,
@@ -786,49 +974,23 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     // at runtime rather than being captured at route creation time
     let reporting_routes = ReportingRoutes::create_router();
 
-    // Casper Loop - maintenance loop body for Casper consensus
-    // This closure is executed repeatedly to:
-    // 1. Fetch missing block dependencies from CasperBuffer
-    // 2. Maintain requested blocks with timeout management
-    // 3. Sleep for the configured interval
+    // Casper loop: until casper runs, lets the engine act on each tick.
     let casper_loop = {
-        trace!("Casper loop tick");
         let engine_cell_clone = engine_cell.clone();
-        let block_retriever_clone = block_retriever.clone();
-        let requested_blocks_timeout = conf.casper.requested_blocks_timeout;
         let casper_loop_interval = conf.casper.casper_loop_interval;
 
         move || -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> {
             let engine_cell = engine_cell_clone.clone();
-            let block_retriever = block_retriever_clone.clone();
 
             Box::pin(async move {
-                // Read the engine from engine cell
                 let engine = engine_cell.get().await;
-
-                // Fetch dependencies from CasperBuffer
-                if let Some(casper) = engine.with_casper() {
-                    trace!("Fetching Casper dependencies");
-                    if let Err(err) = casper.fetch_dependencies().await {
-                        tracing::warn!("Casper dependency fetch failed: {}", err);
-                    }
-                } else {
-                    warn!("Casper engine present but Casper not initialized yet");
+                if engine.with_casper().is_none() {
+                    trace!("Casper not initialized yet; no-casper tick");
                     if let Err(err) = engine.on_no_casper_tick().await {
                         warn!("no-casper tick failed: {}", err);
                     }
                 }
-
-                // Maintain RequestedBlocks for Casper
-                if let Err(err) = block_retriever.request_all(requested_blocks_timeout).await {
-                    tracing::warn!("RequestedBlocks maintenance failed: {}", err);
-                } else {
-                    trace!(timeout = ?requested_blocks_timeout, "RequestedBlocks maintenance executed");
-                }
-
-                // Sleep for the configured interval
                 tokio::time::sleep(casper_loop_interval).await;
-
                 Ok::<(), CasperError>(())
             })
         }
@@ -927,7 +1089,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             conf.dev_mode,
             conf.protocol_server.network_id.clone(),
             conf.casper.shard_name.clone(),
-            conf.casper.min_phlo_price,
+            conf.casper.min_phlo_price.clone(),
             conf.casper.genesis_block_data.native_token_name.clone(),
             conf.casper.genesis_block_data.native_token_symbol.clone(),
             conf.casper.genesis_block_data.native_token_decimals,
@@ -1001,47 +1163,85 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                         return Ok(());
                     };
                     let gc_casper_shard_conf = gc_casper.casper_shard_conf().clone();
+                    let gc_effective_anchor = gc_casper.effective_anchor_handle();
 
-                    // Run GC. `collect_garbage` awaits `floor_of_block`, so on the
-                    // common multi-thread runtime the whole pass (including the
-                    // blocking LMDB reads in `get_representation`/`block_store`)
-                    // runs inside `block_in_place`, driven via a nested `block_on`
-                    // — the standard pattern for calling async code from a
-                    // blocking context without starving other workers.
+                    loop {
+                        let progress = match tokio::runtime::Handle::try_current() {
+                            Ok(rt_handle)
+                                if rt_handle.runtime_flavor()
+                                    == tokio::runtime::RuntimeFlavor::MultiThread =>
+                            {
+                                tokio::task::block_in_place(|| {
+                                    let mut gc_state = gc_state.blocking_lock();
+                                    rt_handle
+                                        .block_on(mergeable_channels_gc::collect_garbage(
+                                            &mut gc_state,
+                                            &gc_block_dag_storage,
+                                            &gc_block_store,
+                                            &gc_runtime_manager,
+                                            &gc_casper_shard_conf,
+                                            &gc_effective_anchor,
+                                        ))
+                                        .map_err(|e| CasperError::RuntimeError(e.to_string()))
+                                })?
+                            }
+                            _ => {
+                                let mut gc_state = gc_state.lock().await;
+                                mergeable_channels_gc::collect_garbage(
+                                    &mut gc_state,
+                                    &gc_block_dag_storage,
+                                    &gc_block_store,
+                                    &gc_runtime_manager,
+                                    &gc_casper_shard_conf,
+                                    &gc_effective_anchor,
+                                )
+                                .await
+                                .map_err(|e| CasperError::RuntimeError(e.to_string()))?
+                            }
+                        };
+                        match progress {
+                            mergeable_channels_gc::GcProgress::Complete { .. } => break,
+                            mergeable_channels_gc::GcProgress::Yielded { .. } => {
+                                tokio::task::yield_now().await
+                            }
+                        }
+                    }
+
+                    // Run one rspace-history mark-and-sweep pass per tick,
+                    // once the mergeable-channel sweep has completed. Default
+                    // off; a no-op when `enable_history_pruning = false`. The
+                    // pass synchronously walks every retained root's trie
+                    // and iterates the LMDB env in pages — runs inside
+                    // `block_in_place` on multi-thread runtimes for the same
+                    // reason the GC above does.
+                    let history_gc_dag = gc_block_dag_storage
+                        .get_representation()
+                        .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                    let history_gc_conf = gc_casper_shard_conf.clone();
+                    let history_gc_runtime = gc_runtime_manager.clone();
+                    let history_gc_block_store = gc_block_store.clone();
                     match tokio::runtime::Handle::try_current() {
                         Ok(rt_handle)
                             if rt_handle.runtime_flavor()
                                 == tokio::runtime::RuntimeFlavor::MultiThread =>
                         {
-                            tokio::task::block_in_place(move || {
-                                let dag = gc_block_dag_storage
-                                    .get_representation()
-                                    .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
-                                let mut gc_state = gc_state.blocking_lock();
-                                rt_handle
-                                    .block_on(mergeable_channels_gc::collect_garbage(
-                                        &mut gc_state,
-                                        &dag,
-                                        &gc_block_store,
-                                        &gc_runtime_manager,
-                                        &gc_casper_shard_conf,
-                                    ))
-                                    .map_err(|e| CasperError::RuntimeError(e.to_string()))
+                            tokio::task::block_in_place(|| {
+                                casper::rust::util::rspace_history_gc::prune_history_once(
+                                    &history_gc_dag,
+                                    &history_gc_block_store,
+                                    &history_gc_runtime,
+                                    &history_gc_conf,
+                                )
+                                .map_err(|e| CasperError::RuntimeError(e.to_string()))
                             })?;
                         }
                         _ => {
-                            let dag = gc_block_dag_storage
-                                .get_representation()
-                                .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
-                            let mut gc_state = gc_state.lock().await;
-                            mergeable_channels_gc::collect_garbage(
-                                &mut gc_state,
-                                &dag,
-                                &gc_block_store,
-                                &gc_runtime_manager,
-                                &gc_casper_shard_conf,
+                            casper::rust::util::rspace_history_gc::prune_history_once(
+                                &history_gc_dag,
+                                &history_gc_block_store,
+                                &history_gc_runtime,
+                                &history_gc_conf,
                             )
-                            .await
                             .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
                         }
                     }
@@ -1071,10 +1271,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         proposer_queue_pending,
         proposer_queue_max_pending,
         proposer_state_ref_opt_for_return,
-        block_processor,
-        block_processor_state_ref,
-        block_processor_queue_tx,
-        block_processor_queue_rx,
+        ingest_tasks,
         trigger_propose_f_opt_for_return,
         Arc::new(block_report_api_for_return),
         block_store,
@@ -1166,7 +1363,7 @@ fn build_deploy_transfers(
                 .map(|t| TransferEvent {
                     from_addr: t.from_addr,
                     to_addr: t.to_addr,
-                    amount: t.amount,
+                    amount: t.amount_raw,
                     success: t.success,
                 })
                 .collect(),
@@ -1188,11 +1385,11 @@ mod tests {
         assert!(!block_report_prewarm_enabled(false, false));
     }
 
-    fn transfer(from: &str, to: &str, amount: i64) -> TransferInfo {
+    fn transfer(from: &str, to: &str, amount: impl ToString) -> TransferInfo {
         TransferInfo {
             from_addr: from.to_string(),
             to_addr: to.to_string(),
-            amount,
+            amount_raw: amount.to_string(),
             success: true,
             fail_reason: String::new(),
         }
@@ -1210,7 +1407,7 @@ mod tests {
         let entry = &out[0];
         assert_eq!(entry.deploy_id, "deploy_with");
         assert_eq!(entry.transfers.len(), 1);
-        assert_eq!(entry.transfers[0].amount, 10);
+        assert_eq!(entry.transfers[0].amount, "10");
     }
 
     #[test]
@@ -1239,7 +1436,331 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].transfers.len(), 2);
-        assert_eq!(out[0].transfers[0].amount, 1);
-        assert_eq!(out[0].transfers[1].amount, 2);
+        assert_eq!(out[0].transfers[0].amount, "1");
+        assert_eq!(out[0].transfers[1].amount, "2");
+    }
+
+    #[test]
+    fn websocket_transfers_carry_exact_amounts() {
+        let above_uint256 = (num_bigint::BigInt::from(1u8) << 256usize).to_string();
+        for amount in ["0", "-5", "10000000000000000000", above_uint256.as_str()] {
+            let mut transfer = transfer("sender", "recipient", amount);
+            transfer.success = false;
+            let out = build_deploy_transfers(std::collections::HashMap::from([(
+                "deploy".to_string(),
+                vec![transfer],
+            )]));
+            let json = serde_json::to_value(&out[0].transfers[0]).unwrap();
+            assert_eq!(json["amount"], amount);
+            assert_eq!(json["success"], false);
+        }
+    }
+
+    // ---------- register_consensus_bundle_roots_core ----------
+
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use casper::rust::genesis::contracts::fs_genesis::BUNDLE_ROOT_PREFIX;
+    use rholang::rust::interpreter::io::path::identity::RootIdentityRegistry;
+    use tempfile::TempDir;
+
+    use super::register_consensus_bundle_roots_core;
+    use crate::rust::configuration::file_io_provisioning::{
+        FileIoProvisioning, StaticDirEntry, StaticFileEntry,
+    };
+
+    fn empty_provisioning() -> FileIoProvisioning {
+        FileIoProvisioning {
+            oracle_static_files: HashMap::new(),
+            oracle_static_dirs: HashMap::new(),
+            consensus_static_files: HashMap::new(),
+            consensus_static_dirs: HashMap::new(),
+        }
+    }
+
+    fn write_bytes(path: &std::path::Path, contents: &[u8]) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, contents).unwrap();
+    }
+
+    /// Empty provisioning -> no registrations, no staging dir created.
+    #[test]
+    fn register_consensus_bundle_roots_core_empty_input_is_noop() {
+        let data_dir = TempDir::new().unwrap();
+        let registry = RootIdentityRegistry::new();
+        let mut allowed = Vec::new();
+        let cfg = empty_provisioning();
+
+        register_consensus_bundle_roots_core(&registry, &mut allowed, &cfg, data_dir.path())
+            .expect("empty input should succeed");
+
+        assert!(allowed.is_empty(), "no allowed roots recorded");
+        assert!(
+            !data_dir.path().join("fs_bundle_staging").exists(),
+            "no staging dir created on empty input"
+        );
+    }
+
+    /// Only oracular entries present -> no consensus registrations,
+    /// no staging dir created.  Oracular entries bypass this path.
+    #[test]
+    fn register_consensus_bundle_roots_core_skips_oracular() {
+        let data_dir = TempDir::new().unwrap();
+        let registry = RootIdentityRegistry::new();
+        let mut allowed = Vec::new();
+        let mut cfg = empty_provisioning();
+        cfg.oracle_static_files
+            .insert("cfg".into(), StaticFileEntry {
+                path: PathBuf::from("/etc/cfg"),
+                mode: "r".into(),
+            });
+        cfg.oracle_static_dirs
+            .insert("share".into(), StaticDirEntry {
+                path: PathBuf::from("/srv/share"),
+                mode: "r".into(),
+            });
+
+        register_consensus_bundle_roots_core(&registry, &mut allowed, &cfg, data_dir.path())
+            .expect("oracular-only input should succeed");
+
+        assert!(
+            allowed.is_empty(),
+            "oracular entries don't produce allowed roots"
+        );
+        assert!(
+            !data_dir.path().join("fs_bundle_staging").exists(),
+            "no staging dir created when only oracular entries present"
+        );
+    }
+
+    /// One bare consensus file -> staging dir created, file copied,
+    /// registry has `/@bundle -> <staging>` entry, allowed_roots
+    /// contains the staging dir.
+    #[test]
+    fn register_consensus_bundle_roots_core_stages_bare_file() {
+        let data_dir = TempDir::new().unwrap();
+        let source_dir = TempDir::new().unwrap();
+        let source = source_dir.path().join("logfile.src");
+        write_bytes(&source, b"hello consensus\n");
+
+        let registry = RootIdentityRegistry::new();
+        let mut allowed = Vec::new();
+        let mut cfg = empty_provisioning();
+        cfg.consensus_static_files
+            .insert("logfile".into(), StaticFileEntry {
+                path: source.clone(),
+                mode: "r+".into(),
+            });
+
+        register_consensus_bundle_roots_core(&registry, &mut allowed, &cfg, data_dir.path())
+            .expect("bare consensus file should succeed");
+
+        let staging_root = data_dir.path().join("fs_bundle_staging");
+        let staged_file = staging_root.join("logfile");
+        assert!(staging_root.is_dir(), "staging root created");
+        assert!(staged_file.is_file(), "file staged under logical name");
+        assert_eq!(
+            std::fs::read(&staged_file).unwrap(),
+            b"hello consensus\n",
+            "staged bytes match source"
+        );
+        assert_eq!(
+            allowed,
+            vec![staging_root.clone()],
+            "staging dir in allowed roots"
+        );
+        assert!(
+            registry.get(&PathBuf::from(BUNDLE_ROOT_PREFIX)).is_some(),
+            "/@bundle registered"
+        );
+    }
+
+    /// Nested consensus file `cfg/theme.json` -> `/@bundle/cfg` entry
+    /// in registry, staging at `<staging>/cfg/theme.json`, allowed
+    /// root is `<staging>/cfg` (not `<staging>` — nested files
+    /// register their parent segment).
+    #[test]
+    fn register_consensus_bundle_roots_core_stages_nested_file() {
+        let data_dir = TempDir::new().unwrap();
+        let source_dir = TempDir::new().unwrap();
+        let source = source_dir.path().join("theme.src");
+        write_bytes(&source, b"{\"theme\": \"dark\"}");
+
+        let registry = RootIdentityRegistry::new();
+        let mut allowed = Vec::new();
+        let mut cfg = empty_provisioning();
+        cfg.consensus_static_files
+            .insert("cfg/theme.json".into(), StaticFileEntry {
+                path: source,
+                mode: "r".into(),
+            });
+
+        register_consensus_bundle_roots_core(&registry, &mut allowed, &cfg, data_dir.path())
+            .expect("nested consensus file should succeed");
+
+        let staging_root = data_dir.path().join("fs_bundle_staging");
+        let staged_file = staging_root.join("cfg").join("theme.json");
+        assert!(staged_file.is_file(), "nested file staged at logical path");
+        assert_eq!(
+            std::fs::read(&staged_file).unwrap(),
+            b"{\"theme\": \"dark\"}",
+            "staged bytes match source"
+        );
+        assert_eq!(
+            allowed,
+            vec![staging_root.join("cfg")],
+            "allowed root is the parent segment, not the root staging dir"
+        );
+        assert!(
+            registry
+                .get(&PathBuf::from(format!("{BUNDLE_ROOT_PREFIX}/cfg")))
+                .is_some(),
+            "/@bundle/cfg registered"
+        );
+    }
+
+    /// A consensus dir entry registers `/@bundle/<logical>` directly
+    /// to the operator path, with no staging and no copy.
+    #[test]
+    fn register_consensus_bundle_roots_core_dir_entry_no_staging() {
+        let data_dir = TempDir::new().unwrap();
+        let source_dir = TempDir::new().unwrap();
+        // Dir entries point at an EXISTING directory on the operator's
+        // host; capture needs it to be a real dir.
+        write_bytes(&source_dir.path().join("placeholder"), b"x");
+
+        let registry = RootIdentityRegistry::new();
+        let mut allowed = Vec::new();
+        let mut cfg = empty_provisioning();
+        cfg.consensus_static_dirs
+            .insert("shared".into(), StaticDirEntry {
+                path: source_dir.path().to_path_buf(),
+                mode: "r+".into(),
+            });
+
+        register_consensus_bundle_roots_core(&registry, &mut allowed, &cfg, data_dir.path())
+            .expect("consensus dir should succeed");
+
+        assert!(
+            !data_dir.path().join("fs_bundle_staging").exists(),
+            "dir entries don't create a staging dir"
+        );
+        assert_eq!(
+            allowed,
+            vec![source_dir.path().to_path_buf()],
+            "operator-declared dir path in allowed roots"
+        );
+        assert!(
+            registry
+                .get(&PathBuf::from(format!("{BUNDLE_ROOT_PREFIX}/shared")))
+                .is_some(),
+            "/@bundle/shared registered"
+        );
+    }
+
+    /// Multiple files sharing a parent segment collapse to one
+    /// registration via the BTreeMap dedupe.  Two files under
+    /// `cfg/` produce ONE `/@bundle/cfg` registration + ONE allowed
+    /// root; both files are staged.
+    #[test]
+    fn register_consensus_bundle_roots_core_shared_parent_dedupes() {
+        let data_dir = TempDir::new().unwrap();
+        let source_dir = TempDir::new().unwrap();
+        let src_a = source_dir.path().join("a.src");
+        let src_b = source_dir.path().join("b.src");
+        write_bytes(&src_a, b"AAAA");
+        write_bytes(&src_b, b"BBBB");
+
+        let registry = RootIdentityRegistry::new();
+        let mut allowed = Vec::new();
+        let mut cfg = empty_provisioning();
+        cfg.consensus_static_files
+            .insert("cfg/a.json".into(), StaticFileEntry {
+                path: src_a,
+                mode: "r".into(),
+            });
+        cfg.consensus_static_files
+            .insert("cfg/b.json".into(), StaticFileEntry {
+                path: src_b,
+                mode: "r".into(),
+            });
+
+        register_consensus_bundle_roots_core(&registry, &mut allowed, &cfg, data_dir.path())
+            .expect("shared-parent files should succeed");
+
+        let staging_root = data_dir.path().join("fs_bundle_staging");
+        assert!(staging_root.join("cfg").join("a.json").is_file());
+        assert!(staging_root.join("cfg").join("b.json").is_file());
+        assert_eq!(
+            allowed,
+            vec![staging_root.join("cfg")],
+            "shared parent collapses to one allowed root"
+        );
+    }
+
+    /// Missing source file surfaces as a specific error naming the
+    /// logical name and source path.  Boot MUST refuse to continue
+    /// rather than silently drop the entry.
+    #[test]
+    fn register_consensus_bundle_roots_core_missing_source_errors() {
+        let data_dir = TempDir::new().unwrap();
+        let registry = RootIdentityRegistry::new();
+        let mut allowed = Vec::new();
+        let mut cfg = empty_provisioning();
+        cfg.consensus_static_files
+            .insert("logfile".into(), StaticFileEntry {
+                path: PathBuf::from("/nonexistent/path/that/does/not/exist"),
+                mode: "r".into(),
+            });
+
+        let err =
+            register_consensus_bundle_roots_core(&registry, &mut allowed, &cfg, data_dir.path())
+                .expect_err("missing source should fail");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("logfile") || msg.contains("/nonexistent/path"),
+            "error should name the offending entry; got {msg:?}"
+        );
+    }
+
+    /// After a successful stage, a leftover `.partial` sidecar from a
+    /// prior crashed boot does NOT prevent the current boot from
+    /// succeeding — `std::fs::copy` overwrites.  Final state is clean
+    /// (`.partial` renamed away, final file holds new bytes).
+    #[test]
+    fn register_consensus_bundle_roots_core_overwrites_leftover_partial() {
+        let data_dir = TempDir::new().unwrap();
+        let staging_root = data_dir.path().join("fs_bundle_staging");
+        std::fs::create_dir_all(&staging_root).unwrap();
+        std::fs::write(staging_root.join("logfile.partial"), b"stale leftover").unwrap();
+
+        let source_dir = TempDir::new().unwrap();
+        let source = source_dir.path().join("logfile.src");
+        write_bytes(&source, b"fresh content");
+
+        let registry = RootIdentityRegistry::new();
+        let mut allowed = Vec::new();
+        let mut cfg = empty_provisioning();
+        cfg.consensus_static_files
+            .insert("logfile".into(), StaticFileEntry {
+                path: source,
+                mode: "r".into(),
+            });
+
+        register_consensus_bundle_roots_core(&registry, &mut allowed, &cfg, data_dir.path())
+            .expect("overwrite leftover .partial");
+
+        assert_eq!(
+            std::fs::read(staging_root.join("logfile")).unwrap(),
+            b"fresh content",
+            "final file has new source bytes"
+        );
+        assert!(
+            !staging_root.join("logfile.partial").exists(),
+            ".partial renamed away"
+        );
     }
 }

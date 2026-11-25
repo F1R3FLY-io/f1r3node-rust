@@ -28,6 +28,8 @@ use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresenta
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
+use shared::rust::blocking::in_blocking;
 use shared::rust::dag::observation_work::{NoopWork, WorkKind, WorkMeter};
 use shared::rust::shared::list_ops::ListOps;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -42,7 +44,7 @@ use crate::rust::util::proto_util;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForkChoice {
     pub tips: Vec<BlockHash>,
-    pub scores: HashMap<BlockHash, i64>,
+    pub scores: HashMap<BlockHash, BigInt>,
     pub lca: BlockHash,
 }
 
@@ -276,7 +278,7 @@ impl Estimator {
         block_dag: &mut KeyValueDagRepresentation,
         latest_messages_hashes: &HashMap<Validator, BlockHash>,
         lowest_common_ancestor: &BlockHash,
-    ) -> Result<HashMap<BlockHash, i64>, KvStoreError> {
+    ) -> Result<HashMap<BlockHash, BigInt>, KvStoreError> {
         fn hash_parents<W: WorkMeter>(
             meter: &W,
             hash: &BlockHash,
@@ -308,12 +310,12 @@ impl Estimator {
 
         async fn add_validator_weight_down_supporting_chain<W: WorkMeter>(
             meter: &W,
-            score_map: HashMap<BlockHash, i64>,
+            score_map: HashMap<BlockHash, BigInt>,
             validator: &Validator,
             latest_block_hash: &BlockHash,
             block_dag: &mut KeyValueDagRepresentation,
             lowest_common_ancestor: &BlockHash,
-        ) -> Result<HashMap<BlockHash, i64>, KvStoreError> {
+        ) -> Result<HashMap<BlockHash, BigInt>, KvStoreError> {
             meter.lookup()?;
             let lca_block_num = block_dag
                 .lookup_unsafe(lowest_common_ancestor)?
@@ -324,47 +326,40 @@ impl Estimator {
             // Saves one clone per node and one Vec allocation. Preallocate
             // visited/result to a reasonable capacity for typical fork-choice
             // BFS sizes (≤ ~few hundred blocks).
-            let mut result = score_map;
-            let mut queue: VecDeque<BlockHash> = VecDeque::from(vec![latest_block_hash.clone()]);
-            let mut visited: HashSet<BlockHash> = HashSet::with_capacity(64);
+            in_blocking(|| {
+                let mut result = score_map;
+                let mut queue: VecDeque<BlockHash> =
+                    VecDeque::from(vec![latest_block_hash.clone()]);
+                let mut visited: HashSet<BlockHash> = HashSet::with_capacity(64);
 
-            while let Some(hash) = queue.pop_front() {
-                meter.step(WorkKind::Traversal)?;
-                if !visited.insert(hash.clone()) {
-                    continue;
-                }
-                meter.allocate(1, std::mem::size_of::<BlockHash>())?;
-                let validator_weight = proto_util::weight_from_validator_by_dag_metered(
-                    meter, block_dag, &hash, validator,
-                )?;
-                // B3: fail loudly on score overflow rather than wrapping. Reachable
-                // only if the cumulative bonded weight on a block exceeds i64::MAX —
-                // a supply-cap violation (total bonded stake ≤ i64::MAX by construction),
-                // so this can only ever reject an already-invalid state, never a valid one.
-                if !result.contains_key(&hash) {
-                    meter.allocate(1, std::mem::size_of::<(BlockHash, i64)>())?;
-                }
-                let entry = result.entry(hash.clone()).or_insert(0);
-                *entry = entry.checked_add(validator_weight).ok_or_else(|| {
-                    KvStoreError::InvalidArgument(
-                        "fork-choice score overflow: cumulative validator weight exceeds i64 \
-                         (total bonded stake must be ≤ i64::MAX by the supply cap)"
-                            .to_string(),
-                    )
-                })?;
-                for parent in hash_parents(meter, &hash, lca_block_num, block_dag)? {
-                    if !visited.contains(&parent) {
-                        meter.step(WorkKind::Traversal)?;
-                        queue.push_back(parent);
+                while let Some(hash) = queue.pop_front() {
+                    meter.step(WorkKind::Traversal)?;
+                    if !visited.insert(hash.clone()) {
+                        continue;
+                    }
+                    meter.allocate(1, std::mem::size_of::<BlockHash>())?;
+                    let validator_weight = proto_util::weight_from_validator_by_dag_metered(
+                        meter, block_dag, &hash, validator,
+                    )?;
+                    if !result.contains_key(&hash) {
+                        meter.allocate(1, std::mem::size_of::<(BlockHash, BigInt)>())?;
+                    }
+                    let entry = result.entry(hash.clone()).or_default();
+                    *entry += validator_weight;
+                    for parent in hash_parents(meter, &hash, lca_block_num, block_dag)? {
+                        if !visited.contains(&parent) {
+                            meter.step(WorkKind::Traversal)?;
+                            queue.push_back(parent);
+                        }
                     }
                 }
-            }
 
-            Ok(result)
+                Ok(result)
+            })
         }
 
         // TODO: Scala message - Since map scores are additive it should be possible to do this in parallel
-        let mut scores_map: HashMap<BlockHash, i64> = HashMap::new();
+        let mut scores_map: HashMap<BlockHash, BigInt> = HashMap::new();
         for (validator, latest_block_hash) in latest_messages_hashes.iter() {
             scores_map = add_validator_weight_down_supporting_chain(
                 meter,
@@ -411,32 +406,34 @@ impl Estimator {
         lca: BlockHash,
         latest_messages_hashes: &HashMap<Validator, BlockHash>,
         block_dag: &KeyValueDagRepresentation,
-        scores: &HashMap<BlockHash, i64>,
+        scores: &HashMap<BlockHash, BigInt>,
     ) -> Result<Vec<BlockHash>, KvStoreError> {
         fn scored_main_children<W: WorkMeter>(
             meter: &W,
             block: &BlockHash,
             block_dag: &KeyValueDagRepresentation,
-            scores: &HashMap<BlockHash, i64>,
+            scores: &HashMap<BlockHash, BigInt>,
         ) -> Result<Vec<BlockHash>, KvStoreError> {
             meter.lookup()?;
-            match block_dag.children(block) {
+            match block_dag.children(block)? {
                 Some(children_set) => {
                     meter.charge(WorkKind::Traversal, children_set.len() as u64, 0)?;
-                    Ok(children_set
-                        .iter()
-                        .filter(|child| {
-                            scores.contains_key(*child)
-                                && block_dag.main_parent(child).as_ref() == Some(block)
-                        })
-                        .cloned()
-                        .collect())
+                    let mut children = Vec::new();
+                    for child in children_set {
+                        if scores.contains_key(&child)
+                            && block_dag.main_parent(&child)?.as_ref() == Some(block)
+                        {
+                            children.push(child);
+                        }
+                    }
+                    Ok(children)
                 }
                 None => Ok(Vec::new()),
             }
         }
 
         let mut head = lca;
+        let zero_score = BigInt::from(0);
         loop {
             meter.step(WorkKind::Traversal)?;
             let mut children = scored_main_children(meter, &head, block_dag, scores)?;
@@ -445,9 +442,9 @@ impl Estimator {
             }
             meter.charge(WorkKind::Traversal, children.len() as u64, 0)?;
             children.sort_by(|a, b| {
-                let score_a = scores.get(a).copied().unwrap_or(0);
-                let score_b = scores.get(b).copied().unwrap_or(0);
-                score_b.cmp(&score_a).then_with(|| a.cmp(b))
+                let score_a = scores.get(a).unwrap_or(&zero_score);
+                let score_b = scores.get(b).unwrap_or(&zero_score);
+                score_b.cmp(score_a).then_with(|| a.cmp(b))
             });
             head = children.swap_remove(0);
         }
@@ -463,7 +460,7 @@ impl Estimator {
             .collect::<HashSet<_>>() // distinct
             .into_iter()
             .collect();
-        meter.allocate(frontier.len(), std::mem::size_of::<(i64, BlockHash)>())?;
+        meter.allocate(frontier.len(), std::mem::size_of::<(BigInt, BlockHash)>())?;
         meter.charge(WorkKind::Traversal, frontier.len() as u64, 0)?;
         let mut ranked = ListOps::sort_by_with_decreasing_order(frontier, scores);
 

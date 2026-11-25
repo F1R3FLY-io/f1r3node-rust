@@ -1,0 +1,52 @@
+{
+  "approval": {
+    "accepted_by": "jltatbeach",
+    "posted_at": "2026-10-22T21:27:54Z",
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/700#issuecomment-6351702378",
+    "comment_body_sha256": "4c03b0c8b664be542e3099578934134301c85b513776c070dea7042744fac613",
+    "comment_body_sha256_method": "sha256 of the body bytes that the GitHub API returns for the comment",
+    "revision": "56ff30370db3d1ee7b43bd33c4c26197968d30ec",
+    "tested_commit": "1200ec4a2c1b67acf8b3d0634ee5be26f0410c53"
+  },
+  "review": {
+    "ref": "docs/casper/cbc-evidence/runs/casper-claims-ledger-slug-20261022-01/report.json",
+    "sha256": "b30e641e04bfc9990059c97df7b213bdafcef905272b45484191603edfbfb1d9"
+  },
+  "previous_acceptance": {
+    "scripts/casper-soak/src/bin/check-casper-claims.rs": {
+      "ref": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json",
+      "sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831",
+      "note": "The previous evidence is the 2026-09-19 formal-gate renewal, not a change acceptance."
+    }
+  },
+  "accepted_scope": {
+    "commits": [
+      "1200ec4a2"
+    ],
+    "change": "check-casper-claims.rs uses the slug rule of the shared CbC tooling without the Cargo.toml exception. Ten Casper ledgers and their docs/cbc-evidence symlinks use that slug. The ledger bytes are unchanged.",
+    "excluded": "Node correctness, the profile claims, the multi-claim ledgers of TASK-026-6, and a live soak result."
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "d195ca6afe951e6806ccd9724a63bc5171374d3e0809196827661e2cb70bc855"
+  },
+  "claim_discharge": "pending",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "node_execution": false,
+  "phase": "pre_pr216_merge",
+  "schema_version": 1,
+  "scope": "casper-claim-audit-ledger-slug",
+  "soak": "pending",
+  "source_digests": {
+    "scripts/casper-soak/src/bin/check-casper-claims.rs": "67408ac6b96424495fd86ddb2f2a69c3ec16a9087f548aaf0c50cb1fe9c0701b"
+  },
+  "status": "accepted-change",
+  "tiers": {
+    "binding": "passed",
+    "construction": "not-applicable",
+    "refutation": "bounded-safety-pass"
+  },
+  "verified_at": "2026-10-22",
+  "waiver": null
+}

@@ -45,7 +45,6 @@ use super::system_processes::{
 };
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 use crate::rust::interpreter::external_services::ExternalServices;
-use crate::rust::interpreter::grpc_client_service::GrpcClientService;
 use crate::rust::interpreter::metrics_constants::{
     CREATE_CHECKPOINT_TIME_METRIC, CREATE_SOFT_CHECKPOINT_TIME_METRIC, EVALUATE_TIME_METRIC,
     RUNTIME_CHECKPOINT_TOTAL_METRIC, RUNTIME_METRICS_SOURCE,
@@ -206,6 +205,17 @@ pub trait RhoRuntime: HasCost {
      * This function would not change the state in the runtime
      */
     async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>>;
+
+    /**
+     * Get data as it was at `soft_checkpoint`, without reverting to it.
+     *
+     * This function would not change the state in the runtime
+     */
+    async fn get_data_at(
+        &self,
+        soft_checkpoint: &SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+        channel: &Par,
+    ) -> Vec<Datum<ListParWithRandom>>;
 
     async fn get_joins(&self, channel: Par) -> Vec<Vec<Par>>;
 
@@ -528,6 +538,9 @@ impl RhoRuntime for RhoRuntimeImpl {
         if let Some(mark) = wal_snap {
             self.fs_handles.wal.truncate_to(mark);
         }
+        // A reverted deploy must not contribute trapped-GPrivate ids to
+        // the successor deploy's sweep.
+        let _ = self.reducer.drain_trapped();
         self.reducer
             .space
             .revert_to_soft_checkpoint(soft_checkpoint)
@@ -537,6 +550,39 @@ impl RhoRuntime for RhoRuntimeImpl {
 
     async fn create_checkpoint(&mut self) -> Checkpoint {
         let start = Instant::now();
+        // Scope-trapped GC (opt-in). Retires rspace data rows keyed on
+        // fresh GPrivates whose binder was used only in channel
+        // positions by H1 (see
+        // `rholang::interpreter::garbage::is_scope_trapped` and
+        // docs/rholang/garbage-collection.md). Continuations and join
+        // records are NOT swept — the casper merger walks event-log
+        // consumes and needs the matching join record to resolve a
+        // hashed channel list, so dropping joins triggers a
+        // "Tuple space inconsistency found" panic in
+        // `StateChange::new`.
+        //
+        // Set `F1R3FLY_SCOPE_TRAPPED_GC=1` to enable. Default remains
+        // off pending a full-suite soak with the sweep on; the
+        // narrowing clears the known merger regression but has not
+        // been validated against the entire casper suite.
+        let drained = self.reducer.drain_trapped();
+        if std::env::var("F1R3FLY_SCOPE_TRAPPED_GC").as_deref() == Ok("1") {
+            // Rust-side callers (exploratory deploys, oracle readers, …) pin
+            // an unforgeable's id via `self.reducer.space.gc_roots()` for the
+            // lifetime of a reference they hold. The sweep must skip any such
+            // pinned id even if H1 classifies the binder as trapped, otherwise
+            // the rspace entries behind the reference disappear while the
+            // reference is still live. See docs/rholang/garbage-collection.md.
+            let roots = self.reducer.space.gc_roots();
+            let unpinned: Vec<Vec<u8>> = drained
+                .into_iter()
+                .filter(|id| !roots.is_pinned_by_key(id))
+                .collect();
+            let trapped = trapped_channels_from_ids(unpinned);
+            if !trapped.is_empty() {
+                let _ = self.reducer.space.sweep_channels(trapped).await;
+            }
+        }
         let checkpoint = self.reducer.space.create_checkpoint().await.unwrap();
         metrics::histogram!(CREATE_CHECKPOINT_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
@@ -546,6 +592,10 @@ impl RhoRuntime for RhoRuntimeImpl {
     }
 
     async fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), InterpreterError> {
+        // Drop any trapped-GPrivate ids held from a prior deploy; reset
+        // means "start fresh at this root", so carrying ids forward
+        // would be a cross-deploy leak.
+        let _ = self.reducer.drain_trapped();
         self.reducer.space.reset(root).await?;
         // PB-M-13 / Slice 28: seed FileHandleTable::next_fd from the
         // state root.  Every block boundary triggers a reset via this
@@ -606,6 +656,17 @@ impl RhoRuntime for RhoRuntimeImpl {
 
     async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
         self.reducer.space.get_data(channel).await
+    }
+
+    async fn get_data_at(
+        &self,
+        soft_checkpoint: &SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+        channel: &Par,
+    ) -> Vec<Datum<ListParWithRandom>> {
+        self.reducer
+            .space
+            .get_data_at(soft_checkpoint, channel)
+            .await
     }
 
     async fn get_joins(&self, channel: Par) -> Vec<Vec<Par>> {
@@ -924,19 +985,6 @@ fn std_system_processes() -> Vec<Definition> {
                     Box::pin(
                         async move { ctx.system_processes.clone().sys_auth_token_ops(args).await },
                     )
-                })
-            }),
-            remainder: None,
-        },
-        Definition {
-            urn: "rho:io:grpcTell".to_string(),
-            fixed_channel: FixedChannels::grpc_tell(),
-            arity: 3,
-            body_ref: BodyRefs::GRPC_TELL,
-            handler: Box::new(|ctx| {
-                Box::new(move |args| {
-                    let ctx = ctx.clone();
-                    Box::pin(async move { ctx.system_processes.clone().grpc_tell(args).await })
                 })
             }),
             remainder: None,
@@ -1273,7 +1321,6 @@ fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 /// (slice 5.33).
 fn fs_handlers_to_definitions(
     dispatcher: RhoDispatch,
-    space: RhoISpace,
     fs_handles: super::io::handle_table::FileHandleTable,
 ) -> (
     Vec<Definition>,
@@ -1287,7 +1334,6 @@ fn fs_handlers_to_definitions(
     let fs_metering: Arc<dyn Metering> = Arc::new(NoopMetering);
     let fs_processes = FsProcesses::new(
         dispatcher,
-        space,
         fs_handles,
         ConsensusMode::Consensus,
         fs_metering,
@@ -1316,7 +1362,6 @@ fn fs_handlers_to_definitions(
 }
 
 fn dispatch_table_creator(
-    space: RhoISpace,
     dispatcher: RhoDispatch,
     block_data: Arc<tokio::sync::RwLock<BlockData>>,
     invalid_blocks: InvalidBlocks,
@@ -1325,7 +1370,6 @@ fn dispatch_table_creator(
     extra_system_processes: &mut Vec<Definition>,
     openai_service: SharedOpenAIService,
     ollama_service: SharedOllamaService,
-    grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
     fs_handles: super::io::handle_table::FileHandleTable,
 ) -> RhoDispatchMap {
@@ -1351,10 +1395,9 @@ fn dispatch_table_creator(
     // The dispatcher clone threaded here is the same `RhoDispatch`
     // instance that every other Definition's handler receives
     // through its `ProcessContext`, so the fs native handlers see
-    // the same reducer / space / dispatcher as the rest of the
+    // the same reducer / dispatcher as the rest of the
     // system-processes layer.
-    let (fs_defs, fs_processes) =
-        fs_handlers_to_definitions(dispatcher.clone(), space.clone(), fs_handles);
+    let (fs_defs, fs_processes) = fs_handlers_to_definitions(dispatcher.clone(), fs_handles);
     all_processes.extend(fs_defs);
 
     // Trait-exempt fs_remove_dir handler: slice 5.43 registered the
@@ -1385,7 +1428,6 @@ fn dispatch_table_creator(
 
     for def in all_processes.iter_mut() {
         let tuple = def.to_dispatch_table(ProcessContext::create(
-            space.clone(),
             dispatcher.clone(),
             block_data.clone(),
             invalid_blocks.clone(),
@@ -1393,7 +1435,6 @@ fn dispatch_table_creator(
             urn_map.clone(),
             openai_service.clone(),
             ollama_service.clone(),
-            grpc_client_service.clone(),
             chromadb_service.clone(),
         ));
 
@@ -1472,7 +1513,6 @@ async fn setup_reducer(
     mergeable_tags: Arc<HashMap<Par, MergeType>>,
     openai_service: SharedOpenAIService,
     ollama_service: SharedOllamaService,
-    grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
     cost: _cost,
     fs_handles: super::io::handle_table::FileHandleTable,
@@ -1491,7 +1531,6 @@ async fn setup_reducer(
     let urn_map = Arc::new(urn_map);
 
     let replay_dispatch_table = dispatch_table_creator(
-        charging_rspace.clone(),
         temp_dispatcher.clone(),
         block_data_ref,
         invalid_blocks,
@@ -1500,7 +1539,6 @@ async fn setup_reducer(
         extra_system_processes,
         openai_service,
         ollama_service,
-        grpc_client_service,
         chromadb_service,
         fs_handles,
     );
@@ -1522,6 +1560,7 @@ async fn setup_reducer(
         yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
         spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
         filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        trapped_gprivates: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
     });
 
     reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
@@ -1606,7 +1645,7 @@ fn setup_maps_and_refs(
     // Wave 4 handler slice.  Register the URN here so FsGenesis
     // composition (slice 5.36) can bind `new fsRemoveDir(
     // `rho:io:fs:native:1.0.0/removeDir`)` without tripping
-    // `eval_new`'s "No value set for URN" check.  Dir.rho sends to
+    // `eval_new`'s `UnknownUrnError`.  Dir.rho sends to
     // this channel inside its `removeDir` method only fire when a
     // user-held Dir cap invokes removeDir — not during genesis
     // composition.
@@ -1625,6 +1664,22 @@ fn setup_maps_and_refs(
         // the Dir.rho call-site `fsRemoveDir!(canonRoot, joined, b,
         // cmode, *retCh)`.
         proc_defs.push((fixed_channel, 5 as Arity, None, BodyRefs::FS_REMOVE_DIR));
+    }
+
+    // Wildcard URNs (`rho:lib:*:…`, `rho:registry:1.*`, …) have no stable
+    // static binding — their resolution depends on registry state that is
+    // not known at genesis time. The `new chan(URI)` sugar compiles them to
+    // a dynamic `registry_lookup` round-trip; registering one here would
+    // short-circuit that path and silently freeze "latest" at genesis.
+    // Fail loudly instead.
+    for urn in urn_map.keys() {
+        if super::registry::versioned_urn::is_wildcard_urn(urn) {
+            panic!(
+                "wildcard URN `{urn}` registered in urn_map; wildcard URNs \
+                 must be resolved dynamically via `new chan(`URN`)` sugar \
+                 and cannot be registered as static Definitions"
+            );
+        }
     }
 
     (
@@ -1693,7 +1748,6 @@ where
     // Use services from ExternalServices
     let openai_service = external_services.openai.clone();
     let ollama_service = external_services.ollama.clone();
-    let grpc_client_service = external_services.grpc_client.clone();
     let chromadb_service = external_services.chroma.clone();
     let reducer = setup_reducer(
         charging_rspace,
@@ -1706,7 +1760,6 @@ where
         mergeable_tags,
         openai_service,
         ollama_service,
-        grpc_client_service,
         chromadb_service,
         cost,
         fs_handles,
@@ -1717,6 +1770,21 @@ where
 }
 
 // This is from Nassim Taleb's "Skin in the Game"
+/// Build the bare-`GPrivate` channel `Par` for each trapped id so the
+/// rspace sweep can retire entries keyed on it. The `Par` shape matches
+/// exactly what `eval_new` pushed into the reducer env for the same id.
+fn trapped_channels_from_ids(ids: Vec<Vec<u8>>) -> Vec<Par> {
+    use models::rhoapi::g_unforgeable::UnfInstance;
+    use models::rhoapi::{GPrivate, GUnforgeable};
+    ids.into_iter()
+        .map(|id| {
+            Par::default().with_unforgeables(vec![GUnforgeable {
+                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id })),
+            }])
+        })
+        .collect()
+}
+
 fn bootstrap_rand() -> Blake2b512Random {
     Blake2b512Random::create_from_bytes("Decentralization is based on the simple notion that it is easier to macrobull***t than microbull***t. \
          Decentralization reduces large structural asymmetries."
@@ -1946,33 +2014,17 @@ pub async fn create_runtime_from_kv_store(
 
 #[cfg(test)]
 mod tests {
-    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-
     use super::*;
     use crate::rust::interpreter::io::handler_trait::{
         EXPECTED_MIGRATED_HANDLER_COUNT, FS_HANDLERS,
     };
     use crate::rust::interpreter::io::FS_NATIVE_URN_PREFIX as FS_NATIVE_URN_FILTER_PREFIX;
-    use crate::rust::interpreter::matcher::r#match::Matcher;
 
-    async fn minimal_dispatch_and_space() -> (RhoDispatch, RhoISpace) {
-        let reducer_cell = Arc::new(std::sync::OnceLock::new());
-        let dispatcher: RhoDispatch = Arc::new(RholangAndScalaDispatcher {
+    fn minimal_dispatcher() -> RhoDispatch {
+        Arc::new(RholangAndScalaDispatcher {
             _dispatch_table: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            reducer: reducer_cell,
-        });
-
-        let mut kvm = InMemoryStoreManager::new();
-        let store = kvm.r_space_stores().await.unwrap();
-        let space = RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create(
-            store,
-            Arc::new(Box::new(Matcher)),
-        )
-        .unwrap();
-        let rspace: RhoISpace = Arc::new(Box::new(space));
-
-        (dispatcher, rspace)
+            reducer: Arc::new(std::sync::OnceLock::new()),
+        })
     }
 
     /// Registration-count regression gate: walking `FS_HANDLERS` via
@@ -1985,10 +2037,8 @@ mod tests {
     /// entries after `FsProcesses` construction.
     #[tokio::test]
     async fn fs_handlers_to_definitions_count_matches_registry() {
-        let (dispatcher, space) = minimal_dispatch_and_space().await;
         let (defs, _fs_processes) = fs_handlers_to_definitions(
-            dispatcher,
-            space,
+            minimal_dispatcher(),
             crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
         );
         assert_eq!(
@@ -2009,10 +2059,8 @@ mod tests {
     /// handler at registration — a silent dispatch regression.
     #[tokio::test]
     async fn fs_handlers_to_definitions_urns_unique() {
-        let (dispatcher, space) = minimal_dispatch_and_space().await;
         let (defs, _fs_processes) = fs_handlers_to_definitions(
-            dispatcher,
-            space,
+            minimal_dispatcher(),
             crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
         );
         let mut seen = std::collections::HashSet::new();
@@ -2039,10 +2087,8 @@ mod tests {
     /// visibility gate (slices 5.32/5.33/5.35).
     #[tokio::test]
     async fn fs_handlers_to_definitions_urns_match_filter_prefix() {
-        let (dispatcher, space) = minimal_dispatch_and_space().await;
         let (defs, _fs_processes) = fs_handlers_to_definitions(
-            dispatcher,
-            space,
+            minimal_dispatcher(),
             crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
         );
         for def in &defs {
@@ -2066,10 +2112,8 @@ mod tests {
     /// returned Vec.
     #[tokio::test]
     async fn fs_handlers_to_definitions_covers_every_registry_entry() {
-        let (dispatcher, space) = minimal_dispatch_and_space().await;
         let (defs, _fs_processes) = fs_handlers_to_definitions(
-            dispatcher,
-            space,
+            minimal_dispatcher(),
             crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
         );
         let def_urns: std::collections::HashSet<&str> =
@@ -2093,7 +2137,7 @@ mod tests {
     /// after `setup_maps_and_refs` runs.  Slice 5.43 added the
     /// registration so FsGenesis composition can bind
     /// `new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`)` without
-    /// tripping eval_new's "No value set for URN" check.  Pinning the
+    /// tripping eval_new's `UnknownUrnError`.  Pinning the
     /// urn_map entry here catches a regression that removes the
     /// explicit registration (which is NOT auto-generated from
     /// FS_HANDLERS — the handler is trait-exempt).

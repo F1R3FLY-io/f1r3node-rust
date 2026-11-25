@@ -1,0 +1,176 @@
+{
+  "acceptance": null,
+  "change": {
+    "task": "PR #782 (disk usage attribution per iteration, before the H1 soak)",
+    "commit": "3dd9785a19dfc347cce157a6d9de4eee9eb20584",
+    "origin": "Weekend soak 38995239992 stopped on the disk floor, and its evidence did not show which component used the disk. PR #782 records the disk usage of each component at each iteration boundary and prunes the build cache. The driver and fixture are accepted at 4626f343 and 09f0877d (package casper-soak-log-budget-guardian-acceptance-20261019-01, PR #774). This package covers the change from those digests to the digests at 3dd9785a1.",
+    "commits": [
+      {
+        "commit": "6e47182de",
+        "files": [
+          "driver",
+          "fixture",
+          "workflow"
+        ],
+        "change": "record_disk_usage writes disk-usage.tsv at segment start, after each iteration and benchmark segment, and at the end of the main loop. Each row has the time, the boundary, the component, and the size in MiB. The workflow prunes the Docker build cache before the soak."
+      },
+      {
+        "commit": "3744a8994",
+        "files": [
+          "driver",
+          "fixture",
+          "claim"
+        ],
+        "change": "After the CbC review, the record runs under the budget SOAK_DISK_USAGE_RECORD_SECONDS (default 60). A failed measurement is '?', never 0. A record that fails or exceeds its budget cannot admit work, change the run result, or erase a protection breach. New scenario disk-record-degraded."
+      },
+      {
+        "commit": "608e7daad",
+        "files": [
+          "workflow",
+          "claim"
+        ],
+        "change": "A failed build cache prune is a warning and does not stop the soak. Both docker system df calls cannot fail the step (PR #782 review)."
+      },
+      {
+        "commit": "898598370",
+        "files": [
+          "driver",
+          "fixture",
+          "claim"
+        ],
+        "change": "A du or docker system df that exits nonzero after partial output gives '?' or no Docker rows, not the partial size (CbC review P2 finding). disk-record-degraded now checks a partial du total and a failed docker system df."
+      },
+      {
+        "commit": "5aba788a2",
+        "files": [
+          "driver"
+        ],
+        "change": "record_disk_usage uses timeout --signal=TERM --kill-after=1 instead of session_bounded. The session_bounded watchdog left an orphaned sleep at each record. In the binding check container, timeout is PID 1 and does not reap orphans, so the zombies reached the pids limit of 192 and forks failed in the driver suite. The bound is unchanged."
+      },
+      {
+        "commit": "3dd9785a1",
+        "files": [
+          "driver",
+          "fixture"
+        ],
+        "change": "Merge of dev 721078a43 (PR #774, PR #783). The fixture conflict keeps both sides: the three log scenarios of PR #774 and disk-record-degraded. The fixture has 60 scenarios."
+      }
+    ],
+    "unchanged": "The disk floor, the memory floor, the hygiene band, the guardian, the log budgets and their breach rule, the admission checks, the emergency deadline, the stop path, and the summary contract are unchanged. The disk record is diagnostic only."
+  },
+  "review": {
+    "cbc_review": "A CbC review of 3744a8994 by the peer agent pi-session-heartbeat-h1-cbc found one P2 defect: a partial du total was recorded as a size. Commit 898598370 fixes it.",
+    "pr_review": "A multi-agent review of PR #782. Commit 608e7daad fixes its findings.",
+    "disposition": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/782#issuecomment-6278059855"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf",
+    "docs/claims/soak-disk-protection.md": "a367f3b68421446d7318255b70eb89528fb6049304183ba2d52516e82c0eb5d0"
+  },
+  "claim_digests_note": "docs/claims/soak-disk-protection.md changed from 906a0755 at the previous package. The PR adds the disk usage record statement and the disk usage record row to CLAIM-SOAK-001.",
+  "claim_discharge": "pending",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "related_claims": {
+    "CLAIM-SOAK-001": "proposed-unratified.",
+    "CLAIM-CASPER-CAMPAIGN-003": "pending. The workflow ledger record stays pending, and this package does not accept the workflow."
+  },
+  "evidence_before_change": {
+    "scripts/run-merge-recovery-soak.sh": {
+      "path": "docs/casper/cbc-evidence/runs/casper-soak-log-budget-guardian-acceptance-20261019-01/report.json",
+      "sha256": "87260360e462518c1e9bd63e717fc899c8734b985b6530c2c83603cd7d791b64"
+    },
+    "scripts/bench/test-soak-disk-admission.sh": {
+      "path": "docs/casper/cbc-evidence/runs/casper-soak-log-budget-guardian-acceptance-20261019-01/report.json",
+      "sha256": "87260360e462518c1e9bd63e717fc899c8734b985b6530c2c83603cd7d791b64"
+    }
+  },
+  "source_digests_before_change": {
+    "scripts/bench/test-soak-disk-admission.sh": "09f0877dab9161b1419e5574b3d97bdb7a8ce5fbe22988f3cf3c50cbe2edf4ac",
+    "scripts/run-merge-recovery-soak.sh": "4626f343d7915214bca057255b6352b3fb4db95cec3c9677873e34afe976d663"
+  },
+  "source_digests": {
+    "scripts/bench/test-soak-disk-admission.sh": "9ae26ef1a2fa01f35d89663a3434b2b8a88b5d9fc901d8ee88556c5236b5147b",
+    "scripts/run-merge-recovery-soak.sh": "c088201d45c33eed68b8e82abac4b45f68b0aae11048fc43d542fd0c3d4e1681"
+  },
+  "related_source_digests": {
+    ".github/workflows/merge-recovery-soak.yml": {
+      "before": "10554dbafe69767dafb4681c2a7292dcc8effecaeee27150cd029464fa89e4c6",
+      "after": "2adf336eee8d8dd8c929260cfab2d858e1e6aff0f237b4ea631ecbe071a24246",
+      "note": "Reviewed with this change. Its acceptance belongs to CLAIM-CASPER-CAMPAIGN-003, which stays pending."
+    }
+  },
+  "verification": {
+    "fixture_local": {
+      "command": "bash scripts/bench/test-soak-disk-admission.sh",
+      "environment": "Docker on arm64. Each scenario runs in a disposable unprivileged container, with no network and no Docker socket, and with the casper-soak harness binary built from the same tree.",
+      "tree": "3dd9785a1",
+      "exit": 0,
+      "scenarios_passed": 60
+    },
+    "binding_check_local": {
+      "command": "bash scripts/ci/check-casper-soak-bindings.sh",
+      "tree": "3dd9785a1",
+      "exit": 0,
+      "driver_invocations": 91,
+      "registered_cases": 48,
+      "pids": "The container has a pids limit of 192 and timeout as PID 1. The peak was 191 with session_bounded and 134 with the fix of 5aba788a2. The dev driver peaks at 127."
+    },
+    "regression_controls": {
+      "description": "The fixture of this change with the accepted driver 4626f343 (dev 721078a43), which has no disk record",
+      "behavioral_failures": {
+        "disk-record-degraded": "The fixture did not serve the Docker sizes or the sufficient disk sample, because the driver records no disk usage."
+      },
+      "partial_output_control": "With the driver of 608e7daad, disk-record-degraded fails because the partial du total 17 is recorded as a size.",
+      "passed": 0
+    }
+  },
+  "hosted": {
+    "repository": "F1R3FLY-io/f1r3node-rust",
+    "tested_sha": "3dd9785a19dfc347cce157a6d9de4eee9eb20584",
+    "full_suite": {
+      "run_id": 39352793030,
+      "steps": {
+        "Verify soak fail-closed driver": "success",
+        "Verify isolated disk admission and emergency scenarios": "success",
+        "Verify the disk admission failure report and bounded-command liveness": "success"
+      }
+    },
+    "claims_and_bindings": {
+      "run_id": 39352793011,
+      "conclusion": "success",
+      "jobs": [
+        "Casper driver binding fixtures",
+        "Node observation binding tests"
+      ]
+    },
+    "campaign_controls": {
+      "run_id": 39352793123,
+      "conclusion": "success"
+    },
+    "earlier_failure": "From 3744a8994 to 5aba788a2, Casper driver binding fixtures failed with 'fork: retry: Resource temporarily unavailable' in the driver suite. Commit 5aba788a2 removes the cause."
+  },
+  "soak_observation": {
+    "status": "not run. The H1 soak runs after PR #782 merges and records the first disk-usage.tsv from a live soak."
+  },
+  "expected_gate_state": "check-casper-claims passes because it reports CLAIM-CASPER-SOAK-001 as pending. The two ledger records keep the digests of the acceptance package casper-soak-log-budget-guardian-acceptance-20261019-01 until a maintainer accepts this package.",
+  "node_execution": false,
+  "phase": "pre_pr216_merge",
+  "schema_version": 1,
+  "scope": "bounded-harness-disk-usage-attribution",
+  "soak": "pending",
+  "status": "change-verified-pending-acceptance",
+  "tiers": {
+    "binding": "passed",
+    "construction": "not-applicable",
+    "refutation": "bounded-safety-pass"
+  },
+  "verified_at": "2026-10-19",
+  "waiver": null,
+  "acceptance_request": {
+    "acceptor": "jltatbeach",
+    "where": "PR #782 comment",
+    "scope": "One acceptance covers the driver and fixture changes of the six commits above."
+  }
+}

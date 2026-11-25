@@ -27,17 +27,19 @@
 // whether the file is present + readable, so missing / permission
 // errors go through the normal FSERR channel.
 //
-// # Shape-A gated resolver deferred
+// # Shape-A root gating
 //
-// Same as fs_exists — uses the ungated `resolve_or_identity`
-// from slice 4.12.  Shape-A `resolve_or_identity_gated_for_consensus`
-// lands later.
+// Same posture as fs_exists: Consensus-mode calls on unregistered
+// `/@bundle/<X>` roots refuse upfront via
+// `resolve_or_identity_gated_for_consensus`.  Oracular calls pass
+// through to identity.  See fs_exists module header for the
+// HandlerReply-ok wrapping rationale.
 //
-// # WAL state-read journaling (Wave 6 scope)
+// # WAL state-read journaling
 //
-// Same deferral as fs_size + fs_exists — `journal_state_read_via_table`
-// not yet on dev.  No-op `journal` method until the helper slice
-// lands.
+// `journal` writes a `WalOp::Stat` entry with the leader's reply
+// hash + composed `(root ⊕ rel)` path.  Consensus-only
+// (self-guarded in `journal_state_read_via_table`).
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -53,12 +55,14 @@ use crate::rust::interpreter::io::handler_trait::{
     dispatch_via_trait_owned, spawn_blocking_par, FsHandler, FsHandlerEntry, HandlerFamily,
     HandlerReply, JournalPath, SyscallCtx, FS_HANDLERS,
 };
+use crate::rust::interpreter::io::handlers::helpers::journal_state_read_via_table;
 use crate::rust::interpreter::io::path::descend::safe_descend_or_root_self;
 use crate::rust::interpreter::io::path::{
     fstatat_meta, io_msg_scrub, leaf_of, quarantine_err_reply,
 };
 use crate::rust::interpreter::io::response::{err, ok_par};
 use crate::rust::interpreter::io::stat::stat_record;
+use crate::rust::interpreter::io::wal::WalOp;
 use crate::rust::interpreter::io::{resolve_cmode, ConsensusMode};
 use crate::rust::interpreter::rho_type::RhoString;
 use crate::rust::interpreter::system_processes::{BodyRefs, FixedChannels};
@@ -138,11 +142,19 @@ impl FsHandler for FsStatHandler {
                     raw
                 }
             };
-            // Ungated resolver — Shape-A gated variant deferred
-            // (see module header).
+            // Shape-A gating: Consensus-mode call on an unregistered
+            // `/@bundle/<X>` short-circuits with FSERR_UNSUPPORTED.
+            // Wrapped in HandlerReply::ok to match this handler's
+            // "always ok, Par carries error semantics" discipline.
             let logical = PathBuf::from(&args.root);
-            let (on_disk_root, expected_root_id) =
-                ctx.handles.root_registry.resolve_or_identity(&logical);
+            let (on_disk_root, expected_root_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&logical, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::ok(err(c, m)),
+            };
             let rel = args.rel;
             let cmode = args.cmode;
             let par = spawn_blocking_par(move || -> Par {
@@ -190,17 +202,43 @@ impl FsHandler for FsStatHandler {
         })
     }
 
-    /// WAL state-read journal — Wave 6 scope.  Same deferral as
-    /// fs_size + fs_exists.  Wave 6 target: `journal_state_read_via_table(
-    /// ctx.handles, cmode, WalOp::Stat, root.join(rel),
-    /// path.produce_reply(), ctx.ack, None)`.
+    /// WAL state-read journal.  Writes a `WalOp::Stat` entry with
+    /// the leader's reply hash + composed `(root ⊕ rel)` path so
+    /// a follower can anchor its re-execution against the same
+    /// WAL event.  `length = None` because the reply hash fully
+    /// encodes the stat record.
     fn journal<'a>(
-        _ctx: SyscallCtx<'a>,
-        _raw_args: &'a [Par],
-        _path: JournalPath<'a>,
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+        path: JournalPath<'a>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        // Wave 4 + 5: no-op.
-        Box::pin(async {})
+        let reply = path.produce_reply();
+        Box::pin(async move {
+            let [root_par, rel_par, cmode_par] = raw_args else {
+                return;
+            };
+            let Some(cmode) = resolve_cmode(cmode_par) else {
+                return;
+            };
+            let (Some(root), Some(rel)) =
+                (RhoString::unapply(root_par), RhoString::unapply(rel_par))
+            else {
+                return;
+            };
+            let mut canon = PathBuf::from(root);
+            if !rel.is_empty() {
+                canon.push(&rel);
+            }
+            journal_state_read_via_table(
+                ctx.handles,
+                cmode,
+                WalOp::Stat,
+                canon,
+                reply,
+                ctx.ack,
+                None,
+            );
+        })
     }
 }
 

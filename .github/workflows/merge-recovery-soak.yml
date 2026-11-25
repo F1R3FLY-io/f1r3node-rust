@@ -1,7 +1,7 @@
 name: Merge Recovery Soak
 
 run-name: >-
-  ${{ inputs.scheduled_slot_epoch != '' && format('Merge Recovery Soak [scheduled:{0}]', inputs.scheduled_slot_epoch) || 'Merge Recovery Soak' }}
+  ${{ inputs.scheduled_slot_epoch != '' && format('Merge Recovery Soak [scheduled:{0}]', inputs.scheduled_slot_epoch) || inputs.gate == 'ca-item' && format('Merge Recovery Soak [ca-item:#{0}]', inputs.gate_pr) || inputs.gate == 'ca-release' && 'Merge Recovery Soak [ca-release]' || 'Merge Recovery Soak' }}
 
 on:
   schedule:
@@ -111,6 +111,22 @@ on:
         required: false
         default: false
         type: boolean
+      gate:
+        description: >-
+          Release train gate (issue #791), set by ca-soak-dispatch.yml.
+          ca-item soaks a ca/ pull request head for 22h and posts
+          "Soak Gate (22h)". ca-release soaks a ca-release commit for 60h and
+          posts "Soak Gate (60h)". target_ref must be a commit SHA. A gate run
+          has its own concurrency group and runner label, and it publishes no
+          dashboard series.
+        required: false
+        default: ""
+        type: string
+      gate_pr:
+        description: Gate ca-item only. The number of the ca/ pull request.
+        required: false
+        default: ""
+        type: string
 
 permissions:
   actions: read
@@ -303,7 +319,155 @@ env:
   #   instead of reading once. The only other changes since 37e8c84 are
   #   .mergify.yml and docs/ToDos.md, neither of which the suite runs.
   #   Verified: descends from 37e8c84 (merge-base --is-ancestor).
-  SYSTEM_INTEGRATION_REF: 942de7b7ead62cb215fc162efce7ae1b6206e261
+  # 2026-10-15: 942de7b -> 2087398 (system-integration MAIN — the #159 merge
+  #   commit): the pre-bond and post-withdrawal tests expect a deploy to an
+  #   unbonded validator to be rejected, and the joiner's activation wait
+  #   requires its own LFB to list it as bonded. Companion to f1r3node-rust
+  #   #718. No other changes since 942de7b. Verified: descends from 942de7b
+  #   (merge-base --is-ancestor).
+  # 2026-10-24: 2087398 -> 1a35dd9 (system-integration MAIN — the #163 merge
+  #   commit). #162 + #163 move the test shard's heartbeat check-interval and
+  #   max-lfb-age from 5s to 3s (cooldown stays 3s), so blocks and finality
+  #   come faster under every soak and integration leg. #163 also changes
+  #   test_load, which the soak runs: a deploy counts as finalized only when
+  #   all six nodes report it (the phase line keeps its shape, with
+  #   last-node latency), deploys go to all four validators, and the test
+  #   sets no node flags of its own. Expect soak finalization latencies a
+  #   little above the pre-bump baseline from the stricter rule. Also brings
+  #   #161 (dev -> main), which carries #160: an opt-in heartbeat-timing
+  #   harness. Verified: descends from 2087398 (merge-base --is-ancestor).
+  # 2026-10-24: 1a35dd9 -> 2d3a8d4 (system-integration MAIN — the #164 merge
+  #   commit). #164 removes the two duplicate genesis wallets (V4's, added by
+  #   #163, and 111125xD9x…) and makes the genesis writer reject a repeated
+  #   address: the node loses credits to a duplicated vault (f1r3node-rust
+  #   #851), which failed test_validator_lifecycle on 1a35dd9. Verified:
+  #   descends from 1a35dd9; test_validator_lifecycle passes locally without
+  #   the duplicate.
+  # 2026-10-24: 2d3a8d4 -> e1e00ee (system-integration MAIN — the #165 merge
+  #   commit). #165 raises the test shard's max-parent-depth from 15 to 25,
+  #   so the 3s tick keeps a 75s citability window above the node's 58s
+  #   block re-request span, and sets protocol-client.network-timeout to 3s.
+  #   Clears three startup warnings on every shard. Verified: descends from
+  #   2d3a8d4; test_concurrent_bridge_locks passes locally with none of the
+  #   warnings on any node.
+  # 2026-11-04: e1e00ee -> 61ae9d1 (system-integration MAIN — the #167 merge
+  #   commit). #167 lets test_observer_missing_block_retry accept the two
+  #   floor-cache retry lines the restore loop logs, so the test no longer
+  #   times out when the source pause lands after block download. It also
+  #   moves compose/monitoring.yml to cadvisor 0.60.6, which mounts /var/run
+  #   read-only for Docker 29's containerd store, and adds runtime logs to
+  #   system-integration's own smoke test. No other changes since e1e00ee.
+  #   Verified: descends from e1e00ee (merge-base --is-ancestor).
+  # 2026-11-06: 61ae9d1 -> f617787 (system-integration PR #173 head, which
+  #   lands with this change). It pins pyf1r3fly to the uint256 client
+  #   (32-byte phloPrice and stake on the wire), reads every API amount as a
+  #   canonical decimal string, bonds with a BigInt literal, and merges #169
+  #   and #171. Verified: descends from 61ae9d1; shared, custom, standalone
+  #   and UCC pass locally against this branch's node (121 passed, 1 opt-in
+  #   skip).
+  # 2026-11-07: f617787 -> 012bfda (system-integration main, the merge of PR
+  #   #173). Its only change since f617787 repins pyf1r3fly to 014d105, the
+  #   merge of pyf1r3fly #11, whose tree equals the 9fd70f0 tested above.
+  #   Verified: descends from f617787; diff is pyproject.toml and poetry.lock.
+  # 2026-11-11: 012bfda -> 4373258 (system-integration main, the merge of PR
+  #   #176). test_successful_genesis_ceremony reads genesis with
+  #   get_blocks_by_heights(0, 0) instead of scanning get_blocks(100), which
+  #   missed #0 once the shared shard passed height 100. No other changes
+  #   since 012bfda. Verified: descends from 012bfda; the test passes locally
+  #   against the dev image.
+  # 2026-11-13: 4373258 -> ba59ca5 (system-integration main, the merge of PR
+  #   #186). Raises the deploy finalization timeout from 45 s to 105 s for the
+  #   floor-based verdict (#184, node #1026), keys the per-test log scan
+  #   window on record timestamps (#177), retries log reads across rotation
+  #   (#178) and repairs standalone recreation log ownership (#182). Verified:
+  #   descends from 4373258; unit tests, test_deployment and test_token_metadata
+  #   pass locally against the dev image on docker.
+  # 2026-11-12: 4373258 -> 03f3fe8 (system-integration PR #175 head, which
+  #   lands with this change). ShardConfig(deploy_queue=True) runs a deploy
+  #   queue in front of each validator; test_load loads a queued shard and
+  #   takes test_shard_degradation's checks (that test is removed);
+  #   test_capacity ramps load until the shard stops keeping up; rust.conf
+  #   drops the overrides #918 makes node defaults and the parameter #917
+  #   removed. 03f3fe8 descends from 012bfda, not from 4373258: it lacks the
+  #   test_successful_genesis_ceremony fix, so it is replaced by #175's merge
+  #   once #175 takes system-integration main. Verified: 516 unit tests pass;
+  #   test_load passed on both ucc legs of two CI runs of this branch (runs
+  #   43085072701 and 43111212784, before the rebase onto dev a8058fbc1).
+  # 2026-11-14: 03f3fe8 -> 7673d5e (system-integration PR #175 head). Runs the
+  #   soak's stock load through the queues, gives each deployer key strictly
+  #   increasing deploy timestamps, waits out queue refusals in workload setup,
+  #   reads the tip once for all submitters, and merges system-integration dev
+  #   (105 s finalization timeout). Verified: descends from 03f3fe8; 610 unit
+  #   tests pass; test_capacity passed twice on a soak-shaped VM against this
+  #   branch's node. 7673d5e contains both parents of ba59ca5.
+  # 2026-11-16: 7673d5e -> 6afe9a0 (system-integration PR #175 head). Merges
+  #   system-integration PR #166 (session-scoped Docker names, so session
+  #   cleanup also removes deploy queue containers) and reads each deploy's
+  #   outcome when the read-only node finalizes it, so the capacity check no
+  #   longer reads blocks the block-store GC pruned. Verified: descends from
+  #   7673d5e; 616 unit tests pass.
+  # 2026-11-17: 6afe9a0 -> 5717054 (system-integration main, PR #175 merged
+  #   through promotion #188). Keeps pytest from capturing the client's DEBUG
+  #   gRPC responses (the load driver's memory growth), runs a deploy queue in
+  #   front of every validator in the compose shards, and trims the unit
+  #   tests. Verified: descends from 6afe9a0 and contains #175's head 6df28f3;
+  #   588 unit tests pass; system-integration CI passed except the two compose
+  #   smoke jobs, which need a node image that ships the deploy-queue binary.
+  # 2026-11-17: 5717054 -> 3867a22 (system-integration main, PR #187 merged
+  #   through promotion #189). test_prepare_deploy and
+  #   test_preview_private_names send the valid-after block number, and
+  #   pyf1r3fly is pinned to 9ec3da8 (#13: distinct per-key deploy timestamps,
+  #   valid-after block in previewPrivateNames; #14: responses log on the
+  #   client's own logger). Verified: descends from 5717054, and differs from
+  #   it only in those tests, node.py, the test catalog, pyproject.toml and
+  #   poetry.lock; unit tests pass.
+  # 2026-11-18: 3867a22 -> 907f8a5 (system-integration main, PRs #190, #191
+  #   and #192 merged through promotion #193). The load driver reads every
+  #   validator's tip concurrently under a 3 s deadline, deploy timestamps
+  #   come from pyf1r3fly's per-key clock, and test_expired_deploy_admission
+  #   retries when a block already being built misses the deploy at the
+  #   expiry boundary. Verified: descends from 3867a22; differs from it only
+  #   in integration-tests/test and unit-tests (10 files); unit tests pass.
+  # 2026-11-18: 907f8a5 -> 646efd0 (system-integration main, PR #194 merged
+  #   through promotion #196). conftest.py deselects opt-in tests such as
+  #   test_capacity_ramp when their environment variable is not set, so
+  #   pytest no longer reports them as skipped and the soak preflight
+  #   (which requires skipped=0) passes again. Verified: descends from
+  #   907f8a5 (4 commits ahead, 0 behind); differs from it only in
+  #   conftest.py, WRITING_TESTS.md, two custom tests and one unit test.
+  # 2026-11-19: 646efd0 -> fba951b (system-integration main, PR #198 merged
+  #   through promotion #199). test_observer_missing_block_retry accepts the
+  #   tuple-space and forward-horizon requesters' retry logs as evidence and
+  #   waits 40 s for them, covering the horizon's 30 s resend (node #1088).
+  #   Verified: descends from 646efd0 (3 commits ahead, 0 behind); differs
+  #   from it only in log_events.py and that test; 586 unit tests pass.
+  # 2026-11-20: fba951b -> a0d8686 (system-integration main, PR #200 merged
+  #   through promotion #201). test_fault_tolerance_asymmetric_bonds re-reads
+  #   each validator's blocks until one get_blocks response holds the
+  #   main-parent FT check (30 s), since a response that straddles a
+  #   finalization can briefly show an ancestor's old FT under a
+  #   descendant's new one (node #1070). Verified: descends from fba951b (1
+  #   commit ahead, 0 behind); differs from it only in that test; the test
+  #   passes on a local subprocess shard; 586 unit tests pass.
+  # 2026-11-20: a0d8686 -> 9243d3b (system-integration main, PRs #197 and
+  #   #202 merged through promotion #203). Test deploys declare phlo limits
+  #   within the node's 20,000,000 max-phlo-limit, pyf1r3fly is pinned to the
+  #   merge of pyf1r3fly #15, which lowers the PosAPI default limit, and
+  #   test_storage declares a limit that covers store-data.rho's registry
+  #   insert. Verified: descends from a0d8686 (7 commits ahead, 0 behind);
+  #   differs from it only in node.py, 14 tests, pyproject.toml and
+  #   poetry.lock; 586 unit tests pass.
+  # 2026-11-24: 9243d3b -> 54f89b6 (system-integration dev, PR #207 merged
+  #   as 20788c3 with the same tree; promotion PR #208 to main is open).
+  #   The suite's nodes start protocol 1 genesis blocks
+  #   (system-integration PR #204). Test deploys, bonds and withdrawals
+  #   declare at most the protocol 7 block demand cap of 5,845,811 phlo,
+  #   and conf/standalone-dev.conf sets fault-tolerance-threshold = 0.1.
+  #   Verified: descends from 9243d3b (8 commits ahead, 0 behind); contains
+  #   every change of system-integration main 074bd62; differs from 9243d3b only in
+  #   rust.conf, standalone-dev.conf, consensus-configuration.md, node.py,
+  #   subprocess.py, 3 tests and 1 unit test.
+  SYSTEM_INTEGRATION_REF: 54f89b684fb64aa0357e23d266d734782f17cb62
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -668,6 +832,7 @@ jobs:
       # Epoch second the run's window ends at. retry_within_window anchors a
       # restarted run to this instant so it conforms to the original slot.
       end_epoch: ${{ steps.resolve.outputs.end_epoch }}
+      late_start: ${{ steps.resolve.outputs.late_start }}
       retry_attempt: ${{ steps.resolve.outputs.retry_attempt }}
       canary: ${{ steps.resolve.outputs.canary }}
       preflight_only: ${{ steps.resolve.outputs.preflight_only }}
@@ -682,6 +847,9 @@ jobs:
       checkpoint_5: ${{ steps.resolve.outputs.checkpoint_5 }}
       candidate_tag: ${{ steps.resolve.outputs.candidate_tag }}
       restart_verified: ${{ steps.resolve.outputs.restart_verified }}
+      # Release train gate (issue #791): empty, ca-item, or ca-release.
+      gate: ${{ steps.resolve.outputs.gate }}
+      gate_pr: ${{ steps.resolve.outputs.gate_pr }}
     steps:
       - name: Resolve schedule
         id: resolve
@@ -701,6 +869,8 @@ jobs:
           INPUT_PREFLIGHT_ONLY: ${{ inputs.preflight_only }}
           INPUT_SKIP_PREFLIGHT: ${{ inputs.skip_integration_preflight }}
           INPUT_INJECT_PROTECTION_BREACH: ${{ inputs.inject_protection_breach }}
+          INPUT_GATE: ${{ inputs.gate }}
+          INPUT_GATE_PR: ${{ inputs.gate_pr }}
           # Read-only, for the "did anything land since the last window?" check.
           GH_TOKEN: ${{ github.token }}
         shell: bash -euo pipefail {0}
@@ -737,6 +907,43 @@ jobs:
               ;;
             false|"") ;;
             *) echo "::error::inject_protection_breach must be true or false"; exit 1 ;;
+          esac
+          # Release train gate (issue #791). The gate status binds to the
+          # soaked commit, so target_ref must be an exact SHA. A gate run is
+          # a full soak of its kind: no canary, preflight-only, skipped
+          # preflight, injection, candidate, or window restart. Its one
+          # restart (retry_attempt 1) soaks a full new window.
+          case "${INPUT_GATE:-}" in
+            "")
+              if [ -n "${INPUT_GATE_PR:-}" ]; then
+                echo "::error::gate_pr requires gate ca-item"
+                exit 1
+              fi
+              ;;
+            ca-item|ca-release)
+              if [ "$EVENT_NAME" != "workflow_dispatch" ] || [ -n "$INPUT_SCHEDULED_SLOT" ]; then
+                echo "::error::a gate run must be a manual dispatch without scheduled_slot_epoch"
+                exit 1
+              fi
+              if [ "${INPUT_CANARY:-false}" = "true" ] || [ "${INPUT_PREFLIGHT_ONLY:-false}" = "true" ] || [ "${INPUT_SKIP_PREFLIGHT:-false}" = "true" ] || [ "${INPUT_INJECT_PROTECTION_BREACH:-false}" = "true" ] || [ -n "${INPUT_CANDIDATE_TAG:-}" ] || [ -n "$INPUT_WINDOW_END" ] || [ -n "$INPUT_SERIES" ]; then
+                echo "::error::a gate run cannot be combined with canary, preflight_only, skip_integration_preflight, injection, candidate_tag, window_end_epoch, or series inputs"
+                exit 1
+              fi
+              if ! [[ "${INPUT_TARGET_REF:-}" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error::a gate run needs target_ref as a 40-character commit SHA"
+                exit 1
+              fi
+              if [ "$INPUT_GATE" = "ca-item" ]; then
+                if [ "$INPUT_DURATION" != "daily-24h" ] || ! [[ "${INPUT_GATE_PR:-}" =~ ^[1-9][0-9]*$ ]]; then
+                  echo "::error::gate ca-item needs duration daily-24h and gate_pr as a pull request number"
+                  exit 1
+                fi
+              elif [ "$INPUT_DURATION" != "weekend-60h" ] || [ -n "${INPUT_GATE_PR:-}" ]; then
+                echo "::error::gate ca-release needs duration weekend-60h and no gate_pr"
+                exit 1
+              fi
+              ;;
+            *) echo "::error::gate must be empty, ca-item, or ca-release"; exit 1 ;;
           esac
           if [ -n "$INPUT_SCHEDULED_SLOT" ]; then
             if [ "${INPUT_CANARY:-false}" = "true" ] || [ "${INPUT_PREFLIGHT_ONLY:-false}" = "true" ] || [ "${INPUT_SKIP_PREFLIGHT:-false}" = "true" ] || [ "${INPUT_INJECT_PROTECTION_BREACH:-false}" = "true" ] || [ -n "$INPUT_WINDOW_END" ] || [ -n "$INPUT_SERIES" ] || [ "${INPUT_RETRY_ATTEMPT:-0}" != "0" ]; then
@@ -1133,6 +1340,22 @@ jobs:
           # Sundays and dailies run Mon–Thu. GitHub cannot generate a variable
           # number of steps, so unused slots are emitted empty and skip.
           end_epoch=$((slot_epoch + duration_seconds))
+          late_start=false
+          late_skip=false
+          window_start="$slot_epoch"
+          if [ "$should_run" = "true" ] && [ "${trigger_source:-}" = "cron-fallback" ] && [ "${slot_delay_seconds:-0}" -gt 900 ]; then
+            remaining=$((end_epoch - now_epoch))
+            if [ "$remaining" -lt 7200 ]; then
+              should_run=false
+              late_skip=true
+              echo "only ${remaining}s left of the window ending $(date -u -d "@${end_epoch}" +%FT%TZ); not launching"
+            else
+              duration_seconds="$remaining"
+              late_start=true
+              window_start="$now_epoch"
+              echo "started ${slot_delay_seconds}s after the slot; soaking the remaining ${remaining}s of the window ending $(date -u -d "@${end_epoch}" +%FT%TZ)"
+            fi
+          fi
           base_day="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%F)"
           checkpoints=()
           for d in 0 1 2 3; do
@@ -1141,7 +1364,7 @@ jobs:
               cp="$(TZ=America/Los_Angeles date -d "${day} ${hm}" +%s)"
               # Strictly inside: a checkpoint on the final instant would leave a
               # zero-length last segment that publishes the same data twice.
-              if [ "$cp" -gt "$slot_epoch" ] && [ "$cp" -lt "$end_epoch" ]; then
+              if [ "$cp" -gt "$window_start" ] && [ "$cp" -lt "$end_epoch" ]; then
                 checkpoints+=("$cp")
               fi
             done
@@ -1173,6 +1396,14 @@ jobs:
               echo "## Restart gate: skipped (window nearly over)"
               echo ""
               echo "The original window ends too soon for a restart to be worth an OCI runner."
+              echo "**No soak was attempted** — a green check on this run is not a soak result."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$should_run" != "true" ] && [ "${late_skip:-false}" = "true" ]; then
+            echo "::notice::Schedule gate skip: the cron fallback started less than 2h before its window ends. No soak was attempted; this run's success is not a soak result."
+            {
+              echo "## Schedule gate: skipped (window nearly over)"
+              echo ""
+              echo "The cron fallback started too late in its window for a soak to be worth an OCI runner."
               echo "**No soak was attempted** — a green check on this run is not a soak result."
             } >> "$GITHUB_STEP_SUMMARY"
           elif [ "$should_run" != "true" ] && [ "${duplicate_skip:-false}" = "true" ]; then
@@ -1246,6 +1477,7 @@ jobs:
             echo "run_benchmarks=$run_benchmarks"
             echo "kind=$kind"
             echo "end_epoch=$end_epoch"
+            echo "late_start=$late_start"
             echo "retry_attempt=$retry_attempt"
             echo "canary=${INPUT_CANARY:-false}"
             echo "preflight_only=${INPUT_PREFLIGHT_ONLY:-false}"
@@ -1258,6 +1490,8 @@ jobs:
             echo "checkpoint_5=$cp5"
             echo "candidate_tag=${INPUT_CANDIDATE_TAG:-}"
             echo "restart_verified=${restart_verified:-false}"
+            echo "gate=${INPUT_GATE:-}"
+            echo "gate_pr=${INPUT_GATE_PR:-}"
           } >> "$GITHUB_OUTPUT"
           if [ -n "${INPUT_CANDIDATE_TAG:-}" ]; then
             mkdir -p "$RUNNER_TEMP/soak-window"
@@ -1266,6 +1500,37 @@ jobs:
               candidate_tag: $tag, soak_kind: $kind, retry_attempt: $retry,
               end_epoch: $end, duration_seconds: $duration}' > "$RUNNER_TEMP/soak-window/soak-window.json"
           fi
+
+      - name: Checkout cleanup control sources
+        if: steps.resolve.outputs.should_run == 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-control
+          persist-credentials: false
+
+      - name: Install the pinned CbC runtime before runner launch
+        if: steps.resolve.outputs.should_run == 'true'
+        timeout-minutes: 5
+        working-directory: ci-control
+        run: bash scripts/ci/install-cbc-runtime.sh
+
+      - name: Configure cleanup acceptance trust
+        if: steps.resolve.outputs.should_run == 'true'
+        working-directory: ci-control
+        env:
+          CBC_ACCEPTANCE_ALLOWED_SIGNERS: ${{ vars.CBC_ACCEPTANCE_ALLOWED_SIGNERS }}
+        run: bash scripts/ci/configure-cbc-trust.sh
+
+      - name: Require accepted cleanup before runner launch
+        if: steps.resolve.outputs.should_run == 'true'
+        env:
+          CBC_CONTROL_REVISION: ${{ github.workflow_sha }}
+          CBC_CANDIDATE_REVISION: ${{ steps.resolve.outputs.target_sha }}
+        run: >-
+          bash ci-control/scripts/ci/check-soak-cleanup.sh --root ci-control
+          --control-revision "$CBC_CONTROL_REVISION" --candidate-revision "$CBC_CANDIDATE_REVISION"
+          --output "$RUNNER_TEMP/soak-cleanup-admission.json"
 
       - name: Record the candidate soak window
         if: inputs.candidate_tag != ''
@@ -1461,6 +1726,15 @@ jobs:
     # case is three full 15-minute waits plus boots. The soak window absorbs
     # this; a hung launch job would not.
     timeout-minutes: ${{ needs.schedule_gate.outputs.preflight_only == 'true' && 30 || 60 }}
+    # The label the soak runner registers under, and the soak job's runs-on.
+    # Every daily and weekend run shares f1r3fly-rust-soak, because at most
+    # one of each runs at a time. Release train gate runs (issue #791) run in
+    # parallel, one per pull request, so each one gets a label of its own run.
+    # Otherwise one gate run's soak job could start on another run's VM.
+    env:
+      SOAK_LABEL: ${{ needs.schedule_gate.outputs.gate != '' && format('f1r3fly-rust-soak-run-{0}', github.run_id) || 'f1r3fly-rust-soak' }}
+    outputs:
+      runner_label: ${{ steps.label.outputs.runner_label }}
     concurrency:
       # Grouped by series (not raw duration — a restart's remainder is
       # arbitrary) so the next night's launch still cancels a lingering
@@ -1468,9 +1742,18 @@ jobs:
       # run is NOT a series run: it gets a per-run group so the nightly slot
       # cannot cancel it (run 33130708285 lost 1h45m of preflight to the
       # 02:31Z daily launch this way) and it cannot cancel the nightly.
-      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.preflight_only == 'true' && format('preflight-only-{0}', github.run_id) || needs.schedule_gate.outputs.kind }}
+      # A release train gate run (issue #791) is not a series run either:
+      # each ca/ pull request has its own group, so item soaks run in
+      # parallel, and ca-release has one group. A newer soak of the same pull
+      # request or of ca-release replaces the older one.
+      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.preflight_only == 'true' && format('preflight-only-{0}', github.run_id) || needs.schedule_gate.outputs.gate == 'ca-item' && format('ca-item-{0}', needs.schedule_gate.outputs.gate_pr) || needs.schedule_gate.outputs.gate == 'ca-release' && 'ca-release' || needs.schedule_gate.outputs.kind }}
       cancel-in-progress: true
     steps:
+      - name: Record the soak runner label
+        id: label
+        shell: bash -euo pipefail {0}
+        run: echo "runner_label=$SOAK_LABEL" >> "$GITHUB_OUTPUT"
+
       - name: Clone trusted runner launcher
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -1540,7 +1823,7 @@ jobs:
           # boots healthy and never matches a runs-on. oracle-cloud in
           # particular is the one whose absence actually breaks routing, and it
           # must stay in step with the soak job's runs-on below.
-          RUNNER_LABELS: self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud
+          RUNNER_LABELS: self-hosted,linux,x64,${{ env.SOAK_LABEL }},oracle-cloud
           # 64GB for the soak VM only (fleet default stays AMD64_MEM_GB=48).
           # The #197 wedge fix unmasked the workload's true footprint: smoke
           # run 31547587950 (2026-08-11) breached at 36008MB instant RSS
@@ -1588,7 +1871,7 @@ jobs:
           # set -- so the retry that exists to escape the race would re-enter it,
           # and the soak would then wait on an exclusive label its own
           # replacement does not carry. Silent, and only on the retry path.
-          RUNNER_LABELS: self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud
+          RUNNER_LABELS: self-hosted,linux,x64,${{ env.SOAK_LABEL }},oracle-cloud
         shell: bash -e {0}
         run: |
           # Bounded reclaim loop. Losing the registration race is recoverable:
@@ -1666,7 +1949,7 @@ jobs:
           # easy to get subtly wrong. Since this step fails closed, a malformed
           # body would not merely mislabel a runner -- it would block every
           # soak. Be unambiguous here.
-          printf '{"labels":["f1r3fly-rust-soak"]}' \
+          jq -cn --arg label "$SOAK_LABEL" '{labels: [$label]}' \
             | gh api -X POST "repos/$GH_REPO/actions/runners/$rid/labels" \
                 --input - >/dev/null
           # Best-effort, and NOT because failures do not matter -- the
@@ -1684,9 +1967,10 @@ jobs:
           have="$(gh api "repos/$GH_REPO/actions/runners/$rid/labels" \
             --jq '[.labels[].name] | sort | join(",")')"
           echo "labels now: $have"
-          case "$have" in
-            *f1r3fly-rust-soak*) ;;
-            *) echo "::error::dedicated label missing after update: $have"; exit 1 ;;
+          # Exact match: f1r3fly-rust-soak is a prefix of every gate run label.
+          case ",$have," in
+            *",$SOAK_LABEL,"*) ;;
+            *) echo "::error::dedicated label $SOAK_LABEL missing after update: $have"; exit 1 ;;
           esac
           case "$have" in
             *f1r3fly-rust-ci-ephemeral*)
@@ -1735,7 +2019,7 @@ jobs:
           # soak routes on. Best effort: if it fails the runner is about to
           # deregister anyway.
           gh api -X DELETE \
-            "repos/$GH_REPO/actions/runners/$rid/labels/f1r3fly-rust-soak" \
+            "repos/$GH_REPO/actions/runners/$rid/labels/$SOAK_LABEL" \
             >/dev/null 2>&1 || true
           if [ "$launch" -lt "$MAX_LAUNCHES" ]; then
             echo "launching a replacement soak runner"
@@ -1808,9 +2092,29 @@ jobs:
           TARGET_REF: ${{ needs.schedule_gate.outputs.target_ref }}
           SKIP_PREFLIGHT: ${{ needs.schedule_gate.outputs.skip_integration_preflight }}
           CANDIDATE_TAG: ${{ needs.schedule_gate.outputs.candidate_tag }}
+          GATE: ${{ needs.schedule_gate.outputs.gate }}
+          GATE_PR: ${{ needs.schedule_gate.outputs.gate_pr }}
           WORKFLOW_REF: ${{ github.ref_name }}
         shell: bash -euo pipefail {0}
         run: |
+          # A release train gate run (issue #791) restarts with a full new
+          # window. A gate soak must run continuously for its whole span, and
+          # it has no slot cadence to keep, so a remainder on a second VM
+          # would not be a 22h or 60h soak. retry_attempt 1 still caps the
+          # chain at one restart.
+          if [ -n "$GATE" ]; then
+            dur=daily-24h
+            [ "$GATE" = "ca-release" ] && dur=weekend-60h
+            gh workflow run merge-recovery-soak.yml \
+              --ref "$WORKFLOW_REF" \
+              -f target_ref="$TARGET_REF" \
+              -f duration="$dur" \
+              -f gate="$GATE" \
+              -f gate_pr="${GATE_PR:-}" \
+              -f retry_attempt=1
+            echo "::notice::restarted the $GATE gate soak with a full $dur window"
+            exit 0
+          fi
           case "$END_EPOCH" in
             ''|*[!0-9]*) echo "::error::no usable end_epoch from the gate; cannot restart"; exit 1 ;;
           esac
@@ -1846,7 +2150,7 @@ jobs:
     # runner launched by launch_runner above carries it, so this job cannot
     # land on a CI-launched VM. See "Bind the soak runner to a dedicated
     # label" for why that matters beyond scheduling.
-    runs-on: [self-hosted, linux, x64, f1r3fly-rust-soak, oracle-cloud]
+    runs-on: [self-hosted, linux, x64, '${{ needs.launch_runner.outputs.runner_label }}', oracle-cloud]
     outputs:
       # Set by the job's last step. Empty means the VM died mid-run — the
       # signal retry_within_window keys on to tell infrastructure death from
@@ -1860,6 +2164,8 @@ jobs:
       instance_id: ${{ steps.selftag.outputs.instance_id }}
       preflight: ${{ steps.integration_preflight.outputs.result }}
       telemetry_reset: ${{ steps.reset_telemetry.outcome }}
+      # pass, regress, or empty. soak_gate_finalize reads it.
+      verdict: ${{ steps.verdict.outputs.verdict }}
     # actions: write is needed only so a segment can dispatch the checkpoint
     # publish workflow. Without it `gh workflow run` is rejected and — because
     # that dispatch is deliberately fail-soft — checkpoints would silently
@@ -1881,7 +2187,7 @@ jobs:
       # Same preflight-only carve-out as the launch job: a per-run group so
       # a diagnostic preflight and the scheduled series never cancel each
       # other.
-      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.preflight_only == 'true' && format('preflight-only-{0}', github.run_id) || needs.schedule_gate.outputs.kind }}
+      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.preflight_only == 'true' && format('preflight-only-{0}', github.run_id) || needs.schedule_gate.outputs.gate == 'ca-item' && format('ca-item-{0}', needs.schedule_gate.outputs.gate_pr) || needs.schedule_gate.outputs.gate == 'ca-release' && 'ca-release' || needs.schedule_gate.outputs.kind }}
       cancel-in-progress: true
     # A composite action cannot read the vars context, so the soak-segment
     # action inherits this value from the job. The node I/O sampler
@@ -2003,6 +2309,28 @@ jobs:
           echo "instance_id=$iid" >> "$GITHUB_OUTPUT"
           echo "tagged $iid — reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
 
+      # The cleanup gate runs after the reaper exemption. Its runtime download
+      # can take minutes, and an unexempt runner can be reaped in that time.
+      - name: Configure cleanup acceptance trust
+        working-directory: ci-control
+        env:
+          CBC_ACCEPTANCE_ALLOWED_SIGNERS: ${{ vars.CBC_ACCEPTANCE_ALLOWED_SIGNERS }}
+        run: bash scripts/ci/configure-cbc-trust.sh
+
+      - name: Install the pinned CbC runtime on this runner
+        timeout-minutes: 5
+        working-directory: ci-control
+        run: bash scripts/ci/install-cbc-runtime.sh
+
+      - name: Require accepted cleanup on this runner
+        env:
+          CBC_CONTROL_REVISION: ${{ github.workflow_sha }}
+          CBC_CANDIDATE_REVISION: ${{ needs.schedule_gate.outputs.target_sha }}
+        run: >-
+          bash ci-control/scripts/ci/check-soak-cleanup.sh --root ci-control
+          --control-revision "$CBC_CONTROL_REVISION" --candidate-revision "$CBC_CANDIDATE_REVISION"
+          --output "$RUNNER_TEMP/soak-cleanup-admission.json"
+
       - name: Checkout code under test
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -2096,6 +2424,13 @@ jobs:
             --tag "$DOCKER_IMAGE_NAME:latest" \
             --load \
             .
+          # The loaded image is all the soak needs. The build cache stays
+          # unused on the disk for the whole run (6.6 GB reclaimable at the
+          # disk floor stop of soak 38995239992), so free it here. The prune only
+          # saves space, so a failure is a warning and the soak still starts.
+          docker system df || true
+          docker builder prune --all --force || echo "::warning::docker builder prune failed; the soak starts with the build cache in place"
+          docker system df || true
 
       - name: Resolve candidate image by digest
         if: needs.schedule_gate.outputs.candidate_tag != ''
@@ -2156,9 +2491,10 @@ jobs:
           jemalloc="/usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2"
           container_id="$(docker create "$DOCKER_IMAGE_NAME:latest")"
           docker cp "$container_id:/opt/docker/bin/node" /tmp/rnode.bin
+          docker cp "$container_id:/opt/docker/bin/deploy-queue" /tmp/deploy-queue
           docker cp -L "$container_id:$jemalloc" /tmp/libjemalloc.so.2
           docker rm "$container_id"
-          chmod +x /tmp/rnode.bin
+          chmod +x /tmp/rnode.bin /tmp/deploy-queue
           printf '%s\n' \
             '#!/bin/sh' \
             'LD_PRELOAD="/tmp/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"' \
@@ -2296,6 +2632,50 @@ jobs:
             [ ! -d "$directory" ] || find "$directory" -mindepth 1 -delete
           done
 
+      # Once per window, ramp mixed load through deploy queues until the shard
+      # stops keeping up (test_capacity). Refusals and expiries are outcomes;
+      # the step fails only when the shard stalls or breaks, which the queues
+      # exist to prevent. The segments get what is left of the window.
+      - name: Capacity escalation
+        id: capacity
+        if: always() && needs.schedule_gate.outputs.preflight_only != 'true' && needs.schedule_gate.outputs.canary != 'true' && (needs.schedule_gate.outputs.skip_integration_preflight == 'true' || (steps.integration_preflight.outputs.result == 'passed' && steps.reset_telemetry.outcome == 'success'))
+        env:
+          F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node-under-test/node/src/main/resources/defaults.conf
+          CAPACITY_WORKLOAD: mix
+          CAPACITY_RESUBMIT: "1"
+          CAPACITY_RATES: "2,4,8,16,32"
+          CAPACITY_HOLD_SECONDS: "300"
+          CAPACITY_OUT: /tmp/merge-recovery-soak/capacity/capacity.jsonl
+          BUDGET_SECONDS: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
+        shell: bash -euo pipefail {0}
+        run: |
+          started="$(date +%s)"
+          mkdir -p "$(dirname "$CAPACITY_OUT")"
+          # At most two hours, and never the last hour of the budget, which
+          # the segments need.
+          limit="$(( BUDGET_SECONDS - 3600 ))"
+          [ "$limit" -gt 7200 ] && limit=7200
+          if [ "$limit" -le 0 ]; then
+            echo "::error::a ${BUDGET_SECONDS}s budget leaves no room for the capacity escalation"
+            echo "remaining_seconds=$BUDGET_SECONDS" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          set +e
+          (cd system-integration && timeout --kill-after=60 "$limit" poetry run pytest \
+            integration-tests/test/tests/custom/test_capacity.py \
+            --provider=docker -v --tb=short --instafail --timeout="$limit")
+          status=$?
+          set -e
+          remaining="$(( BUDGET_SECONDS - ($(date +%s) - started) ))"
+          echo "remaining_seconds=$remaining" >> "$GITHUB_OUTPUT"
+          if [ -s "$CAPACITY_OUT" ]; then
+            jq -r 'select(.stage == "summary")
+              | "**Capacity escalation:** \(if .stalled_or_broken then "STALLED OR BROKE" else "no stall" end); no pressure up to \(.sustained_without_pressure)/s, peak \(.peak_finalized_rate)/s finalized; accepted \(.accepted), finalized \(.finalized), refused \(.refused), abandoned \(.abandoned), expired \(.expired)"' \
+              "$CAPACITY_OUT" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+
       # The soak runs as consecutive segments sharing one output directory, so
       # results can be published part-way through. The script resumes from its
       # state file each time — counters, the original start time and iteration
@@ -2313,7 +2693,9 @@ jobs:
         with:
           label: segment-1
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_1 }}
-          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
+          duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
@@ -2338,7 +2720,9 @@ jobs:
         with:
           label: segment-2
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_2 }}
-          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
+          duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
@@ -2363,7 +2747,9 @@ jobs:
         with:
           label: segment-3
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_3 }}
-          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
+          duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
@@ -2388,7 +2774,9 @@ jobs:
         with:
           label: segment-4
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_4 }}
-          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
+          duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
@@ -2413,7 +2801,9 @@ jobs:
         with:
           label: segment-5
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_5 }}
-          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
+          duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
@@ -2445,12 +2835,15 @@ jobs:
           # exactly the guarantee a restart exists to keep. Normal runs stay
           # start-relative: their 22h/60h budgets already sit inside the slot
           # cadence with hours to spare, and re-anchoring them would shorten
-          # every weekend baseline by a variable provisioning time.
+          # every weekend baseline by a variable provisioning time. A cron
+          # fallback that starts more than 15 minutes after its slot has no
+          # such margin, so it also ends on the window's instant (issue #1044).
           #
           # This segment publishes through perf_report, which computes a real
           # verdict and appends the run to its history series.
-          deadline_epoch: ${{ needs.schedule_gate.outputs.retry_attempt != '0' && needs.schedule_gate.outputs.end_epoch || '' }}
-          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
+          # A gate restart soaks a full window, so it has no deadline either.
+          deadline_epoch: ${{ ((needs.schedule_gate.outputs.retry_attempt != '0' && needs.schedule_gate.outputs.gate == '') || needs.schedule_gate.outputs.late_start == 'true') && needs.schedule_gate.outputs.end_epoch || '' }}
+          duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
@@ -2483,7 +2876,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           SOAK_KIND: ${{ needs.schedule_gate.outputs.kind }}
-          DURATION_SECONDS: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
+          DURATION_SECONDS: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           RETRY_ATTEMPT: ${{ needs.schedule_gate.outputs.retry_attempt }}
           WINDOW_SECONDS: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
@@ -2532,6 +2925,18 @@ jobs:
           esac
           ci-control/scripts/bench/aggregate-perf-report.sh
           cat "$OUT_DIR/perf-report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record the soak verdict
+        id: verdict
+        if: always() && steps.aggregate.outcome == 'success'
+        shell: bash -euo pipefail {0}
+        run: |
+          verdict="$(jq -r '.verdict // ""' /tmp/merge-recovery-soak/report/verdict.json 2>/dev/null || true)"
+          case "$verdict" in
+            pass|regress) ;;
+            *) verdict="" ;;
+          esac
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
 
       - name: Fetch docs link sweep result (advisory)
         if: always() && needs.schedule_gate.outputs.kind == 'weekend'
@@ -2831,13 +3236,81 @@ jobs:
           echo "::error::could not finalize the integration preflight status"
           exit 1
 
+  # Release train gate (issue #791): posts "Soak Gate (22h)" or
+  # "Soak Gate (60h)" on the soaked commit, pending at the start and the
+  # result at the end. .github/scripts/report-soak-gate.sh holds the rule.
+  soak_gate_pending:
+    name: Mark Soak Gate Pending
+    needs: schedule_gate
+    if: needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.gate != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Checkout CI control files
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Report pending status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GATE: ${{ needs.schedule_gate.outputs.gate }}
+          GATE_PR: ${{ needs.schedule_gate.outputs.gate_pr }}
+          TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/report-soak-gate.sh pending
+
+  soak_gate_finalize:
+    name: Report Soak Gate
+    needs: [schedule_gate, launch_runner, soak, soak_gate_pending]
+    if: always() && needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.gate != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      statuses: write
+      pull-requests: write
+    steps:
+      - name: Checkout CI control files
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Report final status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GATE: ${{ needs.schedule_gate.outputs.gate }}
+          GATE_PR: ${{ needs.schedule_gate.outputs.gate_pr }}
+          TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
+          LAUNCH_RESULT: ${{ needs.launch_runner.result }}
+          SOAK_RESULT: ${{ needs.soak.result }}
+          COMPLETED: ${{ needs.soak.outputs.completed }}
+          PREFLIGHT: ${{ needs.soak.outputs.preflight }}
+          VERDICT: ${{ needs.soak.outputs.verdict }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/report-soak-gate.sh final
+
   perf_report:
     name: Publish Soak Dashboard
     needs: [schedule_gate, soak]
     # Both series publish. Gating this on run_benchmarks made it weekend-only,
     # so the dashboard's Daily tab had no producer and nightly results expired
     # with the artifact.
-    if: needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.canary != 'true' && needs.schedule_gate.outputs.preflight_only != 'true' && (needs.schedule_gate.outputs.skip_integration_preflight == 'true' || (needs.soak.outputs.preflight == 'passed' && needs.soak.outputs.telemetry_reset == 'success')) && !cancelled()
+    # A release train gate run (issue #791) publishes no series: its numbers
+    # belong to a pull request or a ca-release commit, and its result is the
+    # Soak Gate status.
+    if: needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.canary != 'true' && needs.schedule_gate.outputs.preflight_only != 'true' && needs.schedule_gate.outputs.gate == '' && (needs.schedule_gate.outputs.skip_integration_preflight == 'true' || (needs.soak.outputs.preflight == 'passed' && needs.soak.outputs.telemetry_reset == 'success')) && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

@@ -1,6 +1,5 @@
 pub mod approve_block_protocol;
 pub mod block_approver_protocol;
-pub mod block_retriever;
 pub mod casper_launch;
 pub mod engine;
 pub mod engine_cell;
@@ -18,6 +17,7 @@ pub mod snapshot_chunk_retriever;
 pub mod snapshot_chunk_server;
 pub mod snapshot_chunk_sync;
 pub mod snapshot_chunk_wire;
+pub mod state_export_limiter;
 pub mod wal_apply_boot;
 pub mod wal_payload_retriever;
 pub mod wal_payload_server;

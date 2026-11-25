@@ -3,6 +3,52 @@ use std::fmt::Debug;
 
 use crate::rust::ByteBuffer;
 
+/// A bounded page of key-value pairs returned by [`KeyValueStore::scan_page`].
+///
+/// `rows` are yielded in ascending lexicographic key order (over raw key
+/// bytes, independent of any encoding the implementation uses internally).
+/// `next` is `Some(cursor)` when a next page MAY contain more entries —
+/// specifically, when the page was filled to the caller's `limit`. Pass the
+/// cursor back as the `after` argument to continue. A `None` `next` is
+/// definitive: the current page reached the end of the store.
+///
+/// The cursor is the raw key bytes of the page's last row. Store contents
+/// may change between pages (concurrent writers permitted), and the scan is
+/// NOT a consistent snapshot. Callers that need snapshot semantics open
+/// their own LMDB read transaction and drive iteration themselves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorePage {
+    pub rows: Vec<(ByteBuffer, ByteBuffer)>,
+    pub next: Option<ByteBuffer>,
+}
+
+/// Maximum entries a single `scan_page` call may return. Matches the limit
+/// `atomic_store::AtomicStoreGroup::scan` already enforces, and the
+/// block-store GC's `GC_PAGE_SIZE` convention.
+pub const SCAN_PAGE_LIMIT_MAX: usize = 1024;
+
+/// Reject out-of-range `limit` arguments. `1..=1024` is the allowed window:
+/// zero is a caller error (page with nothing in it); above 1024 risks long
+/// write-blocking read transactions on large envs.
+pub fn check_scan_limit(limit: usize) -> Result<(), KvStoreError> {
+    if limit == 0 || limit > SCAN_PAGE_LIMIT_MAX {
+        return Err(KvStoreError::InvalidArgument(format!(
+            "scan_page limit must be in 1..={} (got {})",
+            SCAN_PAGE_LIMIT_MAX, limit
+        )));
+    }
+    Ok(())
+}
+
+/// Wrap a raw key in the bincode `Vec<u8>` form LMDB stores it in: an 8-byte
+/// little-endian length prefix followed by the raw bytes. Allocates per call.
+pub fn encode_bincode_key(key: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + key.len());
+    out.extend_from_slice(&(key.len() as u64).to_le_bytes());
+    out.extend_from_slice(key);
+    out
+}
+
 // See shared/src/main/scala/coop/rchain/store/KeyValueStore.scala
 pub trait KeyValueStore: Send + Sync + 'static {
     /// Enables downcasting to a concrete store type (e.g. `LmdbKeyValueStore`)
@@ -22,11 +68,58 @@ pub trait KeyValueStore: Send + Sync + 'static {
 
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError>;
 
+    fn delete_if_value(
+        &self,
+        key: &ByteBuffer,
+        expected: &ByteBuffer,
+    ) -> Result<bool, KvStoreError>;
+
     fn iterate(&self, f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError>;
     fn iterate_while(
         &self,
         f: &mut dyn FnMut(ByteBuffer, ByteBuffer) -> Result<bool, KvStoreError>,
     ) -> Result<(), KvStoreError>;
+
+    /// Return a bounded page of key-value pairs in ascending lexicographic
+    /// key order. `after` is the cursor returned by a previous page (exclusive
+    /// start) or `None` to start at the first key. `limit` must be in `1..=1024`.
+    ///
+    /// Returns [`StorePage`]: `rows` has at most `limit` entries, and `next`
+    /// is `Some(cursor)` exactly when the page was filled (there may be more).
+    /// The scan is NOT a consistent snapshot across pages — concurrent writers
+    /// may have landed between calls. Callers requiring snapshot semantics
+    /// should open their own read transaction and iterate themselves.
+    ///
+    /// Introduced for rspace-history pruning (issue #923, Option D): the
+    /// pruner walks every node hash in the `rspace/history` LMDB env in
+    /// bounded pages, deleting those not reached by a prior mark walk.
+    ///
+    /// The default implementation walks `iterate_while` and is O(cursor
+    /// position) per page. Production impls (`LmdbKeyValueStore`,
+    /// `MemoryKeyValueStore`) override it with a true cursor seek — O(log n)
+    /// to position, O(limit) to fill. Test doubles can use the default.
+    fn scan_page(&self, after: Option<&[u8]>, limit: usize) -> Result<StorePage, KvStoreError> {
+        check_scan_limit(limit)?;
+        let mut rows: Vec<(ByteBuffer, ByteBuffer)> = Vec::with_capacity(limit);
+        let cursor_owned = after.map(|c| c.to_vec());
+        let mut past_cursor = cursor_owned.is_none();
+        self.iterate_while(&mut |key, value| {
+            if !past_cursor {
+                if let Some(cursor) = cursor_owned.as_ref() {
+                    if key.as_slice() > cursor.as_slice() {
+                        past_cursor = true;
+                    }
+                }
+            }
+            if past_cursor && rows.len() < limit {
+                rows.push((key, value));
+            }
+            Ok(rows.len() < limit)
+        })?;
+        let next =
+            (rows.len() == limit).then(|| rows.last().expect("positive page limit").0.clone());
+        Ok(StorePage { rows, next })
+    }
 
     fn clone_box(&self) -> Box<dyn KeyValueStore>;
 

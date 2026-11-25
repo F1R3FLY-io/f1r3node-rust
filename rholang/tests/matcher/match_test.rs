@@ -23,6 +23,7 @@ use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::*;
+use prost::Message;
 use rholang::rust::interpreter::matcher::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use rholang::rust::interpreter::util::{prepend_connective, prepend_expr};
 
@@ -34,7 +35,8 @@ fn assert_spatial_match(
     // println!("\ntest target: {:?}", target);
     // println!("\ntest pattern: {:?}", pattern);
 
-    let mut spatial_matcher = SpatialMatcherContext::new();
+    let mut spatial_matcher =
+        SpatialMatcherContext::new(target.encoded_len() + pattern.encoded_len());
     let spatial_match_result = spatial_matcher.spatial_match(target, pattern);
     let result = spatial_matcher.free_map;
 
@@ -302,6 +304,47 @@ fn matching_extras_with_free_variable_should_work() {
         0,
         prepend_expr(new_gint_par(9, Vec::new(), false), new_gint_expr(7), 0),
     )]);
+    assert!(assert_spatial_match(target, pattern, Some(expected_captures)).is_ok());
+}
+
+#[test]
+fn a_variable_capturing_several_par_fields_keeps_the_earlier_captures() {
+    let send_and_expr = prepend_expr(
+        new_send_par(
+            new_gstring_par("a".to_string(), Vec::new(), false),
+            vec![new_gint_par(1, Vec::new(), false)],
+            false,
+            Vec::new(),
+            false,
+            Vec::new(),
+            false,
+        ),
+        new_gint_expr(7),
+        0,
+    );
+    let target: Par = new_elist_par(
+        vec![new_gint_par(5, Vec::new(), false), send_and_expr.clone()],
+        Vec::new(),
+        false,
+        None,
+        Vec::new(),
+        false,
+    );
+
+    let pattern: Par = new_elist_par(
+        vec![
+            new_freevar_par(0, Vec::new()),
+            new_freevar_par(1, Vec::new()),
+        ],
+        Vec::new(),
+        true,
+        None,
+        Vec::new(),
+        true,
+    );
+
+    let expected_captures =
+        BTreeMap::from([(0, new_gint_par(5, Vec::new(), false)), (1, send_and_expr)]);
     assert!(assert_spatial_match(target, pattern, Some(expected_captures)).is_ok());
 }
 
@@ -1815,12 +1858,13 @@ fn matching_negation_should_work() {
 
     assert!(assert_spatial_match(target.clone(), pattern.clone(), Some(BTreeMap::new())).is_ok());
 
-    let double_pattern: Par =
-        pattern.with_connectives(vec![pattern_connective.clone(), pattern_connective.clone()]);
+    let double_pattern: Par = pattern
+        .clone()
+        .with_connectives(vec![pattern_connective.clone(), pattern_connective.clone()]);
 
     assert!(assert_spatial_match(target.clone(), double_pattern, Some(BTreeMap::new())).is_ok());
 
-    let triple_pattern = pattern.with_connectives(vec![
+    let triple_pattern = pattern.clone().with_connectives(vec![
         pattern_connective.clone(),
         pattern_connective.clone(),
         pattern_connective.clone(),
@@ -1828,7 +1872,7 @@ fn matching_negation_should_work() {
 
     assert!(assert_spatial_match(target.clone(), triple_pattern, Some(BTreeMap::new())).is_ok());
 
-    let quadruple_pattern = pattern.with_connectives(vec![
+    let quadruple_pattern = pattern.clone().with_connectives(vec![
         pattern_connective.clone(),
         pattern_connective.clone(),
         pattern_connective.clone(),
@@ -2236,4 +2280,180 @@ fn matching_byte_array_should_work() {
 
     assert!(assert_spatial_match(success_target, pattern.clone(), Some(BTreeMap::new())).is_ok());
     assert!(assert_spatial_match(fail_target, pattern, None).is_ok());
+}
+
+fn par_with_expr(instance: expr::ExprInstance) -> Par {
+    vector_par(Vec::new(), false).with_exprs(vec![Expr {
+        expr_instance: Some(instance),
+    }])
+}
+
+fn par_with_connective(instance: connective::ConnectiveInstance) -> Par {
+    vector_par(Vec::new(), true).with_connectives(vec![Connective {
+        connective_instance: Some(instance),
+    }])
+}
+
+#[test]
+fn matching_int32_should_work() {
+    let success_target = par_with_expr(GInt32(-7));
+    let fail_target = new_gint_par(7, Vec::new(), false);
+    let pattern = par_with_connective(ConnInt32(true));
+
+    assert!(assert_spatial_match(success_target, pattern.clone(), Some(BTreeMap::new())).is_ok());
+    assert!(assert_spatial_match(fail_target, pattern, None).is_ok());
+}
+
+#[test]
+fn matching_uint64_should_work() {
+    let success_target = par_with_expr(GUint64(42));
+    let fail_target = new_gint_par(42, Vec::new(), false);
+    let pattern = par_with_connective(ConnUint64(true));
+
+    assert!(assert_spatial_match(success_target, pattern.clone(), Some(BTreeMap::new())).is_ok());
+    assert!(assert_spatial_match(fail_target, pattern, None).is_ok());
+}
+
+#[test]
+fn matching_uint32_should_work() {
+    let success_target = par_with_expr(GUint32(42));
+    let fail_target = par_with_expr(GUint64(42));
+    let pattern = par_with_connective(ConnUint32(true));
+
+    assert!(assert_spatial_match(success_target, pattern.clone(), Some(BTreeMap::new())).is_ok());
+    assert!(assert_spatial_match(fail_target, pattern, None).is_ok());
+}
+
+#[test]
+fn matching_uint16_should_work() {
+    let success_target = par_with_expr(GUint16(42));
+    let fail_target = par_with_expr(GUint8(42));
+    let pattern = par_with_connective(ConnUint16(true));
+
+    assert!(assert_spatial_match(success_target, pattern.clone(), Some(BTreeMap::new())).is_ok());
+    assert!(assert_spatial_match(fail_target, pattern, None).is_ok());
+}
+
+#[test]
+fn matching_uint8_should_work() {
+    let success_target = par_with_expr(GUint8(42));
+    let fail_target = par_with_expr(GUint16(42));
+    let pattern = par_with_connective(ConnUint8(true));
+
+    assert!(assert_spatial_match(success_target, pattern.clone(), Some(BTreeMap::new())).is_ok());
+    assert!(assert_spatial_match(fail_target, pattern, None).is_ok());
+}
+
+#[test]
+fn matching_float64_should_work() {
+    let success_target = par_with_expr(GDouble(1.5f64.to_bits()));
+    let fail_target = new_gint_par(1, Vec::new(), false);
+    let pattern = par_with_connective(ConnFloat64(true));
+
+    assert!(assert_spatial_match(success_target, pattern.clone(), Some(BTreeMap::new())).is_ok());
+    assert!(assert_spatial_match(fail_target, pattern, None).is_ok());
+}
+
+#[test]
+fn matching_float32_should_work() {
+    let success_target = par_with_expr(GFloat32(1.5f32.to_bits()));
+    let fail_target = par_with_expr(GDouble(1.5f64.to_bits()));
+    let pattern = par_with_connective(ConnFloat32(true));
+
+    assert!(assert_spatial_match(success_target, pattern.clone(), Some(BTreeMap::new())).is_ok());
+    assert!(assert_spatial_match(fail_target, pattern, None).is_ok());
+}
+
+#[test]
+fn matching_big_int_should_work() {
+    let success_target = par_with_expr(GBigInt(vec![0x01, 0x00]));
+    let fail_target = new_gint_par(256, Vec::new(), false);
+    let pattern = par_with_connective(ConnBigInt(true));
+
+    assert!(assert_spatial_match(success_target, pattern.clone(), Some(BTreeMap::new())).is_ok());
+    assert!(assert_spatial_match(fail_target, pattern, None).is_ok());
+}
+
+#[test]
+fn matching_big_rat_should_work() {
+    let success_target = par_with_expr(GBigRat(GBigRational {
+        numerator: vec![0x01],
+        denominator: vec![0x03],
+    }));
+    let fail_target = par_with_expr(GBigInt(vec![0x01]));
+    let pattern = par_with_connective(ConnBigRat(true));
+
+    assert!(assert_spatial_match(success_target, pattern.clone(), Some(BTreeMap::new())).is_ok());
+    assert!(assert_spatial_match(fail_target, pattern, None).is_ok());
+}
+
+// The i64-only `Int` connective must not match i32, u64, bigint, etc.
+#[test]
+fn int_does_not_cross_match_other_numeric_types() {
+    let int_pattern = par_with_connective(ConnInt(true));
+
+    let candidates = vec![
+        par_with_expr(GInt32(1)),
+        par_with_expr(GUint64(1)),
+        par_with_expr(GUint32(1)),
+        par_with_expr(GUint16(1)),
+        par_with_expr(GUint8(1)),
+        par_with_expr(GDouble(1.0f64.to_bits())),
+        par_with_expr(GFloat32(1.0f32.to_bits())),
+        par_with_expr(GBigInt(vec![0x01])),
+    ];
+
+    for cand in candidates {
+        assert!(assert_spatial_match(cand, int_pattern.clone(), None).is_ok());
+    }
+}
+
+// Helper: build a Par that is a single GFixedPoint with the given unscaled
+// bytes and decimal scale.
+fn gfp_par(unscaled: Vec<u8>, scale: u32) -> Par {
+    par_with_expr(GFixedPoint(models::rhoapi::GFixedPoint { unscaled, scale }))
+}
+
+fn fp_pattern(scale: Par) -> Par {
+    par_with_connective(ConnFixedPointBody(models::rhoapi::ConnFixedPointBody {
+        scale: Some(scale),
+    }))
+}
+
+#[test]
+fn matching_fixed_point_exact_scale() {
+    let pattern = fp_pattern(new_gint_par(2, Vec::new(), false));
+
+    let scale2_target = gfp_par(vec![0x96], 2);
+    let scale3_target = gfp_par(vec![0x96], 3);
+    assert!(assert_spatial_match(scale2_target, pattern.clone(), Some(BTreeMap::new())).is_ok());
+    assert!(assert_spatial_match(scale3_target, pattern, None).is_ok());
+}
+
+#[test]
+fn matching_fixed_point_wildcard_scale() {
+    let pattern = fp_pattern(new_wildcard_par(Vec::new(), true));
+
+    let scale0 = gfp_par(vec![0x01], 0);
+    let scale18 = gfp_par(vec![0x01], 18);
+    assert!(assert_spatial_match(scale0, pattern.clone(), Some(BTreeMap::new())).is_ok());
+    assert!(assert_spatial_match(scale18, pattern, Some(BTreeMap::new())).is_ok());
+}
+
+#[test]
+fn matching_fixed_point_binds_scale() {
+    // Pattern: FixedPoint(s) with `s` free at level 0.
+    let pattern = fp_pattern(new_freevar_par(0, Vec::new()));
+
+    let target = gfp_par(vec![0x96], 2);
+    let expected: BTreeMap<i32, Par> = BTreeMap::from([(0, new_gint_par(2, Vec::new(), false))]);
+    assert!(assert_spatial_match(target, pattern, Some(expected)).is_ok());
+}
+
+#[test]
+fn fixed_point_rejects_non_fixed_point_target() {
+    let pattern = fp_pattern(new_wildcard_par(Vec::new(), true));
+
+    let non_fp = new_gint_par(42, Vec::new(), false);
+    assert!(assert_spatial_match(non_fp, pattern, None).is_ok());
 }

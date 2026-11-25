@@ -1004,6 +1004,68 @@ where
                     message: format!("copy → {to_dst:?}: {e}"),
                 })?;
             }
+            WalOp::Mkdir => {
+                let bits = entry
+                    .mode_bits
+                    .ok_or(ApplierError::MissingModeBits { entry_index: i })?;
+                // `length` encodes the leader's `parents` flag:
+                // `Some(1)` → parents=true (idempotent recursive
+                // create, apply mode to leaf only); `None` →
+                // parents=false (strict mkdirat on the leaf, parent
+                // must exist).
+                let parents = matches!(entry.length, Some(1));
+                if parents {
+                    // Resolve the WAL path's logical root to a host
+                    // path via the same `path_map` discipline used
+                    // by `descend_entry`.  We can't use
+                    // `descend_entry` directly because intermediate
+                    // components may not exist yet — `safe_descend`
+                    // requires every component on the way to the
+                    // leaf's parent to be already present.
+                    let resolved = (path_map)(&entry.path);
+                    if !allowed_roots.is_empty() {
+                        check_path_allowed(i, &entry.path, allowed_roots)?;
+                    }
+                    let host_path = resolved.root.join(&resolved.rel);
+                    std::fs::create_dir_all(&host_path).map_err(|e| ApplierError::IoFailure {
+                        entry_index: i,
+                        op: entry.op,
+                        path: host_path.clone(),
+                        message: format!("create_dir_all: {e}"),
+                    })?;
+                    // Apply mode to leaf only (Node.js semantics;
+                    // intermediates keep umask-default perms).
+                    use std::os::unix::fs::PermissionsExt;
+                    let perm = std::fs::Permissions::from_mode(bits);
+                    std::fs::set_permissions(&host_path, perm).map_err(|e| {
+                        ApplierError::IoFailure {
+                            entry_index: i,
+                            op: entry.op,
+                            path: host_path.clone(),
+                            message: format!("set_permissions: {e}"),
+                        }
+                    })?;
+                } else {
+                    let (parent, dst) =
+                        descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                    // SAFETY: `parent` owns an open dirfd and a NUL-
+                    // terminated `CString` leaf for its lifetime, so
+                    // `as_raw_fd()` and `leaf_ptr()` are valid here.
+                    // `mkdirat` only reads the leaf name pointer.
+                    let rc = unsafe {
+                        libc::mkdirat(parent.as_raw_fd(), parent.leaf_ptr(), bits as libc::mode_t)
+                    };
+                    if rc != 0 {
+                        let e = std::io::Error::last_os_error();
+                        return Err(ApplierError::IoFailure {
+                            entry_index: i,
+                            op: entry.op,
+                            path: dst,
+                            message: format!("mkdirat: {e}"),
+                        });
+                    }
+                }
+            }
         }
     }
     Ok(())

@@ -31,13 +31,31 @@ All HTTP endpoints return errors as structured JSON. Every non-2xx response body
 
 | Code | Meaning | Common `error` values |
 |------|---------|----------------------|
-| `400` | Client sent invalid input | `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`, `invalid_hash`, `illegal_argument`, `rholang_bad_term`, `readonly_node_required`, `validator_node_required`|
+| `400` | Client sent invalid input | `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`, `invalid_hash`, `illegal_argument`, `rholang_bad_term`, `readonly_node_required`, `validator_node_required`, `deploy_expired`, `invalid_deploy_window`|
 | `404` | Requested resource not found | `block_not_found`, `deploy_not_found`, `endpoint_not_found` |
 | `405` | HTTP method not allowed for this path | `method_not_allowed` |
-| `422` | Input is valid but execution failed | `rholang_execution_error`, `out_of_phlogistons`, `user_abort`, `aggregate_error` |
-| `409` | Expected state conflict (empty mempool) | `no_new_deploys` |
+| `415` | Unsupported JSON content type | `invalid_request_body` |
+| `422` | Invalid JSON fields or execution failure | `invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `nesting_limit_exceeded`, `user_abort`, `aggregate_error` |
+| `409` | Expected state conflict (empty mempool, propose refused) | `no_new_deploys`, `validator_not_bonded`, `not_enough_new_blocks`, `too_far_ahead_of_finalized` |
 | `500` | Node-side failure | `interpreter_internal_error`, `runtime_error`, `replay_failure`, `signing_error`, `kv_store_error`, `history_error`, `system_runtime_error`, `stream_error`, `lock_error`, `other_error`, `unknown_error` |
 | `502` | Upstream or peer communication failure | `comm_error`, `external_service_error` |
+| `503` | Node cannot serve the request yet, retry later | `observer_busy`, `block_not_held`, `history_incomplete`, `missing_block`, `deploy_pool_busy`, `deploy_admission_busy`, `validator_not_bonded` (a deploy; a refused propose answers `409`) |
+
+### JSON request validation
+
+JSON endpoints return `400 invalid_request_body` for malformed JSON. Valid JSON with invalid field types or values returns `422 invalid_request_body`.
+
+Unsupported content types return `415 invalid_request_body`. Other extractor failures retain their HTTP status, including `413` for oversized request bodies.
+
+This contract applies to POST `/api/deploy`, `/api/explore-deploy`, `/api/explore-deploy-by-block-hash`, `/api/prepare-deploy`, `/api/data-at-name-by-block-hash`, and `/api/estimate-cost`.
+
+Deploy `phloPrice` requires a canonical unsigned decimal string within uint256 bounds. JSON numbers, signs, leading zeros, fractions, exponents, and values above `2^256 - 1` return `422`.
+
+An `int` deploy parameter requires a canonical decimal string within int64 bounds. A `bigInt` parameter requires a canonical decimal string with absolute value below `2^512`.
+
+Deploy conversion returns `400 illegal_argument` for invalid amounts, hexadecimal values, public keys, signature algorithms, and signatures. The response preserves the validation message.
+
+Invalid deploy parameters return `422 invalid_request_body` during JSON deserialization. This includes invalid parameter names, such as `invalid:name`, and invalid parameter values.
 
 ### Read-only-only endpoints on validators
 
@@ -63,6 +81,37 @@ Route these requests to a read-only node (typically port 40453). `GET /api/statu
 
 ---
 
+## 64-bit integers and token amounts
+
+A JavaScript `Number` guarantees exact integer representation only within `-(2^53-1)..2^53-1`.
+The JSON API therefore gives these values as decimal strings:
+
+| Value | Fields |
+|-------|--------|
+| Rholang integer | `ExprInt.data` and `ExprUint64.data` in every `RhoExpr`, also when nested |
+| Vault balance | `balance` in `GET /api/balance/{address}` |
+| Validator stake | `stake` and `totalStake` in `GET /api/validators`, `stake` in `GET /api/validator/{pubkey}`, `bonds[].stake` in block info |
+| Transfer amount | `transfers[].amount` in block and deploy responses, `amount` in the `transfers-available` WebSocket event |
+| Phlo price | `phloPrice` in block, deploy, and `GET /api/pending-deploys` responses, `minPhloPrice` in `GET /api/status`, `data.phloPrice` in `POST /api/deploy` |
+
+- Integer strings use base 10, without an exponent, a decimal point, a plus sign, or leading zeros. A negative value starts with `-`. Negative zero is not valid.
+- Token amounts use base units (dust) in the range `0..2^256−1`. Other Rholang integers keep their original meaning.
+- The type is always a string. The type does not change with the size of the value.
+- Requests accept only the string form. `POST /api/deploy` rejects a JSON number in `data.phloPrice`.
+- Parse these fields with an exact integer type, such as JavaScript `BigInt` or Python `int`.
+- Phlo quantities (`cost`, `phloLimit`) stay JSON numbers.
+- Deploy `parameters` give `int` and `bigInt` values as decimal strings. See [Deploy parameters](#deploy-parameters).
+- The trace report (`GET /reporting/trace`) gives raw Rholang terms in protobuf JSON form. Integers in these terms stay JSON numbers.
+
+**Transfer amounts.** The node reads a transfer amount from a Rholang `Int` or `BigInt` without loss. The vault accepts a transfer only when the amount is in `1..2^256−1`. A failed transfer keeps its requested amount and failure details. Its amount can be zero, negative, or above `2^256−1`. The report extractor does not apply a separate bit limit and does not omit a failed attempt because of its amount.
+
+**gRPC.** Protobuf has no 256-bit integer type. The gRPC API gives token amounts as decimal strings in the same canonical form: `TransferInfo.amountRaw` (field 6), `BondInfo.stake`, `DeployInfo.phloPrice`, and `Status.minPhloPrice`. Field 3 of `TransferInfo` is reserved. An unavailable report keeps `transfersAvailable=false`.
+
+A map key that is a tuple, list, or map contains the JSON text of the key value.
+Integers in that text are strings, for example `{"ExprInt":{"data":"1"}}`.
+
+---
+
 ## HTTP REST API (port 40403)
 
 ### `GET /api/status`
@@ -83,7 +132,7 @@ curl http://localhost:40403/api/status
   "shardId": "root",
   "peers": 4,
   "nodes": 4,
-  "minPhloPrice": 1,
+  "minPhloPrice": "1",
   "peerList": [
     {"address": "rnode://...", "nodeId": "a5aec03d...", "host": "rnode.validator3", "protocolPort": 40400, "discoveryPort": 40404, "isConnected": true}
   ],
@@ -95,7 +144,12 @@ curl http://localhost:40403/api/status
   "isReadOnly": false,
   "isReady": true,
   "currentEpoch": 2,
-  "epochLength": 10
+  "epochLength": 10,
+  "latestBlockNumber": 31,
+  "deployLifespan": 300,
+  "maxUserDeploysPerBlock": 128,
+  "maxParentDepth": 25,
+  "maxPhloLimit": 20000000
 }
 ```
 
@@ -107,7 +161,7 @@ curl http://localhost:40403/api/status
 | `shardId` | string | Shard identifier |
 | `peers` | int | Connected peer count |
 | `nodes` | int | Discovered node count |
-| `minPhloPrice` | int | Minimum phlogiston price for deploys — the chain-adopted floor once casper is up; until then the local genesis-seed value. `isReady: false` marks every value in this payload provisional |
+| `minPhloPrice` | decimal string | Minimum phlogiston price in dust for deploys — the chain-adopted floor once casper is up; until then the local genesis-seed value. `isReady: false` marks every value in this payload provisional |
 | `peerList` | array | Detailed peer info with connection status |
 | `nativeTokenName` | string | Full token name from genesis |
 | `nativeTokenSymbol` | string | Token ticker symbol |
@@ -118,6 +172,14 @@ curl http://localhost:40403/api/status
 | `isReady` | bool | `true` after engine enters Running state |
 | `currentEpoch` | int | `lastFinalizedBlockNumber / epochLength` |
 | `epochLength` | int | Blocks per epoch, from genesis configuration |
+| `latestBlockNumber` | int/null | Number of the next block: the highest block number in this node's DAG plus one. `null` until casper is up |
+| `deployLifespan` | int/null | Blocks a deploy stays includable after its `validAfterBlockNumber`. `null` until casper is up |
+| `maxUserDeploysPerBlock` | int/null | Most user deploys one block carries. `null` until casper is up |
+| `maxParentDepth` | int/null | How far below the tip a block may cite, in blocks. `null` until casper is up |
+| `maxPhloLimit` | int/null | Largest `phloLimit` a deploy may declare, the chain-adopted cap. `null` until casper is up |
+
+The values from `latestBlockNumber` to `maxParentDepth` let a deploy client, such as a
+[deploy queue](deploy-queue.md), choose `validAfterBlockNumber` and pace its deploys.
 
 ---
 
@@ -243,9 +305,9 @@ Submit a signed deploy to the network. Validator nodes only.
 |-------|------|----------|-------------|
 | `data.term` | string | yes | Rholang source code |
 | `data.timestamp` | int | yes | Deploy timestamp (ms since epoch) |
-| `data.phloPrice` | int | yes | Phlogiston price per unit |
+| `data.phloPrice` | decimal string | yes | Phlogiston price per unit in dust, in [0, 2^256-1]. JSON numbers are rejected. |
 | `data.phloLimit` | int | yes | Maximum phlogiston to consume |
-| `data.validAfterBlockNumber` | int | yes | Deploy valid after this block number |
+| `data.validAfterBlockNumber` | int | yes | Deploy valid after this block number. It must be above `latestBlockNumber - deployLifespan` and at most `latestBlockNumber + maxParentDepth` (see [`GET /api/status`](#get-apistatus)) |
 | `data.shardId` | string | yes | Target shard (e.g. `"root"`) |
 | `data.parameters` | array | no | Named Rholang values. The default is an empty array. |
 | `deployer` | string | yes | Deployer public key (hex) |
@@ -259,7 +321,7 @@ curl -X POST http://localhost:40413/api/deploy \
     "data": {
       "term": "new stdout(`rho:io:stdout`) in { stdout!(42) }",
       "timestamp": 1700000000000,
-      "phloPrice": 10,
+      "phloPrice": "10",
       "phloLimit": 100000,
       "validAfterBlockNumber": 0,
       "shardId": "root"
@@ -273,10 +335,16 @@ curl -X POST http://localhost:40413/api/deploy \
 | Status | Condition |
 |--------|-----------|
 | `200` | Deploy accepted; body is the deploy ID (hex string) |
-| `400` | Malformed body or invalid field value: read-only node, wrong shard ID, forbidden key, phlo price below minimum, deploy expired (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
-| `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
+| `400` | Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, shard ID mismatch, forbidden key, phlo price below minimum, or phlo limit above `maxPhloLimit`. A closed validity window or a past expiration timestamp causes `deploy_expired`. A `validAfterBlockNumber` above `latestBlockNumber + maxParentDepth` causes `invalid_deploy_window`. |
+| `409` | The node already holds the signature (`duplicate_deploy`) |
+| `413` | The deploy record is larger than `casper.deploy-admission.max-bytes` (`deploy_too_large`); do not retry |
+| `415` | Unsupported content type (`invalid_request_body`) |
+| `422` | Invalid JSON field type or value, including deploy parameter names and values, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `nesting_limit_exceeded`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`) |
 | `502` | Peer communication failure (`comm_error`) |
+| `503` | The deploy pool is at its record or byte limit (`deploy_pool_busy`), admission changed during its attempts or the submission limit is reached (`deploy_admission_busy`), or the node's validator is not bonded (`validator_not_bonded`). Retry the same signed deploy later, or send it to another validator |
+
+Deploy admission checks the node's validator against the last finalized block's committee. Proposal checks the selected parent's committee. These sets can differ during the finality gap after a bond change.
 
 ##### Deploy parameters
 
@@ -288,7 +356,8 @@ The node rejects changes to these fields after signing.
 {
   "parameters": [
     {"name": "items", "value": {"type": "list", "value": [
-      {"type": "int", "value": -42},
+      {"type": "int", "value": "-42"},
+      {"type": "bigInt", "value": "10000000000000000000"},
       {"type": "nil"}
     ]}}
   ]
@@ -304,7 +373,8 @@ new items(`rho:deploy:param:items`), stdout(`rho:io:stdout`) in {
 | JSON `type` | JSON `value` |
 |-------------|--------------|
 | `bool` | A Boolean. |
-| `int` | A signed 64-bit integer. |
+| `int` | A signed 64-bit integer as a canonical decimal string. The Rholang value is an `Int`. |
+| `bigInt` | A canonical decimal string with an absolute value below `2^512`. The Rholang value is a `BigInt`, for example a token amount. |
 | `string` | A string. |
 | `bytes` | An array of integers from 0 through 255. |
 | `tuple`, `list`, `set` | An array of typed values. |
@@ -326,16 +396,9 @@ Transport limits also apply.
 Deploys without parameters retain their protobuf bytes and signatures.
 JSON output omits an empty parameter array.
 
-The deploy storage and rejected buffer can read existing records without parameters.
-Both stores write every new record as protobuf with the `F1R3DEP` prefix and version byte `0x01`.
-This storage format also applies to deploys without parameters.
-Nodes that support only the old storage format cannot read these new records.
-Reading a legacy record does not rewrite that record.
-
-The `deploy.storage.legacy_decode` counter records each attempt to decode legacy bincode data in either store.
-The counter includes repeated reads and failed attempts.
-Retain legacy support until active nodes show no legacy decode attempts over an agreed observation period.
-A zero increase without store reads does not prove that legacy records are absent.
+The deploy storage and rejected buffer store every record as protobuf with the `F1R3DEP` prefix, version byte `0x02` and a payload fingerprint.
+A record in any other format, including records from node versions that stored the phlo price as a 64-bit integer, moves to quarantine on its first read.
+See [Invalid records in the local deploy stores](../block-storage/README.md#invalid-records-in-the-local-deploy-stores).
 
 The earlier Scala implementation used protobuf field 13 for parameters.
 This Rust schema uses field 13 for `expirationTimestamp` and field 14 for parameters.
@@ -381,11 +444,11 @@ curl "http://localhost:40403/api/deploy/abc123...?view=summary"
 | `deployer` | string | Deployer public key (full only) |
 | `term` | string | Rholang source (full only) |
 | `systemDeployError` | string | System deploy error message (full only) |
-| `phloPrice` | int | Phlo price (full only) |
+| `phloPrice` | decimal string | Phlo price in dust (full only) |
 | `phloLimit` | int | Phlo limit (full only) |
 | `sigAlgorithm` | string | Signature algorithm (full only) |
 | `validAfterBlockNumber` | int | Valid-after constraint (full only) |
-| `transfers` | array/null | Transfer list or null on validators (full only) |
+| `transfers` | array/null | Transfer list or null on validators (full only). Each `amount` is a decimal string, see [64-bit integers and token amounts](#64-bit-integers-and-token-amounts) |
 | `parameters` | array | Named Rholang values from the signed deploy. The node omits this field in summary responses and when no parameters exist. |
 
 **Summary** returns only: `deployId`, `blockHash`, `blockNumber`, `timestamp`, `cost`, `errored`, `isFinalized`.
@@ -412,16 +475,17 @@ curl http://localhost:40403/api/deploy-finalization-status/3044...
 ```
 
 ```json
-{"state": "Finalized", "rejectionCount": 0, "latestBlockHash": "3bfdf56f..."}
+{"state": "Finalized", "rejection_count": 0, "latest_block_hash": "3bfdf56f..."}
 ```
 
-Possible `state` values: `Finalized`, `Failed`, `Pending`, `Expired`.
+Possible `state` values: `Finalized`, `Failed`, `Pending`, `Expired`. A [deploy queue](deploy-queue.md) also
+answers `Rejected`.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `state` | string | Deploy finalization state |
-| `rejectionCount` | int | Number of times the deploy was rejected during finalization |
-| `latestBlockHash` | string/null | Hex block hash where the deploy was last seen; `null` if never included |
+| `rejection_count` | int | Number of times the deploy was rejected during finalization |
+| `latest_block_hash` | string/null | Hex block hash where the deploy was last seen; `null` if never included |
 
 | Status | Condition |
 |--------|-----------|
@@ -457,7 +521,7 @@ curl http://localhost:40403/api/pending-deploys?deployer=04abc...
     {
       "term": "@1!(1)",
       "timestamp": 1700000000000,
-      "phloPrice": 1,
+      "phloPrice": "1",
       "phloLimit": 90000,
       "validAfterBlockNumber": 0,
       "shardId": "",
@@ -502,7 +566,7 @@ curl http://localhost:40403/api/prepare-deploy
 
 #### `POST /api/prepare-deploy`
 
-Same as GET, but additionally pre-generates unforgeable private names for a given deployer and timestamp. Equivalent to gRPC `previewPrivateNames`.
+Same as GET, but additionally pre-generates the unforgeable private names a deploy will create. A deploy's names derive from its deployer, timestamp and `validAfterBlockNumber`. Equivalent to gRPC `previewPrivateNames`.
 
 **Request body:**
 
@@ -510,12 +574,13 @@ Same as GET, but additionally pre-generates unforgeable private names for a give
 |-------|------|----------|-------------|
 | `deployer` | string | yes | Deployer public key (hex) |
 | `timestamp` | int | yes | Deploy timestamp (ms since epoch) |
+| `validAfterBlockNumber` | int | yes | The deploy's `validAfterBlockNumber` |
 | `nameQty` | int | yes | Number of unforgeable names to generate (max 1024) |
 
 ```bash
 curl -X POST http://localhost:40403/api/prepare-deploy \
   -H 'Content-Type: application/json' \
-  -d '{"deployer": "04abc...", "timestamp": 1700000000000, "nameQty": 2}'
+  -d '{"deployer": "04abc...", "timestamp": 1700000000000, "validAfterBlockNumber": 120, "nameQty": 2}'
 ```
 
 ```json
@@ -531,6 +596,8 @@ The `names` array contains hex-encoded unforgeable names that will be produced b
 |--------|-----------|
 | `200` | Sequence number and (optionally) names returned |
 | `400` | Malformed body or invalid deployer hex (`invalid_request_body`, `invalid_hash`) |
+| `415` | Unsupported content type (`invalid_request_body`) |
+| `422` | Invalid JSON field type or value (`invalid_request_body`) |
 | `500` | Node-side failure (`runtime_error`) |
 
 ---
@@ -559,7 +626,8 @@ curl -X POST http://localhost:40453/api/explore-deploy \
 |--------|-----------|
 | `200` | Execution succeeded; returns channel data |
 | `400` | Malformed body, invalid Rholang, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `readonly_node_required`) |
-| `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
+| `415` | Unsupported content type (`invalid_request_body`) |
+| `422` | Invalid JSON field type or value, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `nesting_limit_exceeded`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 | `502` | External service failure (`external_service_error`) |
 | `503` | Exploratory capacity is occupied (`observer_busy`); carries `Retry-After` |
@@ -589,8 +657,9 @@ curl -X POST http://localhost:40453/api/explore-deploy-by-block-hash \
 |--------|-----------|
 | `200` | Execution succeeded; returns channel data |
 | `400` | Malformed body, invalid Rholang, invalid block hash, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`) |
+| `415` | Unsupported content type (`invalid_request_body`) |
 | `404` | Specified block not found (`block_not_found`) |
-| `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
+| `422` | Invalid JSON field type or value, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `nesting_limit_exceeded`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 | `502` | External service failure (`external_service_error`) |
 | `503` | Exploratory capacity is occupied (`observer_busy`); carries `Retry-After` |
@@ -626,6 +695,8 @@ curl -X POST http://localhost:40453/api/data-at-name-by-block-hash \
 |--------|-----------|
 | `200` | Data found |
 | `400` | Malformed body or invalid block hash (`invalid_request_body`, `invalid_hash`) |
+| `415` | Unsupported content type (`invalid_request_body`) |
+| `422` | Invalid JSON field type or value (`invalid_request_body`) |
 | `404` | Specified block not found (`block_not_found`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 
@@ -659,6 +730,7 @@ curl "http://localhost:40453/reporting/trace?blockHash=3bfdf56f...&forceReplay=f
 | `200` | Trace report returned |
 | `400` | `blockHash` query parameter is missing, empty, or contains non-hex characters; or node is not read-only (`invalid_query_parameter`, `invalid_hash`, `readonly_node_required`) |
 | `404` | Specified block not found (`block_not_found`) |
+| `422` | The block carries a deploy whose phlo limit is above `maxPhloLimit`, so it is not replayed. Genesis is exempt |
 | `500` | Node-side failure (`replay_failure`, `kv_store_error`, `lock_error`, `unknown_error`) |
 
 ---
@@ -681,7 +753,7 @@ curl http://localhost:40453/api/balance/11112BpS5mG8...
 ```
 
 ```json
-{"address": "11112BpS5mG8...", "balance": 1000000, "blockNumber": 42, "blockHash": "3bfdf56f..."}
+{"address": "11112BpS5mG8...", "balance": "1000000", "blockNumber": 42, "blockHash": "3bfdf56f..."}
 ```
 
 | Status | Condition |
@@ -689,7 +761,7 @@ curl http://localhost:40453/api/balance/11112BpS5mG8...
 | `200` | Balance returned |
 | `400` | Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`) |
 | `404` | Specified block not found (`block_not_found`) |
-| `422` | Exploratory deploy execution failed (`rholang_execution_error`, `out_of_phlogistons`) |
+| `422` | Exploratory deploy execution failed (`rholang_execution_error`, `out_of_phlogistons`, `nesting_limit_exceeded`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 
 #### `GET /api/registry/{uri}`
@@ -714,7 +786,7 @@ curl http://localhost:40453/api/registry/rho:id:abc...
 | `200` | Data returned |
 | `400` | Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`) |
 | `404` | Specified block not found (`block_not_found`) |
-| `422` | Exploratory deploy execution failed (`rholang_execution_error`, `out_of_phlogistons`) |
+| `422` | Exploratory deploy execution failed (`rholang_execution_error`, `out_of_phlogistons`, `nesting_limit_exceeded`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 
 #### `GET /api/validators`
@@ -732,11 +804,11 @@ curl http://localhost:40453/api/validators
 ```json
 {
   "validators": [
-    {"publicKey": "04837a4cff...", "stake": 1000},
-    {"publicKey": "04fa70d7be...", "stake": 1000},
-    {"publicKey": "0457febafc...", "stake": 1000}
+    {"publicKey": "04837a4cff...", "stake": "1000"},
+    {"publicKey": "04fa70d7be...", "stake": "1000"},
+    {"publicKey": "0457febafc...", "stake": "1000"}
   ],
-  "totalStake": 3000,
+  "totalStake": "3000",
   "blockNumber": 30,
   "blockHash": "6bb5892d..."
 }
@@ -765,7 +837,7 @@ curl http://localhost:40453/api/validator/04837a4cff...
 
 Bonded validator:
 ```json
-{"publicKey": "04837a4cff...", "isBonded": true, "stake": 1000, "blockNumber": 4, "blockHash": "7701282c..."}
+{"publicKey": "04837a4cff...", "isBonded": true, "stake": "1000", "blockNumber": 4, "blockHash": "7701282c..."}
 ```
 
 Unknown key:
@@ -852,8 +924,8 @@ curl http://localhost:40453/api/epoch/rewards
   "rewards": {
     "ExprMap": {
       "data": {
-        "04837a4cff...": {"ExprInt": {"data": 0}},
-        "04fa70d7be...": {"ExprInt": {"data": 0}}
+        "04837a4cff...": {"ExprInt": {"data": "0"}},
+        "04fa70d7be...": {"ExprInt": {"data": "0"}}
       }
     }
   },
@@ -908,8 +980,9 @@ curl -X POST http://localhost:40453/api/estimate-cost \
 |--------|-----------|
 | `200` | Cost estimated |
  | `400` | Malformed body, invalid Rholang, invalid block hash, invalid deployer key, or node is not read-only (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`) |
+| `415` | Unsupported content type (`invalid_request_body`) |
 | `404` | Specified block not found (`block_not_found`) |
-| `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`) |
+| `422` | Invalid JSON field type or value, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `nesting_limit_exceeded`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 
 ---
@@ -931,7 +1004,9 @@ curl -X POST http://localhost:40405/api/propose
 | `200` | Propose result message (success block hash) |
 | `400` | Read-only node (`readonly_node_required`) |
 | `409` | No new deploys to propose (`no_new_deploys`) |
+| `409` | Propose refused in the current state (`validator_not_bonded`, `not_enough_new_blocks`, `too_far_ahead_of_finalized`) |
 | `500` | Node-side propose failure (`unknown_error`, `replay_failure`) |
+| `503` | Propose refused until the node catches up (`history_incomplete`, `missing_block`) |
 
 ---
 
@@ -941,7 +1016,7 @@ curl -X POST http://localhost:40405/api/propose
 
 | Method | Request | Response | Description |
 |--------|---------|----------|-------------|
-| `doDeploy` | `DeployDataProto` | `DeployResponse` | Submit a signed deploy. Validates phlo price, shard ID, signature, expiration. Triggers auto-propose if enabled |
+| `doDeploy` | `DeployDataProto` | `DeployResponse` | Submit a signed deploy to a validator in the last finalized block's committee. Validates phlo price, shard ID, signature, expiration. Triggers auto-propose if enabled |
 | `getBlock` | `BlockQuery` | `BlockResponse` | Get block by hash. Returns `BlockInfo` (header + deploys). Transfers enriched on readonly |
 | `getBlocks` | `BlocksQuery` | `stream BlockInfoResponse` | Get recent blocks by depth. Streaming. Returns `LightBlockInfo` (headers only) |
 | `showMainChain` | `BlocksQuery` | `stream BlockInfoResponse` | Walk the main chain path from tip. Streaming. Returns `LightBlockInfo` |
@@ -953,7 +1028,7 @@ curl -X POST http://localhost:40405/api/propose
 | `listenForContinuationAtName` | `ContinuationAtNameQuery` | `ContinuationAtNameResponse` | Find processes waiting to receive on given channel names. Returns matching patterns and continuation bodies |
 | `exploratoryDeploy` | `ExploratoryDeployQuery` | `ExploratoryDeployResponse` | Execute Rholang read-only. No block created, no phlo consumed. Returns result `Par`s, block context, and cost. Readonly only |
 | `bondStatus` | `BondStatusQuery` | `BondStatusResponse` | Check if a public key is bonded. Validates that the key is a 65-byte uncompressed secp256k1 point; returns error on invalid input. HTTP: `GET /api/bond-status/{pubkey}` |
-| `previewPrivateNames` | `PrivateNamePreviewQuery` | `PrivateNamePreviewResponse` | Generate unforgeable names from deployer key + timestamp. Allows clients to compute signatures over names before deploying. Max 1024 names |
+| `previewPrivateNames` | `PrivateNamePreviewQuery` | `PrivateNamePreviewResponse` | Generate unforgeable names from deployer key + timestamp + validAfterBlockNumber. Allows clients to compute signatures over names before deploying. Max 1024 names |
 | `getEventByHash` | `ReportQuery` | `EventInfoResponse` | Get full block execution trace — every COMM/produce/consume event per deploy and system deploy. Takes block hash + `forceReplay` flag. Used for debugging and auditing |
 | `visualizeDag` | `VisualizeDagQuery` | `stream VisualizeBlocksResponse` | DAG visualization in DOT format. Takes depth + startBlockNumber + showJustificationLines |
 | `machineVerifiableDag` | `MachineVerifyQuery` | `MachineVerifyResponse` | Machine-parseable DAG representation |
@@ -975,10 +1050,10 @@ Proto definitions: `models/src/main/protobuf/DeployServiceV1.proto`, `ProposeSer
 
 | Node type | `transfers` on deploy responses | `TransfersAvailable` WebSocket event |
 |-----------|--------------------------------|--------------------------------------|
-| **Readonly** | Populated array | Emitted after block report cache warming |
+| **Readonly** | Populated array; `null` for a block below the report window while another replay runs | Emitted after block report cache warming |
 | **Validator** | `null` (omitted) | Not emitted |
 
-`null` means transfers cannot be extracted on this node type (block replay requires readonly mode). An empty array `[]` means the deploy had no transfers.
+`null` means transfers are unavailable: block replay requires readonly mode, and a readonly node replays a block below `api-server.report-cache-retention-blocks` (default 1000 heights) only while no other replay runs. Over gRPC, `transfers_available` is `false` in the same cases. An empty array `[]` means the deploy had no transfers. Transfer amounts are exact decimal strings, see [64-bit integers and token amounts](#64-bit-integers-and-token-amounts).
 
 ---
 

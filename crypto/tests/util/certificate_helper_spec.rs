@@ -1,6 +1,7 @@
 use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::pkcs8::EncodePrivateKey;
+use shared::rust::test_tmpdir::ScopedTmpdir;
 
 #[test]
 fn test_generate_key_pair() {
@@ -89,7 +90,7 @@ fn test_public_address_coordinate_extraction() {
     let (_, public_key) = CertificateHelper::generate_key_pair();
 
     // Get the SEC1 uncompressed point (what our Rust implementation uses)
-    let encoded_point = public_key.to_encoded_point(false);
+    let encoded_point = public_key.to_sec1_point(false);
     assert_eq!(encoded_point.len(), 65); // 0x04 + 32-byte X + 32-byte Y
     assert_eq!(encoded_point.as_bytes()[0], 0x04); // Uncompressed point prefix
 
@@ -126,9 +127,8 @@ fn test_from_file_method() {
     // Create a temporary certificate
     match CertificateHelper::generate_certificate(&secret_key, &public_key) {
         Ok(cert_der) => {
-            // Write to a temporary file
-            let temp_dir = std::env::temp_dir();
-            let cert_file_path = temp_dir.join("test_cert.der");
+            let _scope = ScopedTmpdir::new();
+            let cert_file_path = std::env::temp_dir().join("test_cert.der");
 
             match std::fs::write(&cert_file_path, &cert_der) {
                 Ok(()) => {
@@ -220,7 +220,7 @@ fn test_normalize_public_key_coordinates() {
     assert!(empty_err.to_string().contains("empty"));
 
     let (_, public_key) = CertificateHelper::generate_key_pair();
-    let sec1_bytes = public_key.to_encoded_point(false).as_bytes().to_vec();
+    let sec1_bytes = public_key.to_sec1_point(false).as_bytes().to_vec();
     assert_eq!(sec1_bytes.len(), 65);
 
     let normalized =
@@ -322,8 +322,8 @@ fn test_print_private_key_from_secret_roundtrips_through_read_key_pair() {
             .expect("key pair should parse back");
     assert_eq!(parsed_secret.to_bytes(), secret_key.to_bytes());
     assert_eq!(
-        parsed_public.to_encoded_point(false),
-        public_key.to_encoded_point(false)
+        parsed_public.to_sec1_point(false),
+        public_key.to_sec1_point(false)
     );
 }
 
@@ -391,9 +391,8 @@ fn test_read_key_pair_from_file() {
         Ok(der_bytes) => {
             let pem_content = CertificatePrinter::print_private_key(der_bytes.as_bytes());
 
-            // Write to a temporary file
-            let temp_dir = std::env::temp_dir();
-            let key_file_path = temp_dir.join("test_key.pem");
+            let _scope = ScopedTmpdir::new();
+            let key_file_path = std::env::temp_dir().join("test_key.pem");
 
             match std::fs::write(&key_file_path, &pem_content) {
                 Ok(()) => {

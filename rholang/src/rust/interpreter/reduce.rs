@@ -13,10 +13,10 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
-    EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar,
-    EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, MatchCase,
-    New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod,
+    EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet,
+    ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom,
+    Match, New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
 };
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -35,6 +35,7 @@ use models::rust::utils::{
 use prost::Message;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
+use shared::rust::stack::with_stack_headroom;
 use tokio::sync::RwLock;
 use tokio::task::{JoinError, JoinHandle};
 
@@ -44,10 +45,10 @@ use super::accounting::costs::{
     bigint_negation_cost, bigint_subtraction_cost, bigint_sum_cost, bigrat_comparison_cost,
     bigrat_division_cost, bigrat_multiplication_cost, bigrat_negation_cost,
     bigrat_subtraction_cost, bigrat_sum_cost, boolean_and_cost, boolean_or_cost,
-    byte_array_append_cost, comparison_cost, division_cost, equality_check_cost, list_append_cost,
-    method_call_cost, modulo_cost, multiplication_cost, new_bindings_cost, op_call_cost,
-    receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
-    var_eval_cost,
+    byte_array_append_cost, collection_eval_cost, comparison_cost, division_cost,
+    equality_check_cost, list_append_cost, match_steps_cost, method_call_cost, modulo_cost,
+    multiplication_cost, new_bindings_cost, op_call_cost, receive_eval_cost, send_eval_cost,
+    string_append_cost, string_comparison_cost, subtraction_cost, sum_cost, var_eval_cost,
 };
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
@@ -59,18 +60,19 @@ use super::metrics_constants::{
     REDUCER_EVAL_RECEIVE_CALLS_METRIC, REDUCER_EVAL_RECEIVE_TIME_NS_METRIC,
     REDUCER_EVAL_SEND_CALLS_METRIC, REDUCER_EVAL_SEND_TIME_NS_METRIC, RHOLANG_METRICS_SOURCE,
 };
+use super::nesting::{check_nesting, MAX_EVALUATION_DEPTH};
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{bigint_to_bytes, bytes_to_bigint, RhoExpression, RhoUnforgeable};
 use super::substitute::Substitute;
-use super::unwrap_option_safe;
 use super::util::GeneratedMessage;
+use super::{unwrap_option_ref, unwrap_option_safe};
 use crate::rust::interpreter::accounting::costs::{
     add_cost, bytes_to_hex_cost, concat_bytes_cost, decode_utf8_cost, diff_cost, hex_to_bytes_cost,
     interpolate_cost, keys_method_cost, length_method_cost, lookup_cost, match_eval_cost,
     nth_method_call_cost, remove_cost, size_method_cost, slice_cost, take_cost, to_byte_array_cost,
     to_list_cost, union_cost, valid_utf8_prefix_len_cost,
 };
-use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
+use crate::rust::interpreter::matcher::spatial_matcher::{SpatialMatcherContext, StepBudget};
 use crate::rust::interpreter::rho_type::RhoTuple2;
 
 /// Minimum remaining stack space (in bytes) before growing.
@@ -83,6 +85,34 @@ const STACK_RED_ZONE: usize = 1024 * 1024; // 1 MB
 /// Size of each new stack segment allocated when the red zone is reached.
 const STACK_GROW_SIZE: usize = 2 * 1024 * 1024; // 2 MB
 const SINGLE_TERM_YIELD_INTERVAL: u64 = 256;
+
+// Synchronous expression evaluation never awaits, so the nesting it reaches on
+// a thread depends only on the expression and its values.
+thread_local! {
+    static EVALUATION_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+struct EvaluationDepth;
+
+impl EvaluationDepth {
+    fn enter() -> Result<Self, InterpreterError> {
+        EVALUATION_DEPTH.with(|depth| {
+            let next = depth.get() + 1;
+            if next > MAX_EVALUATION_DEPTH {
+                Err(InterpreterError::NestingLimitExceeded {
+                    limit: MAX_EVALUATION_DEPTH,
+                })
+            } else {
+                depth.set(next);
+                Ok(EvaluationDepth)
+            }
+        })
+    }
+}
+
+impl Drop for EvaluationDepth {
+    fn drop(&mut self) { EVALUATION_DEPTH.with(|depth| depth.set(depth.get() - 1)); }
+}
 
 /// A Future wrapper that dynamically grows the thread stack during polling.
 ///
@@ -218,6 +248,76 @@ fn join_error(err: JoinError) -> InterpreterError {
     }
 }
 
+type DispatchFuture = Pin<
+    Box<dyn futures::Future<Output = Result<DispatchType, InterpreterError>> + std::marker::Send>,
+>;
+
+/// Runs a COMM's dispatch and the produces that accompany it (a persistent
+/// retry, peek restorations) as parallel tasks. Only the dispatch can return
+/// `FailedNonDeterministicCall`; it counts as a failure. On its own it is
+/// returned unchanged, so `produce_inner` records the producing event as
+/// failed; with other errors it is aggregated with them.
+async fn join_comm_tasks(futures: Vec<DispatchFuture>) -> Result<DispatchType, InterpreterError> {
+    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
+        futures.into_iter().map(spawn_in_dispatch_scope).collect();
+    let mut errors = Vec::new();
+    let mut non_deterministic_failure = false;
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(DispatchType::FailedNonDeterministicCall(error))) => {
+                non_deterministic_failure = true;
+                errors.push(error);
+            }
+            Ok(Err(error)) => errors.push(error),
+            Err(error) => errors.push(join_error(error)),
+            Ok(Ok(_)) => {}
+        }
+    }
+    if non_deterministic_failure && errors.len() == 1 {
+        return Ok(DispatchType::FailedNonDeterministicCall(errors.remove(0)));
+    }
+    aggregate_evaluator_errors(errors)
+}
+
+fn aggregate_evaluator_errors(
+    errors: Vec<InterpreterError>,
+) -> Result<DispatchType, InterpreterError> {
+    match errors.as_slice() {
+        // No errors
+        [] => Ok(DispatchType::Skip),
+
+        // Out Of Phlogiston or User Abort error is always single
+        // - if one execution path hits these, the whole evaluation stops as well
+        // UserAbortError takes precedence over OutOfPhlogistonsError
+        // Use single-pass find() to avoid double iteration
+        err_list
+            if err_list
+                .iter()
+                .find(|e| matches!(e, InterpreterError::UserAbortError))
+                .is_some() =>
+        {
+            Err(InterpreterError::UserAbortError)
+        }
+
+        err_list
+            if err_list
+                .iter()
+                .find(|e| matches!(e, InterpreterError::OutOfPhlogistonsError))
+                .is_some() =>
+        {
+            Err(InterpreterError::OutOfPhlogistonsError)
+        }
+
+        // Rethrow single error
+        [ex] => Err(ex.clone()),
+
+        // Collect errors from parallel execution
+        err_list => Err(InterpreterError::AggregateError {
+            interpreter_errors: err_list.to_vec(),
+        }),
+    }
+}
+
 /**
  * Reduce is the interface for evaluating Rholang expressions.
  */
@@ -254,6 +354,14 @@ pub struct DebruijnInterpreter {
     /// `Arc<AtomicBool>` so the flag is shared with dispatcher /
     /// system-process closures that clone the reducer.
     pub filter_fs_native_urns: Arc<std::sync::atomic::AtomicBool>,
+    /// Scope-trapped `GPrivate.id` bytes accumulated during this deploy.
+    /// Populated in `eval_new` for rand-allocated binders whose variable
+    /// is used only in channel positions of the new's body. Drained at
+    /// deploy boundary (checkpoint / reset / soft-revert) so the sweep
+    /// in `RhoRuntimeImpl::create_checkpoint` can retire the matching
+    /// rspace entries before the hot-store delta reaches the radix trie.
+    /// See docs/rholang/garbage-collection.md.
+    pub(crate) trapped_gprivates: Arc<std::sync::Mutex<std::collections::HashSet<Vec<u8>>>>,
 }
 
 type Application = Option<(
@@ -289,6 +397,18 @@ impl DebruijnInterpreter {
         self.yielded_single_term_evaluations
             .store(0, Ordering::Relaxed);
         self.spawned_eval_tasks.store(0, Ordering::Relaxed);
+    }
+
+    /// Take ownership of the deploy's scope-trapped `GPrivate.id` set.
+    /// Call at deploy boundary (checkpoint / reset / soft-revert) to
+    /// hand the ids to the rspace sweep and leave an empty set behind.
+    pub(crate) fn drain_trapped(&self) -> Vec<Vec<u8>> {
+        let mut g = self
+            .trapped_gprivates
+            .lock()
+            .expect("trapped_gprivates lock");
+        let drained: Vec<Vec<u8>> = g.drain().collect();
+        drained
     }
 
     pub fn eval<'a>(
@@ -353,41 +473,41 @@ impl DebruijnInterpreter {
         .filter(|vec| !vec.is_empty())
         .flatten()
         .collect();
-        fn split(
-            id: i32,
-            terms: &Vec<GeneratedMessage>,
-            rand: Blake2b512Random,
-        ) -> Blake2b512Random {
-            if terms.len() == 1 {
+        fn split(id: i32, term_count: usize, rand: Blake2b512Random) -> Blake2b512Random {
+            if term_count == 1 {
                 rand
-            } else if terms.len() > 256 {
+            } else if term_count > 256 {
                 rand.split_short(id.try_into().unwrap())
             } else {
                 rand.split_byte(id.try_into().unwrap())
             }
         }
 
+        let term_count = terms.len();
         let term_split_limit = i16::MAX;
-        if terms.len() > term_split_limit.try_into().unwrap() {
+        if term_count > term_split_limit.try_into().unwrap() {
             Err(InterpreterError::ReduceError(format!(
                 "The number of terms in the Par is {}, which exceeds the limit of {}",
-                terms.len(),
-                term_split_limit
+                term_count, term_split_limit
             )))
         } else {
             metrics::counter!("reducer.eval_par.calls", "source" => "rholang").increment(1);
             metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
-                .increment(terms.len() as u64);
+                .increment(term_count as u64);
 
-            if let [term] = terms.as_slice() {
-                let evaluation = self.single_term_evaluations.fetch_add(1, Ordering::Relaxed) + 1;
-                if evaluation.is_multiple_of(SINGLE_TERM_YIELD_INTERVAL) {
-                    self.yielded_single_term_evaluations
-                        .fetch_add(1, Ordering::Relaxed);
-                    tokio::task::yield_now().await;
+            let terms = match <[GeneratedMessage; 1]>::try_from(terms) {
+                Ok([term]) => {
+                    let evaluation =
+                        self.single_term_evaluations.fetch_add(1, Ordering::Relaxed) + 1;
+                    if evaluation.is_multiple_of(SINGLE_TERM_YIELD_INTERVAL) {
+                        self.yielded_single_term_evaluations
+                            .fetch_add(1, Ordering::Relaxed);
+                        tokio::task::yield_now().await;
+                    }
+                    return self.generated_message_eval(term, env, rand).await;
                 }
-                return self.generated_message_eval(term, env, rand).await;
-            }
+                Err(terms) => terms,
+            };
 
             // Collect errors from all parallel execution paths (pars)
             // parTraverseSafe
@@ -399,16 +519,15 @@ impl DebruijnInterpreter {
                     >,
                 >,
             > = terms
-                .iter()
+                .into_iter()
                 .enumerate()
                 .map(|(index, term)| {
                     let self_clone = self.clone();
-                    let term_clone = term.clone();
                     let env_clone = env.clone();
-                    let rand_split = split(index.try_into().unwrap(), &terms, rand.clone());
+                    let rand_split = split(index.try_into().unwrap(), term_count, rand.clone());
                     Box::pin(async move {
                         self_clone
-                            .generated_message_eval(&term_clone, &env_clone, rand_split)
+                            .generated_message_eval(term, &env_clone, rand_split)
                             .await
                     })
                         as Pin<
@@ -442,7 +561,7 @@ impl DebruijnInterpreter {
             metrics::counter!("reducer.eval_par.join_ns", "source" => "rholang")
                 .increment(join_start.elapsed().as_nanos() as u64);
 
-            match self.aggregate_evaluator_errors(flattened_results) {
+            match aggregate_evaluator_errors(flattened_results) {
                 Ok(_) => Ok(()),
                 Err(e) => Err(e),
             }
@@ -479,7 +598,7 @@ impl DebruijnInterpreter {
             }
         }
 
-        self.aggregate_evaluator_errors(errors).map(|_| ())
+        aggregate_evaluator_errors(errors).map(|_| ())
     }
 
     /// Spawns the dispatch of a Rholang-body continuation as a task of `scope`
@@ -504,6 +623,33 @@ impl DebruijnInterpreter {
             },
         )));
         scope.push(handle);
+    }
+
+    /// Defers the dispatch when `deferral_scope` allows it; otherwise returns
+    /// it as a future for `join_comm_tasks`.
+    fn dispatch_task(
+        &self,
+        continuation: TaggedContinuation,
+        data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
+        is_replay: bool,
+        previous_output: Vec<Par>,
+    ) -> Option<DispatchFuture> {
+        if let Some(scope) = deferral_scope(&continuation) {
+            self.spawn_deferred_dispatch(
+                scope,
+                continuation,
+                data_list,
+                is_replay,
+                previous_output,
+            );
+            return None;
+        }
+        let reducer = self.clone();
+        Some(Box::pin(async move {
+            reducer
+                .dispatch(continuation, data_list, is_replay, previous_output)
+                .await
+        }))
     }
 
     async fn dispatch_or_defer(
@@ -534,7 +680,7 @@ impl DebruijnInterpreter {
      * @param data  The par objects holding the processes being sent.
      * @param persistent  True if the write should remain in the tuplespace indefinitely.
      */
-    fn produce<'a>(
+    pub(super) fn produce<'a>(
         &'a self,
         chan: Par,
         data: ListParWithRandom,
@@ -558,10 +704,8 @@ impl DebruijnInterpreter {
         persistent: bool,
     ) -> Result<DispatchType, InterpreterError> {
         self.update_mergeable_channels(&chan).await;
-        let produce_result = self
-            .space
-            .produce(chan.clone(), data.clone(), persistent)
-            .await?;
+        let retry = persistent.then(|| (chan.clone(), data.clone()));
+        let produce_result = self.space.produce(chan, data, persistent).await?;
         let is_replay = self.space.is_replay().await;
 
         match produce_result {
@@ -569,9 +713,7 @@ impl DebruijnInterpreter {
                 let dispatch_type = self
                     .continue_produce_process(
                         unpack_option_with_peek(Some((c, s))),
-                        chan,
-                        data,
-                        persistent,
+                        retry,
                         is_replay,
                         produce_event.clone().output_value,
                         produce_event.failed,
@@ -635,51 +777,50 @@ impl DebruijnInterpreter {
         peek: bool,
         guard: Option<Par>,
     ) -> Result<DispatchType, InterpreterError> {
-        let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.clone().into_iter().unzip();
+        let retry = persistent.then(|| (binds.clone(), body.clone(), guard.clone()));
+        let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.into_iter().unzip();
 
         // Update mergeable channels
         for source in &sources {
             self.update_mergeable_channels(source).await;
         }
 
+        let peeks = if peek {
+            BTreeSet::from_iter(0..sources.len() as i32)
+        } else {
+            BTreeSet::new()
+        };
         let consume_result = self
             .space
             .consume(
-                sources.clone(),
-                patterns.clone(),
+                sources,
+                patterns,
                 TaggedContinuation {
-                    tagged_cont: Some(TaggedCont::ParBody(body.clone())),
-                    guard: guard.clone(),
+                    tagged_cont: Some(TaggedCont::ParBody(body)),
+                    guard,
                 },
                 persistent,
-                if peek {
-                    BTreeSet::from_iter((0..sources.len() as i32).collect::<Vec<i32>>())
-                } else {
-                    BTreeSet::new()
-                },
+                peeks,
             )
             .await?;
         let is_replay = self.space.is_replay().await;
 
         self.continue_consume_process(
             unpack_option_with_peek(consume_result),
-            binds,
-            body,
-            persistent,
+            retry,
             peek,
             is_replay,
             Vec::new(),
-            guard,
         )
         .await
     }
 
+    /// `retry` holds the channel and data of a persistent produce, which is
+    /// issued again after its COMM fires; it is `None` for a linear produce.
     async fn continue_produce_process(
         &self,
         res: Application,
-        chan: Par,
-        data: ListParWithRandom,
-        persistent: bool,
+        retry: Option<(Par, ListParWithRandom)>,
         is_replay: bool,
         previous_output: Vec<Vec<u8>>,
         trace_failed: bool,
@@ -699,136 +840,34 @@ impl DebruijnInterpreter {
 
         match res {
             Some((continuation, data_list, peek)) => {
-                if persistent {
-                    // dispatchAndRun
-                    let self_clone1 = self.clone();
-                    let self_clone2 = self.clone();
-                    let continuation_clone = continuation.clone();
-                    let data_list_clone = data_list.clone();
-                    let previous_output_clone = previous_output_as_par.clone();
-                    let chan_clone = chan.clone();
-                    let data_clone = data.clone();
-                    let persistent_flag = persistent;
-                    let is_replay_flag = is_replay;
-
-                    let mut futures: Vec<
-                        Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >,
-                    > = vec![];
-
-                    if let Some(scope) = deferral_scope(&continuation_clone) {
-                        self.spawn_deferred_dispatch(
-                            scope,
-                            continuation_clone,
-                            data_list_clone,
-                            is_replay_flag,
-                            previous_output_clone,
-                        );
-                    } else {
-                        futures.push(Box::pin(async move {
-                            self_clone1
-                                .dispatch(
-                                    continuation_clone,
-                                    data_list_clone,
-                                    is_replay_flag,
-                                    previous_output_clone,
-                                )
-                                .await
-                        }));
-                    }
-
-                    futures.push(Box::pin(async move {
-                        self_clone2
-                            .produce(chan_clone, data_clone, persistent_flag)
-                            .await
-                    })
-                        as Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >);
-
+                self.register_bitmask_channels(&data_list).await;
+                if let Some((chan, data)) = retry {
                     // When a persistent produce triggers a peek COMM, the non-persistent
                     // peeked data on other channels was removed by RSpace. Re-issue it
                     // to preserve peek semantics (data should remain after peek read).
-                    if peek {
-                        futures.extend(self.produce_peeks(data_list).await);
-                    }
-
-                    // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
-
-                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
-                    for handle in handles {
-                        match handle.await {
-                            Ok(Err(err)) => flattened_results.push(err),
-                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                                format!("task panicked: {}", join_err),
-                            )),
-                            Ok(Ok(_)) => {}
-                        }
-                    }
-
-                    self.aggregate_evaluator_errors(flattened_results)
-                } else if peek {
-                    // dispatchAndRun
-                    let self_clone = self.clone();
-                    let continuation_clone = continuation.clone();
-                    let data_list_clone = data_list.clone();
-                    let previous_output_clone = previous_output_as_par.clone();
-
-                    let mut futures: Vec<
-                        Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >,
-                    > = vec![];
-                    if let Some(scope) = deferral_scope(&continuation_clone) {
-                        self.spawn_deferred_dispatch(
-                            scope,
-                            continuation_clone,
-                            data_list_clone,
-                            is_replay,
-                            previous_output_clone,
-                        );
+                    let peeks = if peek {
+                        self.produce_peeks(data_list.clone())
                     } else {
-                        futures.push(Box::pin(async move {
-                            self_clone
-                                .dispatch(
-                                    continuation_clone,
-                                    data_list_clone,
-                                    is_replay,
-                                    previous_output_clone,
-                                )
-                                .await
-                        }));
-                    }
-                    futures.extend(self.produce_peeks(data_list).await);
-
-                    // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
-
-                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
-                    for handle in handles {
-                        match handle.await {
-                            Ok(Err(err)) => flattened_results.push(err),
-                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                                format!("task panicked: {}", join_err),
-                            )),
-                            Ok(Ok(_)) => {}
-                        }
-                    }
-
-                    self.aggregate_evaluator_errors(flattened_results)
+                        Vec::new()
+                    };
+                    let mut futures: Vec<DispatchFuture> = self
+                        .dispatch_task(continuation, data_list, is_replay, previous_output_as_par)
+                        .into_iter()
+                        .collect();
+                    let reducer = self.clone();
+                    futures.push(Box::pin(
+                        async move { reducer.produce(chan, data, true).await },
+                    ));
+                    futures.extend(peeks);
+                    join_comm_tasks(futures).await
+                } else if peek {
+                    let peeks = self.produce_peeks(data_list.clone());
+                    let mut futures: Vec<DispatchFuture> = self
+                        .dispatch_task(continuation, data_list, is_replay, previous_output_as_par)
+                        .into_iter()
+                        .collect();
+                    futures.extend(peeks);
+                    join_comm_tasks(futures).await
                 } else {
                     self.dispatch_or_defer(
                         continuation,
@@ -843,16 +882,15 @@ impl DebruijnInterpreter {
         }
     }
 
+    /// `retry` holds the binds, body and guard of a persistent consume, which
+    /// is issued again after its COMM fires; it is `None` for a linear consume.
     async fn continue_consume_process(
         &self,
         res: Application,
-        binds: Vec<(BindPattern, Par)>,
-        body: ParWithRandom,
-        persistent: bool,
+        retry: Option<(Vec<(BindPattern, Par)>, ParWithRandom, Option<Par>)>,
         peek: bool,
         is_replay: bool,
         previous_output: Vec<Vec<u8>>,
-        guard: Option<Par>,
     ) -> Result<DispatchType, InterpreterError> {
         let previous_output_as_par = previous_output
             .into_iter()
@@ -863,137 +901,24 @@ impl DebruijnInterpreter {
 
         match res {
             Some((continuation, data_list, _peek)) => {
-                if persistent {
-                    // dispatchAndRun
-                    let self_clone1 = self.clone();
-                    let self_clone2 = self.clone();
-                    let continuation_clone = continuation.clone();
-                    let data_list_clone = data_list.clone();
-                    let previous_output_clone = previous_output_as_par.clone();
-                    let binds_clone = binds.clone();
-                    let body_clone = body.clone();
-                    let persistent_flag = persistent;
-                    let peek_flag = peek;
-                    let is_replay_flag = is_replay;
-                    let guard_clone = guard.clone();
-
-                    let mut futures: Vec<
-                        Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >,
-                    > = vec![];
-
-                    if let Some(scope) = deferral_scope(&continuation_clone) {
-                        self.spawn_deferred_dispatch(
-                            scope,
-                            continuation_clone,
-                            data_list_clone,
-                            is_replay_flag,
-                            previous_output_clone,
-                        );
-                    } else {
-                        futures.push(Box::pin(async move {
-                            self_clone1
-                                .dispatch(
-                                    continuation_clone,
-                                    data_list_clone,
-                                    is_replay_flag,
-                                    previous_output_clone,
-                                )
-                                .await
-                        }));
-                    }
-
+                if let Some((binds, body, guard)) = retry {
+                    let mut futures: Vec<DispatchFuture> = self
+                        .dispatch_task(continuation, data_list, is_replay, previous_output_as_par)
+                        .into_iter()
+                        .collect();
+                    let reducer = self.clone();
                     futures.push(Box::pin(async move {
-                        self_clone2
-                            .consume(
-                                binds_clone,
-                                body_clone,
-                                persistent_flag,
-                                peek_flag,
-                                guard_clone,
-                            )
-                            .await
-                    })
-                        as Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >);
-
-                    // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
-
-                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
-                    for handle in handles {
-                        match handle.await {
-                            Ok(Err(err)) => flattened_results.push(err),
-                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                                format!("task panicked: {}", join_err),
-                            )),
-                            Ok(Ok(_)) => {}
-                        }
-                    }
-
-                    self.aggregate_evaluator_errors(flattened_results)
+                        reducer.consume(binds, body, true, peek, guard).await
+                    }));
+                    join_comm_tasks(futures).await
                 } else if _peek {
-                    // dispatchAndRun
-                    let self_clone = self.clone();
-                    let continuation_clone = continuation.clone();
-                    let data_list_clone = data_list.clone();
-                    let previous_output_clone = previous_output_as_par.clone();
-
-                    let mut futures: Vec<
-                        Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >,
-                    > = vec![];
-                    if let Some(scope) = deferral_scope(&continuation_clone) {
-                        self.spawn_deferred_dispatch(
-                            scope,
-                            continuation_clone,
-                            data_list_clone,
-                            is_replay,
-                            previous_output_clone,
-                        );
-                    } else {
-                        futures.push(Box::pin(async move {
-                            self_clone
-                                .dispatch(
-                                    continuation_clone,
-                                    data_list_clone,
-                                    is_replay,
-                                    previous_output_clone,
-                                )
-                                .await
-                        }));
-                    }
-                    futures.extend(self.produce_peeks(data_list).await);
-
-                    // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
-
-                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
-                    for handle in handles {
-                        match handle.await {
-                            Ok(Err(err)) => flattened_results.push(err),
-                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                                format!("task panicked: {}", join_err),
-                            )),
-                            Ok(Ok(_)) => {}
-                        }
-                    }
-
-                    self.aggregate_evaluator_errors(flattened_results)
+                    let peeks = self.produce_peeks(data_list.clone());
+                    let mut futures: Vec<DispatchFuture> = self
+                        .dispatch_task(continuation, data_list, is_replay, previous_output_as_par)
+                        .into_iter()
+                        .collect();
+                    futures.extend(peeks);
+                    join_comm_tasks(futures).await
                 } else {
                     self.dispatch_or_defer(
                         continuation,
@@ -1043,29 +968,17 @@ impl DebruijnInterpreter {
             .await
     }
 
-    async fn produce_peeks(
+    fn produce_peeks(
         &self,
         data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
-    ) -> Vec<
-        Pin<
-            Box<
-                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                    + std::marker::Send,
-            >,
-        >,
-    > {
+    ) -> Vec<DispatchFuture> {
         data_list
             .into_iter()
             .filter(|(_, _, _, persist)| !persist)
             .map(|(chan, _, removed_data, _)| {
-                let self_clone = self.clone();
-                Box::pin(async move { self_clone.produce(chan, removed_data, false).await })
-                    as Pin<
-                        Box<
-                            dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                + std::marker::Send,
-                        >,
-                    >
+                let reducer = self.clone();
+                Box::pin(async move { reducer.produce(chan, removed_data, false).await })
+                    as DispatchFuture
             })
             .collect()
     }
@@ -1076,6 +989,20 @@ impl DebruijnInterpreter {
         if let Some(merge_type) = self.is_mergeable_channel(chan) {
             let mut merge_chs_write = self.merge_chs.write().await;
             merge_chs_write.insert(chan.clone(), merge_type);
+        }
+    }
+
+    async fn register_bitmask_channels(
+        &self,
+        data_list: &[(Par, ListParWithRandom, ListParWithRandom, bool)],
+    ) {
+        for (chan, _, _, _) in data_list {
+            if self.is_mergeable_channel(chan) == Some(MergeType::BitmaskOr) {
+                self.merge_chs
+                    .write()
+                    .await
+                    .insert(chan.clone(), MergeType::BitmaskOr);
+            }
         }
     }
 
@@ -1134,49 +1061,9 @@ impl DebruijnInterpreter {
         result
     }
 
-    fn aggregate_evaluator_errors(
-        &self,
-        errors: Vec<InterpreterError>,
-    ) -> Result<DispatchType, InterpreterError> {
-        match errors.as_slice() {
-            // No errors
-            [] => Ok(DispatchType::Skip),
-
-            // Out Of Phlogiston or User Abort error is always single
-            // - if one execution path hits these, the whole evaluation stops as well
-            // UserAbortError takes precedence over OutOfPhlogistonsError
-            // Use single-pass find() to avoid double iteration
-            err_list
-                if err_list
-                    .iter()
-                    .find(|e| matches!(e, InterpreterError::UserAbortError))
-                    .is_some() =>
-            {
-                Err(InterpreterError::UserAbortError)
-            }
-
-            err_list
-                if err_list
-                    .iter()
-                    .find(|e| matches!(e, InterpreterError::OutOfPhlogistonsError))
-                    .is_some() =>
-            {
-                Err(InterpreterError::OutOfPhlogistonsError)
-            }
-
-            // Rethrow single error
-            [ex] => Err(ex.clone()),
-
-            // Collect errors from parallel execution
-            err_list => Err(InterpreterError::AggregateError {
-                interpreter_errors: err_list.to_vec(),
-            }),
-        }
-    }
-
     async fn generated_message_eval(
         &self,
-        term: &GeneratedMessage,
+        term: GeneratedMessage,
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
@@ -1222,16 +1109,12 @@ impl DebruijnInterpreter {
             GeneratedMessage::Expr(term) => match &term.expr_instance {
                 Some(expr_instance) => match expr_instance {
                     ExprInstance::EVarBody(e) => {
-                        let res = self.eval_var(&e.clone().v.unwrap(), env)?;
+                        let var = e.v.as_ref().expect("an EVar always holds a variable");
+                        let res = self.eval_var(var, env)?;
                         self.eval(res, env, rand).await
                     }
-                    ExprInstance::EMethodBody(e) => {
-                        let res = self.eval_expr_to_par(
-                            &Expr {
-                                expr_instance: Some(ExprInstance::EMethodBody(e.clone())),
-                            },
-                            env,
-                        )?;
+                    ExprInstance::EMethodBody(_) => {
+                        let res = self.eval_expr_to_par(&term, env)?;
                         self.eval(res, env, rand).await
                     }
                     other => Err(InterpreterError::BugFoundError(format!(
@@ -1260,13 +1143,13 @@ impl DebruijnInterpreter {
      */
     async fn eval_send(
         &self,
-        send: &Send,
+        send: Send,
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         self.cost.charge(send_eval_cost())?;
-        let eval_chan = self.eval_expr(&unwrap_option_safe(send.chan.clone())?, env)?;
-        let sub_chan = self.substitute.substitute_and_charge(&eval_chan, 0, env)?;
+        let eval_chan = self.eval_expr(unwrap_option_ref(&send.chan)?, env)?;
+        let sub_chan = self.substitute.substitute_and_charge(eval_chan, 0, env)?;
         let unbundled = match single_bundle(&sub_chan) {
             Some(value) => {
                 if !value.write_flag {
@@ -1285,7 +1168,7 @@ impl DebruijnInterpreter {
             .iter()
             .map(|expr| {
                 let evaluated = self.eval_expr(expr, env)?;
-                self.substitute.substitute_and_charge(&evaluated, 0, env)
+                self.substitute.substitute_and_charge(evaluated, 0, env)
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
@@ -1303,7 +1186,7 @@ impl DebruijnInterpreter {
 
     async fn eval_receive(
         &self,
-        receive: &Receive,
+        receive: Receive,
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
@@ -1315,8 +1198,8 @@ impl DebruijnInterpreter {
         // stay as free vars for the matcher to fill in. Stored once on
         // the TaggedContinuation so it sees every bound variable across
         // every bind. Plan §7.12.
-        let subst_guard = match receive.condition.as_ref() {
-            Some(c) if c != &Par::default() => {
+        let subst_guard = match receive.condition {
+            Some(c) if c != Par::default() => {
                 Some(self.substitute.substitute_and_charge(c, 1, env)?)
             }
             _ => None,
@@ -1324,14 +1207,13 @@ impl DebruijnInterpreter {
 
         let binds = receive
             .binds
-            .clone()
             .into_iter()
             .map(|rb| {
                 let q = self.unbundle_receive(&rb, env)?;
                 let subst_patterns = rb
                     .patterns
                     .into_iter()
-                    .map(|pattern| self.substitute.substitute_and_charge(&pattern, 1, env))
+                    .map(|pattern| self.substitute.substitute_and_charge(pattern, 1, env))
                     .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                 Ok((
@@ -1345,9 +1227,18 @@ impl DebruijnInterpreter {
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
+        // A join in which any two channels resolve to the same name never matches:
+        // the runtime counterpart of the normalizer's ReceiveOnSameChannelsError.
+        let mut channels = HashSet::with_capacity(binds.len());
+        if !binds.iter().all(|(_, channel)| channels.insert(channel)) {
+            return Ok(());
+        }
+
         // TODO: Allow for the environment to be stored with the body in the Tuplespace - OLD
         let subst_body = self.substitute.substitute_no_sort_and_charge(
-            receive.body.as_ref().unwrap(),
+            receive
+                .body
+                .expect("Receive.body: normalizer post-condition"),
             0,
             &env.shift(receive.bind_count),
         )?;
@@ -1377,13 +1268,15 @@ impl DebruijnInterpreter {
      *                  an exception.
      */
     fn eval_var(&self, valproc: &Var, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        self.cost.charge(var_eval_cost())?;
         match valproc.var_instance {
             Some(VarInstance::BoundVar(level)) => match env.get(&level) {
-                Some(p) => Ok(p),
+                Some(p) => {
+                    self.cost.charge(var_eval_cost(&p))?;
+                    Ok(p)
+                }
                 None => Err(InterpreterError::ReduceError(format!(
                     "Unbound variable: {} in {:?}",
-                    level, env.env_map
+                    level, env
                 ))),
             },
             Some(VarInstance::Wildcard(_)) => Err(InterpreterError::ReduceError(
@@ -1398,91 +1291,36 @@ impl DebruijnInterpreter {
         }
     }
 
+    /// Matches `target` against `pattern` within the phlo the deploy has left,
+    /// charging a phlo per match step. A match that runs out fails the deploy
+    /// with out-of-phlo rather than reading as no match.
+    fn charged_match(
+        &self,
+        target: &Par,
+        pattern: Par,
+    ) -> Result<Option<models::rust::utils::FreeMap>, InterpreterError> {
+        let available = self.cost.get().value.max(0) as usize;
+        let budget = StepBudget::new(available);
+        let matched =
+            SpatialMatcherContext::with_budget(budget.clone()).match_result(target, pattern);
+        self.cost
+            .charge(match_steps_cost(available - budget.left()))?;
+        if matched.is_none() && budget.exhausted() {
+            return Err(InterpreterError::OutOfPhlogistonsError);
+        }
+        Ok(matched)
+    }
+
     // TODO: review 'loop' matches 'tailRecM'
     async fn eval_match(
         &self,
-        mat: &Match,
+        mat: Match,
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         fn add_to_env(env: &Env<Par>, free_map: BTreeMap<i32, Par>, free_count: i32) -> Env<Par> {
-            (0..free_count).fold(env.clone(), |mut acc, e| {
-                let value = free_map.get(&e).unwrap_or(&Par::default()).clone();
-                acc.put(value)
-            })
+            env.extended((0..free_count).map(|e| free_map.get(&e).cloned().unwrap_or_default()))
         }
-
-        let first_match = Box::new(
-            |target: Par, cases: Vec<MatchCase>, rand: Blake2b512Random| async {
-                let mut state = (target, cases);
-
-                loop {
-                    let (_target, _cases) = state;
-
-                    match _cases.as_slice() {
-                        [] => return Ok(()),
-
-                        [single_case, case_rem @ ..] => {
-                            let pattern = self.substitute.substitute_and_charge(
-                                &unwrap_option_safe(single_case.pattern.clone())?,
-                                1,
-                                env,
-                            )?;
-
-                            let mut spatial_matcher = SpatialMatcherContext::new();
-                            let match_result =
-                                spatial_matcher.spatial_match_result(_target.clone(), pattern);
-
-                            match match_result {
-                                None => {
-                                    state = (_target, case_rem.to_vec());
-                                }
-
-                                Some(free_map) => {
-                                    let case_env =
-                                        add_to_env(env, free_map.clone(), single_case.free_count);
-
-                                    // Optional `where` guard. Fire the case
-                                    // body iff the guard evaluates to
-                                    // GBool(true). Anything else (false,
-                                    // non-bool, eval-error) falls through to
-                                    // the next case — matching the plan §3.4
-                                    // fall-through rule. `Some(empty Par)` is
-                                    // treated as "no guard" so we agree with
-                                    // eval_receive and Matcher::check_commit.
-                                    let guard_passes = match &single_case.guard {
-                                        Some(g) if g != &Par::default() => {
-                                            match rho_pure_eval::eval(g, &case_env) {
-                                                Ok(result) => extract_bool(&result) == Some(true),
-                                                Err(_) => false,
-                                            }
-                                        }
-                                        _ => true,
-                                    };
-
-                                    if !guard_passes {
-                                        state = (_target, case_rem.to_vec());
-                                        continue;
-                                    }
-
-                                    self.eval(
-                                        single_case
-                                            .source
-                                            .clone()
-                                            .expect("MatchCase.source: protobuf no_box invariant"),
-                                        &case_env,
-                                        rand,
-                                    )
-                                    .await?;
-
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-        );
 
         self.cost.charge(match_eval_cost())?;
         let evaled_target = self.eval_expr(
@@ -1491,16 +1329,49 @@ impl DebruijnInterpreter {
                 .expect("Match.target: normalizer post-condition"),
             env,
         )?;
-        let subst_target = self
+        let target = self
             .substitute
-            .substitute_and_charge(&evaled_target, 0, env)?;
+            .substitute_and_charge(evaled_target, 0, env)?;
 
-        first_match(subst_target, mat.cases.clone(), rand).await
+        for case in mat.cases {
+            let pattern =
+                self.substitute
+                    .substitute_and_charge(unwrap_option_safe(case.pattern)?, 1, env)?;
+            let Some(free_map) = self.charged_match(&target, pattern)? else {
+                continue;
+            };
+            let case_env = add_to_env(env, free_map, case.free_count);
+
+            // Optional `where` guard: the case fires only when the guard
+            // evaluates to GBool(true); anything else falls through to the
+            // next case. `Some(empty Par)` means no guard, as in eval_receive
+            // and Matcher::check_commit.
+            let guard_passes = match &case.guard {
+                Some(g) if g != &Par::default() => match rho_pure_eval::eval(g, &case_env) {
+                    Ok(result) => extract_bool(&result) == Some(true),
+                    Err(_) => false,
+                },
+                _ => true,
+            };
+            if !guard_passes {
+                continue;
+            }
+
+            return self
+                .eval(
+                    case.source
+                        .expect("MatchCase.source: protobuf no_box invariant"),
+                    &case_env,
+                    rand,
+                )
+                .await;
+        }
+        Ok(())
     }
 
     async fn eval_if(
         &self,
-        conditional: &If,
+        conditional: If,
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
@@ -1512,16 +1383,13 @@ impl DebruijnInterpreter {
                 .expect("If.condition: normalizer post-condition"),
             env,
         )?;
-        let subst_cond = self
-            .substitute
-            .substitute_and_charge(&evaled_cond, 0, env)?;
+        let subst_cond = self.substitute.substitute_and_charge(evaled_cond, 0, env)?;
 
         match extract_bool(&subst_cond) {
             Some(true) => {
                 self.eval(
                     conditional
                         .if_true
-                        .clone()
                         .expect("If.if_true: normalizer post-condition"),
                     env,
                     rand,
@@ -1532,7 +1400,6 @@ impl DebruijnInterpreter {
                 self.eval(
                     conditional
                         .if_false
-                        .clone()
                         .expect("If.if_false: normalizer post-condition"),
                     env,
                     rand,
@@ -1552,7 +1419,7 @@ impl DebruijnInterpreter {
     // TODO: Eliminate variable shadowing - OLD
     async fn eval_new(
         &self,
-        new: &New,
+        new: New,
         env: Env<Par>,
         mut rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
@@ -1579,105 +1446,113 @@ impl DebruijnInterpreter {
             }
         }
 
-        let mut alloc = |count: usize, urns: Vec<String>| {
-            let simple_news =
-                (0..(count - urns.len()))
-                    .into_iter()
-                    .fold(env.clone(), |mut _env: Env<Par>, _| {
-                        let addr: Par = Par::default().with_unforgeables(vec![GUnforgeable {
-                            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                                id: rand.next().iter().map(|&x| x as u8).collect::<Vec<u8>>(),
-                            })),
-                        }]);
-                        _env.put(addr)
-                    });
+        self.cost.charge(new_bindings_cost(new.bind_count as i64))?;
 
-            let add_urn = |new_env: &mut Env<Par>, urn: String| {
-                if !self.urn_map.contains_key(&urn) {
-                    match new.injections.get(&urn) {
-                        Some(p) => {
-                            if p == &Par::default() {
-                                Ok(new_env.put(Par::default()))
-                            } else if let Some(gunf) = RhoUnforgeable::unapply(p) {
-                                if let Some(instance) = gunf.unf_instance {
-                                    Ok(new_env.put(Par::default().with_unforgeables(vec![
-                                        GUnforgeable {
-                                            unf_instance: Some(instance),
-                                        },
-                                    ])))
-                                } else {
-                                    Err(InterpreterError::BugFoundError(
-                                        "unf_instance field is None".to_string(),
-                                    ))
-                                }
-                            } else if let Some(expr) = RhoExpression::unapply(p) {
-                                if let Some(instance) = expr.expr_instance {
-                                    Ok(new_env.put(Par::default().with_exprs(vec![Expr {
-                                        expr_instance: Some(instance),
-                                    }])))
-                                } else {
-                                    Err(InterpreterError::BugFoundError(
-                                        "expr_instance field is None".to_string(),
-                                    ))
-                                }
+        // Scope-trapped GC: for each rand-allocated binder, check whether its
+        // bound variable in the body appears only in channel positions. If so,
+        // record the fresh GPrivate.id in the per-deploy trapped set so the
+        // checkpoint-time sweep can retire rspace entries keyed on it. URN
+        // injections are system unforgeables and are deliberately excluded.
+        // See docs/rholang/garbage-collection.md.
+        let n_rand: usize = new.bind_count as usize - new.uri.len();
+        let body_for_scan: &Par = new.p.as_ref().ok_or_else(|| {
+            InterpreterError::BugFoundError("New body missing in eval_new".to_string())
+        })?;
+        let mut rand_ids: Vec<Vec<u8>> = Vec::with_capacity(n_rand);
+        for i in 0..n_rand {
+            let id: Vec<u8> = rand.next().iter().map(|&x| x as u8).collect();
+            // The i-th rand.next() is pushed first in the env.extended loop
+            // below, so it sits at the deepest level of the n_rand-slot batch
+            // and resolves to de Bruijn index `bind_count - 1 - i` in the body.
+            let body_db_index = (new.bind_count as usize) - 1 - i;
+            if crate::rust::interpreter::garbage::is_scope_trapped(body_db_index, body_for_scan) {
+                self.trapped_gprivates
+                    .lock()
+                    .expect("trapped_gprivates lock")
+                    .insert(id.clone());
+            }
+            rand_ids.push(id);
+        }
+        let mut rand_ids_iter = rand_ids.into_iter();
+
+        let mut alloc = |count: usize, urns: Vec<String>| {
+            let simple_news = env.extended((0..(count - urns.len())).map(|_| {
+                let id = rand_ids_iter
+                    .next()
+                    .expect("rand_ids pre-allocated for every rand slot");
+                Par::default().with_unforgeables(vec![GUnforgeable {
+                    unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id })),
+                }])
+            }));
+
+            let add_urn = |new_env: Env<Par>, urn: String| match self.urn_map.get(&urn) {
+                None => match new.injections.get(&urn) {
+                    Some(p) => {
+                        if p == &Par::default() {
+                            Ok(new_env.put(Par::default()))
+                        } else if let Some(gunf) = RhoUnforgeable::unapply(p) {
+                            if let Some(instance) = gunf.unf_instance {
+                                Ok(new_env.put(Par::default().with_unforgeables(vec![
+                                    GUnforgeable {
+                                        unf_instance: Some(instance),
+                                    },
+                                ])))
                             } else {
                                 Err(InterpreterError::BugFoundError(
-                                    "invalid injection".to_string(),
+                                    "unf_instance field is None".to_string(),
                                 ))
                             }
-                        }
-                        None => Err(InterpreterError::BugFoundError(format!(
-                            "No value set for {}. This is a bug in the normalizer or on the path from it.",
-                            urn
-                        ))),
-                    }
-                } else {
-                    match self.urn_map.get(&urn) {
-                        Some(p) => {
-                            if urn == "rho:system:bitmaskMergeableTag"
-                                && tracing::enabled!(
-                                    target: "f1r3fly.merge.tag_check.validation",
-                                    tracing::Level::DEBUG
-                                )
-                            {
-                                use prost::Message;
-                                let bytes = p.encode_to_vec();
-                                let hex: String =
-                                    bytes.iter().map(|b| format!("{:02x}", b)).collect();
-                                tracing::debug!(
-                                    target: "f1r3fly.merge.tag_check.validation",
-                                    "URI lookup at deploy: rho:system:bitmaskMergeableTag -> Par hex={}",
-                                    hex,
-                                );
+                        } else if let Some(expr) = RhoExpression::unapply(p) {
+                            if let Some(instance) = expr.expr_instance {
+                                Ok(new_env.put(Par::default().with_exprs(vec![Expr {
+                                    expr_instance: Some(instance),
+                                }])))
+                            } else {
+                                Err(InterpreterError::BugFoundError(
+                                    "expr_instance field is None".to_string(),
+                                ))
                             }
-                            Ok(new_env.put(p.clone()))
+                        } else {
+                            Err(InterpreterError::BugFoundError(
+                                "invalid injection".to_string(),
+                            ))
                         }
-                        None => Err(InterpreterError::ReduceError(format!(
-                            "Unknown urn for new: {}",
-                            urn
-                        ))),
                     }
+                    None => Err(InterpreterError::UnknownUrnError { urn }),
+                },
+                Some(p) => {
+                    if urn == "rho:system:bitmaskMergeableTag"
+                        && tracing::enabled!(
+                            target: "f1r3fly.merge.tag_check.validation",
+                            tracing::Level::DEBUG
+                        )
+                    {
+                        use prost::Message;
+                        let bytes = p.encode_to_vec();
+                        let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                        tracing::debug!(
+                            target: "f1r3fly.merge.tag_check.validation",
+                            "URI lookup at deploy: rho:system:bitmaskMergeableTag -> Par hex={}",
+                            hex,
+                        );
+                    }
+                    Ok(new_env.put(p.clone()))
                 }
             };
 
-            urns.iter().try_fold(simple_news, |mut acc, urn| {
-                add_urn(&mut acc, urn.to_string())
-            })
+            urns.iter()
+                .try_fold(simple_news, |acc, urn| add_urn(acc, urn.to_string()))
         };
 
-        self.cost.charge(new_bindings_cost(new.bind_count as i64))?;
         match alloc(new.bind_count as usize, new.uri.clone()) {
-            Ok(env) => {
-                self.eval(unwrap_option_safe(new.p.clone())?, &env, rand)
-                    .await
-            }
+            Ok(env) => self.eval(unwrap_option_safe(new.p)?, &env, rand).await,
             Err(e) => Err(e),
         }
     }
 
     fn unbundle_receive(&self, rb: &ReceiveBind, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        let eval_src = self.eval_expr(&unwrap_option_safe(rb.source.clone())?, env)?;
-        let subst = self.substitute.substitute_and_charge(&eval_src, 0, env)?;
+        let eval_src = self.eval_expr(unwrap_option_ref(&rb.source)?, env)?;
+        let subst = self.substitute.substitute_and_charge(eval_src, 0, env)?;
         // Check if we try to read from bundled channel
         let unbndl = match single_bundle(&subst) {
             Some(value) => {
@@ -1697,32 +1572,30 @@ impl DebruijnInterpreter {
 
     async fn eval_bundle(
         &self,
-        bundle: &Bundle,
+        bundle: Bundle,
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
-        self.eval(unwrap_option_safe(bundle.body.clone())?, env, rand)
-            .await
+        self.eval(unwrap_option_safe(bundle.body)?, env, rand).await
     }
 
     // Public here for testing purposes
     pub fn eval_expr_to_par(&self, expr: &Expr, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        match unwrap_option_safe(expr.expr_instance.clone())? {
+        match unwrap_option_ref(&expr.expr_instance)? {
             ExprInstance::EVarBody(evar) => {
-                let p = self.eval_var(&unwrap_option_safe(evar.v)?, env)?;
-                let evaled_p = self.eval_expr(&p, env)?;
-                Ok(evaled_p)
+                let p = self.eval_var(unwrap_option_ref(&evar.v)?, env)?;
+                self.eval_expr(&p, env)
             }
             ExprInstance::EMethodBody(emethod) => {
                 self.cost.charge(method_call_cost())?;
-                let evaled_target = self.eval_expr(&unwrap_option_safe(emethod.target)?, env)?;
+                let evaled_target = self.eval_expr(unwrap_option_ref(&emethod.target)?, env)?;
                 let evaled_args: Vec<Par> = emethod
                     .arguments
                     .iter()
                     .map(|arg| self.eval_expr(arg, env))
                     .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-                let result_par = match self.method_table().get(&emethod.method_name) {
+                let result_par = match self.method(&emethod.method_name) {
                     Some(_method) => _method.apply(evaled_target, evaled_args, env)?,
                     None => {
                         return Err(InterpreterError::ReduceError(format!(
@@ -1739,6 +1612,15 @@ impl DebruijnInterpreter {
     }
 
     fn eval_expr_to_expr(&self, expr: &Expr, env: &Env<Par>) -> Result<Expr, InterpreterError> {
+        let _level = EvaluationDepth::enter()?;
+        with_stack_headroom(|| self.eval_expr_to_expr_at_level(expr, env))
+    }
+
+    fn eval_expr_to_expr_at_level(
+        &self,
+        expr: &Expr,
+        env: &Env<Par>,
+    ) -> Result<Expr, InterpreterError> {
         let relop = |p1: &Par,
                      p2: &Par,
                      relopb: fn(bool, bool) -> bool,
@@ -1801,7 +1683,8 @@ impl DebruijnInterpreter {
                 }
 
                 (ExprInstance::GString(s1), ExprInstance::GString(s2)) => {
-                    self.cost.charge(comparison_cost())?;
+                    self.cost
+                        .charge(string_comparison_cost(s1.len(), s2.len()))?;
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::GBool(relops(s1, s2))),
                     })
@@ -2020,8 +1903,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EMultBody(EMult { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
                         if is_sized_int_pair(lhs, rhs) {
@@ -2110,8 +1993,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EDivBody(EDiv { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
                         if is_sized_int_pair(lhs, rhs) {
@@ -2215,8 +2098,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EModBody(EMod { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
                         if is_sized_int_pair(lhs, rhs) {
@@ -2322,8 +2205,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EPlusBody(EPlus { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
                         if is_sized_int_pair(lhs, rhs) {
@@ -2434,8 +2317,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EMinusBody(EMinus { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
                         if is_sized_int_pair(lhs, rhs) {
@@ -2568,43 +2451,43 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::ELtBody(ELt { p1, p2 }) => relop(
-                    &p1.clone().unwrap(),
-                    &p2.clone().unwrap(),
+                    p1.as_ref().unwrap(),
+                    p2.as_ref().unwrap(),
                     |b1: bool, b2: bool| !b1 & b2,
                     |i1: i64, i2: i64| i1 < i2,
                     |s1: String, s2: String| s1 < s2,
                 ),
 
                 ExprInstance::ELteBody(ELte { p1, p2 }) => relop(
-                    &p1.clone().unwrap(),
-                    &p2.clone().unwrap(),
+                    p1.as_ref().unwrap(),
+                    p2.as_ref().unwrap(),
                     |b1: bool, b2: bool| b1 <= b2,
                     |i1: i64, i2: i64| i1 <= i2,
                     |s1: String, s2: String| s1 <= s2,
                 ),
 
                 ExprInstance::EGtBody(EGt { p1, p2 }) => relop(
-                    &p1.clone().unwrap(),
-                    &p2.clone().unwrap(),
+                    p1.as_ref().unwrap(),
+                    p2.as_ref().unwrap(),
                     |b1: bool, b2: bool| b1 & !b2,
                     |i1: i64, i2: i64| i1 > i2,
                     |s1: String, s2: String| s1 > s2,
                 ),
 
                 ExprInstance::EGteBody(EGte { p1, p2 }) => relop(
-                    &p1.clone().unwrap(),
-                    &p2.clone().unwrap(),
+                    p1.as_ref().unwrap(),
+                    p2.as_ref().unwrap(),
                     |b1: bool, b2: bool| b1 >= b2,
                     |i1: i64, i2: i64| i1 >= i2,
                     |s1: String, s2: String| s1 >= s2,
                 ),
 
                 ExprInstance::EEqBody(EEq { p1, p2 }) => {
-                    let v1 = self.eval_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_expr(p2.as_ref().unwrap(), env)?;
                     // TODO: build an equality operator that takes in an environment. - OLD
-                    let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
-                    let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
+                    let sv1 = self.substitute.substitute_and_charge(v1, 0, env)?;
+                    let sv2 = self.substitute.substitute_and_charge(v2, 0, env)?;
                     self.cost.charge(equality_check_cost(&sv1, &sv2))?;
 
                     let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
@@ -2618,10 +2501,10 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::ENeqBody(ENeq { p1, p2 }) => {
-                    let v1 = self.eval_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_expr(&p2.clone().unwrap(), env)?;
-                    let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
-                    let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
+                    let v1 = self.eval_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_expr(p2.as_ref().unwrap(), env)?;
+                    let sv1 = self.substitute.substitute_and_charge(v1, 0, env)?;
+                    let sv2 = self.substitute.substitute_and_charge(v2, 0, env)?;
                     self.cost.charge(equality_check_cost(&sv1, &sv2))?;
 
                     let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
@@ -2635,8 +2518,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EAndBody(EAnd { p1, p2 }) => {
-                    let b1 = self.eval_to_bool(&p1.clone().unwrap(), env)?;
-                    let b2 = self.eval_to_bool(&p2.clone().unwrap(), env)?;
+                    let b1 = self.eval_to_bool(p1.as_ref().unwrap(), env)?;
+                    let b2 = self.eval_to_bool(p2.as_ref().unwrap(), env)?;
                     self.cost.charge(boolean_and_cost())?;
 
                     Ok(Expr {
@@ -2645,8 +2528,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EOrBody(EOr { p1, p2 }) => {
-                    let b1 = self.eval_to_bool(&p1.clone().unwrap(), env)?;
-                    let b2 = self.eval_to_bool(&p2.clone().unwrap(), env)?;
+                    let b1 = self.eval_to_bool(p1.as_ref().unwrap(), env)?;
+                    let b2 = self.eval_to_bool(p2.as_ref().unwrap(), env)?;
                     self.cost.charge(boolean_or_cost())?;
 
                     Ok(Expr {
@@ -2655,20 +2538,18 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EMatchesBody(EMatches { target, pattern }) => {
-                    let evaled_target = self.eval_expr(&target.clone().unwrap(), env)?;
+                    let evaled_target = self.eval_expr(target.as_ref().unwrap(), env)?;
                     let subst_target =
                         self.substitute
-                            .substitute_and_charge(&evaled_target, 0, env)?;
+                            .substitute_and_charge(evaled_target, 0, env)?;
                     let subst_pattern =
                         self.substitute
-                            .substitute_and_charge(&pattern.clone().unwrap(), 1, env)?;
+                            .substitute_and_charge(pattern.clone().unwrap(), 1, env)?;
 
-                    let mut spatial_matcher = SpatialMatcherContext::new();
-                    let match_result =
-                        spatial_matcher.spatial_match_result(subst_target, subst_pattern);
+                    let matched = self.charged_match(&subst_target, subst_pattern)?.is_some();
 
                     Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(match_result.is_some())),
+                        expr_instance: Some(ExprInstance::GBool(matched)),
                     })
                 }
 
@@ -2742,19 +2623,20 @@ impl DebruijnInterpreter {
                     }
 
                     self.cost.charge(op_call_cost())?;
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GString(lhs), ExprInstance::EMapBody(emap)) => {
-                            let rhs = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            if !lhs.is_empty() || !rhs.is_empty() {
-                                let key_value_pairs = rhs
-                                    .clone()
-                                    .into_iter()
-                                    .map(|(k, v)| {
-                                        let key_expr = self.eval_single_expr(&k, env)?;
-                                        let value_expr = self.eval_single_expr(&v, env)?;
+                            if !lhs.is_empty() || !emap.kvs.is_empty() {
+                                let key_value_pairs = emap
+                                    .kvs
+                                    .iter()
+                                    .map(|kv| {
+                                        let key_expr = self
+                                            .eval_single_expr(unwrap_option_ref(&kv.key)?, env)?;
+                                        let value_expr = self
+                                            .eval_single_expr(unwrap_option_ref(&kv.value)?, env)?;
                                         let result = eval_to_string_pair(key_expr, value_expr)?;
                                         Ok(result)
                                     })
@@ -2762,7 +2644,7 @@ impl DebruijnInterpreter {
 
                                 self.cost.charge(interpolate_cost(
                                     lhs.len() as i64,
-                                    rhs.length() as i64,
+                                    emap.kvs.len() as i64,
                                 ))?;
 
                                 Ok(Expr {
@@ -2795,8 +2677,8 @@ impl DebruijnInterpreter {
 
                 ExprInstance::EPlusPlusBody(EPlusPlus { p1, p2 }) => {
                     self.cost.charge(op_call_cost())?;
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GString(lhs), ExprInstance::GString(rhs)) => {
@@ -2808,7 +2690,8 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::GByteArray(lhs), ExprInstance::GByteArray(rhs)) => {
-                            self.cost.charge(byte_array_append_cost(lhs.clone()))?;
+                            self.cost
+                                .charge(byte_array_append_cost(lhs.len(), rhs.len()))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GByteArray(
                                     lhs.into_iter().chain(rhs.into_iter()).collect(),
@@ -2817,7 +2700,7 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::EListBody(lhs), ExprInstance::EListBody(rhs)) => {
-                            self.cost.charge(list_append_cost(lhs.clone().ps))?;
+                            self.cost.charge(list_append_cost(lhs.ps.len()))?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
                                     ps: lhs.ps.into_iter().chain(rhs.ps.into_iter()).collect(),
@@ -2897,8 +2780,8 @@ impl DebruijnInterpreter {
 
                 ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 }) => {
                     self.cost.charge(op_call_cost())?;
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::ESetBody(lhs), ExprInstance::ESetBody(rhs)) => {
@@ -2931,12 +2814,13 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EVarBody(EVar { v }) => {
-                    let p = self.eval_var(&v.clone().unwrap(), env)?;
+                    let p = self.eval_var(v.as_ref().unwrap(), env)?;
                     let expr_val = self.eval_single_expr(&p, env)?;
                     Ok(expr_val)
                 }
 
                 ExprInstance::EListBody(e1) => {
+                    self.cost.charge(collection_eval_cost(e1.ps.len()))?;
                     let evaled_ps = e1
                         .ps
                         .iter()
@@ -2944,8 +2828,8 @@ impl DebruijnInterpreter {
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                     let updated_ps: Vec<Par> = evaled_ps
-                        .iter()
-                        .map(|p| self.update_locally_free_par(p.clone()))
+                        .into_iter()
+                        .map(|p| self.update_locally_free_par(p))
                         .collect();
 
                     Ok(Expr {
@@ -2961,6 +2845,7 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::ETupleBody(e1) => {
+                    self.cost.charge(collection_eval_cost(e1.ps.len()))?;
                     let evaled_ps = e1
                         .ps
                         .iter()
@@ -2968,8 +2853,8 @@ impl DebruijnInterpreter {
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                     let updated_ps: Vec<Par> = evaled_ps
-                        .iter()
-                        .map(|p| self.update_locally_free_par(p.clone()))
+                        .into_iter()
+                        .map(|p| self.update_locally_free_par(p))
                         .collect();
 
                     Ok(Expr {
@@ -2984,46 +2869,71 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::ESetBody(eset) => {
-                    let set = ParSetTypeMapper::eset_to_par_set(eset.clone());
-                    let evaled_ps = set
+                    self.cost.charge(collection_eval_cost(eset.ps.len()))?;
+                    let evaled_ps = eset
                         .ps
-                        .sorted_pars
                         .iter()
                         .map(|p| self.eval_expr(p, env))
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                     let updated_ps: Vec<Par> = evaled_ps
-                        .iter()
-                        .map(|p| self.update_locally_free_par(p.clone()))
+                        .into_iter()
+                        .map(|p| self.update_locally_free_par(p))
                         .collect();
 
-                    let mut cloned_set = set.clone();
-                    cloned_set.ps = SortedParHashSet::create_from_vec(updated_ps);
+                    // Every set is built in canonical order, so a set whose
+                    // elements all evaluate to themselves needs no re-sort.
+                    if updated_ps == eset.ps {
+                        return Ok(Expr {
+                            expr_instance: Some(ExprInstance::ESetBody(eset.clone())),
+                        });
+                    }
+
+                    let evaled_set = ParSet {
+                        ps: SortedParHashSet::create_from_vec(updated_ps),
+                        connective_used: eset.connective_used,
+                        locally_free: eset.locally_free.clone(),
+                        remainder: eset.remainder.clone(),
+                    };
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::ESetBody(
-                            ParSetTypeMapper::par_set_to_eset(cloned_set),
+                            ParSetTypeMapper::par_set_to_eset(evaled_set),
                         )),
                     })
                 }
 
                 ExprInstance::EMapBody(emap) => {
-                    let map = ParMapTypeMapper::emap_to_par_map(emap.clone());
-                    let evaled_ps = map
-                        .ps
-                        .clone()
-                        .into_iter()
-                        .map(|(k, v)| {
-                            let e_key = self.eval_expr(&k, env)?;
-                            let e_value = self.eval_expr(&v, env)?;
+                    self.cost.charge(collection_eval_cost(2 * emap.kvs.len()))?;
+                    let evaled_ps = emap
+                        .kvs
+                        .iter()
+                        .map(|kv| {
+                            let e_key = self.eval_expr(unwrap_option_ref(&kv.key)?, env)?;
+                            let e_value = self.eval_expr(unwrap_option_ref(&kv.value)?, env)?;
                             Ok((e_key, e_value))
                         })
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-                    let mut cloned_map = map.clone();
-                    cloned_map.ps = SortedParMap::create_from_vec(evaled_ps);
+                    // Every map is built in canonical order, so a map whose
+                    // entries all evaluate to themselves needs no re-sort.
+                    let unchanged = evaled_ps.iter().zip(&emap.kvs).all(|((key, value), kv)| {
+                        kv.key.as_ref() == Some(key) && kv.value.as_ref() == Some(value)
+                    });
+                    if unchanged {
+                        return Ok(Expr {
+                            expr_instance: Some(ExprInstance::EMapBody(emap.clone())),
+                        });
+                    }
+
+                    let evaled_map = ParMap {
+                        ps: SortedParMap::create_from_vec(evaled_ps),
+                        connective_used: emap.connective_used,
+                        locally_free: emap.locally_free.clone(),
+                        remainder: emap.remainder.clone(),
+                    };
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::EMapBody(
-                            ParMapTypeMapper::par_map_to_emap(cloned_map),
+                            ParMapTypeMapper::par_map_to_emap(evaled_map),
                         )),
                     })
                 }
@@ -3037,8 +2947,8 @@ impl DebruijnInterpreter {
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                     let updated_ps: Vec<Par> = evaled_ps
-                        .iter()
-                        .map(|p| self.update_locally_free_par(p.clone()))
+                        .into_iter()
+                        .map(|p| self.update_locally_free_par(p))
                         .collect();
 
                     Ok(Expr {
@@ -3071,7 +2981,7 @@ impl DebruijnInterpreter {
                         .map(|arg| self.eval_expr(arg, env))
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-                    let result_par = match self.method_table().get(method_name) {
+                    let result_par = match self.method(method_name) {
                         Some(method_function) => {
                             method_function.apply(evaled_target, evaled_args, env)?
                         }
@@ -3085,6 +2995,73 @@ impl DebruijnInterpreter {
 
                     let result_expr = self.eval_single_expr(&result_par, env)?;
                     Ok(result_expr)
+                }
+
+                // CoC Phase 1a: lambda is a WHNF value; no reduction under
+                // the binder. Returned unchanged.
+                ExprInstance::ELambdaBody(lambda) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::ELambdaBody(lambda.clone())),
+                }),
+
+                // CoC Phase 2a: Pi is a WHNF value (a type-level process).
+                // Treated opaquely until the typechecker phase lands.
+                ExprInstance::EPiBody(pi) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::EPiBody(pi.clone())),
+                }),
+
+                // CoC Phase 1a: β-reduction. Evaluate the head to WHNF; if
+                // it is an ELambda of matching arity, call-by-value the
+                // arguments, extend env, substitute into the body, and
+                // recursively evaluate the result.
+                //
+                // Convention: in a lambda of bind_count N, the surface order
+                // `(x_0, x_1, ..., x_{N-1}) => body` binds x_i to BoundVar(i)
+                // inside body. Pushing args in reverse into env yields that
+                // numbering (env.put keeps a LIFO stack; most recent push is
+                // BoundVar(0)).
+                ExprInstance::EAppBody(app) => {
+                    let fun_par = app.fun.as_ref().ok_or_else(|| {
+                        InterpreterError::ReduceError("EApp.fun was None".to_string())
+                    })?;
+                    let fun_evaled = self.eval_expr(fun_par, env)?;
+                    let fun_expr = self.eval_single_expr(&fun_evaled, env)?;
+
+                    match fun_expr.expr_instance {
+                        Some(ExprInstance::ELambdaBody(lambda)) => {
+                            if app.args.len() as i32 != lambda.bind_count {
+                                return Err(InterpreterError::ReduceError(format!(
+                                    "Lambda arity mismatch: expected {} argument(s), got {}",
+                                    lambda.bind_count,
+                                    app.args.len(),
+                                )));
+                            }
+
+                            let evaled_args: Vec<Par> = app
+                                .args
+                                .iter()
+                                .map(|a| self.eval_expr(a, env))
+                                .collect::<Result<Vec<_>, InterpreterError>>()?;
+                            check_nesting(&evaled_args)?;
+
+                            let new_env = env.extended(evaled_args.into_iter().rev());
+
+                            let body = lambda.body.ok_or_else(|| {
+                                InterpreterError::ReduceError("ELambda.body was None".to_string())
+                            })?;
+                            let reduced_body = self
+                                .substitute
+                                .substitute_no_sort_and_charge(body, 0, &new_env)?;
+
+                            self.eval_single_expr(&reduced_body, env)
+                        }
+                        Some(other_expr) => Err(InterpreterError::ReduceError(format!(
+                            "Application head is not a lambda: {}",
+                            get_type(other_expr),
+                        ))),
+                        None => Err(InterpreterError::ReduceError(
+                            "EApp fun evaluated to empty Expr".to_string(),
+                        )),
+                    }
                 }
             },
             None => Err(InterpreterError::ReduceError(format!(
@@ -3186,7 +3163,7 @@ impl DebruijnInterpreter {
                 let expr_subst =
                     self.outer
                         .substitute
-                        .substitute_and_charge(&expr_evaled, 0, env)?;
+                        .substitute_and_charge(expr_evaled, 0, env)?;
 
                 self.outer.cost.charge(to_byte_array_cost(&expr_subst))?;
                 let ba = self.serialize(&expr_subst)?;
@@ -3523,55 +3500,34 @@ impl DebruijnInterpreter {
                     other_expr.expr_instance.clone().unwrap(),
                 ) {
                     (ExprInstance::ESetBody(base_set), ExprInstance::ESetBody(other_set)) => {
-                        let base_par_set = ParSetTypeMapper::eset_to_par_set(base_set);
-                        let other_par_set = ParSetTypeMapper::eset_to_par_set(other_set);
-
-                        let base_ps = base_par_set.ps;
-                        let other_ps = other_par_set.ps;
-
                         self.outer
                             .cost
-                            .charge(union_cost(other_ps.length() as i64))?;
+                            .charge(union_cost(other_set.ps.len() as i64))?;
 
                         Ok(Expr {
-                            expr_instance: Some(ExprInstance::ESetBody(
-                                ParSetTypeMapper::par_set_to_eset(ParSet {
-                                    ps: base_ps.union(other_ps.ps),
-                                    connective_used: base_par_set.connective_used
-                                        || other_par_set.connective_used,
-                                    locally_free: union(
-                                        base_par_set.locally_free,
-                                        other_par_set.locally_free,
-                                    ),
-                                    remainder: None,
-                                }),
-                            )),
+                            expr_instance: Some(ExprInstance::ESetBody(ESet {
+                                ps: ParSetTypeMapper::union(base_set.ps, other_set.ps),
+                                connective_used: base_set.connective_used
+                                    || other_set.connective_used,
+                                locally_free: union(base_set.locally_free, other_set.locally_free),
+                                remainder: None,
+                            })),
                         })
                     }
 
                     (ExprInstance::EMapBody(base_map), ExprInstance::EMapBody(other_map)) => {
-                        let base_par_map = ParMapTypeMapper::emap_to_par_map(base_map);
-                        let other_par_map = ParMapTypeMapper::emap_to_par_map(other_map.clone());
-
-                        let mut base_sorted_par_map = base_par_map.ps;
-                        let other_sorted_par_map = other_par_map.ps;
-
                         self.outer
                             .cost
                             .charge(union_cost(other_map.kvs.len() as i64))?;
 
                         Ok(Expr {
-                            expr_instance: Some(ExprInstance::EMapBody(
-                                ParMapTypeMapper::par_map_to_emap(ParMap::new(
-                                    base_sorted_par_map
-                                        .extend(other_sorted_par_map.into_iter().collect())
-                                        .into_iter()
-                                        .collect(),
-                                    base_par_map.connective_used || other_par_map.connective_used,
-                                    union(base_par_map.locally_free, other_par_map.locally_free),
-                                    None,
-                                )),
-                            )),
+                            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                                kvs: ParMapTypeMapper::union(base_map.kvs, other_map.kvs),
+                                connective_used: base_map.connective_used
+                                    || other_map.connective_used,
+                                locally_free: union(base_map.locally_free, other_map.locally_free),
+                                remainder: None,
+                            })),
                         })
                     }
 
@@ -3646,55 +3602,31 @@ impl DebruijnInterpreter {
                     other_expr.expr_instance.clone().unwrap(),
                 ) {
                     (ExprInstance::ESetBody(base_set), ExprInstance::ESetBody(other_set)) => {
-                        let base_par_set = ParSetTypeMapper::eset_to_par_set(base_set);
-                        let other_par_set = ParSetTypeMapper::eset_to_par_set(other_set);
-
-                        let base_ps = base_par_set.ps;
-                        let other_ps = other_par_set.ps;
-
-                        // diff is implemented in terms of foldLeft that at each step
-                        // removes one element from the collection.
                         self.outer
                             .cost
-                            .charge(diff_cost(other_ps.length() as i64))?;
-
-                        let base_sorted_pars_set: HashSet<Par> =
-                            base_ps.sorted_pars.into_iter().collect();
-                        let other_sorted_pars_set: HashSet<Par> =
-                            other_ps.sorted_pars.into_iter().collect();
-                        let new_par_set = ParSet::create_from_vec(
-                            base_sorted_pars_set
-                                .difference(&other_sorted_pars_set)
-                                .into_iter()
-                                .cloned()
-                                .collect(),
-                        );
+                            .charge(diff_cost(other_set.ps.len() as i64))?;
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::ESetBody(
-                                ParSetTypeMapper::par_set_to_eset(new_par_set),
+                                ParSetTypeMapper::canonical_eset(ParSetTypeMapper::diff(
+                                    base_set.ps,
+                                    &other_set.ps,
+                                )),
                             )),
                         })
                     }
 
                     (ExprInstance::EMapBody(base_emap), ExprInstance::EMapBody(other_emap)) => {
-                        let base_par_map = ParMapTypeMapper::emap_to_par_map(base_emap);
-                        let other_par_map = ParMapTypeMapper::emap_to_par_map(other_emap);
-
-                        let mut base_ps = base_par_map.ps;
-                        let other_ps = other_par_map.ps;
-
                         self.outer
                             .cost
-                            .charge(diff_cost(other_ps.length() as i64))?;
-
-                        let new_par_map = ParMap::create_from_sorted_par_map(
-                            base_ps.remove_multiple(other_ps.keys()),
-                        );
+                            .charge(diff_cost(other_emap.kvs.len() as i64))?;
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EMapBody(
-                                ParMapTypeMapper::par_map_to_emap(new_par_map),
+                                ParMapTypeMapper::canonical_emap(ParMapTypeMapper::diff(
+                                    base_emap.kvs,
+                                    &other_emap.kvs,
+                                )),
                             )),
                         })
                     }
@@ -6358,20 +6290,16 @@ impl DebruijnInterpreter {
             fn add(&self, base_expr: Expr, par: Par) -> Result<Expr, InterpreterError> {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
-                        ExprInstance::ESetBody(eset) => {
-                            let base = ParSetTypeMapper::eset_to_par_set(eset);
-                            let mut base_ps = base.ps;
+                        ExprInstance::ESetBody(mut eset) => {
+                            ParSetTypeMapper::insert(&mut eset.ps, &par);
 
                             Ok(Expr {
-                                expr_instance: Some(ExprInstance::ESetBody(
-                                    ParSetTypeMapper::par_set_to_eset(ParSet {
-                                        ps: base_ps.insert(par.clone()),
-                                        connective_used: base.connective_used
-                                            || par.connective_used,
-                                        locally_free: union(base.locally_free, par.locally_free),
-                                        remainder: None,
-                                    }),
-                                )),
+                                expr_instance: Some(ExprInstance::ESetBody(ESet {
+                                    ps: eset.ps,
+                                    connective_used: eset.connective_used || par.connective_used,
+                                    locally_free: union(eset.locally_free, par.locally_free),
+                                    remainder: None,
+                                })),
                             })
                         }
 
@@ -6424,37 +6352,29 @@ impl DebruijnInterpreter {
             fn delete(&self, base_expr: Expr, par: Par) -> Result<Expr, InterpreterError> {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
-                        ExprInstance::ESetBody(eset) => {
-                            let base = ParSetTypeMapper::eset_to_par_set(eset);
-                            let mut base_ps = base.ps;
+                        ExprInstance::ESetBody(mut eset) => {
+                            ParSetTypeMapper::remove(&mut eset.ps, &par);
 
                             Ok(Expr {
-                                expr_instance: Some(ExprInstance::ESetBody(
-                                    ParSetTypeMapper::par_set_to_eset(ParSet {
-                                        ps: base_ps.remove(par.clone()),
-                                        connective_used: base.connective_used
-                                            || par.connective_used,
-                                        locally_free: union(base.locally_free, par.locally_free),
-                                        remainder: None,
-                                    }),
-                                )),
+                                expr_instance: Some(ExprInstance::ESetBody(ESet {
+                                    ps: eset.ps,
+                                    connective_used: eset.connective_used || par.connective_used,
+                                    locally_free: union(eset.locally_free, par.locally_free),
+                                    remainder: None,
+                                })),
                             })
                         }
 
-                        ExprInstance::EMapBody(emap) => {
-                            let base = ParMapTypeMapper::emap_to_par_map(emap);
-                            let mut base_ps = base.ps;
+                        ExprInstance::EMapBody(mut emap) => {
+                            ParMapTypeMapper::remove(&mut emap.kvs, &par);
 
                             Ok(Expr {
-                                expr_instance: Some(ExprInstance::EMapBody(
-                                    ParMapTypeMapper::par_map_to_emap(ParMap {
-                                        ps: base_ps.remove(par.clone()),
-                                        connective_used: base.connective_used
-                                            || par.connective_used,
-                                        locally_free: union(base.locally_free, par.locally_free),
-                                        remainder: None,
-                                    }),
-                                )),
+                                expr_instance: Some(ExprInstance::EMapBody(EMap {
+                                    kvs: emap.kvs,
+                                    connective_used: emap.connective_used || par.connective_used,
+                                    locally_free: union(emap.locally_free, par.locally_free),
+                                    remainder: None,
+                                })),
                             })
                         }
 
@@ -6508,21 +6428,17 @@ impl DebruijnInterpreter {
             fn contains(&self, base_expr: Expr, par: Par) -> Result<Expr, InterpreterError> {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
-                        ExprInstance::ESetBody(eset) => {
-                            let base_ps = ParSetTypeMapper::eset_to_par_set(eset).ps;
+                        ExprInstance::ESetBody(eset) => Ok(Expr {
+                            expr_instance: Some(ExprInstance::GBool(ParSetTypeMapper::contains(
+                                &eset, &par,
+                            ))),
+                        }),
 
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GBool(base_ps.contains(par))),
-                            })
-                        }
-
-                        ExprInstance::EMapBody(emap) => {
-                            let base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GBool(base_ps.contains(par))),
-                            })
-                        }
+                        ExprInstance::EMapBody(emap) => Ok(Expr {
+                            expr_instance: Some(ExprInstance::GBool(
+                                ParMapTypeMapper::contains_key(&emap, &par),
+                            )),
+                        }),
 
                         other => Err(InterpreterError::MethodNotDefined {
                             method: String::from("contains"),
@@ -6573,9 +6489,9 @@ impl DebruijnInterpreter {
             fn get(&self, base_expr: Expr, key: Par) -> Result<Par, InterpreterError> {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
+                        // `get` answers Nil for a missing key.
                         ExprInstance::EMapBody(emap) => {
-                            let base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            Ok(base_ps.get_or_else(key, Par::default()))
+                            Ok(ParMapTypeMapper::lookup(&emap, &key).unwrap_or_default())
                         }
 
                         other => Err(InterpreterError::MethodNotDefined {
@@ -6633,8 +6549,7 @@ impl DebruijnInterpreter {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
                         ExprInstance::EMapBody(emap) => {
-                            let base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            Ok(base_ps.get_or_else(key, default))
+                            Ok(ParMapTypeMapper::lookup(&emap, &key).unwrap_or(default))
                         }
 
                         other => Err(InterpreterError::MethodNotDefined {
@@ -6687,15 +6602,12 @@ impl DebruijnInterpreter {
             fn set(&self, base_expr: Expr, key: Par, value: Par) -> Result<Par, InterpreterError> {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
-                        ExprInstance::EMapBody(emap) => {
-                            let mut base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            // let sorted_par_map = base_ps.insert((key, value));
-                            let par_map =
-                                ParMap::create_from_sorted_par_map(base_ps.insert((key, value)));
+                        ExprInstance::EMapBody(mut emap) => {
+                            ParMapTypeMapper::insert(&mut emap.kvs, &key, &value);
 
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EMapBody(
-                                    ParMapTypeMapper::par_map_to_emap(par_map),
+                                    ParMapTypeMapper::canonical_emap(emap.kvs),
                                 )),
                             }]))
                         }
@@ -6750,14 +6662,26 @@ impl DebruijnInterpreter {
             fn keys(&self, base_expr: Expr) -> Result<Par, InterpreterError> {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
+                        // A canonical map's keys are distinct and in canonical
+                        // set order: sets and maps sort by the same score.
                         ExprInstance::EMapBody(emap) => {
-                            let base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            let par_set = ParSet::create_from_vec(base_ps.keys());
+                            let keys: Vec<Par> = emap
+                                .kvs
+                                .into_iter()
+                                .map(|kv| kv.key.expect("EMap entry has a key"))
+                                .collect();
+                            let locally_free = keys
+                                .iter()
+                                .fold(Vec::new(), |acc, key| union(acc, key.locally_free.clone()));
+                            let connective_used = keys.iter().any(|key| key.connective_used);
 
                             Ok(Par::default().with_exprs(vec![Expr {
-                                expr_instance: Some(ExprInstance::ESetBody(
-                                    ParSetTypeMapper::par_set_to_eset(par_set),
-                                )),
+                                expr_instance: Some(ExprInstance::ESetBody(ESet {
+                                    ps: keys,
+                                    locally_free,
+                                    connective_used,
+                                    remainder: None,
+                                })),
                             }]))
                         }
 
@@ -6810,16 +6734,12 @@ impl DebruijnInterpreter {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
                         ExprInstance::EMapBody(emap) => {
-                            let base_ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            let size = base_ps.length() as i64;
-
+                            let size = emap.kvs.len() as i64;
                             Ok((size, new_gint_par(size, Vec::new(), false)))
                         }
 
                         ExprInstance::ESetBody(eset) => {
-                            let base_ps = ParSetTypeMapper::eset_to_par_set(eset).ps;
-                            let size = base_ps.length() as i64;
-
+                            let size = eset.ps.len() as i64;
                             Ok((size, new_gint_par(size, Vec::new(), false)))
                         }
 
@@ -7129,12 +7049,11 @@ impl DebruijnInterpreter {
                         }
 
                         ExprInstance::ESetBody(eset) => {
-                            let ps = ParSetTypeMapper::eset_to_par_set(eset).ps;
-                            self.outer.cost.charge(to_list_cost(ps.length() as i64))?;
+                            self.outer.cost.charge(to_list_cost(eset.ps.len() as i64))?;
 
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
-                                    ps: ps.sorted_pars,
+                                    ps: eset.ps,
                                     locally_free: Vec::new(),
                                     connective_used: false,
                                     remainder: None,
@@ -7143,19 +7062,24 @@ impl DebruijnInterpreter {
                         }
 
                         ExprInstance::EMapBody(emap) => {
-                            let ps = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            self.outer.cost.charge(to_list_cost(ps.length() as i64))?;
+                            self.outer
+                                .cost
+                                .charge(to_list_cost(emap.kvs.len() as i64))?;
 
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EListBody(EList {
-                                    ps: ps
-                                        .sorted_list
+                                    ps: emap
+                                        .kvs
                                         .into_iter()
-                                        .map(|(k, v)| {
+                                        .map(|kv| {
                                             Par::default().with_exprs(vec![Expr {
                                                 expr_instance: Some(ExprInstance::ETupleBody(
                                                     ETuple {
-                                                        ps: vec![k, v],
+                                                        ps: vec![
+                                                            kv.key.expect("EMap entry has a key"),
+                                                            kv.value
+                                                                .expect("EMap entry has a value"),
+                                                        ],
                                                         locally_free: Vec::new(),
                                                         connective_used: false,
                                                     },
@@ -7236,30 +7160,30 @@ impl DebruijnInterpreter {
                         }])),
 
                         ExprInstance::EMapBody(emap) => {
-                            let map = ParMapTypeMapper::emap_to_par_map(emap);
+                            let entries = emap
+                                .kvs
+                                .into_iter()
+                                .map(|kv| {
+                                    Par::default().with_exprs(vec![Expr {
+                                        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                                            ps: vec![
+                                                kv.key.expect("EMap entry has a key"),
+                                                kv.value.expect("EMap entry has a value"),
+                                            ],
+                                            locally_free: Vec::new(),
+                                            connective_used: false,
+                                        })),
+                                    }])
+                                })
+                                .collect();
 
                             Ok(Par::default().with_exprs(vec![Expr {
-                                expr_instance: Some(ExprInstance::ESetBody(
-                                    ParSetTypeMapper::par_set_to_eset(ParSet::new(
-                                        map.ps
-                                            .into_iter()
-                                            .map(|t| {
-                                                Par::default().with_exprs(vec![Expr {
-                                                    expr_instance: Some(ExprInstance::ETupleBody(
-                                                        ETuple {
-                                                            ps: vec![t.0, t.1],
-                                                            locally_free: Vec::new(),
-                                                            connective_used: false,
-                                                        },
-                                                    )),
-                                                }])
-                                            })
-                                            .collect(),
-                                        map.connective_used,
-                                        map.locally_free,
-                                        map.remainder,
-                                    )),
-                                )),
+                                expr_instance: Some(ExprInstance::ESetBody(ESet {
+                                    ps: entries,
+                                    connective_used: emap.connective_used,
+                                    locally_free: emap.locally_free,
+                                    remainder: emap.remainder,
+                                })),
                             }]))
                         }
 
@@ -7363,15 +7287,12 @@ impl DebruijnInterpreter {
                             expr_instance: Some(ExprInstance::EMapBody(emap)),
                         }])),
 
-                        ExprInstance::ESetBody(eset) => {
-                            let base = ParSetTypeMapper::eset_to_par_set(eset);
-                            self.make_map(
-                                base.ps.sorted_pars,
-                                base.connective_used,
-                                base.locally_free,
-                                base.remainder,
-                            )
-                        }
+                        ExprInstance::ESetBody(eset) => self.make_map(
+                            eset.ps,
+                            eset.connective_used,
+                            eset.locally_free,
+                            eset.remainder,
+                        ),
 
                         ExprInstance::EListBody(elist) => self.make_map(
                             elist.ps,
@@ -7467,72 +7388,66 @@ impl DebruijnInterpreter {
         Box::new(ToStringMethod { outer: self })
     }
 
-    fn method_table<'a>(&'a self) -> HashMap<String, Box<dyn Method + 'a>> {
-        let mut table = HashMap::new();
-        table.insert("nth".to_string(), self.nth_method());
-        table.insert("toByteArray".to_string(), self.to_byte_array_method());
-        table.insert("hexToBytes".to_string(), self.hex_to_bytes_method());
-        table.insert("bytesToHex".to_string(), self.bytes_to_hex_method());
-        table.insert("concatBytes".to_string(), self.concat_bytes_method());
-        table.insert(
-            "validUtf8PrefixLen".to_string(),
-            self.valid_utf8_prefix_len_method(),
-        );
-        table.insert("decodeUtf8".to_string(), self.decode_utf8_method());
-        table.insert("toUtf8Bytes".to_string(), self.to_utf8_bytes_method());
-        table.insert("union".to_string(), self.union_method());
-        table.insert("diff".to_string(), self.diff_method());
-        table.insert("intersection".to_string(), self.intersection_method());
-        table.insert("restriction".to_string(), self.restriction_method());
-        table.insert("dropHead".to_string(), self.drop_head_method());
-        table.insert("run".to_string(), self.run_method());
-        // Zipper methods
-        table.insert("readZipper".to_string(), self.read_zipper_method());
-        table.insert("readZipperAt".to_string(), self.read_zipper_at_method());
-        table.insert("writeZipper".to_string(), self.write_zipper_method());
-        table.insert("writeZipperAt".to_string(), self.write_zipper_at_method());
-        table.insert("descendTo".to_string(), self.descend_to_method());
-        table.insert("getLeaf".to_string(), self.get_leaf_method());
-        table.insert("getSubtrie".to_string(), self.get_subtrie_method());
-        table.insert("setLeaf".to_string(), self.set_leaf_method());
-        table.insert("setSubtrie".to_string(), self.set_subtrie_method());
-        table.insert("removeLeaf".to_string(), self.remove_leaf_method());
-        table.insert("removeBranches".to_string(), self.remove_branches_method());
-        table.insert("graft".to_string(), self.graft_method());
-        table.insert("joinInto".to_string(), self.join_into_method());
-        table.insert("atPath".to_string(), self.at_path_method());
-        table.insert("pathExists".to_string(), self.path_exists_method());
-        table.insert("createPath".to_string(), self.create_path_method());
-        table.insert("prunePath".to_string(), self.prune_path_method());
-        table.insert("reset".to_string(), self.reset_method());
-        // Advanced navigation methods
-        table.insert("ascendOne".to_string(), self.ascend_one_method());
-        table.insert("ascend".to_string(), self.ascend_method());
-        table.insert("toNextSibling".to_string(), self.to_next_sibling_method());
-        table.insert("toPrevSibling".to_string(), self.to_prev_sibling_method());
-        table.insert("descendFirst".to_string(), self.descend_first_method());
-        table.insert(
-            "descendIndexedBranch".to_string(),
-            self.descend_indexed_branch_method(),
-        );
-        table.insert("childCount".to_string(), self.child_count_method());
-        table.insert("add".to_string(), self.add_method());
-        table.insert("delete".to_string(), self.delete_method());
-        table.insert("contains".to_string(), self.contains_method());
-        table.insert("get".to_string(), self.get_method());
-        table.insert("getOrElse".to_string(), self.get_or_else_method());
-        table.insert("set".to_string(), self.set_method());
-        table.insert("keys".to_string(), self.keys_method());
-        table.insert("size".to_string(), self.size_method());
-        table.insert("length".to_string(), self.length_method());
-        table.insert("slice".to_string(), self.slice_method());
-        table.insert("take".to_string(), self.take_method());
-        table.insert("toList".to_string(), self.to_list_method());
-        table.insert("toSet".to_string(), self.to_set_method());
-        table.insert("toMap".to_string(), self.to_map_method());
-        table.insert("toString".to_string(), self.to_string_method());
-        table.insert("toBigInt".to_string(), self.to_bigint_method());
-        table
+    fn method<'a>(&'a self, name: &str) -> Option<Box<dyn Method + 'a>> {
+        let method = match name {
+            "nth" => self.nth_method(),
+            "toByteArray" => self.to_byte_array_method(),
+            "hexToBytes" => self.hex_to_bytes_method(),
+            "bytesToHex" => self.bytes_to_hex_method(),
+            "concatBytes" => self.concat_bytes_method(),
+            "validUtf8PrefixLen" => self.valid_utf8_prefix_len_method(),
+            "decodeUtf8" => self.decode_utf8_method(),
+            "toUtf8Bytes" => self.to_utf8_bytes_method(),
+            "union" => self.union_method(),
+            "diff" => self.diff_method(),
+            "intersection" => self.intersection_method(),
+            "restriction" => self.restriction_method(),
+            "dropHead" => self.drop_head_method(),
+            "run" => self.run_method(),
+            "readZipper" => self.read_zipper_method(),
+            "readZipperAt" => self.read_zipper_at_method(),
+            "writeZipper" => self.write_zipper_method(),
+            "writeZipperAt" => self.write_zipper_at_method(),
+            "descendTo" => self.descend_to_method(),
+            "getLeaf" => self.get_leaf_method(),
+            "getSubtrie" => self.get_subtrie_method(),
+            "setLeaf" => self.set_leaf_method(),
+            "setSubtrie" => self.set_subtrie_method(),
+            "removeLeaf" => self.remove_leaf_method(),
+            "removeBranches" => self.remove_branches_method(),
+            "graft" => self.graft_method(),
+            "joinInto" => self.join_into_method(),
+            "atPath" => self.at_path_method(),
+            "pathExists" => self.path_exists_method(),
+            "createPath" => self.create_path_method(),
+            "prunePath" => self.prune_path_method(),
+            "reset" => self.reset_method(),
+            "ascendOne" => self.ascend_one_method(),
+            "ascend" => self.ascend_method(),
+            "toNextSibling" => self.to_next_sibling_method(),
+            "toPrevSibling" => self.to_prev_sibling_method(),
+            "descendFirst" => self.descend_first_method(),
+            "descendIndexedBranch" => self.descend_indexed_branch_method(),
+            "childCount" => self.child_count_method(),
+            "add" => self.add_method(),
+            "delete" => self.delete_method(),
+            "contains" => self.contains_method(),
+            "get" => self.get_method(),
+            "getOrElse" => self.get_or_else_method(),
+            "set" => self.set_method(),
+            "keys" => self.keys_method(),
+            "size" => self.size_method(),
+            "length" => self.length_method(),
+            "slice" => self.slice_method(),
+            "take" => self.take_method(),
+            "toList" => self.to_list_method(),
+            "toSet" => self.to_set_method(),
+            "toMap" => self.to_map_method(),
+            "toString" => self.to_string_method(),
+            "toBigInt" => self.to_bigint_method(),
+            _ => return None,
+        };
+        Some(method)
     }
 
     fn eval_single_expr(&self, p: &Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {
@@ -7711,7 +7626,7 @@ impl DebruijnInterpreter {
             locally_free,
             par.exprs
                 .iter()
-                .flat_map(|expr| expr.locally_free(expr.clone(), 0))
+                .flat_map(|expr| expr.locally_free(0))
                 .collect(),
         );
 
@@ -7767,18 +7682,11 @@ impl DebruijnInterpreter {
             .map(|expr| self.eval_expr_to_par(expr, env))
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-        // Note: the locallyFree cache in par could now be invalid, but given
-        // that locallyFree is for use in the matcher, and the matcher uses
-        // substitution, it will resolve in that case. AlwaysEqual makes sure
-        // that this isn't an issue in the rest of cases.
-        let result = evaled_exprs
+        // The locally_free cache carried over from `par` may now be stale;
+        // the matcher substitutes before it relies on it.
+        Ok(evaled_exprs
             .into_iter()
-            .fold(par.with_exprs(Vec::new()), |acc, expr| {
-                // acc.exprs.iter().chain(expr.exprs.iter()).cloned().collect()
-                concatenate_pars(acc, expr)
-            });
-
-        Ok(result)
+            .fold(par.clone_with_exprs(Vec::new()), concatenate_pars))
     }
 
     pub fn new(
@@ -7808,6 +7716,7 @@ impl DebruijnInterpreter {
             // Default: reject fs native URNs.  Genesis composition
             // flips the flag off via a yet-to-land runtime slice.
             filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            trapped_gprivates: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         });
 
         reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
@@ -7859,6 +7768,9 @@ fn get_type(expr_instance: ExprInstance) -> String {
         ExprInstance::EPlusPlusBody(_) => String::from("plus plus"),
         ExprInstance::EMinusMinusBody(_) => String::from("minus minus"),
         ExprInstance::EModBody(_) => String::from("mod"),
+        ExprInstance::ELambdaBody(_) => String::from("lambda"),
+        ExprInstance::EAppBody(_) => String::from("app"),
+        ExprInstance::EPiBody(_) => String::from("pi"),
     }
 }
 
@@ -8228,6 +8140,76 @@ fn describe_par_type(par: &Par) -> String {
         }
     } else {
         "non-boolean process".to_string()
+    }
+}
+
+#[cfg(test)]
+mod join_comm_tasks_tests {
+    use super::*;
+
+    fn ready(result: Result<DispatchType, InterpreterError>) -> DispatchFuture {
+        Box::pin(std::future::ready(result))
+    }
+
+    fn dispatch_failure() -> InterpreterError {
+        InterpreterError::ReduceError("dispatch failed".to_string())
+    }
+
+    #[tokio::test]
+    async fn a_failed_non_deterministic_dispatch_alone_is_returned_unchanged() {
+        let result = join_comm_tasks(vec![
+            ready(Ok(DispatchType::FailedNonDeterministicCall(
+                dispatch_failure(),
+            ))),
+            ready(Ok(DispatchType::Skip)),
+        ])
+        .await;
+        assert!(matches!(
+            result,
+            Ok(DispatchType::FailedNonDeterministicCall(error)) if error == dispatch_failure()
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_failed_non_deterministic_dispatch_is_aggregated_with_a_restoration_error() {
+        let restoration = InterpreterError::ReduceError("restoration failed".to_string());
+        let result = join_comm_tasks(vec![
+            ready(Ok(DispatchType::FailedNonDeterministicCall(
+                dispatch_failure(),
+            ))),
+            ready(Err(restoration.clone())),
+        ])
+        .await;
+        assert!(matches!(
+            result,
+            Err(InterpreterError::AggregateError { interpreter_errors })
+                if interpreter_errors == vec![dispatch_failure(), restoration]
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_restoration_error_after_a_successful_dispatch_is_returned() {
+        let result = join_comm_tasks(vec![
+            ready(Ok(DispatchType::DeterministicCall)),
+            ready(Err(InterpreterError::OutOfPhlogistonsError)),
+        ])
+        .await;
+        assert!(matches!(
+            result,
+            Err(InterpreterError::OutOfPhlogistonsError)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_user_abort_takes_priority_over_a_failed_non_deterministic_dispatch() {
+        let result = join_comm_tasks(vec![
+            ready(Ok(DispatchType::FailedNonDeterministicCall(
+                InterpreterError::UserAbortError,
+            ))),
+            ready(Err(InterpreterError::OutOfPhlogistonsError)),
+        ])
+        .await;
+        assert!(matches!(result, Err(InterpreterError::UserAbortError)));
     }
 }
 

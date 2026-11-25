@@ -281,6 +281,36 @@ fn required_authority_fixture_contracts() {
 }
 
 #[test]
+fn profile_threshold_preserves_stakes_above_u64_and_i128() {
+    for bits in [65usize, 140] {
+        let scale = num_bigint::BigInt::from(1u8) << bits;
+        let total = (&scale * 3u8).to_string();
+        for offset in [-1i32, 0, 1] {
+            let q = (&scale * 2u8 + offset).to_string();
+            let expected = offset >= 0;
+            let mut fixture = Fixture::new(&format!("bigint-{bits}-{offset}"));
+            fixture.request["threshold_inputs"]["S"] = json!(total);
+            fixture.configure(
+                "threshold_boundary",
+                &q,
+                &total,
+                "1",
+                if expected {
+                    "finalized"
+                } else {
+                    "not_finalized"
+                },
+                expected,
+            );
+            assert_eq!(
+                fixture.invoke(0, "passed")["threshold_component_expected"],
+                expected
+            );
+        }
+    }
+}
+
+#[test]
 fn threshold_boundaries_and_explicit_holds() {
     let mut rational = Fixture::new("equivalent-fractions");
     rational.observations[0]["payload"]["finality"]["value"]["original_ft"]["value"] =

@@ -22,15 +22,14 @@
 //   - `journal`: on error / verify-divergence, patch via
 //     `finalize_failure_journal_via_table` (same path as fs_truncate).
 //
-// # Shape-A root gating (deferred)
+// # Shape-A root gating
 //
-// Uses the ungated `root_registry.resolve_or_identity` — same as
-// `fs_exists` / `fs_stat` on dev.  The gated version
-// (`resolve_or_identity_gated_for_consensus`) that rejects
-// Consensus caps against unregistered logical roots is a deferred
-// follow-up (BACKLOG — needs `test_permissive` + registry-gating
-// support in `path/identity.rs`).  Once ported, this handler + the
-// two observation siblings migrate together to the gated API.
+// Uses `root_registry.resolve_or_identity_gated_for_consensus`
+// so a Consensus-mode call on an unregistered `/@bundle/<X>`
+// logical root short-circuits with `FSERR_UNSUPPORTED` instead
+// of silently falling through to the Oracular identity path
+// (which would disable the H-5 (dev, inode) identity check).
+// Oracular calls pass through unchanged.
 //
 // # No telemetry hazard
 //
@@ -194,12 +193,21 @@ impl FsHandler for FsChmodHandler {
         args: FsChmodArgs,
     ) -> Pin<Box<dyn Future<Output = HandlerReply> + Send + 'a>> {
         Box::pin(async move {
-            // BACKLOG: migrate to resolve_or_identity_gated_for_consensus
-            // once path/identity ports the Shape-A gating.  Dev's
-            // sibling fs_exists / fs_stat carry the same note.
+            // Shape-A gating: Consensus-mode calls on an unregistered
+            // `/@bundle/<X>` logical root short-circuit with
+            // FSERR_UNSUPPORTED instead of silently falling through
+            // to the Oracular identity path (which would skip the
+            // H-5 (dev, inode) identity check — see identity.rs:315-328).
+            // Oracular calls pass through unchanged.
             let logical = PathBuf::from(&args.root);
-            let (root_pb, expected_root_id) =
-                ctx.handles.root_registry.resolve_or_identity(&logical);
+            let (root_pb, expected_root_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&logical, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::err(c, m),
+            };
             let rel = args.rel;
             let bits = args.bits as libc::mode_t;
             // Direct `spawn_blocking` with `Result<Par, Par>` so

@@ -11,6 +11,7 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlockCandidate, BlockMessage, UnapprovedBlock,
 };
 use serial_test::serial;
+use shared::rust::token_amount::TokenAmount;
 
 use crate::helper::test_node::TestNode;
 use crate::util::comm::transport_layer_test_impl::TransportLayerTestImpl;
@@ -45,11 +46,11 @@ impl TestContext {
             .build_genesis_with_parameters(Some(params))
             .await?;
 
-        let bonds: HashMap<PublicKey, i64> = genesis_params
+        let bonds: HashMap<PublicKey, TokenAmount> = genesis_params
             .proof_of_stake
             .validators
             .iter()
-            .map(|v| (v.pk.clone(), v.stake))
+            .map(|v| (v.pk.clone(), v.stake.clone()))
             .collect();
 
         let required_sigs = (bonds.len() - 1) as i32;
@@ -75,12 +76,20 @@ impl TestContext {
             genesis_params.proof_of_stake.max_parent_depth,
             genesis_params.proof_of_stake.deploy_lifespan,
             genesis_params.proof_of_stake.min_phlo_price,
+            genesis_params.proof_of_stake.max_phlo_limit,
             required_sigs,
             genesis_params.proof_of_stake.pos_multi_sig_public_keys,
             genesis_params.proof_of_stake.pos_multi_sig_quorum,
             genesis_params.native_token_name.clone(),
             genesis_params.native_token_symbol.clone(),
             genesis_params.native_token_decimals,
+            // Empty bundle + None cadence matches
+            // GenesisBuilder::build_genesis_with_parameters, which
+            // uses the default-no-provisioning genesis parameters.
+            // Any test that varies these must construct the
+            // protocol with matching values on both sides.
+            Vec::new(),
+            None,
             node.tle.clone(),
             Arc::new(node.rp_conf.clone()),
         )?;
@@ -206,12 +215,15 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
         ctx.protocol.max_parent_depth,
         ctx.protocol.deploy_lifespan,
         ctx.protocol.min_phlo_price,
+        ctx.protocol.max_phlo_limit,
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
+        &ctx.protocol.fs_bundle,
+        ctx.protocol.consensus_fs_snapshot_cadence,
     )
     .await;
 
@@ -244,12 +256,15 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
         ctx.protocol.max_parent_depth,
         ctx.protocol.deploy_lifespan,
         ctx.protocol.min_phlo_price,
+        ctx.protocol.max_phlo_limit,
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
+        &ctx.protocol.fs_bundle,
+        ctx.protocol.consensus_fs_snapshot_cadence,
     )
     .await;
 
@@ -282,12 +297,15 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
         ctx.protocol.max_parent_depth,
         ctx.protocol.deploy_lifespan,
         ctx.protocol.min_phlo_price,
+        ctx.protocol.max_phlo_limit,
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
+        &ctx.protocol.fs_bundle,
+        ctx.protocol.consensus_fs_snapshot_cadence,
     )
     .await;
 
@@ -315,23 +333,163 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_
         ctx.protocol.deploy_timestamp,
         &ctx.protocol.vaults,
         &ctx.protocol.bonds_bytes,
-        ctx.protocol.minimum_bond + 1,                  // incorrect
-        ctx.protocol.maximum_bond - 1,                  // incorrect
-        ctx.protocol.epoch_length + 1,                  // incorrect
-        ctx.protocol.quarantine_length + 1,             // incorrect
-        ctx.protocol.number_of_active_validators + 1,   // incorrect
-        ctx.protocol.fault_tolerance_threshold_ppm + 1, // incorrect
-        ctx.protocol.max_parent_depth + 1,              // incorrect
-        ctx.protocol.deploy_lifespan + 1,               // incorrect
-        ctx.protocol.min_phlo_price + 1,                // incorrect
+        TokenAmount::new(ctx.protocol.minimum_bond.to_bigint() + 1).unwrap(), // incorrect
+        TokenAmount::new(ctx.protocol.maximum_bond.to_bigint() - 1).unwrap(), // incorrect
+        ctx.protocol.epoch_length + 1,                                        // incorrect
+        ctx.protocol.quarantine_length + 1,                                   // incorrect
+        ctx.protocol.number_of_active_validators + 1,                         // incorrect
+        ctx.protocol.fault_tolerance_threshold_ppm + 1,                       // incorrect
+        ctx.protocol.max_parent_depth + 1,                                    // incorrect
+        ctx.protocol.deploy_lifespan + 1,                                     // incorrect
+        TokenAmount::new(ctx.protocol.min_phlo_price.to_bigint() + 1).unwrap(), // incorrect
+        ctx.protocol.max_phlo_limit + 1,                                      // incorrect
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
+        &ctx.protocol.fs_bundle,
+        ctx.protocol.consensus_fs_snapshot_cadence,
     )
     .await;
 
     assert!(result.is_err());
+}
+
+#[tokio::test]
+#[serial]
+async fn block_approver_protocol_should_reject_candidate_with_a_different_phlo_cap() {
+    let ctx = TestContext::create_protocol().await.unwrap();
+
+    let unapproved = TestContext::create_unapproved(ctx.required_sigs, &ctx.node.genesis.clone());
+
+    let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate(
+        &ctx.node.runtime_manager,
+        &unapproved.candidate,
+        ctx.protocol.required_sigs,
+        ctx.protocol.deploy_timestamp,
+        &ctx.protocol.vaults,
+        &ctx.protocol.bonds_bytes,
+        ctx.protocol.minimum_bond.clone(),
+        ctx.protocol.maximum_bond.clone(),
+        ctx.protocol.epoch_length,
+        ctx.protocol.quarantine_length,
+        ctx.protocol.number_of_active_validators,
+        ctx.protocol.fault_tolerance_threshold_ppm,
+        ctx.protocol.max_parent_depth,
+        ctx.protocol.deploy_lifespan,
+        ctx.protocol.min_phlo_price.clone(),
+        ctx.protocol.max_phlo_limit + 1,
+        SHARD_ID,
+        &ctx.protocol.pos_multi_sig_public_keys,
+        ctx.protocol.pos_multi_sig_quorum,
+        &ctx.protocol.native_token_name,
+        &ctx.protocol.native_token_symbol,
+        ctx.protocol.native_token_decimals,
+        &ctx.protocol.fs_bundle,
+        ctx.protocol.consensus_fs_snapshot_cadence,
+    )
+    .await;
+
+    assert!(
+        result
+            .as_ref()
+            .is_err_and(|error| error.starts_with("Genesis candidate deploys do not match")),
+        "a validator configured with a different max-phlo-limit must refuse the candidate, got: {result:?}"
+    );
+}
+
+/// Pin for the fs-bundle-threading fix: a validator whose local
+/// `fs_bundle` differs from the ceremony master's must reject
+/// the candidate — the outcome operators of a mis-configured
+/// shard will see.
+///
+/// Harness posture: the TestContext builds genesis with an empty
+/// bundle (GenesisBuilder default), so the candidate carries the
+/// empty-bundle `fs_generator` deploy at the usual blessed-contract
+/// slot.  We call `validate_candidate` with a single-entry
+/// `fs_bundle` on the validator side.  The validator's locally-
+/// reconstructed `default_blessed_terms` produces an `fs_generator`
+/// deploy with DIFFERENT CONTENT (the bundle entry is serialized
+/// into the deploy body), so the deploy-count check passes but
+/// the per-deploy content comparison fires the "Genesis candidate
+/// deploys do not match expected blessed contracts" error.
+///
+/// A regression that reverted the slice (hardcoded `&[]` + `None`
+/// in `validate_candidate`) would make the validator ignore its
+/// local bundle, happily approve the candidate, and silently
+/// break ceremony-master-side guarantees.
+#[tokio::test]
+#[serial]
+async fn block_approver_protocol_rejects_candidate_when_local_fs_bundle_mismatches_leaders() {
+    use std::path::PathBuf;
+
+    use casper::rust::genesis::contracts::fs_genesis::{
+        BundleConsensusMode, BundleEntry, BundleEntryKind,
+    };
+
+    let ctx = TestContext::create_protocol().await.unwrap();
+    let unapproved = TestContext::create_unapproved(ctx.required_sigs, &ctx.node.genesis.clone());
+
+    // Single entry on the validator side; candidate was built
+    // with an empty bundle, so the deploy lists diverge by one.
+    let local_bundle = vec![BundleEntry::try_new(
+        "config".into(),
+        PathBuf::from("/etc/f1r3fly/config.json"),
+        BundleEntryKind::File,
+        "r".into(),
+        BundleConsensusMode::Oracular,
+    )
+    .expect("construct bundle entry")];
+
+    let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate(
+        &ctx.node.runtime_manager,
+        &unapproved.candidate,
+        ctx.protocol.required_sigs,
+        ctx.protocol.deploy_timestamp,
+        &ctx.protocol.vaults,
+        &ctx.protocol.bonds_bytes,
+        ctx.protocol.minimum_bond,
+        ctx.protocol.maximum_bond,
+        ctx.protocol.epoch_length,
+        ctx.protocol.quarantine_length,
+        ctx.protocol.number_of_active_validators,
+        ctx.protocol.fault_tolerance_threshold_ppm,
+        ctx.protocol.max_parent_depth,
+        ctx.protocol.deploy_lifespan,
+        ctx.protocol.min_phlo_price,
+        ctx.protocol.max_phlo_limit,
+        SHARD_ID,
+        &ctx.protocol.pos_multi_sig_public_keys,
+        ctx.protocol.pos_multi_sig_quorum,
+        &ctx.protocol.native_token_name,
+        &ctx.protocol.native_token_symbol,
+        ctx.protocol.native_token_decimals,
+        &local_bundle,
+        None,
+    )
+    .await;
+
+    match result {
+        Err(msg)
+            if msg.starts_with(
+                "Genesis candidate deploys do not match expected blessed contracts",
+            ) =>
+        {
+            // Pin matches.  The validator built an fs_generator
+            // deploy with its own single-entry bundle; the
+            // candidate carries one with the empty bundle; the
+            // per-deploy content comparison catches the mismatch.
+        }
+        Err(other) => {
+            panic!("expected a blessed-contracts content mismatch; got different error: {other}")
+        }
+        Ok(()) => panic!(
+            "validator with a non-empty local fs_bundle must reject a candidate \
+             whose leader built genesis with a different (empty) bundle; a success \
+             here indicates the fs-bundle thread-through regressed to the pre-slice \
+             `&[]` posture"
+        ),
+    }
 }

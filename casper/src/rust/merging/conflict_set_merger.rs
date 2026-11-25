@@ -384,61 +384,109 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
 /// The shipped merge operator `ChannelChange::combine` (max-union) is
 /// non-associative, yet the merged root is node-identical because survivors are
 /// folded in canonical sorted order AND no order-dependent survivor pair reaches
-/// apply. This accumulator enforces that second premise at runtime: it trips iff
-/// some datum value is contributed to `added` (or `removed`) by >= 2 DISTINCT
-/// survivors on the same NON-mergeable channel — the exact precondition under which
-/// the max-union fold differs from the order-independent sum-union fold
-/// (`ChannelNetting.v` `combine_max_eq_combine_sum_under_no_dup`). It reads only the
-/// survivor set and changes no post-state; a trip means the invariant the proofs
-/// assume was violated (e.g. a conflict-check regression let such a pair through).
-#[derive(Default)]
-struct OrderDependenceGuard {
-    added: HashMap<Blake2b256Hash, HashMap<Vec<u8>, u32>>,
-    removed: HashMap<Blake2b256Hash, HashMap<Vec<u8>, u32>>,
+/// apply. This accumulator enforces that second premise at runtime. Survivors are
+/// grouped by source: every chain of one block carries that block's whole
+/// pre→post diff for each channel it touches, so sibling chains of one block repeat
+/// the SAME contribution and the idempotent max-union counts it once, exactly as the
+/// block executed it. On a NON-mergeable channel the guard trips iff some datum is
+/// contributed to `added` (or `removed`) by >= 2 DISTINCT sources — the precondition
+/// under which the max-union fold differs from the order-independent sum-union fold
+/// over sources (`ChannelNetting.v` `combine_max_eq_combine_sum_under_no_dup`) — or
+/// by >= 2 sibling survivors of one source while another survivor contributes it to
+/// the opposite side, where the fold result depends on the association. It reads
+/// only the survivor set and changes no post-state; a trip means the invariant the
+/// proofs assume was violated (e.g. a conflict-check regression let such a pair
+/// through).
+struct OrderDependenceGuard<S> {
+    added: HashMap<Blake2b256Hash, HashMap<Vec<u8>, Contributors<S>>>,
+    removed: HashMap<Blake2b256Hash, HashMap<Vec<u8>, Contributors<S>>>,
 }
 
-impl OrderDependenceGuard {
+struct Contributors<S> {
+    survivors: u32,
+    sources: HashSet<S>,
+}
+
+impl<S> Default for OrderDependenceGuard<S> {
+    fn default() -> Self {
+        Self {
+            added: HashMap::new(),
+            removed: HashMap::new(),
+        }
+    }
+}
+
+impl<S: Clone + Eq + std::hash::Hash> OrderDependenceGuard<S> {
     /// Record one survivor's per-channel datum contributions. Distinct datums per
     /// channel per survivor are counted once — within-survivor multiplicity is
     /// irrelevant to the CROSS-survivor order dependence this detects.
-    fn observe(&mut self, changes: &StateChange) {
+    fn observe(&mut self, source: &S, changes: &StateChange) {
         for entry in changes.datums_changes.iter() {
             let channel = entry.key();
             let change = entry.value();
-            let per_channel_added = self.added.entry(channel.clone()).or_default();
-            for datum in change.added.iter().collect::<HashSet<_>>() {
-                *per_channel_added.entry(datum.clone()).or_insert(0) += 1;
-            }
-            let per_channel_removed = self.removed.entry(channel.clone()).or_default();
-            for datum in change.removed.iter().collect::<HashSet<_>>() {
-                *per_channel_removed.entry(datum.clone()).or_insert(0) += 1;
+            for (side, datums) in [
+                (&mut self.added, &change.added),
+                (&mut self.removed, &change.removed),
+            ] {
+                let per_channel = side.entry(channel.clone()).or_default();
+                for datum in datums.iter().collect::<HashSet<_>>() {
+                    let contributors =
+                        per_channel
+                            .entry(datum.clone())
+                            .or_insert_with(|| Contributors {
+                                survivors: 0,
+                                sources: HashSet::new(),
+                            });
+                    contributors.survivors += 1;
+                    contributors.sources.insert(source.clone());
+                }
             }
         }
     }
 
     /// The lowest (by hash bytes, so node-identically) NON-mergeable channel on
-    /// which some datum was contributed by >= 2 distinct survivors, or `None` when
-    /// the fold is genuinely order-independent (max-fold == sum-fold). Mergeable /
-    /// number channels are skipped: they merge through the commutative-group
-    /// `combine_mergeable_value`, not max-union, so multiple producers are safe.
+    /// which the fold is order-dependent, or `None` when it is genuinely
+    /// order-independent. Mergeable / number channels are skipped: they merge
+    /// through the commutative-group `combine_mergeable_value`, not max-union, so
+    /// multiple producers are safe.
     fn first_offender(&self, mergeable_keys: &HashSet<Blake2b256Hash>) -> Option<Blake2b256Hash> {
+        let offends =
+            |channel: &Blake2b256Hash,
+             datums: &HashMap<Vec<u8>, Contributors<S>>,
+             opposite: &HashMap<Blake2b256Hash, HashMap<Vec<u8>, Contributors<S>>>| {
+                datums.iter().any(|(datum, contributors)| {
+                    contributors.sources.len() >= 2
+                        || (contributors.survivors >= 2
+                            && opposite
+                                .get(channel)
+                                .is_some_and(|other| other.contains_key(datum)))
+                })
+            };
         self.added
             .iter()
-            .chain(self.removed.iter())
-            .filter(|(channel, counts)| {
-                !mergeable_keys.contains(*channel) && counts.values().any(|&c| c >= 2)
+            .map(|(channel, datums)| (channel, datums, &self.removed))
+            .chain(
+                self.removed
+                    .iter()
+                    .map(|(channel, datums)| (channel, datums, &self.added)),
+            )
+            .filter(|(channel, datums, opposite)| {
+                !mergeable_keys.contains(*channel) && offends(channel, datums, opposite)
             })
-            .map(|(channel, _)| channel.clone())
+            .map(|(channel, _, _)| channel.clone())
             .min_by(|a, b| a.0.cmp(&b.0))
     }
 }
 
 /// Combine the surviving chains' diffs into trie actions and apply them to
 /// the merged base state. Reads `resolved.to_merge` and returns the new state
-/// root; `resolved.rejected` is not read or modified.
-pub fn compute_merged_state<R, C, P, A, K>(
+/// root; `resolved.rejected` is not read or modified. `source_of` names the
+/// state transition an item's diff was computed over (items of one source share
+/// that transition's diff); it feeds only the Finding-A guard.
+pub fn compute_merged_state<R, S, C, P, A, K>(
     resolved: &ResolvedConflicts<R>,
     state_changes: &impl Fn(&R) -> Result<StateChange, HistoryError>,
+    source_of: &impl Fn(&R) -> S,
     mergeable_channels: &impl Fn(&R) -> NumberChannelsDiff,
     compute_trie_actions: &impl Fn(
         StateChange,
@@ -450,6 +498,7 @@ pub fn compute_merged_state<R, C, P, A, K>(
 ) -> Result<Blake2b256Hash, HistoryError>
 where
     R: Clone + Eq + std::hash::Hash + PartialOrd + Ord,
+    S: Clone + Eq + std::hash::Hash,
     C: Clone,
     P: Clone,
     A: Clone,
@@ -505,7 +554,7 @@ where
                 }
                 // Finding-A guard: record this survivor's datum contributions
                 // before `combine` consumes it (detection only, post-state unchanged).
-                order_guard.observe(&item_changes);
+                order_guard.observe(&source_of(item), &item_changes);
                 combined = combined.combine(item_changes);
                 if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                     for entry in combined.datums_changes.iter() {
@@ -744,6 +793,7 @@ pub fn merge<
     let new_state = compute_merged_state(
         &resolved,
         &state_changes,
+        &|item: &R| item.clone(),
         &mergeable_channels,
         &compute_trie_actions,
         &apply_trie_actions,
@@ -1685,8 +1735,8 @@ mod tests {
     fn order_guard_silent_when_survivors_add_distinct_datums() {
         // Two survivors add DIFFERENT datums to one channel: max-fold == sum-fold.
         let mut guard = OrderDependenceGuard::default();
-        guard.observe(&datum_state_change(b"chan", &[b"x"], &[]));
-        guard.observe(&datum_state_change(b"chan", &[b"y"], &[]));
+        guard.observe(&1, &datum_state_change(b"chan", &[b"x"], &[]));
+        guard.observe(&2, &datum_state_change(b"chan", &[b"y"], &[]));
         assert_eq!(guard.first_offender(&HashSet::new()), None);
     }
 
@@ -1696,18 +1746,60 @@ mod tests {
         // `cancel_common` nets them symmetrically — associative-safe, must NOT trip
         // (the guard checks distinct-survivor duplication, not "did cancel fire").
         let mut guard = OrderDependenceGuard::default();
-        guard.observe(&datum_state_change(b"chan", &[b"x"], &[]));
-        guard.observe(&datum_state_change(b"chan", &[], &[b"x"]));
+        guard.observe(&1, &datum_state_change(b"chan", &[b"x"], &[]));
+        guard.observe(&2, &datum_state_change(b"chan", &[], &[b"x"]));
         assert_eq!(guard.first_offender(&HashSet::new()), None);
     }
 
     #[test]
     fn order_guard_trips_when_two_survivors_add_same_datum() {
-        // The same datum contributed to `added` by two distinct survivors — the
-        // precondition under which the max-union fold != the sum-union fold.
+        // The same datum contributed to `added` by survivors of two distinct
+        // sources — the precondition under which the max-union fold != the
+        // sum-union fold.
         let mut guard = OrderDependenceGuard::default();
-        guard.observe(&datum_state_change(b"chan", &[b"x"], &[]));
-        guard.observe(&datum_state_change(b"chan", &[b"x"], &[]));
+        guard.observe(&1, &datum_state_change(b"chan", &[b"x"], &[]));
+        guard.observe(&2, &datum_state_change(b"chan", &[b"x"], &[]));
+        assert_eq!(
+            guard.first_offender(&HashSet::new()),
+            Some(Blake2b256Hash(b"chan".to_vec()))
+        );
+    }
+
+    #[test]
+    fn order_guard_silent_for_sibling_chains_of_one_block() {
+        // Issue #746: two independent deploys of one block each produce onto the
+        // same channel, so the block splits them into two chains, and both chains
+        // carry the block's whole diff {x, y} on that channel. Max-union counts
+        // that one diff once, as the block executed it: no order dependence.
+        let mut guard = OrderDependenceGuard::default();
+        guard.observe(&1, &datum_state_change(b"chan", &[b"x", b"y"], &[]));
+        guard.observe(&1, &datum_state_change(b"chan", &[b"x", b"y"], &[]));
+        guard.observe(&2, &datum_state_change(b"chan", &[b"z"], &[]));
+        assert_eq!(guard.first_offender(&HashSet::new()), None);
+    }
+
+    #[test]
+    fn order_guard_trips_for_sibling_duplicates_meeting_opposite_side() {
+        // Sibling copies of one block's add(x) plus another block's remove(x): the
+        // fold result depends on where remove(x) sorts relative to the copies.
+        let add_x = datum_state_change(b"chan", &[b"x"], &[]);
+        let rem_x = datum_state_change(b"chan", &[], &[b"x"]);
+        let fold = |items: [&StateChange; 3]| {
+            items
+                .into_iter()
+                .fold(StateChange::empty(), |acc, sc| acc.combine(sc.clone()))
+                .datums_changes
+                .get(&Blake2b256Hash(b"chan".to_vec()))
+                .map(|c| (c.added.clone(), c.removed.clone()))
+        };
+        assert_ne!(
+            fold([&add_x, &add_x, &rem_x]),
+            fold([&add_x, &rem_x, &add_x])
+        );
+        let mut guard = OrderDependenceGuard::default();
+        guard.observe(&1, &add_x);
+        guard.observe(&1, &add_x);
+        guard.observe(&2, &rem_x);
         assert_eq!(
             guard.first_offender(&HashSet::new()),
             Some(Blake2b256Hash(b"chan".to_vec()))
@@ -1720,8 +1812,8 @@ mod tests {
         // the commutative-group operator, not max-union. Must be excluded.
         let channel = Blake2b256Hash(b"num".to_vec());
         let mut guard = OrderDependenceGuard::default();
-        guard.observe(&datum_state_change(b"num", &[b"x"], &[]));
-        guard.observe(&datum_state_change(b"num", &[b"x"], &[]));
+        guard.observe(&1, &datum_state_change(b"num", &[b"x"], &[]));
+        guard.observe(&2, &datum_state_change(b"num", &[b"x"], &[]));
         let mergeable: HashSet<Blake2b256Hash> = HashSet::from([channel]);
         assert_eq!(guard.first_offender(&mergeable), None);
     }
@@ -1734,13 +1826,13 @@ mod tests {
         let b = datum_state_change(b"chan", &[b"x"], &[]);
         let c = datum_state_change(b"other", &[b"z"], &[]);
         let mut forward = OrderDependenceGuard::default();
-        forward.observe(&a);
-        forward.observe(&b);
-        forward.observe(&c);
+        forward.observe(&1, &a);
+        forward.observe(&2, &b);
+        forward.observe(&3, &c);
         let mut reverse = OrderDependenceGuard::default();
-        reverse.observe(&c);
-        reverse.observe(&b);
-        reverse.observe(&a);
+        reverse.observe(&3, &c);
+        reverse.observe(&2, &b);
+        reverse.observe(&1, &a);
         assert_eq!(
             forward.first_offender(&HashSet::new()),
             reverse.first_offender(&HashSet::new())
@@ -1749,6 +1841,69 @@ mod tests {
             forward.first_offender(&HashSet::new()),
             Some(Blake2b256Hash(b"chan".to_vec()))
         );
+    }
+
+    fn fold_channel(
+        items: &[(usize, StateChange)],
+        order: &[usize],
+    ) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        let combined = order.iter().fold(StateChange::empty(), |acc, &i| {
+            acc.combine(items[i].1.clone())
+        });
+        let (mut added, mut removed) = combined
+            .datums_changes
+            .get(&Blake2b256Hash(b"chan".to_vec()))
+            .map(|c| (c.added.clone(), c.removed.clone()))
+            .unwrap_or_default();
+        added.sort();
+        removed.sort();
+        (added, removed)
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(500))]
+
+        // A silent guard certifies the shipped fold: every survivor order gives the
+        // same result, and it equals the fold over one copy of each source's diff.
+        // Each source is a block diff (one sign per datum) repeated by 1..=3
+        // sibling chains.
+        #[test]
+        fn silent_order_guard_implies_order_independent_fold(
+            sources in proptest::collection::vec(
+                (proptest::collection::vec(-1i8..=1, 4), 1usize..=3),
+                1..=4),
+            rot in 0usize..12,
+        ) {
+            let mut survivors: Vec<(usize, StateChange)> = Vec::new();
+            let mut unique: Vec<(usize, StateChange)> = Vec::new();
+            for (source, (signs, copies)) in sources.iter().enumerate() {
+                let added: Vec<Vec<u8>> =
+                    (0..4u8).filter(|d| signs[*d as usize] > 0).map(|d| vec![d]).collect();
+                let removed: Vec<Vec<u8>> =
+                    (0..4u8).filter(|d| signs[*d as usize] < 0).map(|d| vec![d]).collect();
+                let added: Vec<&[u8]> = added.iter().map(|d| d.as_slice()).collect();
+                let removed: Vec<&[u8]> = removed.iter().map(|d| d.as_slice()).collect();
+                let change = datum_state_change(b"chan", &added, &removed);
+                unique.push((source, change.clone()));
+                for _ in 0..*copies {
+                    survivors.push((source, change.clone()));
+                }
+            }
+            let mut guard = OrderDependenceGuard::default();
+            for (source, change) in &survivors {
+                guard.observe(source, change);
+            }
+            if guard.first_offender(&HashSet::new()).is_none() {
+                let ident: Vec<usize> = (0..survivors.len()).collect();
+                let mut rotated = ident.clone();
+                rotated.rotate_left(rot % survivors.len());
+                let reversed: Vec<usize> = ident.iter().rev().copied().collect();
+                let reference = fold_channel(&unique, &(0..unique.len()).collect::<Vec<_>>());
+                proptest::prop_assert_eq!(fold_channel(&survivors, &ident), reference.clone());
+                proptest::prop_assert_eq!(fold_channel(&survivors, &rotated), reference.clone());
+                proptest::prop_assert_eq!(fold_channel(&survivors, &reversed), reference);
+            }
+        }
     }
 }
 

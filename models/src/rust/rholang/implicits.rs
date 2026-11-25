@@ -96,28 +96,19 @@ pub fn single_unforgeable(p: &Par) -> Option<GUnforgeable> {
     }
 }
 
-pub fn concatenate_pars(p: Par, that: Par) -> Par {
-    Par {
-        sends: that.sends.into_iter().chain(p.sends).collect(),
-        receives: that.receives.into_iter().chain(p.receives).collect(),
-        news: that.news.into_iter().chain(p.news).collect(),
-        exprs: that.exprs.into_iter().chain(p.exprs).collect(),
-        matches: that.matches.into_iter().chain(p.matches).collect(),
-        unforgeables: that
-            .unforgeables
-            .into_iter()
-            .chain(p.unforgeables)
-            .collect(),
-        bundles: that.bundles.into_iter().chain(p.bundles).collect(),
-        connectives: that.connectives.into_iter().chain(p.connectives).collect(),
-        conditionals: that
-            .conditionals
-            .into_iter()
-            .chain(p.conditionals)
-            .collect(),
-        locally_free: union(that.locally_free, p.locally_free),
-        connective_used: that.connective_used || p.connective_used,
-    }
+pub fn concatenate_pars(p: Par, mut that: Par) -> Par {
+    that.sends.extend(p.sends);
+    that.receives.extend(p.receives);
+    that.news.extend(p.news);
+    that.exprs.extend(p.exprs);
+    that.matches.extend(p.matches);
+    that.unforgeables.extend(p.unforgeables);
+    that.bundles.extend(p.bundles);
+    that.connectives.extend(p.connectives);
+    that.conditionals.extend(p.conditionals);
+    that.locally_free = union(std::mem::take(&mut that.locally_free), p.locally_free);
+    that.connective_used |= p.connective_used;
+    that
 }
 
 #[cfg(test)]
@@ -162,7 +153,7 @@ mod tests {
         let par = gint(1);
         assert_eq!(single_expr(&par), Some(par.exprs[0].clone()));
 
-        let two_exprs = par.with_exprs(vec![par.exprs[0].clone(), par.exprs[0].clone()]);
+        let two_exprs = par.clone_with_exprs(vec![par.exprs[0].clone(), par.exprs[0].clone()]);
         assert_eq!(single_expr(&two_exprs), None);
 
         let with_send = par.with_sends(vec![Send::default()]);

@@ -25,6 +25,30 @@ pub struct ParsedUrn {
     pub project_version: Option<String>,
 }
 
+/// True iff any version segment of a parsed URN contains a `*`.
+///
+/// A wildcard URN cannot be resolved at compile time: its binding
+/// changes as new versions are inserted. `new chan(URI)` sugar routes
+/// such URNs through a dynamic registry lookup; `basic_processes` /
+/// `Definition` registration rejects them.
+pub fn has_wildcard(parsed: &ParsedUrn) -> bool {
+    parsed.service_version.contains('*')
+        || parsed
+            .project_version
+            .as_deref()
+            .is_some_and(|v| v.contains('*'))
+}
+
+/// Convenience: parse `urn` and test for wildcards in one call.
+///
+/// Returns `true` only for URNs that match a versioned-URN shape
+/// (`rho:lib:…`, `rho:serve:…`, `rho:registry:<ver>`) AND carry at
+/// least one `*`. Legacy URNs (`rho:io:stdout`), malformed strings,
+/// and exact versioned URNs all return `false`.
+pub fn is_wildcard_urn(urn: &str) -> bool {
+    parse_urn(urn).as_ref().map(has_wildcard).unwrap_or(false)
+}
+
 /// Parse a URN into its segments. Returns `None` on any structural
 /// failure: wrong scheme, unknown namespace, wrong segment count, or an
 /// empty segment.
@@ -144,6 +168,32 @@ mod tests {
         // registry needs exactly 2 segments
         assert!(parse_urn("rho:registry").is_none());
         assert!(parse_urn("rho:registry:1.0.0:extra").is_none());
+    }
+
+    #[test]
+    fn is_wildcard_urn_classifies_correctly() {
+        // Exact versioned URNs → not wildcards.
+        assert!(!is_wildcard_urn("rho:lib:1.0.0:abc:proj:2.6.3"));
+        assert!(!is_wildcard_urn("rho:serve:1.0.0:deadbeef:catalog:0.1.0"));
+        assert!(!is_wildcard_urn("rho:registry:1.0.0"));
+        assert!(!is_wildcard_urn("rho:lib:1.0.0:abc:proj:2.6.3-alpha"));
+
+        // Wildcard URNs → wildcards.
+        assert!(is_wildcard_urn("rho:lib:*:abc:proj:1.0.0"));
+        assert!(is_wildcard_urn("rho:lib:1.*:abc:proj:1.0.0"));
+        assert!(is_wildcard_urn("rho:lib:1.0.0:abc:proj:*"));
+        assert!(is_wildcard_urn("rho:lib:1.0.0:abc:proj:1.*"));
+        assert!(is_wildcard_urn("rho:lib:1.0.0:abc:proj:1.2.*"));
+        assert!(is_wildcard_urn("rho:lib:*:abc:proj:*"));
+        assert!(is_wildcard_urn("rho:registry:*"));
+        assert!(is_wildcard_urn("rho:registry:1.*"));
+
+        // Legacy and malformed URNs → not wildcards.
+        assert!(!is_wildcard_urn("rho:io:stdout"));
+        assert!(!is_wildcard_urn("rho:registry:lookup"));
+        assert!(!is_wildcard_urn("rho:id:zphj"));
+        assert!(!is_wildcard_urn(""));
+        assert!(!is_wildcard_urn("not-a-rho-urn"));
     }
 
     #[test]

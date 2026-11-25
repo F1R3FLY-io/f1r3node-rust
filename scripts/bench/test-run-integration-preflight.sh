@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 RUNNER=$ROOT/scripts/run-integration-preflight.sh
+REAL_DATE=$(command -v date)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p \
@@ -14,6 +15,7 @@ mkdir -p \
 printf '%s\n' test-capability >"$TMP/node/.github/system-integration-node-capabilities.txt"
 touch \
 	"$TMP/harness/integration-tests/test/tests/custom/test_alpha.py" \
+	"$TMP/harness/integration-tests/test/tests/custom/test_heartbeat_timing.py" \
 	"$TMP/harness/integration-tests/test/tests/shared/test_beta.py" \
 	"$TMP/harness/integration-tests/test/tests/standalone/test_gamma.py"
 printf '%s\n' \
@@ -26,11 +28,13 @@ cat >"$TMP/bin/poetry" <<'EOF'
 set -euo pipefail
 xml=
 collect=false
+ignore_timing=false
 selectors=()
 for arg in "$@"; do
 	case "$arg" in
 	--junitxml=*) xml=${arg#*=} ;;
 	--collect-only) collect=true ;;
+	--ignore=integration-tests/test/tests/custom/test_heartbeat_timing.py) ignore_timing=true ;;
 	integration-tests/test/tests/*/) selectors+=("$arg") ;;
 	esac
 done
@@ -43,6 +47,9 @@ if [ "$collect" = true ]; then
 				'integration-tests/test/tests/shared/test_beta.py::test_one' \
 				'integration-tests/test/tests/custom/test_alpha.py::test_two' \
 				'integration-tests/test/tests/standalone/test_gamma.py::test_three'
+			if [ "$ignore_timing" = false ]; then
+				printf '%s\n' 'integration-tests/test/tests/custom/test_heartbeat_timing.py::test_heartbeat_timing'
+			fi
 			exit 0
 			;;
 	esac
@@ -53,13 +60,16 @@ suite=${selectors[0]%/}
 suite=${suite##*/}
 printf '%s\n' "$suite" >>"${FAKE_CALLS:?}"
 body="<testcase name=\"$suite\"/>"
+if [ "$suite" = custom ] && [ "$ignore_timing" = false ]; then
+	body+='<testcase name="heartbeat_timing"><skipped/></testcase>'
+fi
 status=0
 case "${FAKE_MODE:-pass}:$suite" in
 	skip:custom) body='<testcase name="custom"><skipped/></testcase>' ;;
 	short:standalone) body= ;;
 	fail:custom) body='<testcase name="custom"><failure/></testcase>'; status=1 ;;
 	no-report:custom) exit 0 ;;
-	timeout:shared) sleep 5 ;;
+	timeout:shared) printf '101\n' >"${FAKE_CLOCK_FILE:?}"; sleep 5 ;;
 	pass:* | skip:* | short:* | fail:* | no-report:* | timeout:*) ;;
 	*) exit 2 ;;
 esac
@@ -67,6 +77,30 @@ printf '<testsuites><testsuite>%s</testsuite></testsuites>\n' "$body" >"$xml"
 exit "$status"
 EOF
 chmod +x "$TMP/bin/poetry"
+
+cat >"$TMP/bin/date" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${FAKE_MODE:-}:$*" in
+	timeout:+%s)
+		if [ -f "${FAKE_CLOCK_FILE:?}" ]; then
+			cat "$FAKE_CLOCK_FILE"
+		else
+			printf '100\n'
+		fi
+		;;
+	timeout-before-first-suite:+%s)
+		if [ -f "${FAKE_CLOCK_FILE:?}" ]; then
+			printf '101\n'
+		else
+			printf '100\n' >"$FAKE_CLOCK_FILE"
+			printf '100\n'
+		fi
+		;;
+	*) exec "${FAKE_REAL_DATE:?}" "$@" ;;
+esac
+EOF
+chmod +x "$TMP/bin/date"
 
 run_preflight() {
 	PATH="$TMP/bin:$PATH" \
@@ -77,6 +111,8 @@ run_preflight() {
 	PREFLIGHT_TIMEOUT_SECONDS="${4:-30}" \
 	FAKE_MODE="${3:-pass}" \
 	FAKE_CALLS="$2/calls" \
+	FAKE_CLOCK_FILE="$2/clock" \
+	FAKE_REAL_DATE="$REAL_DATE" \
 		"$RUNNER"
 }
 
@@ -88,7 +124,12 @@ test "$(cat "$TMP/pass/calls")" = $'shared\ncustom\nstandalone'
 test -f "$TMP/pass/junit-shared.xml"
 test -f "$TMP/pass/junit-custom.xml"
 test -f "$TMP/pass/junit-standalone.xml"
+grep -Fxq integration-tests/test/tests/custom/test_heartbeat_timing.py "$TMP/pass/excluded-tests.txt"
 test "$(grep -o '<testcase ' "$TMP/pass/junit.xml" | wc -l)" -eq 3
+
+HEARTBEAT_TIMING=1 run_preflight "$TMP/profile" "$TMP/timing-enabled"
+test "$(cat "$TMP/timing-enabled/result")" = passed
+grep -Fq 'tests=3 collected=3 failures=0 errors=0 skipped=0' "$TMP/timing-enabled/report.txt"
 
 if run_preflight "$TMP/profile" "$TMP/skip" skip; then
 	printf 'preflight accepted a skipped test\n' >&2
@@ -121,6 +162,14 @@ fi
 test "$(cat "$TMP/timeout/result")" = failed
 test "$(cat "$TMP/timeout/calls")" = shared
 grep -Fq 'suite_statuses=shared:124 custom:124 standalone:124' "$TMP/timeout/report.txt"
+
+if run_preflight "$TMP/profile" "$TMP/timeout-before-first-suite" timeout-before-first-suite 1; then
+	printf 'preflight accepted an exhausted timeout before the first suite\n' >&2
+	exit 1
+fi
+test "$(cat "$TMP/timeout-before-first-suite/result")" = failed
+test ! -e "$TMP/timeout-before-first-suite/calls"
+grep -Fq 'suite_statuses=shared:124 custom:124 standalone:124' "$TMP/timeout-before-first-suite/report.txt"
 
 if run_preflight "$TMP/profile" "$TMP/collection-fail" collection-fail; then
 	printf 'preflight accepted a collection failure\n' >&2

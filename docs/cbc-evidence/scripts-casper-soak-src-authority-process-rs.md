@@ -1,1 +1,0 @@
-../casper/cbc-evidence/scripts-casper-soak-src-authority-process-rs.md

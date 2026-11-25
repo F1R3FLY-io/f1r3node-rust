@@ -39,6 +39,7 @@
 pub mod fs_chmod;
 pub mod fs_chown;
 pub mod fs_copy_file;
+pub mod fs_mkdir;
 pub mod fs_remove_file;
 pub mod fs_rename;
 pub mod fs_truncate;

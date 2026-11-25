@@ -11,6 +11,9 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use shared::rust::tracing_init::LoggingConfig;
 
+use crate::rust::configuration::commandline::cli_static_provisioning::{
+    CliStaticDirArg, CliStaticFileArg,
+};
 use crate::rust::configuration::commandline::options::{
     BondStatusOptions, ContAtNameOptions, DataAtNameOptions, DeployOptions, EvalOptions,
     FindDeployOptions, IsFinalizedOptions, KeygenOptions, ProposeOptions, RunOptions,
@@ -170,11 +173,21 @@ pub struct ApiServer {
     #[serde(rename = "http-max-body-bytes", deserialize_with = "de_bytes")]
     pub http_max_body_bytes: u32,
 
+    #[serde(rename = "deploy-max-inflight", default)]
+    pub deploy_max_inflight: Option<usize>,
+
     #[serde(rename = "max-blocks-limit")]
     pub max_blocks_limit: u32,
 
     #[serde(rename = "enable-reporting")]
     pub enable_reporting: bool,
+
+    #[serde(
+        rename = "report-cache-retention-blocks",
+        default,
+        deserialize_with = "de_report_cache_retention"
+    )]
+    pub report_cache_retention_blocks: u32,
 
     #[serde(rename = "exploratory-deploy-max-concurrent")]
     pub exploratory_deploy_max_concurrent: usize,
@@ -218,6 +231,25 @@ pub struct Storage {
     /// of under an intermediate `storage.file-io-provisioning` block.
     #[serde(default, flatten)]
     pub file_io_provisioning: super::file_io_provisioning::FileIoProvisioning,
+
+    /// CLI-only mirror of `RunOptions.oracle_static_files` /
+    /// `oracle_static_dirs` / `consensus_static_files` /
+    /// `consensus_static_dirs`.  `ConfigMapper::override_config_values`
+    /// moves the parsed `Vec<CliStatic{File,Dir}Arg>` from `RunOptions`
+    /// into these slots; `setup_node_program` threads them into
+    /// `merge_and_validate` alongside `file_io_provisioning` so CLI
+    /// `--*-static-{file,dir}` entries fold into the same validation
+    /// pipeline as HOCON entries.  `#[serde(skip)]` keeps them off
+    /// both the HOCON parse surface and any config serialization —
+    /// they're transient boot-time data, not persisted config.
+    #[serde(skip)]
+    pub cli_oracle_static_files: Vec<CliStaticFileArg>,
+    #[serde(skip)]
+    pub cli_oracle_static_dirs: Vec<CliStaticDirArg>,
+    #[serde(skip)]
+    pub cli_consensus_static_files: Vec<CliStaticFileArg>,
+    #[serde(skip)]
+    pub cli_consensus_static_dirs: Vec<CliStaticDirArg>,
 }
 
 /// TLS configuration
@@ -467,4 +499,18 @@ where D: serde::Deserializer<'de> {
             parse_bytes(&s).ok_or_else(|| D::Error::custom(format!("invalid byte size {s:?}")))
         }
     }
+}
+
+// The HOCON deserializer casts integers, so a negative or too large value
+// would wrap into the u32 range; read it as i64 and check the range.
+fn de_report_cache_retention<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where D: serde::Deserializer<'de> {
+    use serde::de::Error as _;
+    let value = i64::deserialize(deserializer)?;
+    u32::try_from(value).map_err(|_| {
+        D::Error::custom(format!(
+            "report-cache-retention-blocks must be between 0 and {}, got {value}",
+            u32::MAX
+        ))
+    })
 }

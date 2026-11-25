@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "scope": "bounded-harness-segment-writer-stop",
+  "phase": "pre_pr216_merge",
+  "status": "change-verified-pending-acceptance",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "change": {
+    "task": "PR #811 (stop owned writers at the end of each soak segment)",
+    "commit": "4c38b5489fe35b943d8d6c8db9b0e2103600fcb9",
+    "origin": "Soaks 39194089405 and 39369559337 stopped at the host disk floor after 17.3 h and 28.8 h. A segment deadline stopped a subprocess session without its teardown, and its detached nodes continued to write to .subprocess-data. Each segment has a new owner marker, so a later segment cannot stop them. The evidence is in issue #24, comment 6319658249. The driver and the host-control source are accepted at c088201d and 933e9cd7. The fixture is accepted at 2baf7e19. This package covers the change from those digests to the digests at 4c38b5489.",
+    "earlier_unaccepted_commits": {
+      "file": "scripts/bench/test-run-merge-recovery-soak.sh",
+      "note": "Three fixture commits reached dev after the fixture acceptance at 345a99a23 and before this PR. The base digest 00c03b49 of this PR includes them. One acceptance of this package covers them.",
+      "commits": [
+        {"commit": "e5c922f19", "digest_prefix": "309de1cbe71b", "change": "Stop counting deadline-truncated iterations as provider failures."},
+        {"commit": "cb6201d93", "digest_prefix": "ed417369cc00", "change": "Gzip the node-metrics CSV of each iteration so weekend soaks stay above the disk floor."},
+        {"commit": "2b7e06f76", "digest_prefix": "00c03b496154", "change": "Add a per-phase summary of the issue #24 soak metrics."}
+      ]
+    },
+    "commits": [
+      {
+        "commit": "01af6a247",
+        "files": ["driver", "fixture"],
+        "change": "After the iteration loop, a non-Casper segment runs stop_node_writers -q kill while it still owns its writers. Kill keeps the containers, so their logs remain. A segment that starts after an earlier stop keeps that reason in summary.txt. The fixture adds a detached node with the owner marker, a process of another owner, an owned container, a failing stop-owned wrapper, and a restart without a guardian marker."
+      },
+      {
+        "commit": "70744ec35",
+        "files": ["driver", "fixture"],
+        "change": "A failed stop in a no-op segment keeps the earlier reason (review P2). The fixture wrapper honors SOAK_HARNESS_BIN (review P2). An ERR trap names the failed assertion."
+      },
+      {
+        "commit": "28746e00b",
+        "files": ["fixture"],
+        "change": "Temporary diagnostic block for the scenario 1 failure count. Commit 4c38b5489 removes it."
+      },
+      {
+        "commit": "ca75715cd",
+        "files": ["host-control", "claim"],
+        "change": "The owner scan of stop-owned and prefer-oom skips a same-user process when its environment read fails with EACCES or EPERM. Before this change, one such process failed every call. A non-root runner has such processes (hosted run 39639227494). Every other scan error still fails the call. Two unit tests use a non-dumpable unrelated process. The claim document records the narrower guarantee."
+      },
+      {
+        "commit": "f79e3960c",
+        "files": ["driver", "fixture"],
+        "change": "A failed stop is a terminal failure. It always writes writer-stop-failure.txt, keeps an earlier reason or records writer_stop_failed, and changes a count of 0 to 1. A higher count stays, so later segments do not raise it. The fixture covers no earlier reason, a disk breach, a no-op restart, a target_advanced exit, and several failed iterations."
+      },
+      {
+        "commit": "4c38b5489",
+        "files": ["fixture"],
+        "change": "Removes the temporary diagnostic block of 28746e00b. The ERR trap stays."
+      }
+    ],
+    "merged_from_dev": "85c55441d merges dev 06143734f (PR #788). It changes no file of this package.",
+    "unchanged": "The disk floor, the memory floor, the hygiene band, the guardian, the log budgets, the admission checks, the emergency deadline, the guardian stop path, and the Casper runtime path are unchanged. The end-of-segment stop applies only to non-Casper segments."
+  },
+  "guarantee_change": {
+    "before": "stop-owned and prefer-oom act on every same-user process whose environment contains the owner marker. A same-user process with an unreadable environment fails the call.",
+    "after": "stop-owned and prefer-oom act on every same-user process whose environment is readable and contains the owner marker. A same-user process with an unreadable environment is not owned.",
+    "limitation": "An owned process with an unreadable environment escapes cleanup and the OOM preference. A process has an unreadable environment only when it is not dumpable, for example after a set-user-ID execution or a PR_SET_DUMPABLE change. The soak node, pytest, and the Docker CLI are dumpable.",
+    "claim_record": "docs/claims/casper-soak-harness.md, the paragraph of 2026-10-21"
+  },
+  "failure_rule": {
+    "statement": "A failed end-of-segment stop always writes writer-stop-failure.txt. It keeps the reason of this segment or of an earlier segment, or records writer_stop_failed. It changes a failure count of 0 to 1 and keeps a higher count. The soak exits nonzero.",
+    "cases": [
+      {"case": "no earlier reason", "reason": "writer_stop_failed", "count": "1"},
+      {"case": "disk floor stop", "reason": "host_protection_breach", "count": "1"},
+      {"case": "no-op restart of that soak", "reason": "host_protection_breach", "count": "1"},
+      {"case": "successful early exit", "reason": "target_advanced", "count": "1"},
+      {"case": "several failed iterations", "reason": "writer_stop_failed", "count": "the number of failed iterations"}
+    ]
+  },
+  "source_digests_before_change": {
+    "scripts/run-merge-recovery-soak.sh": "c088201d45c33eed68b8e82abac4b45f68b0aae11048fc43d542fd0c3d4e1681",
+    "scripts/bench/test-run-merge-recovery-soak.sh": "2baf7e1925f5ff56361cc5f9c0242ba8075da9d99358d83594be6b6c4345815a",
+    "scripts/casper-soak/src/host_control.rs": "933e9cd7d05e763fea581d53f255ddba08fe3737c2046d3bbe6e996a06859aa9"
+  },
+  "source_digests_at_base": {
+    "base": "06143734f869e622e5dc13791dbc572663b87034",
+    "scripts/run-merge-recovery-soak.sh": "c088201d45c33eed68b8e82abac4b45f68b0aae11048fc43d542fd0c3d4e1681",
+    "scripts/bench/test-run-merge-recovery-soak.sh": "00c03b496154ebff2e6cdfcb3832ccd157aac5e01d679eba726db141f73db187",
+    "scripts/casper-soak/src/host_control.rs": "933e9cd7d05e763fea581d53f255ddba08fe3737c2046d3bbe6e996a06859aa9"
+  },
+  "source_digests": {
+    "scripts/run-merge-recovery-soak.sh": "8486972f4b7ea2c2ba3433d0dc1c3b2cdd1efa58de01feebbe7e6726548b2758",
+    "scripts/bench/test-run-merge-recovery-soak.sh": "320127860c51ab6b1439f568b41d660fdddf04fa52bb3a1ab51c2b4f23949ac7",
+    "scripts/casper-soak/src/host_control.rs": "3c4c637574f6624f4e1d08518cee22eb8a99e76383f1fc92d0f489db6ed540a8"
+  },
+  "evidence_before_change": {
+    "scripts/run-merge-recovery-soak.sh": {
+      "path": "docs/casper/cbc-evidence/runs/casper-soak-disk-attribution-acceptance-20261019-01/report.json",
+      "sha256": "b7ee5b093d81fe4b51bd4a112a8ff99f9abf6c129a4fb39b593f0f8d52c05a68"
+    },
+    "scripts/bench/test-run-merge-recovery-soak.sh": {
+      "path": "docs/casper/cbc-evidence/runs/casper-soak-driver-evidence-scope-acceptance-20261004-02/report.json",
+      "sha256": "5943def5a8f7dee8de9b75a8f68e642a03068484140cbd4e815f184192df832f"
+    },
+    "scripts/casper-soak/src/host_control.rs": {
+      "path": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json",
+      "sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831"
+    }
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "48b1850c6127d643da3b6043c98e7a2ed13280ceeb4fd3c01db08be3026015ea"
+  },
+  "claim_digests_note": "docs/claims/casper-soak-harness.md changed from b6d4f83f at the base. Commit ca75715cd adds the paragraph of 2026-10-21 that records the narrower ownership guarantee and its limitation.",
+  "tiers": {
+    "binding": "passed",
+    "construction": "not-applicable",
+    "refutation": "bounded-safety-pass"
+  },
+  "verification": {
+    "fixture_local": {
+      "command": "bash scripts/bench/test-run-merge-recovery-soak.sh",
+      "environment": "rust:bookworm container on arm64, run as a non-root user with a non-dumpable same-user process present, with a 12 GB tmpfs /tmp and the casper-soak binary built from the same tree.",
+      "tree": "4c38b5489",
+      "exit": 0
+    },
+    "fixture_before_fix": {
+      "tree": "98eb647e6 driver with the 01af6a247 fixture",
+      "result": "failed: a node of the deadline-stopped session survived the segment"
+    },
+    "driver_mutations": {
+      "method": "Each mutation edits a scratch copy of the driver at f79e3960c. The fixture of the same tree runs against it.",
+      "results": {
+        "no-stop": "failed: the writer stop did not kill the owned container",
+        "no-summary-fallback": "failed: a segment after the stop lost the early exit reason",
+        "no-failure-count": "failed: a failed writer stop passed the soak",
+        "increment": "failed: FAILURES=1 expected after the disk floor stop",
+        "reset-count": "failed: the count of several failed iterations not kept",
+        "remove-containers": "failed: the writer stop did not kill the owned container",
+        "overwrite-reason": "failed: the disk floor reason not kept",
+        "ignore-prior": "failed: the disk floor reason not kept on the no-op restart"
+      },
+      "survived": 0,
+      "note": "Three mutations first failed at the scenario 1 start wait, a known timing flake. They failed at their intended assertions on a second run."
+    },
+    "host_control_unit_tests": {
+      "command": "casper-soak unit test binary, host_control tests, --test-threads=1",
+      "as_uid_65534": "9 passed, 1 ignored",
+      "as_root": "9 passed, 1 ignored",
+      "strict_read_control": "With the strict environment read restored on a scratch copy, stop_skips_a_process_whose_environment_is_unreadable and oom_preference_skips_a_process_whose_environment_is_unreadable fail as UID 65534.",
+      "parallel_root_note": "Run in parallel as root, the host-control tests fail in some runs. Without this change they fail in 2 of 15 runs. CI runs them as UID 65534 with one thread."
+    },
+    "static": {
+      "clippy": "cargo clippy -p casper-soak --all-targets -D warnings on Linux: no findings",
+      "shellcheck": "no new findings in the driver or the fixture",
+      "check_casper_claims": "exit 0"
+    }
+  },
+  "hosted": {
+    "repository": "F1R3FLY-io/f1r3node-rust",
+    "tested_sha": "4c38b5489fe35b943d8d6c8db9b0e2103600fcb9",
+    "soak_harness_tests": {
+      "run_id": 39659666973,
+      "job_id": 119429539402,
+      "steps": {
+        "Verify soak fail-closed driver": "success",
+        "Verify isolated disk admission and emergency scenarios": "success",
+        "Verify the disk admission failure report and bounded-command liveness": "success"
+      }
+    },
+    "claims_and_bindings": {
+      "run_id": 39659667086,
+      "job": "Casper driver binding fixtures",
+      "job_id": 119431257252,
+      "steps": {
+        "Check model, claim-audit, and interruption regressions": "success",
+        "Audit Casper claim identities and discharge evidence": "success",
+        "Check isolated driver bindings and actual case counts": "success"
+      },
+      "note": "The binding container runs the host-control unit tests as UID 65534 with all capabilities dropped."
+    },
+    "earlier_failures": [
+      "Run 39639227494 (28746e00b): the driver step failed at the scenario 1 failure count. The diagnostic block showed that stop-owned failed with no owned writer left. Commit ca75715cd fixes the owner scan.",
+      "Run 39642685101 (ca75715cd): the disk admission stop-timeout case counted two failures for one unconfirmed stop. Commit f79e3960c applies the one-failure rule."
+    ]
+  },
+  "review": {
+    "pr_review": "A multi-agent review of PR #811 (comment 6321438707). Only one provider returned a verdict, with two suggestions.",
+    "peer_review": "The peer agent found two P2 defects: a failed no-op restart stop replaced the earlier reason, and the fixture wrapper ignored SOAK_HARNESS_BIN. Commit 70744ec35 fixes both.",
+    "disposition": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/811#issuecomment-6323629461"
+  },
+  "acceptance_request": {
+    "acceptor": "jltatbeach",
+    "where": "PR #811 comment",
+    "scope": "One acceptance covers the driver, fixture, and host-control changes of the six commits above, the three earlier fixture commits, and the narrower ownership guarantee with its limitation."
+  },
+  "expected_gate_state": "check-casper-claims passes because it reports CLAIM-CASPER-SOAK-001 as pending. The three ledger records keep their accepted digests until a maintainer accepts this package.",
+  "claim_discharge": "pending",
+  "node_execution": false,
+  "waiver": null,
+  "soak": "pending",
+  "soak_observation": {
+    "status": "not run. A repeat of the H1 soak after PR #811 merges shows whether a soak reaches 60 hours."
+  },
+  "verified_at": "2026-10-21"
+}

@@ -1,0 +1,121 @@
+{
+  "acceptance": null,
+  "change": {
+    "task": "Hotfix: install-step stalls in the Casper profile workflows and the TLA+ invariant check",
+    "base": "679e2b4c1b929184a4f67d3f9c879d23599d6f29",
+    "origin": "On 2026-10-23 the Ubuntu package mirror of the hosted runners was very slow. In PR #826 and PR #827, apt-get install default-jre took 12.5 to 15 minutes, and the 15-minute job timeout stopped the TLA+ invariant check and two profile checks before verification ran.",
+    "change": "Each of the nine install steps uses the JDK 21 of the runner image (JAVA_HOME_21_X64) instead of apt-get update and apt-get install default-jre. The step puts that JDK first on PATH for the later steps and prints its version. jq and wget come from the runner image, and command -v checks them. Each install step has timeout-minutes: 5, so a slow step fails with its own name.",
+    "java": "default-jre on Ubuntu noble installs OpenJDK 21. The runner image provides Temurin JDK 21, so the Java major version for TLC does not change.",
+    "unchanged": "The TLA+ tools version (v1.7.4), its download, its sha256 check, the models, the fixtures, the verification commands, the job timeouts, and the triggers are unchanged."
+  },
+  "expected_failure": "Six workflows belong to discharged claims (CLAIM-CASPER-SOAK-003 to 008). Until the maintainer accepts this change and the ledgers are rebound, check-casper-claims fails with 'The discharged source or specification differs.' in the Slashing test suite. The ledgers are not rebound before the acceptance.",
+  "claim_digests": {
+    "docs/claims/casper-campaign-execution.md": "1574f70fc5b1f432b7bf1fa98a6deca125d3221e3b29864686a42da70a2b31bb",
+    "docs/claims/casper-soak-authority-finality.md": "11570876df0aa9c642f28e602d3c120d0954337f59c174eae98bce5e9a6cfb8a",
+    "docs/claims/casper-soak-carrier-index.md": "4aab7367b93766df504bcd679670b8d4bcfeda3d4cd5ea3a2f6b2f39ca86a236",
+    "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf",
+    "docs/claims/casper-soak-merge-accounting.md": "22a6534ef37b1675b6fe69cd04dbae6473d2fa93d9306efb454499cd04c970f3",
+    "docs/claims/casper-soak-publication.md": "f49995b85ec66fe5da179efeadef28559eaec3df2a55fa69479c7688492b00db",
+    "docs/claims/casper-soak-recovery.md": "057e4cfe06c19ac3ae7d61a15568fe6c72a8e0083f4737215fdf749cde4c5afe",
+    "docs/claims/casper-soak-slashing.md": "6954ff5fe9edb29909f88f94b328aced5229ac5c7387b67d02c185c4b717845b",
+    "docs/claims/casper-soak-version-phlo.md": "05e750fc023dd55ed869c1175b0e6639ecfd7e2be22ded37f32175003aa6757a"
+  },
+  "claim_status": {
+    "CLAIM-CASPER-CAMPAIGN-003": "pending",
+    "CLAIM-CASPER-SOAK-002": "pending",
+    "CLAIM-CASPER-SOAK-008": "discharged",
+    "CLAIM-CASPER-SOAK-001": "pending",
+    "CLAIM-CASPER-SOAK-005": "discharged",
+    "CLAIM-CASPER-SOAK-003": "discharged",
+    "CLAIM-CASPER-SOAK-004": "discharged",
+    "CLAIM-CASPER-SOAK-006": "discharged",
+    "CLAIM-CASPER-SOAK-007": "discharged"
+  },
+  "claim_discharge": "pending",
+  "claim_ids": [
+    "CLAIM-CASPER-CAMPAIGN-003",
+    "CLAIM-CASPER-SOAK-001",
+    "CLAIM-CASPER-SOAK-002",
+    "CLAIM-CASPER-SOAK-003",
+    "CLAIM-CASPER-SOAK-004",
+    "CLAIM-CASPER-SOAK-005",
+    "CLAIM-CASPER-SOAK-006",
+    "CLAIM-CASPER-SOAK-007",
+    "CLAIM-CASPER-SOAK-008"
+  ],
+  "evidence_before_change": {
+    ".github/workflows/casper-authority-finality.yml": {
+      "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/report.json",
+      "sha256": "d85f9d4ce21cc13205e44f0ef94ab6ead8ca2a192a094febb128198135810470"
+    },
+    ".github/workflows/casper-campaign-control.yml": {
+      "path": "docs/casper/cbc-evidence/runs/casper-campaign-phase-20260922-01/report.json",
+      "sha256": "cdd7e051aaa4959f84bf8a87840630e3aacf1d0bd8c09b3f6297afca69d3248f"
+    },
+    ".github/workflows/casper-carrier-index.yml": {
+      "path": "docs/casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json",
+      "sha256": "06e5c0d15a9eef13c09f5e28c5b553a082685be7dc44f305fed5380e0c7860e7"
+    },
+    ".github/workflows/casper-merge-accounting.yml": {
+      "path": "docs/casper/cbc-evidence/runs/casper-merge-accounting-acceptance-20260919-01/report.json",
+      "sha256": "ba73b6ff31e85ee528490be184a8b95441977bcaba7ceac6eb905fdb1e0a576b"
+    },
+    ".github/workflows/casper-publication.yml": {
+      "path": "docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json",
+      "sha256": "614d13c3e52ed11afb84a9a0b5f6345db42bc3a684518f9ce7060b15fc08c4da"
+    },
+    ".github/workflows/casper-recovery.yml": {
+      "path": "docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json",
+      "sha256": "614d13c3e52ed11afb84a9a0b5f6345db42bc3a684518f9ce7060b15fc08c4da"
+    },
+    ".github/workflows/casper-slashing.yml": {
+      "path": "docs/casper/cbc-evidence/runs/casper-slashing-ratification-20260919-01/report.json",
+      "sha256": "b47dc09e4d3f901503b88ae0ce346c94aecc4a0fc60d3b76079c8b19f54070ca"
+    },
+    ".github/workflows/casper-version-phlo.yml": {
+      "path": "docs/casper/cbc-evidence/runs/casper-version-phlo-acceptance-20260919-01/report.json",
+      "sha256": "114a1372249ed2488da96f3dc4346a41ea4cc2eddc8702ca3444e4008e52edc3"
+    },
+    ".github/workflows/slashing-tests.yml": {
+      "path": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json",
+      "sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831"
+    }
+  },
+  "source_digests_before_change": {
+    ".github/workflows/casper-authority-finality.yml": "db9a1044cb693690f66975ff45d7954ab10b4469d353d156fe5bc402e6746721",
+    ".github/workflows/casper-campaign-control.yml": "109a71c33f50577dc42daa7a8800504a8df7c0bb81ef844c8fd97e7c533a7541",
+    ".github/workflows/casper-carrier-index.yml": "fbf03950c448d1872ac2cdc59772aadf1c9b96f657cda736dd1e9d4a9d2da97d",
+    ".github/workflows/casper-merge-accounting.yml": "69478722b065d0bebc3c2d8dd6d43a129ee7296ebf58a3ff910e43347997b23d",
+    ".github/workflows/casper-publication.yml": "91c25c33c997588985913a9fc511b9b35b79f0e1a03abf733c0c5aac53f20421",
+    ".github/workflows/casper-recovery.yml": "2745a031e27a851a9503874be3a8932d55f74bc61acfab6b6fab2fe1a7e5dc5d",
+    ".github/workflows/casper-slashing.yml": "53a2f0bcf732405cde493c1aaf13868913ad58c5d97a5116059d90b5cd502675",
+    ".github/workflows/casper-version-phlo.yml": "f0b66b1183d12b318b3d62066c4044155a90eba4e332f938c7b51ec752f3583d",
+    ".github/workflows/slashing-tests.yml": "915af218194a292ec2c227c5b3e28b396b76eff7a0586fdf7c4fe87febe0eb15"
+  },
+  "source_digests": {
+    ".github/workflows/casper-authority-finality.yml": "e4ae8673e683c21628bbb9d4b159cdd6dd41e2e6e1774793e5ef2d01f521c9c1",
+    ".github/workflows/casper-campaign-control.yml": "1229b3a91d4ff91f55da363913196af72d2fdc1583876b99c340cd6e5fb756c2",
+    ".github/workflows/casper-carrier-index.yml": "91215fdd0f86d321d10ee7f496c5d361af13e7e2ffe449cb6b821c146b833883",
+    ".github/workflows/casper-merge-accounting.yml": "36d4b339cee219f8fb798ccdd9bb82bac7cac2706467bfc60d9599f056e44402",
+    ".github/workflows/casper-publication.yml": "e8789552da5e982e6d01df684f23aba23f5cb2dd341f31e3cb7cbd2e68b07ab9",
+    ".github/workflows/casper-recovery.yml": "b1f16d34161db3d198df771927baad6f367f626aff1bbc12ec351b7734a2fce1",
+    ".github/workflows/casper-slashing.yml": "99d58b578284114f6e88c6ea9cc3b188d273438df66445dfb44162ca195520fc",
+    ".github/workflows/casper-version-phlo.yml": "7e40e4f0ed4983ad3553d8125095d980511a12b74b83f9c97f0a1312f000156d",
+    ".github/workflows/slashing-tests.yml": "b9164f7d5aa8de7655fb9627b91701fe82787c2af1ba3203d7dfcffe5560ac6b"
+  },
+  "ledgers_stale_before_change": {
+    ".github/workflows/slashing-tests.yml": {
+      "ledger_sha256": "1821ac5e6d95226e323423806efb1de9ceda8f423b5fa19bdc7572bf2209cc3b",
+      "base_sha256": "915af218194a292ec2c227c5b3e28b396b76eff7a0586fdf7c4fe87febe0eb15"
+    },
+    ".github/workflows/slashing-tests.yml -> docs/claims/casper-soak-harness.md": {
+      "ledger_sha256": "c1f6b7473f790a60ab964ce7fd7277841cd6cee5718e9853ad96cf4c671d5932",
+      "base_sha256": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf"
+    }
+  },
+  "ledgers_stale_note": "On the base revision these ledgers already record a source or claim digest that differs from the file. Their claims are pending, so the claims audit does not check them. The acceptance rebinds them to the digests above.",
+  "hosted_evidence": "pending: the runs of the nine workflows on the pushed revision",
+  "schema_version": 1,
+  "scope": "ci-install-step-only",
+  "node_execution": false
+}

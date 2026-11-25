@@ -33,10 +33,12 @@
 //
 // Consensus WAL entries record bundle-relative paths
 // (`/@bundle/<...>`).  The joiner's `RootIdentityRegistry` —
-// populated at `node::setup` from the operator's fs bundle (when
-// that wiring lands) — rewrites those to the joiner's
-// per-validator on-disk subdir before the syscall.  Oracular
-// entries have no matching prefix and fall through to identity.
+// populated at boot by
+// `node::rust::runtime::setup::register_consensus_bundle_roots`
+// from the operator's merged static-provisioning entries —
+// rewrites those to the joiner's per-validator on-disk subdir
+// before the syscall.  Oracular entries have no matching prefix
+// and fall through to identity.
 //
 // Defense-in-depth: `allowed_roots` bounds where applier writes
 // may land.  Empty vector skips validation (pre-Shape-A behavior).
@@ -97,10 +99,8 @@ pub const BOOT_APPLY_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// when the snapshot driver is dropped).
 ///
 /// `allowed_roots` bounds where applier writes may land.  Boot
-/// sites currently pass an empty `Vec` pending provisioning
-/// plumbing; the parameter exists so a follow-up slice can wire
-/// the operator's consensus-static roots without changing this
-/// signature.
+/// sites pass `RuntimeManager::consensus_static_roots()`,
+/// populated at boot by `register_consensus_bundle_roots`.
 ///
 /// `payload_lookup` is the DD-7b-2 (a) Option 1 reducer source:
 /// when `Some`, the boot enumerator consults the joiner's local

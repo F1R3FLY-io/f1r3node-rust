@@ -88,10 +88,19 @@ suites_failed=0
 for suite in manifest models bindings interruption claims driver; do
  /case/test-$suite --test-threads=1 > /case/evidence/$suite.txt 2>&1 || suites_failed=1
 done
-[[ "$suites_failed" == 0 ]] || exit 1
-grep -Eq "test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;" /case/evidence/bindings.txt
-grep -Eq "test result: ok\. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;" /case/evidence/interruption.txt
-grep -Eq "test result: ok\. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;" /case/evidence/claims.txt
+if [[ "$suites_failed" != 0 ]]; then
+ printf "FAIL: a test suite failed; its output is in the evidence directory.\n" >&2
+ exit 1
+fi
+expect_result() {
+ if ! grep -Eq "test result: ok\. $2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;" "/case/evidence/$1.txt"; then
+  printf "FAIL: suite %s expected \"test result: ok. %s passed; 0 failed\" and found \"%s\".\n" "$1" "$2" "$(grep -m1 -E "^test result:" "/case/evidence/$1.txt" || printf "no result line")" >&2
+  exit 1
+ fi
+}
+expect_result bindings 1
+expect_result interruption 2
+expect_result claims 4
 /case/check-casper-bindings --evidence /case/evidence --output /case/evidence/counts.json
 ')"
 docker inspect "$CONTAINER" >"$OUTPUT/container.json"
@@ -115,7 +124,10 @@ timeout --signal=TERM --kill-after=5 600 docker start -a "$CONTAINER" >"$OUTPUT/
 docker inspect "$CONTAINER" >"$OUTPUT/finished.json"
 docker cp "$CONTAINER:/case/evidence" "$OUTPUT/evidence" >/dev/null
 jq -e --argjson status "$status" '.[0].State | .Running==false and .OOMKilled==false and .ExitCode==$status' "$OUTPUT/finished.json" >/dev/null
-[[ "$status" == 0 ]] || exit "$status"
+if [[ "$status" != 0 ]]; then
+	tail -n 20 "$OUTPUT/run.txt" >&2
+	exit "$status"
+fi
 jq -e '.scope=="binding-inventory-only" and .driver_invocations==91 and .registered_cases==48 and .matched_exits==true and .claim_discharge=="pending"' "$OUTPUT/evidence/counts.json" >/dev/null
 rustc --version >"$OUTPUT/evidence/rustc-version.txt"
 cargo --version >"$OUTPUT/evidence/cargo-version.txt"

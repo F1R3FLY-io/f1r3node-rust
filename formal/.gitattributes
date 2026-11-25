@@ -1,0 +1,10 @@
+/tlaplus/node_observation/** cbc=mandatory cbc-weight=high
+/rocq/node_observation/** cbc=mandatory cbc-weight=high
+/rocq/node_authority/** cbc=mandatory cbc-weight=high
+/tlaplus/casper_soak/** cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/tlaplus/soak_cleanup/EraseReason.cfg cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/tlaplus/soak_cleanup/IgnoreStopFailure.cfg cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/tlaplus/soak_cleanup/SkipOwnerStop.cfg cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/tlaplus/soak_cleanup/SkipResidualStop.cfg cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/tlaplus/soak_cleanup/SoakCleanup.tla cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/tlaplus/soak_cleanup/clean.cfg cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence

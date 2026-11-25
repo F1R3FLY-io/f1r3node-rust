@@ -17,7 +17,6 @@ impl RhoLoggerContract {
         let mut pretty_printer = PrettyPrinter::new();
 
         let is_contract_call = ContractCall {
-            space: ctx.space.clone(),
             dispatcher: ctx.dispatcher.clone(),
         };
 

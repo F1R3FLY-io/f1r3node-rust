@@ -233,16 +233,7 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                                         }
                                     }
                                 }
-                                None => {
-                                    if propose_result.is_no_new_deploys() {
-                                        tracing::info!("Propose: {}", propose_result.propose_status)
-                                    } else {
-                                        tracing::error!(
-                                            status = %propose_result.propose_status,
-                                            "propose failed"
-                                        )
-                                    }
-                                }
+                                None => log_unproposed(&propose_result),
                             }
 
                             should_retry_on_trigger
@@ -409,8 +400,9 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
 
 /// Classify a propose-call error into the failure the channels report and
 /// the block to request, if any. `BlockNotHeld` carries the floor
-/// machinery's fetch-and-retry contract; everything else is a genuine bug
-/// the heartbeat should back off on.
+/// machinery's fetch-and-retry contract and a floor-distance refusal is a
+/// hold until finality advances; everything else is a genuine bug the
+/// heartbeat should back off on.
 pub(crate) fn classify_propose_error(
     error: &CasperError,
 ) -> (ProposeFailure, Option<models::rust::block_hash::BlockHash>) {
@@ -419,7 +411,18 @@ pub(crate) fn classify_propose_error(
             ProposeFailure::MissingBlock(hash.clone()),
             Some(hash.clone()),
         ),
+        CasperError::FloorDistanceExceeded { .. } => (ProposeFailure::FloorDistanceHold, None),
         _ => (ProposeFailure::BugError, None),
+    }
+}
+
+fn log_unproposed(propose_result: &ProposeResult) {
+    if propose_result.is_no_new_deploys() || propose_result.is_history_incomplete() {
+        tracing::info!("Propose: {}", propose_result.propose_status)
+    } else if propose_result.is_not_bonded() {
+        tracing::warn!(status = %propose_result.propose_status, "propose failed")
+    } else {
+        tracing::error!(status = %propose_result.propose_status, "propose failed")
     }
 }
 
@@ -488,6 +491,20 @@ mod tests {
         assert!(matches!(failure, ProposeFailure::BugError));
     }
 
+    /// A floor-distance refusal is a hold until finality advances: it must not
+    /// escalate the heartbeat's bug backoff.
+    #[test]
+    fn floor_distance_refusal_classifies_as_a_hold() {
+        let (failure, request) = classify_propose_error(&CasperError::FloorDistanceExceeded {
+            distance: 257,
+            cap: 256,
+            floor_block: 425,
+            parents: 4,
+        });
+        assert!(request.is_none());
+        assert!(matches!(failure, ProposeFailure::FloorDistanceHold));
+    }
+
     #[test]
     fn should_not_retry_internal_deploy_error_immediately() {
         let result = ProposeResult::failure(ProposeFailure::InternalDeployError);
@@ -506,5 +523,41 @@ mod tests {
             !should_retry_immediately_on_trigger(&result, true),
             "NotEnoughNewBlocks should not trigger immediate async retry"
         );
+    }
+
+    #[test]
+    fn a_validator_that_is_not_bonded_yet_logs_its_refusal_as_a_warning() {
+        use shared::rust::tracing_init::EventCapture;
+        use tracing::Level;
+
+        let capture = EventCapture::new();
+        {
+            let _guard = capture.install();
+            log_unproposed(&ProposeResult::not_bonded());
+            log_unproposed(&ProposeResult::no_new_deploys());
+            log_unproposed(&ProposeResult::failure(ProposeFailure::BugError));
+        }
+
+        let levels: Vec<Level> = capture.events().into_iter().map(|e| e.level).collect();
+        assert_eq!(levels, vec![Level::WARN, Level::INFO, Level::ERROR]);
+    }
+
+    #[test]
+    fn a_node_still_catching_up_on_its_history_logs_its_refusal_as_info() {
+        use shared::rust::tracing_init::EventCapture;
+        use tracing::Level;
+
+        let capture = EventCapture::new();
+        {
+            let _guard = capture.install();
+            log_unproposed(&ProposeResult::failure(
+                ProposeFailure::CheckConstraintsFailure(
+                    CheckProposeConstraintsFailure::HistoryIncomplete,
+                ),
+            ));
+        }
+
+        let levels: Vec<Level> = capture.events().into_iter().map(|e| e.level).collect();
+        assert_eq!(levels, vec![Level::INFO]);
     }
 }

@@ -33,6 +33,7 @@ mod replay_memory_profile_spec;
 mod setsubtrie_spec;
 mod single_term_recursion_spec;
 mod substitute_test;
+mod waiting_continuation_spec;
 mod zipper_advanced_navigation_spec;
 mod zipper_path_management_spec;
 mod zipper_query_methods_spec;

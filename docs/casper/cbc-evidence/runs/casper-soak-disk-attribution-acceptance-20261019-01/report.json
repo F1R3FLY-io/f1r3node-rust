@@ -1,0 +1,40 @@
+{
+ "approval": {
+  "accepted_by": "jltatbeach",
+  "posted_at": "2026-10-20T01:55:21Z",
+  "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/782#issuecomment-6281505686",
+  "revision": "acc55d50aa178883325ba4c61b9bb8c09e91ce4c"
+ },
+ "review": {
+  "ref": "docs/casper/cbc-evidence/runs/casper-soak-disk-attribution-20261019-01/report.json",
+  "sha256": "6bc280221b2aa209b2d8ac2d98fb1fefaee36272d453cf5859ccb070d4af5b29"
+ },
+ "previous_acceptance": {
+  "ref": "docs/casper/cbc-evidence/runs/casper-soak-log-budget-guardian-acceptance-20261019-01/report.json",
+  "sha256": "87260360e462518c1e9bd63e717fc899c8734b985b6530c2c83603cd7d791b64"
+ },
+ "claim_digests": {
+  "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf"
+ },
+ "claim_discharge": "discharged",
+ "claim_ids": [
+  "CLAIM-CASPER-SOAK-001"
+ ],
+ "node_execution": false,
+ "phase": "pre_pr216_merge",
+ "schema_version": 1,
+ "scope": "bounded-harness-disk-usage-attribution",
+ "soak": "pending",
+ "source_digests": {
+  "scripts/bench/test-soak-disk-admission.sh": "9ae26ef1a2fa01f35d89663a3434b2b8a88b5d9fc901d8ee88556c5236b5147b",
+  "scripts/run-merge-recovery-soak.sh": "c088201d45c33eed68b8e82abac4b45f68b0aae11048fc43d542fd0c3d4e1681"
+ },
+ "status": "accepted-change",
+ "tiers": {
+  "binding": "passed",
+  "construction": "not-applicable",
+  "refutation": "bounded-safety-pass"
+ },
+ "verified_at": "2026-10-20",
+ "waiver": null
+}
