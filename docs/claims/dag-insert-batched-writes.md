@@ -5,7 +5,7 @@ claim_id: CLAIM-DAG-INSERT-BATCH-001
 artifacts:
   - block-storage/src/rust/dag/carrier_index.rs                 # CarrierIndex::record_block
   - block-storage/src/rust/dag/block_dag_key_value_storage.rs   # insert_internal and record_deploy_events call the batch writers
-status: discharged
+status: pending
 adapter: embedded
 mechanization: none   # binding tier only. The construction tier is pending.
 task: issue #1151
@@ -55,4 +55,4 @@ The new tests did not compile before the change, because the batch writers did n
 
 The run package `docs/cbc-evidence/runs/dag-insert-batch-20261125-01/report.json` holds the test results, the source digests, and the local load measurement.
 
-`carrier_index.rs` and `block_dag_key_value_storage.rs` have named records for this claim. The ledger of `block_dag_key_value_storage.rs` moved from one legacy record to named claims on 2026-11-25. The run package `docs/cbc-evidence/runs/block-dag-storage-named-claims-20261125-01/report.json` gives that migration.
+`carrier_index.rs` and `block_dag_key_value_storage.rs` have named records for this claim, with the status `pending`. The binding tier is reached for P1 and for the tested instances of P2. The claim stays pending until the construction tier proves P2 for every block sequence. The ledger of `block_dag_key_value_storage.rs` moved from one legacy record to named claims on 2026-11-25. The run package `docs/cbc-evidence/runs/block-dag-storage-named-claims-20261125-01/report.json` gives that migration.

@@ -1,10 +1,10 @@
 # CbC Evidence: block-storage/src/rust/dag/block_dag_key_value_storage.rs
 
-This ledger uses named claims since the migration of 2026-11-25. Before the migration, it held one legacy record for `CLAIM-CASPER-NODE-OBSERVATION-002`, `-003`, and `-005`. A named maintainer accepted that record at revision `1a9839b0e` on 2026-10-01 (PR #447, comment 5924422936).
+This ledger uses named claims since the migration of 2026-11-25. Before the migration, it held one legacy record for `CLAIM-CASPER-NODE-OBSERVATION-002`, `-003`, and `-005`. A named maintainer accepted each claim separately: 002 at `4c0c0dbe7` and 003 at `237e43d72` (PR #447, review 5294038948), and 005 at `1a9839b0e` (PR #447, comment 5924422936).
 
 The original bytes are in `history/66249e5087ae81aa66fd33ddcd02701e301d536a2148199192da00b58c72128b-block-storage-src-rust-dag-block-dag-key-value-storage-rs.md`. The run package `docs/cbc-evidence/runs/block-dag-storage-named-claims-20261125-01/report.json` gives the mapping.
 
-The file changed after that acceptance. The records for 002, 003, and 005 therefore have the status `pending` until a maintainer accepts them for the current bytes. Each of these records keeps the accepted record in its `historical` field.
+The file changed after each acceptance. The records for 002, 003, and 005 therefore have the status `pending` until a maintainer accepts them for the current bytes. Each of these records cites its own acceptance in its `acceptance` field, and keeps the original combined record in its `historical` field.
 
 
 ## Claim CLAIM-DAG-INSERT-BATCH-001
@@ -13,34 +13,34 @@ The file changed after that acceptance. The records for 002, 003, and 005 theref
 {
   "artifact": {
     "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
-    "commit": "cc76daf25c57814b4f490bf019f906e56265a0cb",
+    "commit": "77f16f7459b852cd1763a3d4dddddf514e6bc5f0",
     "id": "block-storage-src-rust-dag-block-dag-key-value-storage-rs"
   },
   "claim": "docs/claims/dag-insert-batched-writes.md",
   "adapter": "embedded",
-  "status": "discharged",
+  "status": "pending",
   "scope": "binding-tier",
   "evidence": {
     "kind": "bounded-regression-tests",
     "ref": "docs/cbc-evidence/runs/dag-insert-batch-20261125-01/report.json",
     "counterexample": null,
-    "detail": "Binding tier. insert_internal and record_deploy_events call the batch writers. Counting-store tests show one table write for each table in a block, and equivalence tests compare the batch writers with test copies of the pre-change writers. The construction tier is pending."
+    "detail": "Binding tier reached. Counting-store tests prove P1, and equivalence tests against test copies of the pre-change writers cover the tested instances of P2. The claim stays pending until the construction tier proves P2 for every block sequence."
   },
   "waiver": null,
-  "verified_at": "2026-11-25T14:59:37Z",
+  "verified_at": "2026-11-25T15:15:41Z",
   "claim_id": "CLAIM-DAG-INSERT-BATCH-001",
   "schema": "cbc-claim/v1",
-  "verification_id": "8923217b-2ecc-430e-803e-6dfb6a7b9ca9",
+  "verification_id": "976c88f6-b55c-474d-8e2d-0fdf482b25e2",
   "inputs": {
     "artifact": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
     "source_sha256": "a247350dda3ee9a9e6e355cd3d7f709e9f13ce23dddace5f4bf80b47c8b23d6a",
     "claim": {
       "path": "docs/claims/dag-insert-batched-writes.md",
-      "sha256": "18eeaeb3242c4bea741549b62e49f683beb69bcfde8542ec94a80563f5e8eb70"
+      "sha256": "3561abaa0464cd19d172d1306644448edc65831f045750c5a2386f558e4e605b"
     }
   },
   "evidence_files": {
-    "docs/cbc-evidence/runs/dag-insert-batch-20261125-01/report.json": "1e99d08157ecbb5f9829adae03dff756aebdc5d4e7bb3aebf73163f0d836fa48"
+    "docs/cbc-evidence/runs/dag-insert-batch-20261125-01/report.json": "5323bb409bfa3f4f68768546c287cbc5dcf92e59090aa7c555738163d2908a77"
   }
 }
 ```
@@ -52,7 +52,7 @@ The file changed after that acceptance. The records for 002, 003, and 005 theref
 {
   "artifact": {
     "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
-    "commit": "cc76daf25c57814b4f490bf019f906e56265a0cb",
+    "commit": "77f16f7459b852cd1763a3d4dddddf514e6bc5f0",
     "id": "block-storage-src-rust-dag-block-dag-key-value-storage-rs"
   },
   "claim": "docs/claims/casper-node-authority-snapshot.md",
@@ -63,10 +63,18 @@ The file changed after that acceptance. The records for 002, 003, and 005 theref
     "kind": "binding-tests-supporting",
     "ref": "docs/cbc-evidence/runs/block-dag-storage-named-claims-20261125-01/report.json",
     "counterexample": null,
-    "detail": "A maintainer accepted this claim for the bytes of the file at 1a9839b0e (PR #447, comment 5924422936). The file changed after that acceptance. The node observation binding tests pass on the current bytes, but they do not discharge the claim. The claim waits for a new acceptance."
+    "detail": "A maintainer accepted this claim at revision 4c0c0dbe7. The file changed after that acceptance. The node observation binding tests pass on the current bytes, but they do not discharge the claim. The claim waits for a new acceptance."
   },
   "waiver": null,
-  "verified_at": "2026-11-25T15:07:37Z",
+  "verified_at": "2026-11-25T15:15:40Z",
+  "acceptance": {
+    "accepted_by": "jltatbeach",
+    "accepted_at": "2026-09-23T16:55:28Z",
+    "revision": "4c0c0dbe7c8958debefdb02f2b21795786c45900",
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948",
+    "package": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01",
+    "source": "docs/claims/casper-node-authority-snapshot.md"
+  },
   "historical": {
     "artifact": {
       "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
@@ -150,7 +158,7 @@ The file changed after that acceptance. The records for 002, 003, and 005 theref
   },
   "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-002",
   "schema": "cbc-claim/v1",
-  "verification_id": "cc3604d8-b9ab-4f29-acd1-8c10f780f037",
+  "verification_id": "df500e7f-d00d-455c-b4ce-fa3cc5382a76",
   "inputs": {
     "artifact": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
     "source_sha256": "a247350dda3ee9a9e6e355cd3d7f709e9f13ce23dddace5f4bf80b47c8b23d6a",
@@ -160,7 +168,7 @@ The file changed after that acceptance. The records for 002, 003, and 005 theref
     }
   },
   "evidence_files": {
-    "docs/cbc-evidence/runs/block-dag-storage-named-claims-20261125-01/report.json": "bce5a1d859e6cfe6404d56fdd8880b46d3ae86c28f2dc3792e94349b8d731ed8"
+    "docs/cbc-evidence/runs/block-dag-storage-named-claims-20261125-01/report.json": "909b65b6fcc69e49fd8d1de3866355a4bf7db9ff6a20472543dd8bb9884a28f4"
   }
 }
 ```
@@ -172,7 +180,7 @@ The file changed after that acceptance. The records for 002, 003, and 005 theref
 {
   "artifact": {
     "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
-    "commit": "cc76daf25c57814b4f490bf019f906e56265a0cb",
+    "commit": "77f16f7459b852cd1763a3d4dddddf514e6bc5f0",
     "id": "block-storage-src-rust-dag-block-dag-key-value-storage-rs"
   },
   "claim": "docs/claims/casper-node-authority-evaluation.md",
@@ -183,10 +191,18 @@ The file changed after that acceptance. The records for 002, 003, and 005 theref
     "kind": "binding-tests-supporting",
     "ref": "docs/cbc-evidence/runs/block-dag-storage-named-claims-20261125-01/report.json",
     "counterexample": null,
-    "detail": "A maintainer accepted this claim for the bytes of the file at 1a9839b0e (PR #447, comment 5924422936). The file changed after that acceptance. The node observation binding tests pass on the current bytes, but they do not discharge the claim. The claim waits for a new acceptance."
+    "detail": "A maintainer accepted this claim at revision 237e43d72. The file changed after that acceptance. The node observation binding tests pass on the current bytes, but they do not discharge the claim. The claim waits for a new acceptance."
   },
   "waiver": null,
-  "verified_at": "2026-11-25T15:07:38Z",
+  "verified_at": "2026-11-25T15:15:40Z",
+  "acceptance": {
+    "accepted_by": "jltatbeach",
+    "accepted_at": "2026-09-23T21:01:02Z",
+    "revision": "237e43d723b9867985cd47fdfe312fd8d06352e8",
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948",
+    "package": "docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02",
+    "source": "docs/claims/casper-node-authority-evaluation.md"
+  },
   "historical": {
     "artifact": {
       "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
@@ -270,7 +286,7 @@ The file changed after that acceptance. The records for 002, 003, and 005 theref
   },
   "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-003",
   "schema": "cbc-claim/v1",
-  "verification_id": "87d8d50c-a2f2-487e-b118-5cb051a651a9",
+  "verification_id": "bbd34980-a81e-4140-910e-f6201f0a6bbc",
   "inputs": {
     "artifact": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
     "source_sha256": "a247350dda3ee9a9e6e355cd3d7f709e9f13ce23dddace5f4bf80b47c8b23d6a",
@@ -280,7 +296,7 @@ The file changed after that acceptance. The records for 002, 003, and 005 theref
     }
   },
   "evidence_files": {
-    "docs/cbc-evidence/runs/block-dag-storage-named-claims-20261125-01/report.json": "bce5a1d859e6cfe6404d56fdd8880b46d3ae86c28f2dc3792e94349b8d731ed8"
+    "docs/cbc-evidence/runs/block-dag-storage-named-claims-20261125-01/report.json": "909b65b6fcc69e49fd8d1de3866355a4bf7db9ff6a20472543dd8bb9884a28f4"
   }
 }
 ```
@@ -292,7 +308,7 @@ The file changed after that acceptance. The records for 002, 003, and 005 theref
 {
   "artifact": {
     "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
-    "commit": "cc76daf25c57814b4f490bf019f906e56265a0cb",
+    "commit": "77f16f7459b852cd1763a3d4dddddf514e6bc5f0",
     "id": "block-storage-src-rust-dag-block-dag-key-value-storage-rs"
   },
   "claim": "docs/claims/casper-node-display-projection.md",
@@ -303,10 +319,17 @@ The file changed after that acceptance. The records for 002, 003, and 005 theref
     "kind": "binding-tests-supporting",
     "ref": "docs/cbc-evidence/runs/block-dag-storage-named-claims-20261125-01/report.json",
     "counterexample": null,
-    "detail": "A maintainer accepted this claim for the bytes of the file at 1a9839b0e (PR #447, comment 5924422936). The file changed after that acceptance. The node observation binding tests pass on the current bytes, but they do not discharge the claim. The claim waits for a new acceptance."
+    "detail": "A maintainer accepted this claim at revision 1a9839b0e. The file changed after that acceptance. The node observation binding tests pass on the current bytes, but they do not discharge the claim. The claim waits for a new acceptance."
   },
   "waiver": null,
-  "verified_at": "2026-11-25T15:07:38Z",
+  "verified_at": "2026-11-25T15:15:40Z",
+  "acceptance": {
+    "accepted_by": "jltatbeach",
+    "accepted_at": "2026-10-01T03:56:25Z",
+    "revision": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f",
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5924422936",
+    "source": "the acceptance field of the original record"
+  },
   "historical": {
     "artifact": {
       "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
@@ -390,7 +413,7 @@ The file changed after that acceptance. The records for 002, 003, and 005 theref
   },
   "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-005",
   "schema": "cbc-claim/v1",
-  "verification_id": "e390c242-dddd-4664-991f-2312845e3e63",
+  "verification_id": "4bee7e69-fdac-408d-9aba-839bff45c1f5",
   "inputs": {
     "artifact": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
     "source_sha256": "a247350dda3ee9a9e6e355cd3d7f709e9f13ce23dddace5f4bf80b47c8b23d6a",
@@ -400,7 +423,7 @@ The file changed after that acceptance. The records for 002, 003, and 005 theref
     }
   },
   "evidence_files": {
-    "docs/cbc-evidence/runs/block-dag-storage-named-claims-20261125-01/report.json": "bce5a1d859e6cfe6404d56fdd8880b46d3ae86c28f2dc3792e94349b8d731ed8"
+    "docs/cbc-evidence/runs/block-dag-storage-named-claims-20261125-01/report.json": "909b65b6fcc69e49fd8d1de3866355a4bf7db9ff6a20472543dd8bb9884a28f4"
   }
 }
 ```

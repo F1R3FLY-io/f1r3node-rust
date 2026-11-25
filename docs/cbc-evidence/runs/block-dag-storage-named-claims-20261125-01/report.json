@@ -9,14 +9,13 @@
   "original_record": {
     "path": "docs/cbc-evidence/history/66249e5087ae81aa66fd33ddcd02701e301d536a2148199192da00b58c72128b-block-storage-src-rust-dag-block-dag-key-value-storage-rs.md",
     "sha256": "66249e5087ae81aa66fd33ddcd02701e301d536a2148199192da00b58c72128b",
-    "accepted_at_revision": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f",
-    "accepted_source_sha256": "8d74386319993358bccd1a2674f970c0c49c2187614fd60f19733f1619638ab2",
-    "acceptance_ref": "PR #447, comment 5924422936",
     "claim_ids": [
       "CLAIM-CASPER-NODE-OBSERVATION-002",
       "CLAIM-CASPER-NODE-OBSERVATION-003",
       "CLAIM-CASPER-NODE-OBSERVATION-005"
-    ]
+    ],
+    "record_revision": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f",
+    "record_source_sha256": "8d74386319993358bccd1a2674f970c0c49c2187614fd60f19733f1619638ab2"
   },
   "inventory": {
     "CLAIM-CASPER-NODE-OBSERVATION-002": {
@@ -46,16 +45,23 @@
     "CLAIM-DAG-INSERT-BATCH-001": {
       "claim": {
         "path": "docs/claims/dag-insert-batched-writes.md",
-        "sha256": "18eeaeb3242c4bea741549b62e49f683beb69bcfde8542ec94a80563f5e8eb70"
+        "sha256": "3561abaa0464cd19d172d1306644448edc65831f045750c5a2386f558e4e605b"
+      }
+    },
+    "CLAIM-DEPLOY-EXPIRY-001": {
+      "claim": {
+        "path": "docs/claims/deploy-admission.md",
+        "sha256": "648fc90dfefb8a2eea102f4b9585ac37196bd8a29ae53ae0465e5d011e0011eb"
       }
     }
   },
   "mapping": {
-    "CLAIM-CASPER-NODE-OBSERVATION-002": "Named record with status pending. Its historical field holds the original combined record.",
-    "CLAIM-CASPER-NODE-OBSERVATION-003": "Named record with status pending. Its historical field holds the original combined record.",
-    "CLAIM-CASPER-NODE-OBSERVATION-005": "Named record with status pending. Its historical field holds the original combined record.",
+    "CLAIM-CASPER-NODE-OBSERVATION-002": "Named record with status pending. Its acceptance field cites the acceptance of this claim, and its historical field holds the original combined record.",
+    "CLAIM-CASPER-NODE-OBSERVATION-003": "Named record with status pending. Its acceptance field cites the acceptance of this claim, and its historical field holds the original combined record.",
+    "CLAIM-CASPER-NODE-OBSERVATION-005": "Named record with status pending. Its acceptance field cites the acceptance of this claim, and its historical field holds the original combined record.",
     "CLAIM-FINALITY-002": "Declared without a record. The claim is pending on its own differential and soak gates.",
-    "CLAIM-DAG-INSERT-BATCH-001": "Named record, discharged at the binding tier by run package dag-insert-batch-20261125-01."
+    "CLAIM-DAG-INSERT-BATCH-001": "Named record with status pending. The binding tier is reached. The construction tier for P2 is pending.",
+    "CLAIM-DEPLOY-EXPIRY-001": "Declared without a record. The claim is pending in docs/claims/deploy-admission.md."
   },
   "binding_tests": {
     "workflow_run": 45639271705,
@@ -65,8 +71,35 @@
     "conclusion": "success",
     "completed_at": "2026-11-25T15:01:12Z",
     "summary": "Node observation binding tests passed. Claim acceptance remains separate.",
-    "script": "scripts/ci/check-node-observation-bindings.sh"
+    "script": "scripts/ci/check-node-observation-bindings.sh",
+    "tested_source_sha256": "a247350dda3ee9a9e6e355cd3d7f709e9f13ce23dddace5f4bf80b47c8b23d6a",
+    "source_unchanged": true
   },
-  "reason_pending": "The maintainer accepted 002, 003, and 005 for the bytes of the file at 1a9839b0e. The file changed after that acceptance. The claims require an applicability review and an acceptance, and claim 005 states that test results do not discharge it. The binding tests on the current bytes are supporting evidence only.",
-  "required_next": "A maintainer reviews the mapping and accepts 002, 003, and 005 for the current bytes, or records why a claim no longer applies to this file."
+  "reason_pending": "A maintainer accepted 002 at 4c0c0dbe7, 003 at 237e43d72, and 005 at 1a9839b0e. The file changed after each acceptance. The claims require an applicability review and an acceptance, and claim 005 states that test results do not discharge it. The binding tests on the current bytes are supporting evidence only.",
+  "required_next": "A maintainer reviews the mapping and accepts 002, 003, and 005 for the current bytes, or records why a claim no longer applies to this file.",
+  "acceptances": {
+    "CLAIM-CASPER-NODE-OBSERVATION-002": {
+      "accepted_by": "jltatbeach",
+      "accepted_at": "2026-09-23T16:55:28Z",
+      "revision": "4c0c0dbe7c8958debefdb02f2b21795786c45900",
+      "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948",
+      "package": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01",
+      "source": "docs/claims/casper-node-authority-snapshot.md"
+    },
+    "CLAIM-CASPER-NODE-OBSERVATION-003": {
+      "accepted_by": "jltatbeach",
+      "accepted_at": "2026-09-23T21:01:02Z",
+      "revision": "237e43d723b9867985cd47fdfe312fd8d06352e8",
+      "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948",
+      "package": "docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02",
+      "source": "docs/claims/casper-node-authority-evaluation.md"
+    },
+    "CLAIM-CASPER-NODE-OBSERVATION-005": {
+      "accepted_by": "jltatbeach",
+      "accepted_at": "2026-10-01T03:56:25Z",
+      "revision": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f",
+      "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5924422936",
+      "source": "the acceptance field of the original record"
+    }
+  }
 }
