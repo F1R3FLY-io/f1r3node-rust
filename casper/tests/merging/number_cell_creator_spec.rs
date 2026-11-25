@@ -1,12 +1,6 @@
-#![allow(clippy::mutable_key_type)]
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Arc;
+use std::collections::HashMap;
 
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
-use block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables;
-use casper::rust::merging::deploy_chain_index::DeployChainIndex;
-use casper::rust::merging::{block_index, dag_merger};
+use casper::rust::errors::CasperError;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use crypto::rust::hash::keccak256::Keccak256;
@@ -16,23 +10,17 @@ use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
 use models::rust::block_hash::BlockHash;
-use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
-use parking_lot::RwLock as PlRwLock;
 use prost::bytes::Bytes;
 use prost::Message;
 use rholang::rust::interpreter::system_processes::BlockData;
-use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
-use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
+use super::support::{block_hash, dag_with_parents, index_block, merge_blocks, IndexedBlock};
 use crate::util::genesis_builder::GenesisContext;
 use crate::util::rholang::resources::with_runtime_manager;
 
 const MAP: &str = "number-cell-creator-map";
 const CONFLICT: &str = "number-cell-creator-conflict";
-
-fn block_hash(seed: u8) -> BlockHash { Bytes::from(vec![seed; 32]) }
 
 fn deploy(source: String, sec: &PrivateKey) -> Signed<DeployData> {
     construct_deploy::source_deploy_now_full(
@@ -103,212 +91,6 @@ fn insert(key: &str, conflict: bool) -> String {
     )
 }
 
-struct Block {
-    hash: BlockHash,
-    number: i64,
-    parents: Vec<BlockHash>,
-    post_state: Bytes,
-    chains: Vec<DeployChainIndex>,
-}
-
-async fn build(
-    runtime_manager: &RuntimeManager,
-    pre_state: &Bytes,
-    deploys: Vec<Signed<DeployData>>,
-    creator: &PublicKey,
-    hash: BlockHash,
-    number: i64,
-    parents: Vec<BlockHash>,
-) -> Block {
-    let block_data = BlockData {
-        time_stamp: deploys[0].data.time_stamp,
-        seq_num: 1,
-        block_number: number,
-        sender: creator.clone(),
-    };
-    let (post_state, processed, system) = runtime_manager
-        .compute_state(pre_state, deploys, vec![], block_data, Some(HashMap::new()))
-        .await
-        .unwrap();
-    assert!(
-        processed.iter().all(|d| !d.is_failed),
-        "every deploy of block {number} must execute"
-    );
-    let mergeable = runtime_manager
-        .load_mergeable_channels(&post_state, creator.bytes.clone(), 1)
-        .unwrap();
-    let chains = block_index::new(
-        &hash,
-        number,
-        &processed,
-        &system,
-        &Blake2b256Hash::from_bytes_prost(pre_state),
-        &Blake2b256Hash::from_bytes_prost(&post_state),
-        &runtime_manager.get_history_repo(),
-        &mergeable,
-    )
-    .unwrap()
-    .deploy_chains;
-    Block {
-        hash,
-        number,
-        parents,
-        post_state,
-        chains,
-    }
-}
-
-fn dag(genesis: &BlockHash, blocks: &[&Block]) -> KeyValueDagRepresentation {
-    let mut dag_set = imbl::HashSet::new();
-    let mut block_number_map = imbl::HashMap::new();
-    let mut main_parent_map = imbl::HashMap::new();
-    let mut height_map = imbl::OrdMap::new();
-    let mut child_map: imbl::HashMap<BlockHash, imbl::HashSet<BlockHash>> = imbl::HashMap::new();
-    let mut metadata_store = BlockMetadataStore::new(KeyValueTypedStoreImpl::new(Arc::new(
-        InMemoryKeyValueStore::new(),
-    )));
-    dag_set.insert(genesis.clone());
-    block_number_map.insert(genesis.clone(), 0i64);
-    height_map
-        .entry(0)
-        .or_insert_with(imbl::HashSet::new)
-        .insert(genesis.clone());
-    for block in blocks {
-        dag_set.insert(block.hash.clone());
-        block_number_map.insert(block.hash.clone(), block.number);
-        height_map
-            .entry(block.number)
-            .or_insert_with(imbl::HashSet::new)
-            .insert(block.hash.clone());
-        main_parent_map.insert(block.hash.clone(), block.parents[0].clone());
-        for parent in &block.parents {
-            child_map
-                .entry(parent.clone())
-                .or_default()
-                .insert(block.hash.clone());
-        }
-        metadata_store
-            .add(BlockMetadata {
-                block_hash: block.hash.clone(),
-                parents: block.parents.clone(),
-                sender: Bytes::new(),
-                justifications: vec![],
-                weight_map: BTreeMap::new(),
-                block_number: block.number,
-                sequence_number: 1,
-                equivocates: None,
-                directly_finalized: false,
-                finalized: false,
-                fault_tolerance_value: 0.0,
-                merge_base: Bytes::new(),
-            })
-            .unwrap();
-    }
-    let mut finalized_blocks_set = imbl::HashSet::new();
-    finalized_blocks_set.insert(genesis.clone());
-    block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
-        history: None,
-        view_sequence: u64::MAX,
-        view_max_height: None,
-        pruning_cutoff: 0,
-        dag_set,
-        latest_messages_map: imbl::HashMap::new(),
-        child_map,
-        height_map,
-        block_number_map,
-        main_parent_map,
-        self_justification_map: imbl::HashMap::new(),
-        last_finalized_block_hash: genesis.clone(),
-        finalized_blocks_set,
-        block_metadata_index: Arc::new(PlRwLock::new(metadata_store)),
-        floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
-        frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
-        lifecycle: Arc::new(PlRwLock::new(DeployLifecycleTables::in_memory())),
-        carrier_index: Arc::new(PlRwLock::new(
-            block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
-        )),
-    }
-    .build()
-}
-
-/// Merges `scope` onto `base`; `expensive` is the sig the cost function makes
-/// costliest to reject. Returns (merged state, rejected sigs, applied sigs).
-fn merge(
-    runtime_manager: &RuntimeManager,
-    dag: &KeyValueDagRepresentation,
-    base: &BlockHash,
-    base_state: &Bytes,
-    scope: Vec<(BlockHash, Vec<DeployChainIndex>)>,
-    expensive: Option<Bytes>,
-    seeds: &HashMap<Bytes, Vec<u8>>,
-) -> (Bytes, HashSet<Bytes>, HashSet<Bytes>) {
-    let hashes: HashSet<BlockHash> = scope.iter().map(|(h, _)| h.clone()).collect();
-    let name_seeds = dag_merger::NameSeeds {
-        of_scope_deploys: scope
-            .iter()
-            .flat_map(|(_, chains)| chains.iter())
-            .flat_map(|chain| chain.deploys_with_cost.0.iter())
-            .filter_map(|d| {
-                seeds
-                    .get(&d.deploy_id)
-                    .map(|s| (d.deploy_id.clone(), s.clone()))
-            })
-            .collect(),
-        held_by_base: HashMap::new(),
-    };
-    let (state, rejected, applied) = dag_merger::merge(
-        dag,
-        base,
-        &Blake2b256Hash::from_bytes_prost(base_state),
-        move |hash: &BlockHash| -> Result<Vec<DeployChainIndex>, casper::rust::errors::CasperError> {
-            Ok(scope
-                .iter()
-                .find(|(h, _)| h == hash)
-                .map(|(_, c)| c.clone())
-                .unwrap_or_default())
-        },
-        &runtime_manager.get_history_repo(),
-        move |chain: &DeployChainIndex| {
-            if chain
-                .deploys_with_cost
-                .0
-                .iter()
-                .any(|d| Some(&d.deploy_id) == expensive.as_ref())
-            {
-                1_000_000
-            } else {
-                chain.deploys_with_cost.0.iter().map(|d| d.cost).sum()
-            }
-        },
-        Some(hashes),
-        0,
-        50,
-        &|_| Ok(false),
-        &|_| Ok(false),
-        &HashSet::new(),
-        &HashMap::new(),
-        &name_seeds,
-    )
-    .expect("merge");
-    (
-        state.to_bytes_prost(),
-        rejected.iter().map(|r| r.sig.clone()).collect(),
-        applied,
-    )
-}
-
-fn seeds_of(deploys: &[&Signed<DeployData>]) -> HashMap<Bytes, Vec<u8>> {
-    deploys
-        .iter()
-        .map(|d| {
-            (
-                d.sig.clone(),
-                models::rust::deploy_seed::deploy_name_seed(d),
-            )
-        })
-        .collect()
-}
-
 async fn execute(
     runtime_manager: &RuntimeManager,
     state: &Bytes,
@@ -358,98 +140,91 @@ async fn a_write_to_a_number_cell_whose_creator_an_earlier_merge_rejected_is_rej
             let (k1, k2, k3) = keys_through_one_node();
             let root = BlockHash::from(genesis_block.block_hash.to_vec());
 
-            let p = build(
+            let p = index_block(
                 &rm,
                 &genesis_state,
                 vec![deploy(init_map(), &vault(0))],
                 &validator(0),
                 block_hash(0xA0),
                 1,
-                vec![root.clone()],
             )
             .await;
             let d = deploy(insert(&k1, true), &vault(1));
             let c = deploy(format!(r#"for (_ <- @"{CONFLICT}") {{ Nil }}"#), &vault(2));
             let e = deploy(insert(&k2, false), &vault(3));
             let (d_sig, c_sig, e_sig) = (d.sig.clone(), c.sig.clone(), e.sig.clone());
-            let seeds = seeds_of(&[&d, &c, &e]);
 
-            let a = build(
+            let a = index_block(
                 &rm,
                 &p.post_state,
                 vec![d.clone()],
                 &validator(1),
                 block_hash(0xA1),
                 2,
-                vec![p.hash.clone()],
             )
             .await;
-            let c_block = build(
+            let c_block = index_block(
                 &rm,
                 &p.post_state,
                 vec![c],
                 &validator(2),
                 block_hash(0xC1),
                 2,
-                vec![p.hash.clone()],
             )
             .await;
-            let b = build(
+            let b = index_block(
                 &rm,
                 &a.post_state,
                 vec![e.clone()],
                 &validator(3),
                 block_hash(0xB1),
                 3,
-                vec![a.hash.clone()],
             )
             .await;
 
-            let dag_x = dag(&root, &[&p, &a, &c_block]);
-            let (x_state, rejected_x, _) = merge(
+            let dag_x = dag_with_parents(&root, &[
+                (&p, root.clone()),
+                (&a, p.hash.clone()),
+                (&c_block, p.hash.clone()),
+            ]);
+            let x_merge = merge_blocks(
                 &rm,
                 &dag_x,
                 &p.hash,
                 &p.post_state,
-                vec![
-                    (a.hash.clone(), a.chains.clone()),
-                    (c_block.hash.clone(), c_block.chains.clone()),
-                ],
+                &[&a, &c_block],
                 Some(c_sig),
-                &seeds,
             );
             assert!(
-                rejected_x.contains(&d_sig),
+                x_merge.rejected.contains(&d_sig),
                 "the merge of A and C must reject D"
             );
 
-            let x = Block {
+            let x = IndexedBlock {
                 hash: block_hash(0xD0),
                 number: 3,
-                parents: vec![c_block.hash.clone(), a.hash.clone()],
-                post_state: x_state.clone(),
+                post_state: x_merge.state,
                 chains: vec![],
+                seeds: HashMap::new(),
             };
-            let dag_y = dag(&root, &[&p, &a, &c_block, &x, &b]);
-            let (y_state, rejected_y, applied_y) = merge(
-                &rm,
-                &dag_y,
-                &x.hash,
-                &x.post_state,
-                vec![(b.hash.clone(), b.chains.clone())],
-                None,
-                &seeds,
-            );
+            let dag_y = dag_with_parents(&root, &[
+                (&p, root.clone()),
+                (&a, p.hash.clone()),
+                (&c_block, p.hash.clone()),
+                (&x, c_block.hash.clone()),
+                (&b, a.hash.clone()),
+            ]);
+            let y_merge = merge_blocks(&rm, &dag_y, &x.hash, &x.post_state, &[&b], None);
             assert!(
-                !applied_y.contains(&e_sig),
+                !y_merge.applied.contains(&e_sig),
                 "the merge onto X must not apply E"
             );
             assert!(
-                rejected_y.contains(&e_sig),
+                y_merge.rejected.contains(&e_sig),
                 "E must be recorded for recovery"
             );
 
-            let recovered = execute(&rm, &y_state, d, 5, &validator(1)).await;
+            let recovered = execute(&rm, &y_merge.state, d, 5, &validator(1)).await;
             let e_again = execute(&rm, &recovered, e, 6, &validator(3)).await;
             execute(
                 &rm,
@@ -459,7 +234,7 @@ async fn a_write_to_a_number_cell_whose_creator_an_earlier_merge_rejected_is_rej
                 &validator(2),
             )
             .await;
-            Ok::<(), casper::rust::errors::CasperError>(())
+            Ok::<(), CasperError>(())
         },
     )
     .await
@@ -484,67 +259,59 @@ async fn a_write_to_a_number_cell_whose_creator_the_merge_keeps_is_kept() {
             let (k1, k2, k3) = keys_through_one_node();
             let root = BlockHash::from(genesis_block.block_hash.to_vec());
 
-            let p = build(
+            let p = index_block(
                 &rm,
                 &genesis_state,
                 vec![deploy(init_map(), &vault(0))],
                 &validator(0),
                 block_hash(0xA0),
                 1,
-                vec![root.clone()],
             )
             .await;
             let d = deploy(insert(&k1, false), &vault(1));
             let e = deploy(insert(&k2, false), &vault(3));
             let (d_sig, e_sig) = (d.sig.clone(), e.sig.clone());
-            let seeds = seeds_of(&[&d, &e]);
 
-            let a = build(
+            let a = index_block(
                 &rm,
                 &p.post_state,
                 vec![d],
                 &validator(1),
                 block_hash(0xA1),
                 2,
-                vec![p.hash.clone()],
             )
             .await;
-            let b = build(
+            let b = index_block(
                 &rm,
                 &a.post_state,
                 vec![e],
                 &validator(3),
                 block_hash(0xB1),
                 3,
-                vec![a.hash.clone()],
             )
             .await;
 
-            let dag_y = dag(&root, &[&p, &a, &b]);
-            let (y_state, rejected_y, applied_y) = merge(
-                &rm,
-                &dag_y,
-                &p.hash,
-                &p.post_state,
-                vec![
-                    (a.hash.clone(), a.chains.clone()),
-                    (b.hash.clone(), b.chains.clone()),
-                ],
-                None,
-                &seeds,
+            let dag_y = dag_with_parents(&root, &[
+                (&p, root.clone()),
+                (&a, p.hash.clone()),
+                (&b, a.hash.clone()),
+            ]);
+            let y_merge = merge_blocks(&rm, &dag_y, &p.hash, &p.post_state, &[&a, &b], None);
+            assert!(
+                y_merge.rejected.is_empty(),
+                "nothing in the merge conflicts"
             );
-            assert!(rejected_y.is_empty(), "nothing in the merge conflicts");
-            assert!(applied_y.contains(&d_sig) && applied_y.contains(&e_sig));
+            assert!(y_merge.applied.contains(&d_sig) && y_merge.applied.contains(&e_sig));
 
             execute(
                 &rm,
-                &y_state,
+                &y_merge.state,
                 deploy(insert(&k3, false), &vault(4)),
                 5,
                 &validator(2),
             )
             .await;
-            Ok::<(), casper::rust::errors::CasperError>(())
+            Ok::<(), CasperError>(())
         },
     )
     .await

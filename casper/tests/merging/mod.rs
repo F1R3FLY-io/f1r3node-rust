@@ -7,3 +7,4 @@ mod merging_cases;
 mod number_cell_creator_spec;
 mod rejected_sibling_chain_spec;
 mod sibling_chains_order_guard_spec;
+mod support;

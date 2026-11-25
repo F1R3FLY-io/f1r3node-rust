@@ -14,8 +14,6 @@ use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;
 use dashmap::DashSet;
-use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{Expr, Par};
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_implicits;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, ProcessedDeploy};
@@ -23,6 +21,7 @@ use prost::bytes::Bytes;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::system_processes::BlockData;
 
+use super::support::channel_values;
 use crate::util::genesis_builder::GenesisContext;
 use crate::util::rholang::resources::{
     block_dag_storage_from_dyn, genesis_context, mergeable_store_from_dyn,
@@ -193,14 +192,8 @@ impl Chain {
     }
 
     async fn holds(&self, state: &StateHash, channel: &str) -> bool {
-        let par = Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(ExprInstance::GString(channel.to_string())),
-        }]);
-        !self
-            .runtime_manager
-            .get_data(state.clone(), &par)
+        !channel_values(&self.runtime_manager, state, channel)
             .await
-            .unwrap()
             .is_empty()
     }
 }
