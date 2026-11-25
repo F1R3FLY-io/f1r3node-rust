@@ -256,6 +256,13 @@ impl GrpcDeployService {
             Some(rho_data_response::Message::Payload(RhoDataPayload { par, block })) => {
                 Ok((par, block.unwrap_or_default()))
             }
+            // Issue #1157: the target block's state has been swept past the
+            // retention floor; render as a structured client error so the
+            // caller can route to an archive node.
+            Some(rho_data_response::Message::Pruned(info)) => Err(vec![format!(
+                "pruned_state: target_block_height={}, retention_floor={}",
+                info.target_block_height, info.retention_floor
+            )]),
             None => Err(vec!["empty RhoDataResponse.message".into()]),
         }
     }
