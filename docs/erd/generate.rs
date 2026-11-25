@@ -11,6 +11,7 @@ use syn::parse::Parser;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 
+mod ranking;
 mod sizing;
 
 const CRATES: &[&str] = &[
@@ -886,6 +887,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .parent()
         .unwrap();
     let check = std::env::args().any(|a| a == "--check");
+    if std::env::args().any(|a| a == "--rank-sizes") {
+        return ranking::generate(root, check);
+    }
     if std::env::args().any(|a| a == "--check-links") {
         check_storage(root)?;
         return check_links(root);

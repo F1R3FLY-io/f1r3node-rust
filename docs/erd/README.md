@@ -16,6 +16,7 @@ GitHub can display the SVG files without a PlantUML extension.
 | [Memory cardinality and size](memory/sizing.md) | Per-field assessments, ownership rules, and production owner limits |
 | [Storage cardinality and size](storage/sizing.md) | Record-count growth, byte formulas, and physical accounting |
 | [Runtime observations](storage/observed.md) | Timestamped counts, page sizes, and bounded record-size samples |
+| [Ranked size overview](size-overview.md) | Descending cardinality x record-size totals, across replicas and per node |
 
 ## Scope
 

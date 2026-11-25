@@ -5,6 +5,9 @@ Each catalog page gives entity cardinality, size rules, and a field-by-field tab
 [sizing.json](sizing.json) contains the same assessments for automated analysis.
 There are 1,868 declarations in this revision. This is not a count of live objects.
 
+The [ranked size overview](../size-overview.md) uses measured storage cardinalities and encoded record sizes.
+It does not assign fabricated totals to unmeasured heap entities.
+
 ## Interpretation
 
 Cardinality has two meanings here:

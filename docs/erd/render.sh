@@ -10,6 +10,7 @@ fi
 printf '%s  %s\n' e9bc9e6b2eb715e8c0c929f3dcb5fc1923be13f37599b09c293c66d354e88686 "$JAR" | sha256sum --check --status
 export CARGO_TARGET_DIR="$ROOT/target/erd-tools/build"
 cargo run --locked --manifest-path docs/erd/Cargo.toml -- "$@"
+cargo run --locked --manifest-path docs/erd/Cargo.toml -- --rank-sizes "$@"
 mapfile -t diagrams < <(find docs/erd/memory docs/erd/storage -maxdepth 1 -name '*.puml' -type f | sort)
 if (( ${#diagrams[@]} == 0 )); then
     printf 'No diagrams found.\n' >&2

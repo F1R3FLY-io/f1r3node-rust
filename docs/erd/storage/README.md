@@ -6,6 +6,7 @@ They do not imply database-enforced foreign keys.
 
 See [cardinality and size](sizing.md) for all database and file entities.
 [Runtime observations](observed.md) distinguish exact counts from bounded size samples.
+The [size overview](../size-overview.md) ranks cardinality x average record size in descending order.
 
 ## Diagrams
 
