@@ -15,6 +15,10 @@ path = "generate.rs"
 name = "erd-store-stats"
 path = "store_stats.rs"
 
+[[bin]]
+name = "erd-leaf-stats"
+path = "leaf_stats.rs"
+
 [dependencies]
 syn = { version = "2", features = ["full", "visit", "extra-traits"] }
 quote = "1"
@@ -25,7 +29,16 @@ prost = "0.14"
 prost-types = "0.14"
 regex = "1"
 heed = "=0.22.1"
+bincode = "=1.3.3"
+blake2 = "0.10"
+hex = "0.4"
+serde_stacker = "0.1"
+
+[build-dependencies]
+prost-build = "0.14"
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
 
 [dev-dependencies]
-bincode = "=1.3.3"
 tempfile = "3"

@@ -3,6 +3,7 @@
 This assessment covers all 38 logical database names in the [storage inventory](README.md).
 It also covers filesystem entities and logical contract records.
 [Observed sizes](observed.md) report counts and page usage from the local shard.
+The later [full cold-leaf scan](leaf-measurements.md) measures each leaf variant, its nested records and Par values, and its root reachability without sampling.
 
 ## Units and Encoding
 
@@ -99,8 +100,8 @@ See [deploy storage](../../../block-storage/src/rust/deploy/key_value_deploy_sto
 | `eval-history` | Same schema for the evaluator environment | Same formula as `rspace-history` |
 | `rspace-roots` | One marker per recorded root plus zero or one current-root pointer | **51** per root marker, **60** for the pointer |
 | `eval-roots` | Same root schema in the evaluator environment | **51** or **60** |
-| `rspace-cold` | One per retained leaf hash. Data, continuation, or join payload | `56 + bc(PersistedData)` |
-| `eval-cold` | Same cold schema in the evaluator environment | `56 + bc(PersistedData)` |
+| `rspace-cold` | Retained content-addressed data, continuation, or join leaves. Both key formats can hold the same hash | `56 + bc(PersistedData)` for bincode-hash keys; `48 + bc(PersistedData)` for raw-hash keys |
+| `eval-cold` | Same cold schema in the evaluator environment | Same formulas as `rspace-cold` |
 | `rspace-channels` | Legacy compatibility mapping. Not an additional current writer | Legacy schema not assigned a current record-size formula |
 | `records` | One queue record per retained signature. Some terminal records remain after payload deletion | `S + 16 + bc(QueueRecord)` |
 | `payloads` | Zero or one signed deploy payload per queue record. Removed on terminal decision | `S + P + 16` |
@@ -110,6 +111,12 @@ A radix node has 256 possible slots. Each nonempty slot has a two-byte header, a
 Its compact encoded payload is at most 41,216 bytes by that format bound.
 This bound does not imply every such node is reachable or valid for a particular history key.
 See [radix encoding](../../../rspace++/src/rspace/history/radix_tree.rs) and [root records](../../../rspace++/src/rspace/history/roots_store.rs).
+
+The [cold-leaf diagram](leaf-internals.svg) expands the three payload types.
+Each leaf contains a bincode vector of encoded element byte vectors.
+The elements decode as `Datum<ListParWithRandom>`, `WaitingContinuation<BindPattern, TaggedContinuation>`, or `Vec<Par>`.
+The schema permits zero or more elements and recursive Par trees. Observed maxima are not protocol limits.
+See [cold leaves](../../../rspace++/src/rspace/history/cold_store.rs), [key lookup](../../../rspace++/src/rspace/history/instances/rspace_history_reader_impl.rs), [record fields](../../../rspace++/src/rspace/internal.rs), [trace records](../../../rspace++/src/rspace/trace/event.rs), [serialization](../../../rspace++/src/rspace/serializers/serializers.rs), and [RhoTypes](../../../models/src/main/protobuf/RhoTypes.proto).
 
 The queue payload budget defaults to 8 GiB. Its map limit is 16 GiB.
 The node's LMDB environment map limits are separate from both used pages and file length.
@@ -152,10 +159,14 @@ See [filesystem diagrams](filesystem.svg), [contract state](contract-state.svg),
 
 ## Physical Accounting
 
-The read-only probe reports exact row counts and live B-tree page usage within one read transaction per environment.
+The earlier [sample probe](../store_stats.rs) reports exact row counts and live B-tree page usage within one read transaction per environment.
 It samples only the first 256 rows per table, with a two-second sampling budget per environment.
 Sample means are not population means, and sample byte totals are not whole-table totals unless the sample is complete.
 Empty tables have zero rows. An absent database is reported separately, not as a measured empty table.
+
+The [full leaf probe](../leaf_stats.rs) scans all cold rows within bounded read transactions, releases the readers, then decodes the captured records.
+Its [report](leaf-measurements.md) separates the common finalized root, other recorded roots, and physical rows not referenced by those roots.
+The two observations were captured at different times. Do not combine their totals as one snapshot.
 
 Do not add decoded heap bytes to encoded storage bytes as though they were one allocation.
 Do not sum replica counts to estimate unique chain entities.

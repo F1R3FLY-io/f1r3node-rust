@@ -11,6 +11,8 @@ printf '%s  %s\n' e9bc9e6b2eb715e8c0c929f3dcb5fc1923be13f37599b09c293c66d354e886
 export CARGO_TARGET_DIR="$ROOT/target/erd-tools/build"
 cargo run --locked --manifest-path docs/erd/Cargo.toml -- "$@"
 cargo run --locked --manifest-path docs/erd/Cargo.toml -- --rank-sizes "$@"
+cargo run --locked --manifest-path docs/erd/Cargo.toml --bin erd-leaf-stats -- \
+    --report docs/erd/storage/leaves-observed.json docs/erd/storage/leaf-measurements.md "$@"
 mapfile -t diagrams < <(find docs/erd/memory docs/erd/storage -maxdepth 1 -name '*.puml' -type f | sort)
 if (( ${#diagrams[@]} == 0 )); then
     printf 'No diagrams found.\n' >&2

@@ -7,6 +7,8 @@ They do not imply database-enforced foreign keys.
 See [cardinality and size](sizing.md) for all database and file entities.
 [Runtime observations](observed.md) distinguish exact counts from bounded size samples.
 The [size overview](../size-overview.md) ranks cardinality x average record size in descending order.
+The [complete cold-leaf measurements](leaf-measurements.md) decode every stored datum, continuation, and join in a later capture.
+They include internal cardinality distributions, nested Par sizes, and finalized-root reachability.
 
 ## Diagrams
 
@@ -18,6 +20,7 @@ The [size overview](../size-overview.md) ranks cardinality x average record size
 | Deploy pool and recovery buffer | [SVG](deploys.svg) | [PlantUML](deploys.puml) |
 | Deploy lifecycle and carriers | [SVG](deploy-lifecycle.svg) | [PlantUML](deploy-lifecycle.puml) |
 | Tuple-space history | [SVG](tuple-space.svg) | [PlantUML](tuple-space.puml) |
+| Cold-leaf internal types and cardinality | [SVG](leaf-internals.svg) | [PlantUML](leaf-internals.puml) |
 | Deploy queue | [SVG](deploy-queue.svg) | [PlantUML](deploy-queue.puml) |
 | Filesystem WAL and snapshots | [SVG](filesystem.svg) | [PlantUML](filesystem.puml) |
 | Logical contract state | [SVG](contract-state.svg) | [PlantUML](contract-state.puml) |

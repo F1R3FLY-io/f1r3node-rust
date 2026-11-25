@@ -1,0 +1,101 @@
+@startuml
+!include ../style.puml
+title Cold leaf payloads: decoded types and schema cardinality
+
+entity DataLeaf {
+  bytes : Vec<u8>
+  payload : bincode Vec<Vec<u8>>
+}
+entity ContinuationsLeaf {
+  bytes : Vec<u8>
+  payload : bincode Vec<Vec<u8>>
+}
+entity JoinsLeaf {
+  bytes : Vec<u8>
+  payload : bincode Vec<Vec<u8>>
+}
+entity Datum {
+  a : ListParWithRandom
+  persist : bool
+  source : Produce
+}
+entity "WaitingContinuation" as Waiting {
+  patterns : Vec<BindPattern>
+  continuation : TaggedContinuation
+  persist : bool
+  peeks : BTreeSet<i32>
+  source : Consume
+}
+entity "Channel group" as Group {
+  channels : Vec<Par>
+}
+entity ListParWithRandom {
+  pars : Vec<Par>
+  random_state : Vec<u8>
+}
+entity BindPattern {
+  patterns : Vec<Par>
+  remainder : Option<Var>
+  free_count : i32
+}
+entity TaggedContinuation {
+  tagged_cont : Option<TaggedCont>
+  guard : Option<Par>
+  --
+  TaggedCont alternatives:
+  ParBody(ParWithRandom)
+  ScalaBodyRef(i64)
+}
+entity ParWithRandom {
+  body : Option<Par>
+  random_state : Vec<u8>
+}
+entity Produce {
+  channel_hash, hash : Blake2b256Hash
+  persistent, is_deterministic, failed : bool
+  output_value : Vec<Vec<u8>>
+}
+entity Consume {
+  channel_hashes : Vec<Blake2b256Hash>
+  hash : Blake2b256Hash
+  persistent : bool
+}
+entity Par {
+  sends : Vec<Send>
+  receives : Vec<Receive>
+  news : Vec<New>
+  exprs : Vec<Expr>
+  matches : Vec<Match>
+  unforgeables : Vec<GUnforgeable>
+  bundles : Vec<Bundle>
+  connectives : Vec<Connective>
+  conditionals : Vec<If>
+  locally_free : Vec<u8>
+  connective_used : bool
+}
+
+DataLeaf "1" --> "0..*" Datum : decode each element
+ContinuationsLeaf "1" --> "0..*" Waiting : decode each element
+JoinsLeaf "1" --> "0..*" Group : decode each element
+Datum "1" --> "1" ListParWithRandom
+Datum "1" --> "1" Produce
+Waiting "1" --> "0..*" BindPattern
+Waiting "1" --> "1" TaggedContinuation
+Waiting "1" --> "1" Consume
+ListParWithRandom "1" --> "0..*" Par : values
+BindPattern "1" --> "0..*" Par : patterns
+Group "1" --> "0..*" Par : channels
+TaggedContinuation "1" --> "0..1" ParWithRandom : ParBody alternative
+TaggedContinuation "1" --> "0..1" Par : guard
+ParWithRandom "1" --> "0..1" Par : body
+
+legend bottom
+Arrows describe decoded records, not separate LMDB rows.
+All three variants use sorted vectors of encoded element bytes.
+Cardinality labels describe the schema, not this workload's observed limits.
+Par can recursively contain more Par values through its message fields.
+Blake2b256Hash wraps Vec<u8>; valid hash contents have 32 bytes.
+Actual counts and byte distributions: leaf-measurements.md.
+Sources: cold_store.rs, internal.rs, trace/event.rs, serializers.rs, RhoTypes.proto.
+endlegend
+@enduml

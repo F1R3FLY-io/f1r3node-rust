@@ -30,6 +30,8 @@ Live page usage is measured separately. It includes branch, leaf, and overflow p
 
 Cardinality counts stored copies across nodes and queues, not unique chain entities. DB instances include empty tables. Different environments were read at different times.
 
+The later [complete cold-leaf scan](storage/leaf-measurements.md) gives exact totals for DataLeaf, ContinuationsLeaf, and JoinsLeaf. It also measures their internal records and root reachability. Its capture time differs from this sampled overview; the totals must not be combined.
+
 | Rank | Entity | DB instances | Cardinality | Average B/record | Cardinality x size | Live page bytes | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `rspace/cold / rspace-cold` | 5 | 65136 | 4806.59 | 298.58 MiB | 239.48 MiB | Sampled, 1280 records; exceeds pages |
