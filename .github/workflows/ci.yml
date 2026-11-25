@@ -708,6 +708,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-check-commit-trailers.sh
 
+      - name: Verify fork cleanup trust configuration
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-cbc-fork-trust.sh
+
       - name: Verify pre-push hook
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-pre-push-hook.sh
@@ -966,9 +970,19 @@ jobs:
         run: bash scripts/ci/verify-soak-cleanup.sh --output target/soak-cleanup-verification
 
       - name: Configure cleanup acceptance trust
+        shell: bash -euo pipefail {0}
         env:
           CBC_ACCEPTANCE_ALLOWED_SIGNERS: ${{ vars.CBC_ACCEPTANCE_ALLOWED_SIGNERS }}
-        run: bash scripts/ci/configure-cbc-trust.sh
+          CBC_FORK_PULL_REQUEST: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          CBC_FORK_SIGNERS_SHA256: 9cf390cffc3f3fb6c73e8f2af5f9ecd28f6fc090219616e7c0c0894480c868bf
+        run: |
+          if [ -z "$CBC_ACCEPTANCE_ALLOWED_SIGNERS" ] && [ "$CBC_FORK_PULL_REQUEST" = true ]; then
+            CBC_ACCEPTANCE_ALLOWED_SIGNERS="$(cat .github/cbc-allowed-signers)"
+            digest="$(printf '%s\n' "$CBC_ACCEPTANCE_ALLOWED_SIGNERS" | sha256sum)"
+            [ "${digest%% *}" = "$CBC_FORK_SIGNERS_SHA256" ]
+            export CBC_ACCEPTANCE_ALLOWED_SIGNERS
+          fi
+          bash scripts/ci/configure-cbc-trust.sh
 
       - name: Require current cleanup discharge
         env:
