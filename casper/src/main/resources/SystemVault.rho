@@ -20,9 +20,9 @@ new
   _makeVault,
   _newVault,
   _create,
-  _createVaultIfMissing,
   _systemVault,
-  _transferTemplate
+  _transferTemplate,
+  _createVaultIfMissing
 in {
   rl!(`rho:system:makeMint`, *MakeMintCh) |
   rl!(`rho:system:authKey`, *AuthKeyCh) |
