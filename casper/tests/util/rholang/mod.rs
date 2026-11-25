@@ -1,5 +1,6 @@
 pub mod cost_accounting_perf_spec;
 pub mod deploy_id_test;
+pub mod auth_key_residue_test;
 pub mod bridge_vault_registration_test;
 pub mod state_growth_ab_test;
 pub mod deployer_id_test;
