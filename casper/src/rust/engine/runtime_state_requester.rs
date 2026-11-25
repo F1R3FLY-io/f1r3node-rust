@@ -33,9 +33,7 @@ use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
 use tokio::sync::mpsc;
 
 use crate::rust::blocks::ingest::ingest_state::{StateFetchDrop, StateFetchResult};
-use crate::rust::engine::lfs_horizon_requester::{
-    HasRootFn, HorizonRequesterOps, MAX_IN_FLIGHT_REQUESTS,
-};
+use crate::rust::engine::lfs_horizon_requester::{HasRootFn, HorizonRequesterOps};
 use crate::rust::engine::lfs_tuple_space_requester::{
     validate_store_items, StatePartPath, StoreItems, ValidChunk, PAGE_SIZE,
 };
@@ -45,6 +43,8 @@ use crate::rust::errors::CasperError;
 /// a handful (two per admitted straggler); the cap prices the worst case the
 /// same way the admission budget does — bounded, alarmed, degrade to deferral.
 const ROOT_FETCH_BUDGET: u64 = 1_024;
+
+const MAX_PENDING_ROOTS: usize = 4;
 
 /// Re-request cadence for outstanding chunks, and how long a root may stay
 /// outstanding before it is dropped with an alarm. Waiting blocks keep their
@@ -142,7 +142,7 @@ impl Core {
                  investigate what keeps missing state"
             );
         }
-        if self.pending.len() < MAX_IN_FLIGHT_REQUESTS {
+        if self.pending.len() < MAX_PENDING_ROOTS {
             Some(self.activate(root))
         } else {
             self.queued.push_back(root);
@@ -166,7 +166,7 @@ impl Core {
 
     fn fill_window(&mut self) -> Vec<StatePartPath> {
         let mut paths = Vec::new();
-        while self.pending.len() < MAX_IN_FLIGHT_REQUESTS {
+        while self.pending.len() < MAX_PENDING_ROOTS {
             let Some(root) = self.queued.pop_front() else {
                 break;
             };
@@ -448,6 +448,10 @@ mod tests {
 
     impl RSpaceImporter for RecordingImporter {
         fn get_history_item(&self, _hash: Blake2b256Hash) -> Option<Vec<u8>> { None }
+
+        fn has_data_items(&self, hashes: &[Blake2b256Hash]) -> Vec<bool> {
+            vec![false; hashes.len()]
+        }
     }
 
     fn core_with_store() -> (Core, Arc<Mutex<HashSet<Blake2b256Hash>>>) {
@@ -574,36 +578,34 @@ mod tests {
     #[test]
     fn at_most_max_in_flight_roots_are_requested_and_the_rest_wait() {
         let (mut core, _) = core_with_store();
-        let roots: Vec<Blake2b256Hash> = (1..=MAX_IN_FLIGHT_REQUESTS as u8 + 2).map(root).collect();
+        let roots: Vec<Blake2b256Hash> = (1..=MAX_PENDING_ROOTS as u8 + 2).map(root).collect();
 
         let started: Vec<StatePartPath> = roots
             .iter()
             .filter_map(|r| core.on_fetch(r.clone()))
             .collect();
-        assert_eq!(started.len(), MAX_IN_FLIGHT_REQUESTS);
+        assert_eq!(started.len(), MAX_PENDING_ROOTS);
         assert!(core.fill_window().is_empty());
-        assert!(core
-            .on_fetch(roots[MAX_IN_FLIGHT_REQUESTS].clone())
-            .is_none());
+        assert!(core.on_fetch(roots[MAX_PENDING_ROOTS].clone()).is_none());
 
         let first = started[0].clone();
         assert!(deliver(&mut core, chunk(first.clone(), first, 1), true).is_none());
         assert_eq!(core.fill_window(), vec![vec![(
-            roots[MAX_IN_FLIGHT_REQUESTS].clone(),
+            roots[MAX_PENDING_ROOTS].clone(),
             None
         )]]);
-        assert_eq!(core.pending.len(), MAX_IN_FLIGHT_REQUESTS);
+        assert_eq!(core.pending.len(), MAX_PENDING_ROOTS);
     }
 
     #[test]
     fn a_queued_root_present_by_its_turn_is_reported_imported() {
         let (mut core, recorded) = core_with_store();
-        let roots: Vec<Blake2b256Hash> = (1..=MAX_IN_FLIGHT_REQUESTS as u8 + 1).map(root).collect();
+        let roots: Vec<Blake2b256Hash> = (1..=MAX_PENDING_ROOTS as u8 + 1).map(root).collect();
         let started: Vec<StatePartPath> = roots
             .iter()
             .filter_map(|r| core.on_fetch(r.clone()))
             .collect();
-        let queued = roots[MAX_IN_FLIGHT_REQUESTS].clone();
+        let queued = roots[MAX_PENDING_ROOTS].clone();
         recorded.lock().unwrap().insert(queued.clone());
 
         let first = started[0].clone();

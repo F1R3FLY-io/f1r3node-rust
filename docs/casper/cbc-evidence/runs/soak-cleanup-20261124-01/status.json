@@ -1,6 +1,6 @@
 {
   "schema": "soak-cleanup-admission/v1",
-  "control_revision": "493b89f5860ac0bf7add665075e959072ec2cd0d",
+  "control_revision": "7125ac23f2dfcb304b0eab7c9dbec7385aa1fdbe",
   "candidate_revision": "",
   "claim_id": "CLAIM-SOAK-CLEANUP-001",
   "status": "rejected",

@@ -148,4 +148,24 @@ mod tests {
         let st6 = st5.done(10);
         assert_eq!(st6.rejected(10), st6);
     }
+
+    #[test]
+    fn a_transition_does_not_copy_the_paths_that_are_already_tracked() {
+        let wide_key = |i: u32| vec![[i; 64]; 6];
+        let mut st = ST::new((0..50_000).map(wide_key).collect());
+
+        let started = std::time::Instant::now();
+        for i in 0..1_000 {
+            let (next, is_received) = st.received(wide_key(i));
+            assert!(is_received);
+            st = next.done(wide_key(i));
+        }
+
+        assert_eq!(st.done_count(), 1_000);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "2,000 transitions took {:?}",
+            started.elapsed()
+        );
+    }
 }

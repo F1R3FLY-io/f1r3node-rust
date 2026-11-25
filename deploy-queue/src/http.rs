@@ -60,12 +60,26 @@ pub fn router(state: HttpState) -> Router {
         .with_state(state)
 }
 
-fn error_response(status: StatusCode, kind: &str, message: String) -> Response {
-    (status, Json(json!({ "error": kind, "message": message }))).into_response()
+fn error_response(
+    status: StatusCode,
+    kind: &str,
+    message: String,
+    cause: Option<&str>,
+) -> Response {
+    let mut body = json!({ "error": kind, "message": message });
+    if let Some(cause) = cause {
+        body["cause"] = json!(cause);
+    }
+    (status, Json(body)).into_response()
 }
 
 fn intake_error_response(error: IntakeError) -> Response {
-    let mut response = error_response(error.status(), error.kind(), error.to_string());
+    let mut response = error_response(
+        error.status(),
+        error.kind(),
+        error.to_string(),
+        error.cause(),
+    );
     if let Some(secs) = error.retry_after_secs() {
         response
             .headers_mut()
@@ -84,6 +98,7 @@ async fn deploy_handler(State(state): State<HttpState>, body: Bytes) -> Response
                 StatusCode::BAD_REQUEST,
                 "invalid_request_body",
                 e.to_string(),
+                None,
             )
         }
     };
@@ -129,6 +144,7 @@ async fn deploy_status_handler(
             StatusCode::BAD_REQUEST,
             "invalid_hash",
             format!("'{}' is not a valid hex deploy signature", deploy_sig_hex),
+            None,
         );
     };
     match state.engine.status(sig).await {
@@ -138,6 +154,7 @@ async fn deploy_status_handler(
             StatusCode::SERVICE_UNAVAILABLE,
             "deploy_queue_stopped",
             e.to_string(),
+            None,
         ),
     }
 }
@@ -168,6 +185,7 @@ async fn watch_handler(
                 StatusCode::BAD_REQUEST,
                 "invalid_hash",
                 "sigs must be a comma-separated list of hex deploy signatures".to_string(),
+                None,
             )
         }
     };
@@ -290,6 +308,7 @@ async fn queue_status_handler(State(state): State<HttpState>) -> Response {
             StatusCode::SERVICE_UNAVAILABLE,
             "deploy_queue_stopped",
             e.to_string(),
+            None,
         ),
     }
 }
@@ -341,6 +360,7 @@ async fn proxy(node: &NodeHttp, request: Request) -> Response {
                         StatusCode::BAD_GATEWAY,
                         "node_unavailable",
                         format!("node answer could not be relayed: {}", e),
+                        None,
                     )
                 })
         }
@@ -348,6 +368,7 @@ async fn proxy(node: &NodeHttp, request: Request) -> Response {
             StatusCode::BAD_GATEWAY,
             "node_unavailable",
             format!("node did not answer: {}", e),
+            None,
         ),
     }
 }

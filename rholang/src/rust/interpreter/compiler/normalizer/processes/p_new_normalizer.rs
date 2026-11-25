@@ -41,7 +41,7 @@ pub fn normalize_p_new<'ast>(
 
 /// Current (pre-wildcard-rewrite) behavior. Covers every binder set with no
 /// wildcard URN — i.e., every URN in `urn_map` plus every unresolvable exact
-/// URN (which continues to error at `eval_new` with "Unknown urn for new").
+/// URN (which errors at `eval_new` with `UnknownUrnError`).
 fn normalize_static_only<'ast>(
     decls: &[NameDecl<'ast>],
     proc: &'ast AnnProc<'ast>,

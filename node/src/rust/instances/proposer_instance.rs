@@ -233,16 +233,7 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                                         }
                                     }
                                 }
-                                None => {
-                                    if propose_result.is_no_new_deploys() {
-                                        tracing::info!("Propose: {}", propose_result.propose_status)
-                                    } else {
-                                        tracing::error!(
-                                            status = %propose_result.propose_status,
-                                            "propose failed"
-                                        )
-                                    }
-                                }
+                                None => log_unproposed(&propose_result),
                             }
 
                             should_retry_on_trigger
@@ -425,6 +416,16 @@ pub(crate) fn classify_propose_error(
     }
 }
 
+fn log_unproposed(propose_result: &ProposeResult) {
+    if propose_result.is_no_new_deploys() || propose_result.is_history_incomplete() {
+        tracing::info!("Propose: {}", propose_result.propose_status)
+    } else if propose_result.is_not_bonded() {
+        tracing::warn!(status = %propose_result.propose_status, "propose failed")
+    } else {
+        tracing::error!(status = %propose_result.propose_status, "propose failed")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use casper::rust::blocks::proposer::propose_result::CheckProposeConstraintsFailure;
@@ -522,5 +523,41 @@ mod tests {
             !should_retry_immediately_on_trigger(&result, true),
             "NotEnoughNewBlocks should not trigger immediate async retry"
         );
+    }
+
+    #[test]
+    fn a_validator_that_is_not_bonded_yet_logs_its_refusal_as_a_warning() {
+        use shared::rust::tracing_init::EventCapture;
+        use tracing::Level;
+
+        let capture = EventCapture::new();
+        {
+            let _guard = capture.install();
+            log_unproposed(&ProposeResult::not_bonded());
+            log_unproposed(&ProposeResult::no_new_deploys());
+            log_unproposed(&ProposeResult::failure(ProposeFailure::BugError));
+        }
+
+        let levels: Vec<Level> = capture.events().into_iter().map(|e| e.level).collect();
+        assert_eq!(levels, vec![Level::WARN, Level::INFO, Level::ERROR]);
+    }
+
+    #[test]
+    fn a_node_still_catching_up_on_its_history_logs_its_refusal_as_info() {
+        use shared::rust::tracing_init::EventCapture;
+        use tracing::Level;
+
+        let capture = EventCapture::new();
+        {
+            let _guard = capture.install();
+            log_unproposed(&ProposeResult::failure(
+                ProposeFailure::CheckConstraintsFailure(
+                    CheckProposeConstraintsFailure::HistoryIncomplete,
+                ),
+            ));
+        }
+
+        let levels: Vec<Level> = capture.events().into_iter().map(|e| e.level).collect();
+        assert_eq!(levels, vec![Level::INFO]);
     }
 }
