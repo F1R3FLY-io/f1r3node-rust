@@ -1,4 +1,4 @@
-# Memory and Storage Improvement Proposals
+# Memory, Storage, and Performance Improvement Proposals
 
 Status: draft designs for review. These proposals do not authorize implementation, migration, deployment, or a protocol change.
 Date: 2026-11-25.
@@ -36,6 +36,21 @@ The [Par schema](../../models/src/main/protobuf/RhoTypes.proto) has many collect
 The [hot store](../../rspace++/src/rspace/hot_store.rs) already shares datums and continuations through `Arc` and uses persistent checkpoint maps.
 Further runtime sharing needs measurements that account for those existing optimizations.
 Storage-subtree deduplication does not itself reduce decoded runtime objects.
+
+### Performance
+
+The [performance overview](performance-overview.md) gives the source evidence, evaluation order, and shared validation plan.
+It also includes a reproducible operation-count probe.
+These are proposed optimizations, not measured improvements to finalized throughput.
+
+| Proposal | Execution target | Main risk | Suggested order |
+| --- | --- | --- | --- |
+| [Storage buffer copies](performance-storage-buffer-copies.md) | Redundant owned-buffer clones in point reads and conditional writes | Presence-query errors and write semantics | First, with copy removal only |
+| [Checkpoint assembly](performance-checkpoint-assembly.md) | Deep action clones and repeated diagnostic encoding | Snapshot ownership, failure recovery, and canonical bytes | Move assembled actions first |
+| [Merge ordering](performance-merge-ordering.md) | Repeated hash computation and branch-member sorting | Consensus ordering and rejection tie breaks | After comparator equivalence tests |
+| [Compiled deploy terms](performance-compiled-term-cache.md) | Repeated compilation of the same validated deploy | Deploy-specific bindings, charging, and cache bounds | Measure reuse before implementation |
+| [History cache eviction](performance-history-cache-eviction.md) | Whole-cache clearing and possible repeated history reads | Root isolation, cache accounting, and contention | Measure actual reloads first |
+| [Replay cache fast path](performance-replay-cache-fast-path.md) | Runtime construction after a replay-cache hit | Runtime side effects, mergeable recovery, and root lifetime | Audit before removing work |
 
 ## Measurement Baseline
 
