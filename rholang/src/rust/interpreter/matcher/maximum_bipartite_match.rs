@@ -27,10 +27,10 @@ where
     /// first unseen target it matches and displacing an earlier pattern onto
     /// another target when that one is taken. The pairs are ordered by target,
     /// then by the target's position.
-    pub fn find_matches(&mut self, patterns: Vec<P>, targets: Vec<T>) -> Option<Vec<(T, P, R)>> {
+    pub fn find_matches(&mut self, patterns: &[P], targets: &[T]) -> Option<Vec<(T, P, R)>> {
         let mut search = Search {
-            patterns: &patterns,
-            targets: &targets,
+            patterns,
+            targets,
             match_function: &mut self.match_function,
             claims: (0..targets.len()).map(|_| None).collect(),
             seen: vec![false; targets.len()],
@@ -222,7 +222,7 @@ mod tests {
 
             let log = Rc::new(RefCell::new(Vec::new()));
             let mut search = MaximumBipartiteMatch::new(stateful(accepts.clone(), log.clone()));
-            let found = search.find_matches(patterns, targets.clone());
+            let found = search.find_matches(&patterns, &targets);
 
             assert_eq!(found, expected, "targets {targets:?}");
             assert_eq!(*log.borrow(), *reference_log.borrow(), "targets {targets:?}");

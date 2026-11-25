@@ -329,6 +329,25 @@ fn canonical_map_operations_match_a_rebuilt_map() {
     );
 }
 
+// The matcher matches a map in its stored order, which must be the order
+// rebuilding it would give.
+#[test]
+fn a_canonical_map_rebuilt_keeps_its_order() {
+    let (key_a, value_a, key_b, value_b) = colliding_pair();
+    let mut pars = create_pars();
+    pars.extend([(key_a, value_a), (key_b, value_b)]);
+    for rotation in 0..pars.len() {
+        let mut input = pars.clone();
+        input.rotate_left(rotation);
+        if rotation % 2 == 1 {
+            input.reverse();
+        }
+        let canonical = emap_of(&SortedParMap::create_from_vec(input).sorted_list);
+        let rebuilt = ParMapTypeMapper::emap_to_par_map(canonical.clone()).ps.sorted_list;
+        assert_eq!(rebuilt, entries(canonical.kvs), "rotation {rotation}");
+    }
+}
+
 fn inserted(map: &SortedParMap, key: &Par, value: &Par) -> Vec<(Par, Par)> {
     let mut kvs = emap_of(&map.sorted_list).kvs;
     ParMapTypeMapper::insert(&mut kvs, key, value);

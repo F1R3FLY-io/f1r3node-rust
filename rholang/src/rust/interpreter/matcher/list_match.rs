@@ -103,14 +103,14 @@ macro_rules! list_match {
                     .map(|level| vec![Pattern::Remainder(level); targets.len() - patterns.len()])
                     .unwrap_or(Vec::new());
                 let mut all_patterns: Vec<Pattern<$type>> = remainder_patterns;
-                all_patterns.extend(patterns.clone().into_iter().map(Pattern::Term));
+                all_patterns.extend(patterns.into_iter().map(Pattern::Term));
 
                 let mut cloned_self = self.clone();
                 let _match_function = Box::new(move |pattern, t| cloned_self.match_function(pattern, t));
                 // NOTE: Bypassing 'memoizeInHashMap' here
                 let mut maximum_bipartite_match: MaximumBipartiteMatch<Pattern<$type>, $type, FreeMap> = MaximumBipartiteMatch::new(_match_function);
 
-                let matches = maximum_bipartite_match.find_matches(all_patterns, targets.clone())?;
+                let matches = maximum_bipartite_match.find_matches(&all_patterns, &targets)?;
 
                 let free_maps: Vec<FreeMap> = matches
                     .iter()
