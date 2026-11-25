@@ -20,6 +20,8 @@
 // watermark, because a database that predates it holds sig rows from heights
 // whose seeds were never recorded.
 
+use std::collections::btree_map::Entry;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
@@ -91,27 +93,64 @@ impl CarrierIndex {
         height: i64,
         block_hash: ByteString,
     ) -> Result<(), KvStoreError> {
-        let mut seed_row = self
-            .seed_carriers
-            .get_one(&seed.to_vec())?
-            .unwrap_or_default();
-        if !seed_row
-            .iter()
-            .any(|e| e.block_hash == block_hash && e.sig == sig)
-        {
-            seed_row.push(SeedCarrierEntry {
-                height,
-                block_hash: block_hash.clone(),
-                sig: sig.to_vec(),
-            });
-            self.seed_carriers.put_one(seed.to_vec(), seed_row)?;
+        self.record_block(height, &block_hash, &[(sig.to_vec(), seed.to_vec())])
+    }
+
+    pub fn record_block(
+        &self,
+        height: i64,
+        block_hash: &ByteString,
+        deploys: &[(ByteString, ByteString)],
+    ) -> Result<(), KvStoreError> {
+        let mut seed_rows: BTreeMap<ByteString, (Vec<SeedCarrierEntry>, bool)> = BTreeMap::new();
+        let mut sig_rows: BTreeMap<ByteString, (Vec<CarrierEntry>, bool)> = BTreeMap::new();
+        for (sig, seed) in deploys {
+            let (seed_row, seed_dirty) = match seed_rows.entry(seed.clone()) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    entry.insert((self.seed_carriers.get_one(seed)?.unwrap_or_default(), false))
+                }
+            };
+            if !seed_row
+                .iter()
+                .any(|e| e.block_hash == *block_hash && e.sig == *sig)
+            {
+                seed_row.push(SeedCarrierEntry {
+                    height,
+                    block_hash: block_hash.clone(),
+                    sig: sig.clone(),
+                });
+                *seed_dirty = true;
+            }
+            let (row, dirty) = match sig_rows.entry(sig.clone()) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    entry.insert((self.carriers.get_one(sig)?.unwrap_or_default(), false))
+                }
+            };
+            if !row.iter().any(|e| e.block_hash == *block_hash) {
+                row.push(CarrierEntry {
+                    height,
+                    block_hash: block_hash.clone(),
+                });
+                *dirty = true;
+            }
         }
-        let mut row = self.carriers.get_one(&sig.to_vec())?.unwrap_or_default();
-        if row.iter().any(|e| e.block_hash == block_hash) {
-            return Ok(());
+        let seed_writes: Vec<_> = seed_rows
+            .into_iter()
+            .filter_map(|(seed, (row, dirty))| dirty.then_some((seed, row)))
+            .collect();
+        if !seed_writes.is_empty() {
+            self.seed_carriers.put(seed_writes)?;
         }
-        row.push(CarrierEntry { height, block_hash });
-        self.carriers.put_one(sig.to_vec(), row)
+        let sig_writes: Vec<_> = sig_rows
+            .into_iter()
+            .filter_map(|(sig, (row, dirty))| dirty.then_some((sig, row)))
+            .collect();
+        if !sig_writes.is_empty() {
+            self.carriers.put(sig_writes)?;
+        }
+        Ok(())
     }
 
     /// True when the index holds NO carrier of another sig with this seed.
@@ -421,6 +460,90 @@ mod tests {
         fn non_empty(&self) -> Result<bool, KvStoreError> { self.inner.non_empty() }
 
         fn size_bytes(&self) -> usize { self.inner.size_bytes() }
+    }
+
+    fn counting_store(writes: &Arc<std::sync::atomic::AtomicUsize>) -> WriteCountingStore {
+        WriteCountingStore {
+            inner: InMemoryKeyValueStore::new(),
+            writes: writes.clone(),
+            largest_batch: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            fail_puts: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    fn block_deploys(count: u8) -> Vec<(ByteString, ByteString)> {
+        (0..count)
+            .map(|i| (vec![b's', i], vec![b'n', i % 3]))
+            .collect()
+    }
+
+    #[test]
+    fn a_block_records_its_carriers_in_one_write_for_each_table() {
+        let carrier_writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seed_writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let index = CarrierIndex::new(
+            Arc::new(counting_store(&carrier_writes)),
+            Arc::new(counting_store(&seed_writes)),
+            Arc::new(InMemoryKeyValueStore::new()),
+        );
+        let deploys = block_deploys(20);
+
+        index
+            .record_block(7, &vec![9; 32], &deploys)
+            .expect("record block");
+
+        assert_eq!(carrier_writes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(seed_writes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_redelivered_block_writes_nothing() {
+        let carrier_writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seed_writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let index = CarrierIndex::new(
+            Arc::new(counting_store(&carrier_writes)),
+            Arc::new(counting_store(&seed_writes)),
+            Arc::new(InMemoryKeyValueStore::new()),
+        );
+        let deploys = block_deploys(20);
+        index
+            .record_block(7, &vec![9; 32], &deploys)
+            .expect("record block");
+        carrier_writes.store(0, std::sync::atomic::Ordering::SeqCst);
+        seed_writes.store(0, std::sync::atomic::Ordering::SeqCst);
+
+        index
+            .record_block(7, &vec![9; 32], &deploys)
+            .expect("redeliver block");
+
+        assert_eq!(carrier_writes.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(seed_writes.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_block_record_matches_one_record_for_each_deploy() {
+        let batched = CarrierIndex::in_memory();
+        let single = CarrierIndex::in_memory();
+        let deploys = block_deploys(20);
+        for (height, block) in [(7, vec![9; 32]), (8, vec![8; 32]), (7, vec![9; 32])] {
+            batched
+                .record_block(height, &block, &deploys)
+                .expect("record block");
+            for (sig, seed) in &deploys {
+                single
+                    .record_once(sig, seed, height, block.clone())
+                    .expect("record deploy");
+            }
+        }
+
+        assert_eq!(
+            batched.carriers.to_map().expect("read"),
+            single.carriers.to_map().expect("read")
+        );
+        assert_eq!(
+            batched.seed_carriers.to_map().expect("read"),
+            single.seed_carriers.to_map().expect("read")
+        );
     }
 
     #[test]

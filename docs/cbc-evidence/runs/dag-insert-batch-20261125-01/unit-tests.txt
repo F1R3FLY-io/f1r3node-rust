@@ -1,0 +1,21 @@
+running 19 tests
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 127 filtered out; finished in 0.01s
+test rust::dag::carrier_index::tests::a_block_record_matches_one_record_for_each_deploy ... ok
+test rust::dag::carrier_index::tests::a_block_records_its_carriers_in_one_write_for_each_table ... ok
+test rust::dag::carrier_index::tests::a_prune_that_fails_part_way_is_finished_by_the_next_walk ... ok
+test rust::dag::carrier_index::tests::a_prune_walk_writes_no_batch_larger_than_the_write_chunk ... ok
+test rust::dag::carrier_index::tests::a_prune_walk_writes_the_carrier_table_in_a_bounded_number_of_batches ... ok
+test rust::dag::carrier_index::tests::a_redelivered_block_writes_nothing ... ok
+test rust::dag::carrier_index::tests::a_seed_carried_by_another_sig_is_not_proven_unshared ... ok
+test rust::dag::carrier_index::tests::prune_drops_below_cutoff_and_strides ... ok
+test rust::dag::carrier_index::tests::prune_drops_seed_carriers_below_the_cutoff ... ok
+test rust::dag::carrier_index::tests::record_is_idempotent_per_block_and_absence_flips_on_first_carrier ... ok
+test rust::dag::carrier_index::tests::the_seed_watermark_is_set_once_and_alongside_an_older_sig_watermark ... ok
+test rust::dag::carrier_index::tests::watermark_is_write_once ... ok
+test rust::dag::deploy_lifecycle_types::tests::a_block_append_matches_one_append_for_each_event ... ok
+test rust::dag::deploy_lifecycle_types::tests::a_block_appends_its_events_in_one_write ... ok
+test rust::dag::deploy_lifecycle_types::tests::a_discard_rechecks_the_row_it_deletes ... ok
+test rust::dag::deploy_lifecycle_types::tests::append_after_terminal_is_a_noop ... ok
+test rust::dag::deploy_lifecycle_types::tests::append_event_once_is_idempotent_per_block_and_kind ... ok
+test rust::dag::deploy_lifecycle_types::tests::terminal_is_write_once_and_prunes_the_event_row ... ok
+test rust::dag::deploy_lifecycle_types::tests::valid_after_records_once_and_events_accumulate ... ok
