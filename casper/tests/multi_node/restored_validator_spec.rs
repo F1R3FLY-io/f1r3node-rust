@@ -63,6 +63,30 @@ fn is_held(status: &ProposeStatus) -> bool {
     )
 }
 
+fn begin_recovery(node: &TestNode) -> std::path::PathBuf {
+    let id = uuid::Uuid::new_v4();
+    node.block_store
+        .begin_validator_recovery(id.as_bytes())
+        .expect("persist recovery");
+    node.block_store
+        .validator_recovery_dir()
+        .unwrap()
+        .join(format!("validator-recovery-{id}.confirm"))
+}
+
+fn confirm(node: &TestNode, path: &std::path::Path, checkpoint: &str) {
+    let key = &node.validator_id_opt.as_ref().unwrap().public_key.bytes;
+    std::fs::write(
+        path,
+        format!(
+            "{} {} {checkpoint}\n",
+            hex::encode(&node.genesis.block_hash),
+            hex::encode(key)
+        ),
+    )
+    .unwrap();
+}
+
 #[tokio::test]
 async fn a_restored_validator_does_not_reuse_the_sequence_number_of_its_lost_block() {
     let genesis = GenesisBuilder::new()
@@ -90,10 +114,9 @@ async fn a_restored_validator_does_not_reuse_the_sequence_number_of_its_lost_blo
     for peer in [0, 1, 3] {
         admit(&mut nodes[peer], &lost).await;
     }
-    assert!(restored
-        .casper
-        .hold_proposals_until_own_history_known()
-        .expect("hold"));
+    let path = begin_recovery(&restored);
+    let checkpoint = format!("{} {}", lost.seq_num, hex::encode(&lost.block_hash));
+    confirm(&restored, &path, &checkpoint);
 
     let identity = restored.validator_id_opt.clone().expect("validator");
     let mut proposer = proposer_for(&restored, identity, restored.tle.clone());
@@ -108,6 +131,7 @@ async fn a_restored_validator_does_not_reuse_the_sequence_number_of_its_lost_blo
         early.propose_result.propose_status
     );
 
+    confirm(&restored, &path, "first-use");
     let stale_peer_block = propose_everywhere(&mut nodes, 2).await;
     admit(&mut nodes[2], &lost).await;
     admit(&mut restored, &lost).await;
@@ -122,12 +146,19 @@ async fn a_restored_validator_does_not_reuse_the_sequence_number_of_its_lost_blo
         .expect("propose");
     assert!(
         partial.block_message_opt.is_none() && is_held(&partial.propose_result.propose_status),
-        "the gate opened while a peer's latest block still cited the older own block: {:?}",
+        "the gate accepted first-use with a signed own block: {:?}",
         partial.propose_result.propose_status
     );
 
     let caught_up_peer_block = propose_everywhere(&mut nodes, 2).await;
     admit(&mut restored, &caught_up_peer_block).await;
+    std::fs::remove_file(&path).unwrap();
+    let held = proposer
+        .propose(restored.casper.clone(), true)
+        .await
+        .unwrap();
+    assert!(is_held(&held.propose_result.propose_status));
+    confirm(&restored, &path, &checkpoint);
     let resumed = proposer
         .propose(restored.casper.clone(), true)
         .await
@@ -139,7 +170,12 @@ async fn a_restored_validator_does_not_reuse_the_sequence_number_of_its_lost_blo
         )
     });
     assert_eq!(block.seq_num, lost.seq_num + 1);
-    assert!(!restored.casper.own_history_gate.is_closed());
+    std::fs::remove_file(path).unwrap();
+    assert!(restored
+        .block_store
+        .pending_validator_recovery(&block.sender)
+        .unwrap()
+        .is_none());
     admit(&mut nodes[1], &block).await;
 }
 
@@ -157,10 +193,7 @@ async fn a_held_node_that_is_not_bonded_reports_that_it_is_not_bonded() {
     }
     propose_everywhere(&mut nodes, 1).await;
     let joiner = &nodes[0];
-    assert!(joiner
-        .casper
-        .hold_proposals_until_own_history_known()
-        .expect("hold"));
+    begin_recovery(joiner);
 
     let (unbonded_key, _) = Secp256k1.new_key_pair();
     let mut proposer = proposer_for(
@@ -182,5 +215,39 @@ async fn a_held_node_that_is_not_bonded_reports_that_it_is_not_bonded() {
         "an unbonded node must report that it is not bonded, got {:?}",
         refused.propose_result.propose_status
     );
-    assert!(joiner.casper.own_history_gate.is_closed());
+    assert!(joiner
+        .block_store
+        .pending_validator_recovery(&joiner.validator_id_opt.as_ref().unwrap().public_key.bytes)
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn first_use_confirmation_is_scoped_to_one_restore() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::create_network(genesis, 1, Some(0.0), None, None, None)
+        .await
+        .unwrap()
+        .remove(0);
+    let old = begin_recovery(&node);
+    confirm(&node, &old, "first-use");
+    let current = begin_recovery(&node);
+    let mut proposer = proposer_for(
+        &node,
+        node.validator_id_opt.clone().unwrap(),
+        node.tle.clone(),
+    );
+    let held = proposer.propose(node.casper.clone(), true).await.unwrap();
+    assert!(is_held(&held.propose_result.propose_status));
+    confirm(&node, &current, "first-use");
+    let released = proposer.propose(node.casper.clone(), true).await.unwrap();
+    assert_eq!(
+        released.block_message_opt.expect("first proposal").seq_num,
+        1
+    );
+    std::fs::remove_file(old).unwrap();
+    std::fs::remove_file(current).unwrap();
 }

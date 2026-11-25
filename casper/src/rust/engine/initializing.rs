@@ -682,6 +682,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true)
             );
 
+            initializing
+                .block_store
+                .begin_validator_recovery(uuid::Uuid::new_v4().as_bytes())?;
             initializing.block_dag_storage.insert(
                 block,
                 block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
@@ -1842,10 +1845,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     })
                 })
             }
-            StartupState::RestoredFromPeers => {
-                casper.hold_proposals_until_own_history_known()?;
-                Arc::new(|| Box::pin(async { Ok(()) }))
-            }
+            StartupState::RestoredFromPeers => Arc::new(|| Box::pin(async { Ok(()) })),
         };
 
         tracing::info!(

@@ -954,9 +954,6 @@ impl TestNode {
         let tls =
             TransportLayerServerTestImpl::new(current_peer_node.clone(), test_network.clone());
 
-        // With shared LMDB, we don't need to copy storage directories.
-        // Use the shared LMDB path for data_dir (for logging/debugging purposes only).
-        let _new_storage_dir = resources::get_shared_lmdb_path();
         // Each TestNode has its own block and DAG scope. The RSpace scope is
         // the genesis one, shared by every node, unless the node keeps its own.
         let rspace_scope = if overrides.own_rspace {
@@ -976,7 +973,8 @@ impl TestNode {
         let block_store_base = KeyValueBlockStore::create_from_kvm(&mut *kvm)
             .await
             .unwrap();
-        let block_store = block_store_base;
+        let block_store =
+            block_store_base.with_validator_recovery_dir(resources::get_shared_lmdb_path());
 
         // Initialize block store with genesis block
         block_store
@@ -1157,7 +1155,6 @@ impl TestNode {
                     MultiParentCasperImpl::MAX_JUDGED_TWINS,
                 ),
             ),
-            own_history_gate: std::sync::Arc::default(),
         };
 
         let casper = Arc::new(casper_impl);

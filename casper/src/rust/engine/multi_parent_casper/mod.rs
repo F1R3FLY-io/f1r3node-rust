@@ -48,5 +48,4 @@ pub(crate) mod validation_dispatcher;
 // circular alias path (engine → shim → engine).
 pub use bond_cache::FinalizedBondCache;
 pub use events::{added_event, created_event, finalised_event};
-pub use own_history_gate::{OwnHistoryGate, OWN_HISTORY_WAIT_LIMIT};
 pub use types::MultiParentCasperImpl;

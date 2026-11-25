@@ -226,7 +226,9 @@ where
             CheckProposeConstraintsResult::Failure(CheckProposeConstraintsFailure::NotBonded) => {
                 CheckProposeConstraintsResult::not_bonded()
             }
-            _ if casper.awaiting_own_history(casper_snapshot)? => {
+            _ if casper
+                .awaiting_own_history(casper_snapshot, &self.validator.public_key.bytes)? =>
+            {
                 CheckProposeConstraintsResult::history_incomplete()
             }
             checked => checked,

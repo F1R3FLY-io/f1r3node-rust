@@ -55,6 +55,7 @@ pub struct KeyValueBlockStore {
     store: Arc<dyn KeyValueStore>,
     store_approved_block: Arc<dyn KeyValueStore>,
     approved_block_key: [u8; 1],
+    validator_recovery_dir: Option<std::path::PathBuf>,
     pending: Arc<PendingBlocks>,
 }
 
@@ -86,6 +87,7 @@ impl KeyValueBlockStore {
             store,
             store_approved_block,
             approved_block_key: [42],
+            validator_recovery_dir: None,
             pending: Arc::new(PendingBlocks::new(pending_limits)),
         }
     }
@@ -94,6 +96,49 @@ impl KeyValueBlockStore {
         let store = kvm.store("blocks".to_string()).await?;
         let store_approved_block = kvm.store("blocks-approved".to_string()).await?;
         Ok(Self::new(store, store_approved_block))
+    }
+
+    pub fn with_validator_recovery_dir(mut self, path: std::path::PathBuf) -> Self {
+        self.validator_recovery_dir = Some(path);
+        self
+    }
+
+    pub fn validator_recovery_dir(&self) -> Option<&std::path::Path> {
+        self.validator_recovery_dir.as_deref()
+    }
+
+    // The approved-block store survives an ordinary restart and is local to this node.
+    // Start a new generation before installing any part of a peer restore.
+    pub fn begin_validator_recovery(&self, generation: &[u8; 16]) -> Result<(), KvStoreError> {
+        self.store_approved_block
+            .put_one(b"validator-recovery".to_vec(), generation.to_vec())
+    }
+
+    pub fn pending_validator_recovery(
+        &self,
+        validator: &[u8],
+    ) -> Result<Option<[u8; 16]>, KvStoreError> {
+        let Some(bytes) = self
+            .store_approved_block
+            .get_one(&b"validator-recovery".to_vec())?
+        else {
+            return Ok(None);
+        };
+        let generation: [u8; 16] = bytes.try_into().map_err(|_| {
+            KvStoreError::SerializationError("Invalid validator recovery generation".to_string())
+        })?;
+        let key = [b"validator-recovery/".as_slice(), validator].concat();
+        let confirmed = self.store_approved_block.get_one(&key)?;
+        Ok((confirmed.as_deref() != Some(generation.as_slice())).then_some(generation))
+    }
+
+    pub fn confirm_validator_recovery(
+        &self,
+        validator: &[u8],
+        generation: &[u8; 16],
+    ) -> Result<(), KvStoreError> {
+        let key = [b"validator-recovery/".as_slice(), validator].concat();
+        self.store_approved_block.put_one(key, generation.to_vec())
     }
 
     fn error_block(hash: BlockHash, cause: String) -> String {
@@ -378,7 +423,7 @@ impl KeyValueBlockStore {
 
     pub fn pending_usage(&self) -> PendingUsage { self.pending.usage() }
 
-    fn disk_contains(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
+    pub fn disk_contains(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
         Ok(self
             .store
             .contains(&vec![block_hash.to_vec()])?

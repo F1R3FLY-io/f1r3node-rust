@@ -449,6 +449,15 @@ async fn create_initializing_engine_with_dag(
 
 #[tokio::test]
 async fn stored_dag_resume_allows_proposals_without_a_new_peer_tip() {
+    check_proposal_gate_on_stored_dag_resume(false).await;
+}
+
+#[tokio::test]
+async fn stored_dag_resume_preserves_an_unconfirmed_recovery() {
+    check_proposal_gate_on_stored_dag_resume(true).await;
+}
+
+async fn check_proposal_gate_on_stored_dag_resume(pending: bool) {
     use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
     use casper::rust::engine::engine::Engine;
     use casper::rust::validator_identity::ValidatorIdentity;
@@ -489,6 +498,12 @@ async fn stored_dag_resume_allows_proposals_without_a_new_peer_tip() {
         frontier_hash: tip.block_hash.clone(),
     });
     let cell = Arc::new(EngineCell::init());
+    if pending {
+        fixture
+            .block_store
+            .begin_validator_recovery(uuid::Uuid::new_v4().as_bytes())
+            .unwrap();
+    }
     let engine = create_initializing_engine_with_dag(
         &fixture,
         Arc::new(|| Box::pin(async { Ok(()) })),
@@ -518,7 +533,12 @@ async fn stored_dag_resume_allows_proposals_without_a_new_peer_tip() {
         snapshot.dag.latest_message_hash(&tip.sender),
         Some(tip.block_hash)
     );
-    assert!(!running.awaiting_own_history(&snapshot).unwrap());
+    assert_eq!(
+        running
+            .awaiting_own_history(&snapshot, &fixture.validator_id.public_key.bytes)
+            .unwrap(),
+        pending
+    );
 }
 
 #[tokio::test]

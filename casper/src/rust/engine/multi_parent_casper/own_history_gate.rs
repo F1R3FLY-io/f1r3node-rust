@@ -1,146 +1,91 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::fs::File;
+use std::io::{ErrorKind, Read};
 
-use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::validator::Validator;
+use uuid::Uuid;
 
 use super::types::MultiParentCasperImpl;
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
 
-pub const OWN_HISTORY_WAIT_LIMIT: Duration = Duration::from_secs(120);
-
-#[derive(Debug)]
-struct Hold {
-    peer_sequences: HashMap<Validator, i32>,
-    until: Instant,
-}
-
-#[derive(Debug, Default)]
-pub struct OwnHistoryGate {
-    hold: Mutex<Option<Arc<Hold>>>,
-}
-
-impl OwnHistoryGate {
-    fn close(&self, peer_sequences: HashMap<Validator, i32>, until: Instant) {
-        *self.hold.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Hold {
-            peer_sequences,
-            until,
-        }));
-    }
-
-    pub fn is_closed(&self) -> bool { self.current().is_some() }
-
-    fn current(&self) -> Option<Arc<Hold>> {
-        self.hold.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-
-    fn open(&self) { *self.hold.lock().unwrap_or_else(|e| e.into_inner()) = None; }
-}
-
 impl MultiParentCasperImpl {
-    pub fn hold_proposals_until_own_history_known(&self) -> Result<bool, CasperError> {
-        let Some(identity) = &self.validator_id else {
-            return Ok(false);
-        };
-        let dag = self.block_dag_storage.get_representation()?;
-        let mut peer_sequences = HashMap::new();
-        for (validator, hash) in dag.latest_message_hashes() {
-            if validator == identity.public_key.bytes {
-                continue;
-            }
-            if let Some(latest) = dag.own_testimony(&validator, &hash)? {
-                peer_sequences.insert(validator, latest.sequence_number);
-            }
-        }
-        self.own_history_gate
-            .close(peer_sequences, Instant::now() + OWN_HISTORY_WAIT_LIMIT);
-        tracing::info!(
-            "Holding proposals after the state restore until every other active validator \
-             that has proposed advances from the restored DAG and cites this validator's \
-             latest message (limit {:?})",
-            OWN_HISTORY_WAIT_LIMIT
-        );
-        Ok(true)
-    }
-
     pub(crate) fn awaiting_own_history(
         &self,
         snapshot: &CasperSnapshot,
+        validator: &Validator,
     ) -> Result<bool, CasperError> {
-        let (Some(hold), Some(identity)) = (self.own_history_gate.current(), &self.validator_id)
-        else {
+        let Some(generation) = self.block_store.pending_validator_recovery(validator)? else {
             return Ok(false);
         };
-        let own = &identity.public_key.bytes;
-        let own_latest = snapshot.justifications.iter().find(|j| j.validator == *own);
-        let mut awaited = Vec::new();
-        for validator in &snapshot.on_chain_state.active_validators {
-            if validator == own {
-                continue;
+        let recovery_id = Uuid::from_bytes(generation);
+        let genesis = hex::encode(&snapshot.chain_id);
+        let key = hex::encode(validator);
+        let Some(dir) = self.block_store.validator_recovery_dir() else {
+            return Ok(true);
+        };
+        let path = dir.join(format!("validator-recovery-{recovery_id}.confirm"));
+        let file = match File::open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                tracing::info!(%recovery_id, %genesis, validator = %key, file = %path.display(),
+                    "Proposals held pending operator confirmation of signing history");
+                return Ok(true);
             }
-            let Some(hash) = snapshot.dag.latest_message_hash(validator) else {
-                continue;
-            };
-            let Some(latest) = snapshot.dag.own_testimony(validator, &hash)? else {
-                continue;
-            };
-            let cited_own = latest.justifications.iter().find(|j| j.validator == *own);
-            if latest.is_invalid()
-                || hold
-                    .peer_sequences
-                    .get(validator)
-                    .is_some_and(|&restored_seq| latest.sequence_number <= restored_seq)
-                || cited_own != own_latest
-            {
-                awaited.push(validator);
+            Err(e) => {
+                return Err(CasperError::RuntimeError(format!(
+                    "Reading {}: {e}",
+                    path.display()
+                )))
             }
+        };
+        let mut input = Vec::new();
+        file.take(1025)
+            .read_to_end(&mut input)
+            .map_err(|e| CasperError::RuntimeError(format!("Reading {}: {e}", path.display())))?;
+        let fields: Vec<_> = std::str::from_utf8(&input)
+            .unwrap_or("")
+            .split_ascii_whitespace()
+            .collect();
+        let latest = snapshot.dag.latest_message_hash(validator);
+        let sequence = snapshot.max_seq_nums.get(validator);
+        let matches = input.len() <= 1024
+            && match fields.as_slice() {
+                [network, signer, "first-use"] if *network == genesis && *signer == key => {
+                    sequence.is_none()
+                        && latest
+                            .as_ref()
+                            .is_none_or(|hash| hash == &snapshot.chain_id)
+                }
+                [network, signer, seq, hash] if *network == genesis && *signer == key => {
+                    if let (Some(latest), Some(sequence)) = (latest, sequence) {
+                        seq.parse::<u64>().ok() == Some(*sequence)
+                            && *hash == hex::encode(&latest)
+                            && snapshot
+                                .justifications
+                                .iter()
+                                .any(|j| j.validator == *validator && j.latest_block_hash == latest)
+                            && snapshot
+                                .dag
+                                .own_testimony(validator, &latest)?
+                                .is_some_and(|m| {
+                                    !m.is_invalid()
+                                        && u64::try_from(m.sequence_number).ok() == Some(*sequence)
+                                })
+                            && self.block_store.disk_contains(&latest)?
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            };
+        if !matches {
+            tracing::warn!(%recovery_id, %genesis, validator = %key,
+                "Proposals held: confirmation does not match the validator's local signing history");
+            return Ok(true);
         }
-        if awaited.is_empty() {
-            self.own_history_gate.open();
-            tracing::info!(
-                "Every other active validator that has proposed advanced from the restored DAG \
-                 and cites this validator's latest message; proposals resume"
-            );
-            return Ok(false);
-        }
-        if Instant::now() >= hold.until {
-            self.own_history_gate.open();
-            tracing::warn!(
-                "Proposals resume after {:?} without updated own-history evidence from {}",
-                OWN_HISTORY_WAIT_LIMIT,
-                awaited
-                    .iter()
-                    .map(|v| PrettyPrinter::build_string_bytes(v))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            return Ok(false);
-        }
-        tracing::info!(
-            "Not proposing: waiting for updated own-history evidence from {}",
-            awaited
-                .iter()
-                .map(|v| PrettyPrinter::build_string_bytes(v))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        Ok(true)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_gate_is_open_until_closed_and_after_it_opens() {
-        let gate = OwnHistoryGate::default();
-        assert!(!gate.is_closed());
-        gate.close(HashMap::new(), Instant::now() + OWN_HISTORY_WAIT_LIMIT);
-        assert!(gate.is_closed());
-        gate.open();
-        assert!(!gate.is_closed());
+        self.block_store
+            .confirm_validator_recovery(validator, &generation)?;
+        tracing::info!(%recovery_id, %genesis, validator = %key, "Accepted operator confirmation of signing history");
+        Ok(false)
     }
 }
