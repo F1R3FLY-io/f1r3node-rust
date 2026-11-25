@@ -4,7 +4,7 @@
   "claim_id": "CLAIM-DAG-INSERT-BATCH-001",
   "claim": {
     "path": "docs/claims/dag-insert-batched-writes.md",
-    "sha256": "1418e4bb4c83b6b0fa9bc2ba69ba2d25156cebe396282e11c319de75590b04be"
+    "sha256": "18eeaeb3242c4bea741549b62e49f683beb69bcfde8542ec94a80563f5e8eb70"
   },
   "base_commit": "1caf7b8cfdf7e8d447b348af1c90ae3615f19010",
   "branch": "fix/1151-dag-insert-lock-stall",
