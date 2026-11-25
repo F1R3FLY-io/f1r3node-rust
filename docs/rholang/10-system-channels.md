@@ -307,21 +307,7 @@ new invalid(`rho:casper:invalidBlocks`) in {
 }
 ```
 
-## Network
-
-### `rho:io:grpcTell` (arity 3)
-
-Fire-and-forget gRPC notification. No acknowledgment.
-
-```rho
-new grpcTell(`rho:io:grpcTell`) in {
-  grpcTell!("localhost", 8080, {"event": "deploy_complete"})
-}
-```
-
-Args: host (String), port (Int), payload (any Par).
-
-This is a non-deterministic operation -- results are cached during replay.
+## Utility and Control
 
 ### `rho:io:devNull` (arity 1)
 
@@ -460,7 +446,6 @@ new models(`rho:ollama:models`) in {
 | `rho:registry:insertArbitrary` | varies | Registry | Yes |
 | `rho:registry:insertSigned:secp256k1` | varies | Registry | Yes |
 | `rho:registry:ops` | 3 | Registry | Yes |
-| `rho:io:grpcTell` | 3 | Network | No |
 | `rho:io:devNull` | 1 | Utility | Yes |
 | `rho:execution:abort` | 1 | Control | Yes |
 | `rho:ai:gpt4` | 2 | AI | No |

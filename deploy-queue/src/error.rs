@@ -111,8 +111,82 @@ impl IntakeError {
             _ => None,
         }
     }
+
+    pub fn cause(&self) -> Option<&'static str> {
+        match self {
+            IntakeError::QueueFull { cause, .. } => Some(match cause {
+                Congestion::Validator => "validator",
+                Congestion::ValidatorIdle => "validator_idle",
+                Congestion::Shard => "shard",
+                Congestion::Storage => "storage",
+            }),
+            IntakeError::DeployerShareFull { .. } => Some("deployer_share"),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("deploy queue engine has stopped")]
 pub struct EngineStopped;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_full_queue_names_its_cause_and_keeps_its_code_and_wait() {
+        let full = |cause| IntakeError::QueueFull {
+            retry_after_secs: 12,
+            cause,
+        };
+        let refusals = [
+            (full(Congestion::Validator), "validator"),
+            (full(Congestion::ValidatorIdle), "validator_idle"),
+            (full(Congestion::Shard), "shard"),
+            (full(Congestion::Storage), "storage"),
+            (
+                IntakeError::DeployerShareFull {
+                    held: 12,
+                    limit: 12,
+                    retry_after_secs: 12,
+                },
+                "deployer_share",
+            ),
+        ];
+        for (refusal, cause) in refusals {
+            assert_eq!(
+                (
+                    refusal.status(),
+                    refusal.kind(),
+                    refusal.retry_after_secs(),
+                    refusal.cause()
+                ),
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "deploy_queue_full",
+                    Some(12),
+                    Some(cause)
+                ),
+            );
+        }
+    }
+
+    #[test]
+    fn other_refusals_name_no_cause() {
+        let refusals = [
+            IntakeError::IllegalArgument("bad shard".to_string()),
+            IntakeError::DeployExpired("too old".to_string()),
+            IntakeError::InvalidDeployWindow("too far ahead".to_string()),
+            IntakeError::Duplicate(vec![7; 64]),
+            IntakeError::NodeUnavailable {
+                retry_after_secs: 1,
+            },
+            IntakeError::Stopped,
+            IntakeError::Store("disk full".to_string()),
+        ];
+        for refusal in refusals {
+            assert_eq!(refusal.cause(), None, "{}", refusal.kind());
+        }
+    }
+}

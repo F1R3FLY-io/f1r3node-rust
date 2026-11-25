@@ -451,6 +451,32 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: .github/scripts/check-promotion-source.sh
 
+  ci_parity:
+    name: CI Parity
+    needs: build_base
+    if: github.event_name == 'pull_request' && github.base_ref == 'ca-release' && startsWith(github.head_ref, 'promote/ca-release-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
+
+      - name: Check the CI control files against master and dev
+        shell: bash -euo pipefail {0}
+        env:
+          CANDIDATE: ${{ needs.build_base.outputs.TARGET_SHA }}
+        run: |
+          git fetch --no-tags --depth=1 origin \
+            "+refs/heads/master:refs/remotes/origin/master" \
+            "+refs/heads/dev:refs/remotes/origin/dev"
+          git show refs/remotes/origin/master:.github/scripts/check-ci-parity.sh >"$RUNNER_TEMP/check-ci-parity.sh"
+          bash "$RUNNER_TEMP/check-ci-parity.sh" "$CANDIDATE" refs/remotes/origin/master refs/remotes/origin/dev
+
   # Commit identity policy for pull requests. This job reads the pull request
   # head SHA, so it has no cache step: a cache step in the same job is the
   # pattern of the CodeQL cache-poisoning rule (alerts #93 to #110).
@@ -682,6 +708,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-check-commit-trailers.sh
 
+      - name: Verify fork cleanup trust configuration
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-cbc-fork-trust.sh
+
       - name: Verify pre-push hook
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-pre-push-hook.sh
@@ -789,6 +819,10 @@ jobs:
       - name: Verify daily back-merge provenance
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-check-ca-daily-provenance.sh
+
+      - name: Verify CI parity check
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-check-ci-parity.sh
 
       - name: Verify Dockerfile workspace check
         shell: bash -euo pipefail {0}
@@ -921,6 +955,10 @@ jobs:
         timeout-minutes: 5
         run: bash scripts/ci/install-cbc-runtime.sh
 
+      - name: Verify the cleanup signing kit and import
+        timeout-minutes: 5
+        run: bash scripts/ci/test-soak-cleanup-signing.sh
+
       - name: Install the cleanup model checker
         timeout-minutes: 5
         run: |
@@ -936,9 +974,19 @@ jobs:
         run: bash scripts/ci/verify-soak-cleanup.sh --output target/soak-cleanup-verification
 
       - name: Configure cleanup acceptance trust
+        shell: bash -euo pipefail {0}
         env:
           CBC_ACCEPTANCE_ALLOWED_SIGNERS: ${{ vars.CBC_ACCEPTANCE_ALLOWED_SIGNERS }}
-        run: bash scripts/ci/configure-cbc-trust.sh
+          CBC_FORK_PULL_REQUEST: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          CBC_FORK_SIGNERS_SHA256: 9cf390cffc3f3fb6c73e8f2af5f9ecd28f6fc090219616e7c0c0894480c868bf
+        run: |
+          if [ -z "$CBC_ACCEPTANCE_ALLOWED_SIGNERS" ] && [ "$CBC_FORK_PULL_REQUEST" = true ]; then
+            CBC_ACCEPTANCE_ALLOWED_SIGNERS="$(cat .github/cbc-allowed-signers)"
+            digest="$(printf '%s\n' "$CBC_ACCEPTANCE_ALLOWED_SIGNERS" | sha256sum)"
+            [ "${digest%% *}" = "$CBC_FORK_SIGNERS_SHA256" ]
+            export CBC_ACCEPTANCE_ALLOWED_SIGNERS
+          fi
+          bash scripts/ci/configure-cbc-trust.sh
 
       - name: Require current cleanup discharge
         env:

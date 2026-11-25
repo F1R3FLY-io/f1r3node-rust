@@ -2159,9 +2159,9 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -5223,7 +5223,7 @@ dependencies = [
 [[package]]
 name = "rholang-parser"
 version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2#4e22339eca493c5ce3d14386c2af67af74bfffa2"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=6e678c96643dfae1fc10e4627d1ea31b8755e508#6e678c96643dfae1fc10e4627d1ea31b8755e508"
 dependencies = [
  "bitvec",
  "nonempty-collections",
@@ -5238,7 +5238,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2#4e22339eca493c5ce3d14386c2af67af74bfffa2"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=6e678c96643dfae1fc10e4627d1ea31b8755e508#6e678c96643dfae1fc10e4627d1ea31b8755e508"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -5247,7 +5247,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter-proc-macro"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2#4e22339eca493c5ce3d14386c2af67af74bfffa2"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=6e678c96643dfae1fc10e4627d1ea31b8755e508#6e678c96643dfae1fc10e4627d1ea31b8755e508"
 dependencies = [
  "anyhow",
  "quote",
@@ -5922,6 +5922,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "signal-hook-registry",
+ "stacker",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
@@ -7098,9 +7099,9 @@ dependencies = [
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use rholang::rust::interpreter::chromadb_service::create_noop_chromadb_service;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::external_services::ExternalServices;
-use rholang::rust::interpreter::grpc_client_service::GrpcClientService;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::ollama_service::OllamaService;
 use rholang::rust::interpreter::rho_runtime::{self, RhoRuntime, RhoRuntimeImpl};
@@ -29,13 +28,11 @@ where
 
     let chromadb_service = create_noop_chromadb_service();
     let openai_service = rholang::rust::interpreter::openai_service::create_noop_openai_service();
-    let grpc_client = GrpcClientService::new_noop();
     let ollama_service = Arc::new(Mutex::new(mock_service));
 
     let external_services = ExternalServices {
         openai: openai_service,
         ollama: ollama_service,
-        grpc_client,
         openai_enabled: false,
         ollama_enabled: true,
         is_validator: true,

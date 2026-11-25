@@ -54,6 +54,10 @@ struct Pass {
     /// reused across the turns this pass takes to complete. Bonded-and-not-
     /// slashed validators only, so a retired validator cannot freeze the walk.
     active_latest: HashMap<Validator, BlockHash>,
+    /// A block at or below this height is unreachable from the restored DAG
+    /// and GC admits it without the finalized / moved-past gates — see
+    /// `below_restore_floor`. `None` if no LFS restore has recorded a floor.
+    restore_floor: Option<i64>,
 }
 
 #[derive(Default)]
@@ -65,6 +69,11 @@ enum Phase {
         pass: Pass,
         cursor: Option<Vec<u8>>,
         minimum: Option<i64>,
+        /// True once the walk has observed a below-restore-floor candidate
+        /// in this pass. Those candidates do not contribute to `minimum` —
+        /// they do not need the moved-past guard — but they do require the
+        /// Delete phase to run so the retry-queue entries and bodies clear.
+        has_below_floor: bool,
     },
     Delete {
         pass: Pass,
@@ -204,6 +213,7 @@ fn start_pass(
         discovery_cursor: state.cursor,
         retry_cursor: store.retry_cursor()?,
         active_latest,
+        restore_floor: store.restore_floor()?,
     }))
 }
 
@@ -272,23 +282,47 @@ where
                     pass,
                     cursor,
                     minimum: None,
+                    has_below_floor: false,
                 };
             }
             Phase::FindMinimum {
                 pass,
                 cursor,
                 mut minimum,
+                mut has_below_floor,
             } => {
                 let rows = store.retry_page(cursor.as_deref(), page)?;
                 for (hash, _) in rows.rows {
-                    if !pass.dag.contains(&hash)? || !pass.dag.is_finalized(&hash)? {
+                    if !pass.dag.contains(&hash)? {
                         if store.drop_unfinalized(&hash)? {
                             metrics::counter!("mergeable_channels_gc_dropped_unfinalized")
                                 .increment(1);
                         }
                         continue;
                     }
-                    if super::reaches_ancestor_check(&pass.dag, &hash, &pass.floor, &pass.conf)? {
+                    // A below-floor candidate is deletable without consulting
+                    // the finalized or moved-past gates (see `below_restore_floor`).
+                    // It also must not drag `minimum` down: the moved-past walk
+                    // cannot reach it, and lowering the walk here would freeze
+                    // the pass on the same gap that stranded it originally.
+                    if super::below_restore_floor(&pass.dag, &hash, pass.restore_floor)? {
+                        has_below_floor = true;
+                        continue;
+                    }
+                    if !pass.dag.is_finalized(&hash)? {
+                        if store.drop_unfinalized(&hash)? {
+                            metrics::counter!("mergeable_channels_gc_dropped_unfinalized")
+                                .increment(1);
+                        }
+                        continue;
+                    }
+                    if super::reaches_ancestor_check(
+                        &pass.dag,
+                        &hash,
+                        &pass.floor,
+                        &pass.conf,
+                        pass.restore_floor,
+                    )? {
                         let height = pass.dag.block_number_unsafe(&hash)?;
                         minimum = Some(minimum.map_or(height, |lowest| lowest.min(height)));
                     }
@@ -298,22 +332,27 @@ where
                         pass,
                         cursor: Some(next),
                         minimum,
+                        has_below_floor,
                     };
                     return Ok(GcProgress::Yielded {
                         deleted,
                         blocks_deleted,
                     });
                 }
-                let Some(minimum) = minimum else {
-                    store.finish_retry_page(None)?;
-                    sweep.pending_len = 0;
-                    return Ok(GcProgress::Complete {
-                        deleted,
-                        blocks_deleted,
-                    });
+                let moved_past = match minimum {
+                    Some(min) => {
+                        super::moved_past_by_every_validator(&pass.dag, &pass.active_latest, min)?
+                    }
+                    None if has_below_floor => None,
+                    None => {
+                        store.finish_retry_page(None)?;
+                        sweep.pending_len = 0;
+                        return Ok(GcProgress::Complete {
+                            deleted,
+                            blocks_deleted,
+                        });
+                    }
                 };
-                let moved_past =
-                    super::moved_past_by_every_validator(&pass.dag, &pass.active_latest, minimum)?;
                 let cursor = pass.retry_cursor.clone();
                 // Advance the effective-anchor atomic before any body
                 // deletion in the pass. If the atomic advances AFTER the
@@ -350,9 +389,19 @@ where
                             &pass.floor,
                             &pass.conf,
                             moved_past.as_ref(),
+                            pass.restore_floor,
                         )?
                     {
                         continue;
+                    }
+                    // Label collections that arrived via the restore-floor
+                    // short-circuit so operators chasing #1134 symptoms can
+                    // confirm the new path is firing. The extra lookup is
+                    // one block_number_unsafe per accepted candidate — cheap
+                    // against the delete work it tags.
+                    if super::below_restore_floor(&pass.dag, &hash, pass.restore_floor)? {
+                        metrics::counter!("mergeable_channels_gc_below_floor_collected")
+                            .increment(1);
                     }
                     collected += 1;
                     if let Some(block) = blocks.get(&hash)? {
@@ -369,7 +418,11 @@ where
                         // dropping it here does not change any honest-path
                         // verdict — only a byzantine block that cites across
                         // this horizon can observe the deletion.
-                        if pass.conf.enable_block_store_gc && blocks.discard_stored(&hash)? {
+                        let is_genesis = block.header.parents_hash_list.is_empty();
+                        if pass.conf.enable_block_store_gc
+                            && !is_genesis
+                            && blocks.discard_stored(&hash)?
+                        {
                             blocks_deleted += 1;
                         }
                     }
@@ -633,7 +686,8 @@ mod tests {
         candidates
             .iter()
             .filter(|hash| {
-                super::super::is_safe_to_delete(&dag, hash, floor, conf, moved.as_ref()).unwrap()
+                super::super::is_safe_to_delete(&dag, hash, floor, conf, moved.as_ref(), None)
+                    .unwrap()
             })
             .cloned()
             .collect()
@@ -822,6 +876,85 @@ mod tests {
         }
     }
 
+    /// Issue #1134, interrupted-LFS case. A prior restore left orphans in
+    /// the DAG that never became finalized. A later restore with a higher
+    /// lower bound advanced the GC's restore floor over them. Without the
+    /// floor, `FindMinimum` drops each from the retry queue via
+    /// `drop_unfinalized`, keeping the body (the observed 594 MiB on the
+    /// testbed observer). With the floor, the orphans are admitted to
+    /// Delete regardless of finalization, their mergeable data is released,
+    /// and when body-store GC is on the stored body is dropped too. Orphans
+    /// ABOVE the floor keep the pre-fix behaviour: they still require
+    /// finalization and leave only the retry-queue entry.
+    ///
+    /// Orphans here use a distinct sender so they do not read as
+    /// equivocations of the main chain (same-sender same-seq-num blocks are
+    /// marked invalid, and `scan_height_range` with `valid_only=true` would
+    /// skip them before they could reach the retry queue).
+    #[tokio::test]
+    async fn orphans_below_the_restore_floor_are_collected_and_their_bodies_released() {
+        let orphan_sender: models::rust::block_hash::BlockHash = vec![0x77; 65].into();
+        let put_orphan = |storage: &BlockDagKeyValueStorage,
+                          blocks: &KeyValueBlockStore,
+                          hash: BlockHash,
+                          height: i64,
+                          parents: Vec<BlockHash>| {
+            let mut block = template();
+            block.block_hash = hash;
+            block.sender = orphan_sender.clone();
+            block.body.state.block_number = height;
+            block.seq_num = height as i32;
+            block.header.parents_hash_list = parents;
+            blocks.put(block.block_hash.clone(), &block).unwrap();
+            drop(storage.insert(&block, InsertMode::Normal).unwrap());
+        };
+
+        let (storage, blocks) = open().await;
+        for n in 0..=20u8 {
+            let parents = if n == 0 { vec![] } else { vec![hash(n - 1)] };
+            put(&storage, &blocks, hash(n), i64::from(n), parents);
+            if (1..=15).contains(&n) {
+                put_orphan(&storage, &blocks, side(n), i64::from(n), vec![hash(n - 1)]);
+            }
+        }
+        finalize_with_floor(&storage, 20).await;
+        storage.gc_store().advance_restore_floor(10).unwrap();
+        let mut conf = super::super::tests::conf();
+        conf.enable_block_store_gc = true;
+
+        let collected = run_to_completion(&storage, &blocks, &conf, 3);
+
+        let below: HashSet<_> = (1..=10).map(side).collect();
+        let above: HashSet<_> = (11..=15).map(side).collect();
+        for hash in &below {
+            assert!(
+                collected.contains(hash),
+                "a below-floor orphan's mergeable data must be released: {hash:?}",
+            );
+            assert!(
+                blocks.get(hash).unwrap().is_none(),
+                "a below-floor orphan's body must be released: {hash:?}",
+            );
+        }
+        for hash in &above {
+            assert!(
+                !collected.contains(hash),
+                "an above-floor orphan still requires finalization: {hash:?}",
+            );
+            assert!(
+                blocks.get(hash).unwrap().is_some(),
+                "an above-floor orphan's body is kept: {hash:?}",
+            );
+        }
+        let queued = queued(&storage);
+        for hash in below.iter().chain(above.iter()) {
+            assert!(
+                !queued.contains(hash),
+                "neither path leaves an orphan in the retry queue: {hash:?}",
+            );
+        }
+    }
+
     #[tokio::test]
     async fn an_orphan_finalized_after_it_left_the_queue_is_queued_again_and_collected() {
         let (storage, blocks) = open().await;
@@ -999,7 +1132,10 @@ mod tests {
 
         for hash in &all {
             let body_present = blocks.get(hash).unwrap().is_some();
-            if expected.contains(hash) {
+            if *hash == all[0] {
+                assert!(expected.contains(hash), "the pass must reach genesis");
+                assert!(body_present, "the genesis body must survive the pass");
+            } else if expected.contains(hash) {
                 assert!(!body_present, "flag-on must drop the body at {hash:?}",);
             } else {
                 assert!(
@@ -1049,9 +1185,10 @@ mod tests {
                     total_blocks_deleted += blocks_deleted;
                     total_mergeable_deleted += deleted;
                     assert_eq!(
-                        total_blocks_deleted, total_mergeable_deleted,
-                        "every collected block whose body was present is also \
-                         counted as a block-store deletion",
+                        total_blocks_deleted + 1,
+                        total_mergeable_deleted,
+                        "every collected block except genesis is also counted as a \
+                         block-store deletion",
                     );
                     assert!(total_blocks_deleted > 0);
                     return;

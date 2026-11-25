@@ -13,6 +13,32 @@ mod job;
 pub use job::collect_garbage_with;
 pub use job::{collect_garbage, GcProgress, GcSweep};
 
+/// A block at or below the recorded restore floor is unreachable from the
+/// restored DAG by construction: either the node held it before an LFS whose
+/// lower bound now sits above it, or it was downloaded by a prior, interrupted
+/// LFS whose anchor a later restore superseded. Either way the finalized /
+/// moved-past gates cannot be checked for it — its parents live in a gap —
+/// and any body it still holds is a leak. Reported here so the gates can
+/// short-circuit to "safe to delete" without consulting either.
+///
+/// Also bypasses the `deploy_lifespan` safety window that `reaches_ancestor_check`
+/// normally honors: a post-restore block cannot cite a below-floor parent
+/// (the restore replaced the DAG below `min_height` with its own anchor), so
+/// no validation walk reads these bodies. If a future reader anchors body-GC
+/// on a different horizon, that reader must keep this exemption explicit —
+/// collapsing it back into the `deploy_lifespan` clause would re-leak this
+/// span.
+fn below_restore_floor(
+    dag: &KeyValueDagRepresentation,
+    block_hash: &BlockHash,
+    restore_floor: Option<i64>,
+) -> Result<bool, KvStoreError> {
+    let Some(floor) = restore_floor else {
+        return Ok(false);
+    };
+    Ok(dag.block_number_unsafe(block_hash)? <= floor)
+}
+
 /// Conditions 1 and 2 of `is_safe_to_delete`, plus the "has children" half of
 /// condition 3 — everything that can be decided about a candidate WITHOUT
 /// consulting the moved-past set. Shared with the caller that bounds
@@ -24,7 +50,11 @@ fn reaches_ancestor_check(
     block_hash: &BlockHash,
     floor: &Floor,
     casper_shard_conf: &CasperShardConf,
+    restore_floor: Option<i64>,
 ) -> Result<bool, KvStoreError> {
+    if below_restore_floor(dag, block_hash, restore_floor)? {
+        return Ok(true);
+    }
     // 1. Check if block is finalized. An orphan on a losing fork never
     //    satisfies this — permanently, not just for this pass — so the pass
     //    drops it from the retry queue, and finalization queues it again if
@@ -80,8 +110,12 @@ fn is_safe_to_delete(
     floor: &Floor,
     casper_shard_conf: &CasperShardConf,
     moved_past: Option<&HashSet<BlockHash>>,
+    restore_floor: Option<i64>,
 ) -> Result<bool, KvStoreError> {
-    if !reaches_ancestor_check(dag, block_hash, floor, casper_shard_conf)? {
+    if below_restore_floor(dag, block_hash, restore_floor)? {
+        return Ok(true);
+    }
+    if !reaches_ancestor_check(dag, block_hash, floor, casper_shard_conf, restore_floor)? {
         return Ok(false);
     }
 
@@ -805,7 +839,7 @@ mod tests {
         let candidate_height = dag.lookup_unsafe(block_hash)?.block_number;
         let active = all_as_active_latest(dag);
         let moved_past = moved_past_by_every_validator(dag, &active, candidate_height)?;
-        is_safe_to_delete(dag, block_hash, floor, conf, moved_past.as_ref())
+        is_safe_to_delete(dag, block_hash, floor, conf, moved_past.as_ref(), None)
     }
 
     /// THE regression. Mergeable data serves merges, and a merge reads it for
@@ -1170,7 +1204,7 @@ mod tests {
     ) -> Result<bool, KvStoreError> {
         let candidate_height = dag.lookup_unsafe(block_hash)?.block_number;
         let moved_past = moved_past_by_every_validator(dag, active_latest, candidate_height)?;
-        is_safe_to_delete(dag, block_hash, floor, conf, moved_past.as_ref())
+        is_safe_to_delete(dag, block_hash, floor, conf, moved_past.as_ref(), None)
     }
 
     /// An unbonded or equivocation-slashed validator ejects from

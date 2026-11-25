@@ -449,7 +449,25 @@ env:
   #   descendant's new one (node #1070). Verified: descends from fba951b (1
   #   commit ahead, 0 behind); differs from it only in that test; the test
   #   passes on a local subprocess shard; 586 unit tests pass.
-  SYSTEM_INTEGRATION_REF: a0d868645166feca4c3ea9db7a06fc796a118459
+  # 2026-11-20: a0d8686 -> 9243d3b (system-integration main, PRs #197 and
+  #   #202 merged through promotion #203). Test deploys declare phlo limits
+  #   within the node's 20,000,000 max-phlo-limit, pyf1r3fly is pinned to the
+  #   merge of pyf1r3fly #15, which lowers the PosAPI default limit, and
+  #   test_storage declares a limit that covers store-data.rho's registry
+  #   insert. Verified: descends from a0d8686 (7 commits ahead, 0 behind);
+  #   differs from it only in node.py, 14 tests, pyproject.toml and
+  #   poetry.lock; 586 unit tests pass.
+  # 2026-11-24: 9243d3b -> 54f89b6 (system-integration dev, PR #207 merged
+  #   as 20788c3 with the same tree; promotion PR #208 to main is open).
+  #   The suite's nodes start protocol 1 genesis blocks
+  #   (system-integration PR #204). Test deploys, bonds and withdrawals
+  #   declare at most the protocol 7 block demand cap of 5,845,811 phlo,
+  #   and conf/standalone-dev.conf sets fault-tolerance-threshold = 0.1.
+  #   Verified: descends from 9243d3b (8 commits ahead, 0 behind); contains
+  #   every change of system-integration main 074bd62; differs from 9243d3b only in
+  #   rust.conf, standalone-dev.conf, consensus-configuration.md, node.py,
+  #   subprocess.py, 3 tests and 1 unit test.
+  SYSTEM_INTEGRATION_REF: 54f89b684fb64aa0357e23d266d734782f17cb62
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -1352,11 +1370,6 @@ jobs:
             done
           done
           if [ "${INPUT_CANARY:-false}" = "true" ] || [ "${INPUT_PREFLIGHT_ONLY:-false}" = "true" ]; then
-            checkpoints=()
-          fi
-          # A gate run publishes no checkpoint: its numbers belong to a pull
-          # request or a ca-release commit, not to the dev or master series.
-          if [ -n "${INPUT_GATE:-}" ]; then
             checkpoints=()
           fi
           cp1=""; cp2=""; cp3=""; cp4=""; cp5=""
@@ -2680,6 +2693,8 @@ jobs:
         with:
           label: segment-1
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_1 }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
           duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
@@ -2705,6 +2720,8 @@ jobs:
         with:
           label: segment-2
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_2 }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
           duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
@@ -2730,6 +2747,8 @@ jobs:
         with:
           label: segment-3
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_3 }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
           duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
@@ -2755,6 +2774,8 @@ jobs:
         with:
           label: segment-4
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_4 }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
           duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
@@ -2780,6 +2801,8 @@ jobs:
         with:
           label: segment-5
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_5 }}
+          gate: ${{ needs.schedule_gate.outputs.gate }}
+          gate_pr: ${{ needs.schedule_gate.outputs.gate_pr }}
           duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}

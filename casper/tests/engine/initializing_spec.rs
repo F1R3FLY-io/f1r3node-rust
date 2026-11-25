@@ -12,6 +12,7 @@ use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::initializing::Initializing;
 use casper::rust::engine::lfs_tuple_space_requester;
 use casper::rust::errors::CasperError;
+use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::protocol_helper::packet_with_content;
 use comm::rust::test_instances::TransportLayerStub;
 use crypto::rust::hash::blake2b256::Blake2b256;
@@ -44,7 +45,11 @@ impl InitializingSpec {
     }
 
     fn after_each(fixture: &TestFixture) { fixture.transport_layer.reset(); }
-    async fn make_transition_to_running_once_approved_block_received() {
+    async fn make_transition_to_running_once_approved_block_received() -> (
+        Arc<Initializing<TransportLayerStub>>,
+        BlockMessage,
+        PeerNode,
+    ) {
         let _event_bus = shared::rust::shared::f1r3fly_events::F1r3flyEvents::new();
 
         let fixture = TestFixture::new().await;
@@ -365,6 +370,11 @@ impl InitializingSpec {
         test.await;
 
         Self::after_each(&fixture);
+        (
+            initializing_engine,
+            fixture.genesis.clone(),
+            fixture.local.clone(),
+        )
     }
 }
 
@@ -431,12 +441,44 @@ async fn create_initializing_engine_with_dag(
         fixture.estimator.clone(),
         casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
         None,
+        None,
     )))
 }
 
 #[tokio::test]
 async fn make_transition_to_running_once_approved_block_received() {
     InitializingSpec::make_transition_to_running_once_approved_block_received().await;
+}
+
+#[tokio::test]
+async fn a_genesis_restore_and_a_late_block_response_log_no_warnings() {
+    use casper::rust::engine::engine::Engine;
+    use shared::rust::tracing_init::EventCapture;
+    use tracing::Level;
+
+    let capture = EventCapture::new();
+    let _guard = capture.install();
+
+    let (initializing_engine, genesis, peer) =
+        InitializingSpec::make_transition_to_running_once_approved_block_received().await;
+    initializing_engine
+        .handle(peer, CasperMessage::BlockMessage(genesis))
+        .await
+        .expect("a late block response is accepted");
+
+    assert!(capture
+        .with_message("anchored at genesis")
+        .iter()
+        .any(|event| event.level == Level::INFO));
+    assert!(capture
+        .with_message("the LFS block requester is no longer running")
+        .iter()
+        .any(|event| event.level == Level::DEBUG));
+    assert_eq!(capture.with_message("has no floor seed"), vec![]);
+    assert_eq!(
+        capture.with_message("Failed to enqueue BlockMessage"),
+        vec![]
+    );
 }
 
 /// Test that verifies the fix for the race condition where a slow validator
@@ -908,6 +950,7 @@ fn transition_to_initializing_invokes_init_immediately() {
                     &fixture.estimator,
                     &heartbeat_signal_ref,
                     None,
+                    None,
                 )
                 .await
                 .expect("transition_to_initializing should succeed");
@@ -1200,5 +1243,239 @@ async fn store_items_from_a_peer_that_was_not_asked_are_ignored() {
     );
     assert!(engine_cell.get().await.with_casper().is_some());
 
+    InitializingSpec::after_each(&fixture);
+}
+
+async fn run_restore_that_cites_pruned_genesis(
+    fixture: &TestFixture,
+    answer_from: comm::rust::peer_node::PeerNode,
+    within: std::time::Duration,
+) -> (bool, bool) {
+    use casper::rust::engine::engine::Engine;
+    use models::casper::BlockRequestProto;
+    use models::rust::block_implicits::get_random_block;
+    use models::rust::casper::protocol::casper_message::{
+        ApprovedBlockCandidate, BlockPrunedResponse, Justification,
+    };
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    let genesis_hash = Bytes::from(vec![0xab; 32]);
+    let own = fixture.validator_id.public_key.bytes.clone();
+    let template = |number: i64, parent: Bytes, justifications: Vec<Justification>| {
+        fixture.validator_id.sign_block(&get_random_block(
+            Some(number),
+            None,
+            None,
+            Some(fixture.genesis.body.state.post_state_hash.clone()),
+            None,
+            None,
+            None,
+            Some(vec![parent]),
+            Some(justifications),
+            Some(vec![]),
+            Some(vec![]),
+            Some(vec![]),
+            Some(fixture.casper_shard_conf.shard_name.clone()),
+            None,
+        ))
+    };
+    let cites_genesis = template(9_999, Bytes::from(vec![0xcd; 32]), vec![Justification {
+        validator: Bytes::from(vec![0x77; 65]),
+        latest_block_hash: genesis_hash.clone(),
+    }]);
+    let anchor = template(10_000, cites_genesis.block_hash.clone(), vec![
+        Justification {
+            validator: own,
+            latest_block_hash: cites_genesis.block_hash.clone(),
+        },
+    ]);
+    let approved_block = ApprovedBlock {
+        candidate: ApprovedBlockCandidate {
+            block: anchor.clone(),
+            required_sigs: 0,
+        },
+        floor_seed: None,
+        sigs: vec![],
+    };
+    let honest = honest_store_items(fixture, &approved_block);
+
+    let mut kvm = InMemoryStoreManager::new();
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+        .await
+        .expect("empty DAG storage");
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let engine = create_initializing_engine_with_dag(
+        fixture,
+        the_init,
+        Arc::new(EngineCell::init()),
+        dag_storage,
+    )
+    .await
+    .expect("Failed to create Initializing engine");
+
+    let restore = tokio::spawn({
+        let (engine, local) = (engine.clone(), fixture.local.clone());
+        async move {
+            engine
+                .handle(local, CasperMessage::ApprovedBlock(approved_block))
+                .await
+        }
+    });
+    for chunk in &honest {
+        engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::StoreItemsMessage(chunk.clone()),
+            )
+            .await
+            .expect("StoreItemsMessage handling");
+    }
+
+    let reached_floor_cache = tokio::time::timeout(within, async {
+        let mut answered = 0;
+        while floor_cache_requests(fixture) == 0 {
+            let requests = fixture.transport_layer.get_all_requests();
+            let seen = requests.len();
+            for request in requests.iter().skip(answered) {
+                let Some(ProtocolMessage::Packet(packet)) = &request.msg.message else {
+                    continue;
+                };
+                if packet.type_id != "BlockRequest" {
+                    continue;
+                }
+                let hash = BlockRequestProto::decode(packet.content.as_ref())
+                    .expect("BlockRequest")
+                    .hash;
+                let held = [&anchor, &cites_genesis]
+                    .into_iter()
+                    .find(|block| block.block_hash == hash);
+                let (from, answer) = match held {
+                    Some(block) => (
+                        fixture.local.clone(),
+                        CasperMessage::BlockMessage(block.clone()),
+                    ),
+                    None => (
+                        answer_from.clone(),
+                        CasperMessage::BlockPrunedResponse(BlockPrunedResponse {
+                            block_height: if hash == genesis_hash { 0 } else { 9_000 },
+                            hash,
+                            prune_floor: 9_500,
+                        }),
+                    ),
+                };
+                engine.handle(from, answer).await.expect("answer handling");
+            }
+            answered = seen;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .is_ok();
+    let restarted = reached_floor_cache && {
+        respond_with_floor_cache(&engine, fixture.local.clone(), genesis_hash).await;
+        tokio::time::timeout(within, async {
+            while !fixture
+                .transport_layer
+                .get_all_requests()
+                .iter()
+                .any(|request| {
+                    matches!(&request.msg.message, Some(ProtocolMessage::Packet(packet))
+                        if packet.type_id == "ApprovedBlockRequest")
+                })
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .is_ok()
+    };
+    restore.abort();
+    (reached_floor_cache, restarted)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restore_that_cites_pruned_genesis_fails_once_nobody_ships_the_block() {
+    let mut fixture = TestFixture::new().await;
+    fixture.casper_shard_conf.max_parent_depth = 25;
+    InitializingSpec::before_each(&fixture);
+    let bootstrap = fixture.local.clone();
+    let (reached_floor_cache, restarted) = run_restore_that_cites_pruned_genesis(
+        &fixture,
+        bootstrap,
+        std::time::Duration::from_secs(60),
+    )
+    .await;
+    assert!(
+        reached_floor_cache,
+        "a pruned genesis must not hold the block download"
+    );
+    assert!(
+        restarted,
+        "a restore without the cited genesis must fail and ask for the approved state again"
+    );
+    InitializingSpec::after_each(&fixture);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pruned_answer_from_a_peer_that_is_not_the_bootstrap_is_ignored() {
+    let mut fixture = TestFixture::new().await;
+    fixture.casper_shard_conf.max_parent_depth = 25;
+    InitializingSpec::before_each(&fixture);
+    let (reached_floor_cache, _) = run_restore_that_cites_pruned_genesis(
+        &fixture,
+        stranger(),
+        std::time::Duration::from_secs(20),
+    )
+    .await;
+    assert!(
+        !reached_floor_cache,
+        "a stranger must not end the wait for a block"
+    );
+    InitializingSpec::after_each(&fixture);
+}
+
+#[tokio::test]
+async fn init_keeps_requesting_while_the_bootstrap_cannot_be_reached() {
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    assert_eq!(
+        fixture.rp_conf_ask.bootstrap.as_ref(),
+        Some(&fixture.rp_conf_ask.local),
+        "the fixture node is its own bootstrap"
+    );
+
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let engine_cell = Arc::new(EngineCell::init());
+    let engine = create_initializing_engine(&fixture, the_init, engine_cell)
+        .await
+        .expect("Failed to create Initializing engine");
+
+    fixture.transport_layer.reset();
+    fixture.transport_layer.set_responses(|_peer, _protocol| {
+        Err(comm::rust::errors::CommError::PeerUnavailable(
+            "TCP connection failed".to_string(),
+        ))
+    });
+
+    tokio::time::pause();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(60), {
+        use casper::rust::engine::engine::Engine;
+        engine.init()
+    })
+    .await;
+
+    assert!(
+        outcome.is_err(),
+        "init returned although the bootstrap never accepted a send: {outcome:?}. The bootstrap request is now bounded; update this test with option (c) of issue #1120"
+    );
+    assert!(
+        fixture.transport_layer.request_count() >= 6,
+        "init retried {} times in 60 s",
+        fixture.transport_layer.request_count()
+    );
     InitializingSpec::after_each(&fixture);
 }

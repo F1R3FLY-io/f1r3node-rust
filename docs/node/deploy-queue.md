@@ -26,27 +26,49 @@ block in the open window:
 - above `latestBlockNumber - deployLifespan`, or the deploy is expired (`deploy_expired`);
 - at most `latestBlockNumber + maxParentDepth`, or the deploy is refused (`invalid_deploy_window`).
 
-Read `latestBlockNumber`, `deployLifespan` and `maxParentDepth` from
+`phloLimit` must be at most `maxPhloLimit`, or the deploy is refused (`illegal_argument`).
+
+Read `latestBlockNumber`, `deployLifespan`, `maxParentDepth` and `maxPhloLimit` from
 [`GET /api/status`](api-reference.md#get-apistatus).
 
 ## Refusals
 
-| `error` | HTTP | gRPC | Cause | Client action |
+| `error` | HTTP | gRPC | Meaning | Client action |
 |---------|------|------|-------|---------------|
 | `invalid_request_body`, `illegal_argument`, `deploy_expired`, `invalid_deploy_window` | 400 | `ServiceError` in the response, as the node; `deploy_expired` and `invalid_deploy_window` messages start with their kind | The deploy is not valid | Correct the deploy |
 | `duplicate_deploy` | 409 | `ServiceError` | The queue already holds this deploy | Read its status |
-| `deploy_queue_full` | 503 + `Retry-After` | `RESOURCE_EXHAUSTED` + `retry-after` metadata | At the validator's intake, the deploys ahead would keep this one out of a block until its window closes, or this deployer holds its full share of the queue | Wait for `Retry-After` seconds, sign the deploy again with a current `validAfterBlockNumber`, then send it |
+| `deploy_queue_full` | 503 + `Retry-After`, `cause` in the body | `RESOURCE_EXHAUSTED` + `retry-after` and `cause` metadata | At the validator's intake, the deploys ahead would keep this one out of a block until its window closes, or this deployer holds its full share of the queue | Wait for `Retry-After` seconds, then do the action of its `cause` (see below) |
 | `node_unavailable` | 503 + `Retry-After` | `UNAVAILABLE` + `retry-after` metadata | The queue is not connected to its node | Wait and send again |
 | `deploy_queue_stopped` | 503 | `UNAVAILABLE` | The queue is shutting down | Send again later |
 | `queue_store_error` | 500 | `INTERNAL` | The queue could not store the deploy | Send again later |
 
-A refused deploy is not held. The message of `deploy_queue_full` names its cause: the validator takes fewer
-deploys than arrive; the signed deploys the queue holds fill its storage budget (half of its 16 GiB store); the
-validator has created no block over a citable depth while the shard moved on; or the
-shard (the node is holding its validator back because finality trails the tip, or finality trails the tip by more
-than `maxParentDepth` and the queue holds every deploy until it catches up). While its validator creates no block,
-the queue takes no deploy, and its `Retry-After` is one citable depth at the shard's pace; a client that cannot
-wait sends the deploy to another validator's queue.
+A refused deploy is not held. A `deploy_queue_full` refusal names its cause in the `cause` field of the HTTP body
+and in the `cause` gRPC metadata. Its message also names the cause in words.
+
+```json
+{
+  "error": "deploy_queue_full",
+  "cause": "deployer_share",
+  "message": "deploy queue is full for this deployer: it holds 12 of the 12 deploys one deployer may hold, so that other deployers keep room; retry in 30s"
+}
+```
+
+| `cause` | The queue is full because | Client action after `Retry-After` |
+|---------|---------------------------|-----------------------------------|
+| `validator` | The validator takes fewer deploys than arrive | Sign the deploy again with a current `validAfterBlockNumber`, then send it |
+| `validator_idle` | The validator has created no block over a citable depth while the shard moved on | Sign the deploy again with a current `validAfterBlockNumber`, then send it |
+| `shard` | The node is holding its validator back because finality trails the tip, or finality trails the tip by more than `maxParentDepth` and the queue holds every deploy until it catches up | Sign the deploy again with a current `validAfterBlockNumber`, then send it |
+| `storage` | The signed deploys the queue holds fill its storage budget (half of its 16 GiB store) | Sign the deploy again with a current `validAfterBlockNumber`, then send it |
+| `deployer_share` | This deployer holds its full share of the queue | Send the same signed deploy again |
+
+For `deployer_share`, do not sign the deploy again. The same signed deploy keeps its deploy ID.
+
+While its validator creates no block, the queue takes no deploy, and its `Retry-After` is one citable depth at the
+shard's pace. Thus, for `validator_idle`, a client that cannot wait sends the deploy to another validator's queue.
+
+A documented `cause` value keeps its meaning. A later queue can add values. A client handles a
+`deploy_queue_full` refusal with no `cause`, or with a value it does not know, as a `deploy_queue_full` refusal
+with no cause.
 
 The queue does not compile the Rholang term. The node checks it when the queue releases the deploy, and a term
 that does not compile ends the deploy `Rejected` with `rholang_bad_term` in its status detail.
@@ -100,5 +122,6 @@ Queued deploys are counted as `ready` (window open, released earliest deadline f
 `finalized`, `failed`, `expired` and `rejected`. A terminal deploy stays held for one lifespan after its verdict,
 so its status can still be read. `held` is the sum of all of these. `payload_bytes` is the size of the signed
 deploys held for undecided deploys, which the storage budget caps.
-`GET /queue/metrics` answers Prometheus metrics. `GET /ws/events` relays the node's
+`GET /queue/metrics` answers Prometheus metrics. `deploy_queue_refused` counts refused deploys by `reason`, the
+refusal's `error`, and by `cause`, which is `none` for a refusal without one. `GET /ws/events` relays the node's
 [event stream](websocket-events.md).
