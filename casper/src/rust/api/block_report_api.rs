@@ -1,6 +1,8 @@
 // See casper/src/main/scala/coop/rchain/casper/api/BlockReportAPI.scala
 
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -122,6 +124,52 @@ pub enum BlockReportError {
 }
 
 pub type ApiErr<T> = Result<T, BlockReportError>;
+
+async fn retry_report_recovery<T, F>(mut attempt: impl FnMut() -> F) -> ApiErr<T>
+where F: Future<Output = ApiErr<T>> {
+    match attempt().await {
+        Err(BlockReportError::StoreError(_) | BlockReportError::CasperNotInitialized) => {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            attempt().await
+        }
+        result => result,
+    }
+}
+
+#[cfg(test)]
+mod report_recovery_tests {
+    use super::{retry_report_recovery, BlockReportError};
+
+    #[tokio::test(start_paused = true)]
+    async fn recovery_retries_a_temporary_store_error() {
+        let mut attempts = 0;
+        let recovered = retry_report_recovery(|| {
+            attempts += 1;
+            std::future::ready(if attempts == 1 {
+                Err(BlockReportError::StoreError("temporary".into()))
+            } else {
+                Ok(7)
+            })
+        })
+        .await;
+        assert_eq!(recovered.unwrap(), 7);
+        assert_eq!(attempts, 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recovery_skips_a_block_with_pruned_state() {
+        let mut attempts = 0;
+        let result = retry_report_recovery(|| {
+            attempts += 1;
+            std::future::ready(Err::<(), _>(BlockReportError::StateUnavailable(
+                Default::default(),
+            )))
+        })
+        .await;
+        assert!(matches!(result, Err(BlockReportError::StateUnavailable(_))));
+        assert_eq!(attempts, 1);
+    }
+}
 
 /// BlockReportAPI provides functionality to replay blocks and generate event reports
 #[derive(Clone)]
@@ -405,6 +453,76 @@ impl BlockReportAPI {
     pub async fn prewarm_block_report(&self, hash: BlockHash) -> ApiErr<BlockEventInfo> {
         self.block_report_with_permit(hash, false, ReportPermit::Wait)
             .await
+    }
+
+    pub fn finalized_report_pages<'a>(
+        &self,
+        dag: &'a KeyValueDagRepresentation,
+    ) -> ApiErr<impl Iterator<Item = ApiErr<Vec<(BlockHash, i64)>>> + 'a> {
+        const PAGE_SIZE: usize = 32;
+        let store_error = |error: KvStoreError| BlockReportError::StoreError(error.to_string());
+        let end = dag
+            .block_number_unsafe(&dag.last_finalized_block())
+            .map_err(store_error)?;
+        let start = self.recovery_window_start(end);
+        let mut next = (start <= end).then_some(None);
+        Ok(std::iter::from_fn(move || {
+            let after: Option<Vec<u8>> = next.take()?;
+            Some((|| {
+                let page = dag
+                    .scan_height_range(start, end, true, after.as_deref(), PAGE_SIZE)
+                    .map_err(store_error)?;
+                let mut finalized = Vec::new();
+                for hash in page.rows {
+                    if dag.is_finalized(&hash).map_err(store_error)? {
+                        let height = dag.block_number_unsafe(&hash).map_err(store_error)?;
+                        finalized.push((hash, height));
+                    }
+                }
+                next = page.next.map(Some);
+                Ok(finalized)
+            })())
+        }))
+    }
+
+    pub async fn recover_finalized_reports(
+        &self,
+        dag: &KeyValueDagRepresentation,
+        mut should_report: impl FnMut(&BlockHash) -> bool,
+        mut on_report: impl FnMut(BlockHash, i64, BlockEventInfo),
+    ) -> ApiErr<()> {
+        for page in self.finalized_report_pages(dag)? {
+            for (hash, height) in page? {
+                if !should_report(&hash) {
+                    continue;
+                }
+                let report = retry_report_recovery(|| async {
+                    match self.cached_report(&hash)? {
+                        Some(report) => Ok(report),
+                        None => self.prewarm_block_report(hash.clone()).await,
+                    }
+                })
+                .await;
+                match report {
+                    Ok(report) => on_report(hash, height, report),
+                    Err(error) => {
+                        tracing::debug!(block_hash = %hex::encode(&hash), %error, "Could not recover block report");
+                    }
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+        Ok(())
+    }
+
+    pub fn recovery_window_start(&self, height: i64) -> i64 {
+        const RECOVERY_WINDOW_WITHOUT_RETENTION: i64 = 1_000;
+        let depth = if self.report_cache_retention == 0 {
+            RECOVERY_WINDOW_WITHOUT_RETENTION
+        } else {
+            i64::from(self.report_cache_retention)
+        };
+        height.saturating_sub(depth).max(1)
     }
 
     async fn block_report_with_permit(

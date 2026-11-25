@@ -50,7 +50,7 @@ use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::store::soak_snapshot::SnapshotError;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock as AsyncRwLock};
 
 use super::block_metadata_store::BlockMetadataStore;
 use super::carrier_index::CarrierIndex;
@@ -1352,6 +1352,7 @@ pub struct BlockDagKeyValueStorage {
     /// mutation paths (`insert`, `record_directly_finalized`) still take
     /// exclusive access.
     pub(crate) global_lock: Arc<PlRwLock<()>>,
+    finalization_snapshot_lock: Arc<AsyncRwLock<()>>,
     pub(crate) latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
     pub(crate) block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
     /// Memoized justification-derived floor per block (block hash -> floor hash).
@@ -1615,6 +1616,7 @@ impl BlockDagKeyValueStorage {
         Ok(Self {
             persistence: Some(persistence),
             global_lock: Arc::new(PlRwLock::new(())),
+            finalization_snapshot_lock: Arc::new(AsyncRwLock::new(())),
             block_metadata_index: Arc::new(PlRwLock::new(block_metadata_store)),
             floor_index: floor_index_db,
             frontier_index: frontier_index_db,
@@ -1740,6 +1742,7 @@ impl BlockDagKeyValueStorage {
         Self {
             persistence: None,
             global_lock,
+            finalization_snapshot_lock: Arc::new(AsyncRwLock::new(())),
             latest_messages_index,
             block_metadata_index,
             floor_index,
@@ -1818,6 +1821,13 @@ impl BlockDagKeyValueStorage {
         // readers do not serialize on each other. Mutators take `.write()`.
         let _lock_guard = self.global_lock.read();
         self.get_representation_internal()
+    }
+
+    pub async fn get_representation_after_finalization(
+        &self,
+    ) -> Result<KeyValueDagRepresentation, KvStoreError> {
+        let _snapshot = self.finalization_snapshot_lock.write().await;
+        self.get_representation()
     }
 
     /// Runs `f` on a representation with the global lock held shared, so no
@@ -2318,6 +2328,7 @@ impl BlockDagKeyValueStorage {
         F: FnMut(&HashSet<BlockHash>) -> Fut,
         Fut: std::future::Future<Output = Result<(), KvStoreError>>,
     {
+        let _finalizing = self.finalization_snapshot_lock.read().await;
         // P5 (slashing audit): bound chosen because typical reconciliation
         // converges in 1–4 loops under realistic block-insert load. A
         // 128-loop ceiling prevents the (TOCTOU-driven) pathological case
