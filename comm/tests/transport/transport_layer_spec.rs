@@ -8,10 +8,12 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use models::routing::Packet;
 use prost::bytes::Bytes;
+use shared::rust::tracing_init::EventCapture;
+use tracing::Level;
 
 use crate::transport::transport_layer_runtime::{
-    broadcast_heartbeat, get_free_port, send_heartbeat, DispatcherCallback, TestProtocolDispatcher,
-    TestStreamDispatcher, TransportLayerTestRuntime,
+    broadcast_heartbeat, get_free_port, send_heartbeat, DispatcherCallback, ResponseType,
+    TestProtocolDispatcher, TestStreamDispatcher, TransportLayerTestRuntime,
 };
 
 fn init_logger() { shared::rust::tracing_init::init_for_tests(); }
@@ -1006,4 +1008,79 @@ async fn a_server_restarts_on_its_port_after_a_stop() {
         .expect("the restarted server dispatches the heartbeat");
     assert_eq!(dispatcher.received().len(), 1);
     server.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_dispatch_failure_for_an_unresolvable_peer_is_not_logged_as_an_error() {
+    let capture = EventCapture::new();
+    let _guard = capture.install();
+
+    let runtime = TransportLayerTestRuntime::new("test".to_string());
+    let protocol_dispatcher = TestProtocolDispatcher::with_response_type(ResponseType::Error(
+        CommError::DnsResolutionFailed(
+            "validator6-0.validator6.svc.cluster.local".to_string(),
+            "Name or service not known".to_string(),
+        ),
+    ));
+
+    runtime
+        .run_two_nodes_test(
+            |transport, local, remote| async move {
+                send_heartbeat(Arc::new(transport), &local, &remote, "test").await
+            },
+            Some(protocol_dispatcher.clone()),
+            None,
+            true,
+        )
+        .await
+        .expect("Test should succeed");
+
+    assert_eq!(protocol_dispatcher.received().len(), 1);
+    let dispatch_failures = capture.with_message("gRPC message dispatch failed");
+    assert!(
+        !dispatch_failures.is_empty(),
+        "the failed dispatch is still logged"
+    );
+    assert!(dispatch_failures
+        .iter()
+        .chain(capture.with_message("Send message handler failed").iter())
+        .all(|event| event.level == Level::DEBUG));
+    assert_eq!(capture.at_or_above(Level::ERROR), vec![]);
+}
+
+#[tokio::test]
+async fn a_peer_that_changed_its_identity_is_not_logged_as_an_error() {
+    let capture = EventCapture::new();
+    let _guard = capture.install();
+
+    let runtime = TransportLayerTestRuntime::new("test".to_string());
+    let previous_identity = runtime
+        .create_environment(0)
+        .await
+        .expect("environment")
+        .peer
+        .id;
+
+    let result = runtime
+        .run_two_nodes_test(
+            |transport, local, remote| async move {
+                let stale_peer = PeerNode {
+                    id: previous_identity,
+                    endpoint: remote.endpoint.clone(),
+                };
+                send_heartbeat(Arc::new(transport), &local, &stale_peer, "test").await
+            },
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("Test should succeed");
+
+    assert!(result.result.is_err());
+    assert!(capture
+        .with_message("F1r3flyConnector TLS handshake failed")
+        .iter()
+        .any(|event| event.level == Level::WARN));
+    assert_eq!(capture.at_or_above(Level::ERROR), vec![]);
 }

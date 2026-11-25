@@ -118,6 +118,12 @@ enum StreamOutcome {
     TimedOut,
 }
 
+#[derive(Clone, Copy)]
+enum ChannelStage {
+    Connect,
+    Request,
+}
+
 async fn send_cached_stream<T: TransportLayerClientTrait>(
     key: &str,
     client: &mut T,
@@ -283,7 +289,7 @@ impl GrpcTransportClient {
             .connect_with_connector(f1r3fly_connector)
             .await
             .map_err(|e| {
-                tracing::error!(uri = %endpoint_uri, error = %e, "F1r3flyConnector gRPC channel connect failed");
+                tracing::warn!(uri = %endpoint_uri, error = %e, "F1r3flyConnector gRPC channel connect failed");
                 CommError::InternalCommunicationError(format!(
                     "Failed to establish gRPC connection: {}",
                     e
@@ -486,27 +492,38 @@ impl GrpcTransportClient {
     {
         // Apply timeout to the entire operation
         let timed_operation = tokio::time::timeout(timeout, async {
-            let channel = self.get_channel(peer).await?;
+            let channel = self
+                .get_channel(peer)
+                .await
+                .map_err(|error| (error, ChannelStage::Connect))?;
 
             let client_guard = channel.transport_client.lock().await;
             let client = client_guard.clone(); // Clone the client for use
             drop(client_guard); // Release the lock immediately
 
-            let result = request(client).await?;
+            let result = request(client)
+                .await
+                .map_err(|error| (error, ChannelStage::Request))?;
 
             // Return control to caller thread
             // In Rust, this is handled automatically by the async runtime
             tokio::task::yield_now().await;
 
-            Ok::<A, CommError>(result)
+            Ok::<A, (CommError, ChannelStage)>(result)
         });
 
         // Handle timeout and other errors
         match timed_operation.await {
             Ok(Ok(success)) => Ok(success),
-            Ok(Err(comm_error)) => {
-                if !matches!(&comm_error, CommError::DnsResolutionFailed(_, _)) {
-                    tracing::error!(peer = %peer.to_address(), error = %comm_error, "gRPC request failed");
+            Ok(Err((comm_error, stage))) => {
+                match (&comm_error, stage) {
+                    (CommError::DnsResolutionFailed(_, _), _) => {}
+                    (_, ChannelStage::Connect) => {
+                        tracing::warn!(peer = %peer.to_address(), error = %comm_error, "gRPC request failed");
+                    }
+                    (_, ChannelStage::Request) => {
+                        tracing::error!(peer = %peer.to_address(), error = %comm_error, "gRPC request failed");
+                    }
                 }
                 Err(comm_error)
             }

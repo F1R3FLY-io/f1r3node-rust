@@ -23,6 +23,7 @@ use models::servicemodelapi::ServiceError;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -61,9 +62,10 @@ fn deploy_error(message: String) -> Result<Response<DeployResponse>, Status> {
     }))
 }
 
-/// Carries the refusal's wait as `retry-after` metadata, in seconds, the way
-/// the HTTP API carries it in the `Retry-After` header.
-fn with_retry_after(mut status: Status, error: &IntakeError) -> Status {
+/// Carries the refusal's wait as `retry-after` metadata, in seconds, and its
+/// cause as `cause` metadata, the way the HTTP API carries them in the
+/// `Retry-After` header and the `cause` field.
+fn with_refusal_metadata(mut status: Status, error: &IntakeError) -> Status {
     if let Some(secs) = error.retry_after_secs() {
         status.metadata_mut().insert(
             "retry-after",
@@ -71,6 +73,11 @@ fn with_retry_after(mut status: Status, error: &IntakeError) -> Status {
                 .parse()
                 .expect("a decimal number is valid ASCII metadata"),
         );
+    }
+    if let Some(cause) = error.cause() {
+        status
+            .metadata_mut()
+            .insert("cause", MetadataValue::from_static(cause));
     }
     status
 }
@@ -121,12 +128,12 @@ impl DeployService for QueueGrpc {
             ) => deploy_error(error.to_string()),
             Err(
                 error @ (IntakeError::QueueFull { .. } | IntakeError::DeployerShareFull { .. }),
-            ) => Err(with_retry_after(
+            ) => Err(with_refusal_metadata(
                 Status::resource_exhausted(error.to_string()),
                 &error,
             )),
             Err(error @ (IntakeError::NodeUnavailable { .. } | IntakeError::Stopped)) => Err(
-                with_retry_after(Status::unavailable(error.to_string()), &error),
+                with_refusal_metadata(Status::unavailable(error.to_string()), &error),
             ),
             Err(error @ IntakeError::Store(_)) => Err(Status::internal(error.to_string())),
         }
@@ -374,7 +381,7 @@ mod tests {
 
     #[test]
     fn capacity_refusals_carry_their_wait() {
-        let status = with_retry_after(
+        let status = with_refusal_metadata(
             Status::resource_exhausted("full"),
             &IntakeError::QueueFull {
                 retry_after_secs: 12,
@@ -382,7 +389,27 @@ mod tests {
             },
         );
         assert_eq!(status.metadata().get("retry-after").unwrap(), "12");
-        let status = with_retry_after(Status::unavailable("stopped"), &IntakeError::Stopped);
+        let status = with_refusal_metadata(Status::unavailable("stopped"), &IntakeError::Stopped);
         assert!(status.metadata().get("retry-after").is_none());
+    }
+
+    #[test]
+    fn full_queue_refusals_carry_their_cause() {
+        let status = with_refusal_metadata(
+            Status::resource_exhausted("full"),
+            &IntakeError::DeployerShareFull {
+                held: 12,
+                limit: 12,
+                retry_after_secs: 12,
+            },
+        );
+        assert_eq!(status.metadata().get("cause").unwrap(), "deployer_share");
+        let status = with_refusal_metadata(
+            Status::unavailable("not connected"),
+            &IntakeError::NodeUnavailable {
+                retry_after_secs: 1,
+            },
+        );
+        assert!(status.metadata().get("cause").is_none());
     }
 }

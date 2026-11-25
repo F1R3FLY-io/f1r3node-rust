@@ -193,7 +193,7 @@ impl Service<Uri> for F1r3flyConnector {
                 }) as Box<dyn StdError + Send + Sync>
             })?
             .map_err(|e| {
-                tracing::error!(addr = %addr, error = %e, "F1r3flyConnector TLS handshake failed");
+                tracing::warn!(addr = %addr, error = %e, "F1r3flyConnector TLS handshake failed");
                 Box::new(F1r3flyConnectorError::TlsConnectionError(e))
                     as Box<dyn StdError + Send + Sync>
             })?;
