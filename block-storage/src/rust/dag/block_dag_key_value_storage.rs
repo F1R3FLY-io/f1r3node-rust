@@ -2402,7 +2402,9 @@ impl BlockDagKeyValueStorage {
         Fut: std::future::Future<Output = Result<(), KvStoreError>>,
     {
         use crate::rust::dag::finalization_commit::{CommitOutcome, CommitRefusal};
-        match self.commit_lfb(directly_finalized_hash.clone(), ft_value, |_| Ok(()))? {
+        match in_blocking(|| {
+            self.commit_lfb(directly_finalized_hash.clone(), ft_value, |_| Ok(()))
+        })? {
             CommitOutcome::Committed(marker) => {
                 let finalized: HashSet<BlockHash> =
                     marker.finalized_in_order().into_iter().collect();
