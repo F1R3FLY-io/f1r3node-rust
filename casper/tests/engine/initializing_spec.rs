@@ -397,6 +397,7 @@ async fn create_initializing_engine(
         the_init,
         engine_cell,
         fixture.block_dag_storage.clone(),
+        None,
     )
     .await
 }
@@ -409,6 +410,7 @@ async fn create_initializing_engine_with_dag(
     >,
     engine_cell: Arc<EngineCell>,
     block_dag_storage: BlockDagKeyValueStorage,
+    stored_approved_block: Option<ApprovedBlock>,
 ) -> Result<Arc<Initializing<TransportLayerStub>>, String> {
     // Create engine-specific channels (each Initializing instance needs its own)
     let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(50);
@@ -441,8 +443,82 @@ async fn create_initializing_engine_with_dag(
         fixture.estimator.clone(),
         casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
         None,
-        None,
+        stored_approved_block,
     )))
+}
+
+#[tokio::test]
+async fn stored_dag_resume_allows_proposals_without_a_new_peer_tip() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    use casper::rust::engine::engine::Engine;
+    use casper::rust::validator_identity::ValidatorIdentity;
+    use models::rust::casper::protocol::casper_message::FinalizedFloorSeed;
+
+    use crate::util::genesis_builder::DEFAULT_VALIDATOR_KEY_PAIRS;
+
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    let stored = signed_approved_block(&fixture);
+    let genesis_hash = fixture.genesis.block_hash.clone();
+    fixture
+        .block_store
+        .put(genesis_hash.clone(), &fixture.genesis)
+        .unwrap();
+
+    let peer = ValidatorIdentity::new(&DEFAULT_VALIDATOR_KEY_PAIRS[1].0);
+    let mut child = fixture.genesis.clone();
+    child.header.parents_hash_list = vec![genesis_hash.clone()];
+    child.header.chain_id = genesis_hash;
+    child.body.state.block_number = 1;
+    child.seq_num = 1;
+    let tip = peer.sign_block(&child);
+    fixture
+        .block_store
+        .put(tip.block_hash.clone(), &tip)
+        .unwrap();
+    fixture
+        .block_dag_storage
+        .insert(&tip, InsertMode::Normal)
+        .unwrap();
+
+    let mut advertised = stored.clone();
+    advertised.floor_seed = Some(FinalizedFloorSeed {
+        floor_number: 1,
+        floor_hash: tip.block_hash.clone(),
+        frontier_number: 1,
+        frontier_hash: tip.block_hash.clone(),
+    });
+    let cell = Arc::new(EngineCell::init());
+    let engine = create_initializing_engine_with_dag(
+        &fixture,
+        Arc::new(|| Box::pin(async { Ok(()) })),
+        cell.clone(),
+        fixture.block_dag_storage.clone(),
+        Some(stored),
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        engine.handle(
+            fixture.local.clone(),
+            CasperMessage::ApprovedBlock(advertised),
+        ),
+    )
+    .await
+    .expect("resume should skip state sync")
+    .unwrap();
+    let running = cell.get().await.with_casper().expect("stored DAG resumed");
+    let snapshot = running.get_snapshot().await.unwrap();
+    assert!(snapshot
+        .on_chain_state
+        .active_validators
+        .contains(&tip.sender));
+    assert_eq!(
+        snapshot.dag.latest_message_hash(&tip.sender),
+        Some(tip.block_hash)
+    );
+    assert!(!running.awaiting_own_history(&snapshot).unwrap());
 }
 
 #[tokio::test]
@@ -678,6 +754,7 @@ async fn truncated_restore(
         the_init,
         Arc::new(EngineCell::init()),
         dag_storage.clone(),
+        None,
     )
     .await
     .expect("Failed to create Initializing engine");
@@ -1311,6 +1388,7 @@ async fn run_restore_that_cites_pruned_genesis(
         the_init,
         Arc::new(EngineCell::init()),
         dag_storage,
+        None,
     )
     .await
     .expect("Failed to create Initializing engine");

@@ -62,6 +62,11 @@ const FLOOR_CACHE_CHANNEL_CAPACITY: usize = 4;
 
 const BLOCK_PRUNED_CHANNEL_CAPACITY: usize = 256;
 
+enum StartupState {
+    StoredDag,
+    RestoredFromPeers,
+}
+
 /// The minimum local height at which the startup horizon probe is still
 /// within peers' body-prune window. Matches the GC formula used in
 /// `mergeable_channels_gc::job::start_pass`: `floor - (max_parent_depth +
@@ -813,23 +818,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                                 "Startup horizon probe: stored state is within window. \
                                  Resuming from stored approved block; skipping LFS (#1059)."
                             );
-                            let transport = self.transport_layer.clone();
-                            let connections = self.connections_cell.clone();
-                            let rp_conf = self.rp_conf_ask.clone();
-                            let the_init = Arc::new(move || {
-                                let transport = transport.clone();
-                                let connections = connections.clone();
-                                let rp_conf = rp_conf.clone();
-                                Box::pin(async move {
-                                    transport
-                                        .send_fork_choice_tip_request(&connections, &rp_conf)
-                                        .await?;
-                                    Ok(())
-                                })
-                                    as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
-                            });
                             if let Err(err) = self
-                                .create_casper_and_transition_to_running(&stored, the_init)
+                                .create_casper_and_transition_to_running(
+                                    &stored,
+                                    StartupState::StoredDag,
+                                )
                                 .await
                             {
                                 self.recover_from_restore_failure(err).await?;
@@ -1278,15 +1271,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // Transition to Running state
         tracing::info!("request_approved_state: transitioning to Running");
-        // LFS path: state is synced from peers, no startup propose or
-        // fork-choice-tip re-ask needed. The empty init is the Scala
-        // `().pure[F]` equivalent.
-        let empty_init = Arc::new(|| {
-            Box::pin(async { Ok(()) })
-                as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
-        });
-        self.create_casper_and_transition_to_running(approved_block, empty_init)
-            .await?;
+        self.create_casper_and_transition_to_running(
+            approved_block,
+            StartupState::RestoredFromPeers,
+        )
+        .await?;
         tracing::info!("request_approved_state: transition_to_running completed");
 
         Ok(())
@@ -1791,18 +1780,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     }
 
     /// **Scala equivalent**: `private def createCasperAndTransitionToRunning(approvedBlock: ApprovedBlock): F[Unit]`
-    ///
-    /// `the_init` is the init callback the transitioned Running engine
-    /// will invoke. The LFS path passes an empty init (state is already
-    /// synced from peers). The #1059 within-window short-circuit path
-    /// passes an init that does `send_fork_choice_tip_request` so the
-    /// peers' latest tips can be fetched on resume.
     async fn create_casper_and_transition_to_running(
         &self,
         approved_block: &ApprovedBlock,
-        the_init: Arc<
-            dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> + Send + Sync,
-        >,
+        startup_state: StartupState,
     ) -> Result<(), CasperError> {
         let ab = approved_block.candidate.block.clone();
         let genesis_post_state_hash = ab.body.state.post_state_hash.clone();
@@ -1842,7 +1823,30 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             self.heartbeat_signal_ref.clone(),
         )
         .await?;
-        casper.hold_proposals_until_own_history_known()?;
+        let the_init: Arc<
+            dyn Fn() -> futures::future::BoxFuture<'static, Result<(), CasperError>> + Send + Sync,
+        > = match startup_state {
+            StartupState::StoredDag => {
+                let transport = self.transport_layer.clone();
+                let connections = self.connections_cell.clone();
+                let rp_conf = self.rp_conf_ask.clone();
+                Arc::new(move || {
+                    let transport = transport.clone();
+                    let connections = connections.clone();
+                    let rp_conf = rp_conf.clone();
+                    Box::pin(async move {
+                        transport
+                            .send_fork_choice_tip_request(&connections, &rp_conf)
+                            .await?;
+                        Ok(())
+                    })
+                })
+            }
+            StartupState::RestoredFromPeers => {
+                casper.hold_proposals_until_own_history_known()?;
+                Arc::new(|| Box::pin(async { Ok(()) }))
+            }
+        };
 
         tracing::info!(
             "create_casper_and_transition_to_running: MultiParentCasper instance created"
