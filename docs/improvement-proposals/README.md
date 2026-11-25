@@ -1,9 +1,11 @@
-# Storage Improvement Proposals
+# Memory and Storage Improvement Proposals
 
 Status: draft designs for review. These proposals do not authorize implementation, migration, deployment, or a protocol change.
 Date: 2026-11-25.
 
 ## Proposals
+
+### Storage
 
 | Proposal | Purpose | Main risk | Suggested order |
 | --- | --- | --- | --- |
@@ -14,6 +16,26 @@ Compression and deduplication address different costs.
 Compression reduces repetition within stored bytes.
 Deduplication stores one copy of an identical subtree for several references.
 Neither proposal changes which chain states the node retains.
+
+### Memory
+
+| Proposal | Memory target | Main risk | Suggested order |
+| --- | --- | --- | --- |
+| [Typed JSON boundaries](memory-typed-json-boundaries.md) | Temporary object trees in reports, events, and queue parsing | API compatibility and parser behavior | First, as independent boundary changes |
+| [Shared events and compact replay](memory-event-replay.md) | Payload clones and retained per-client startup JSON strings | Publication order, replay overlap, and lag recovery | After deterministic handoff tests |
+| [Sparse radix cache](memory-sparse-radix-cache.md) | Empty slots in decoded cached nodes | Canonical bytes, lookup cost, and conversion churn | After occupancy measurements |
+| [Inline binary hashes](memory-inline-hashes.md) | Per-hash allocations in selected runtime caches | Key compatibility and accidental serialization changes | Start with private cache keys |
+
+This order reflects implementation risk, not a measured ranking of whole-node savings.
+JSON trees mainly affect boundary allocations.
+Radix nodes and hash keys can affect retained heap without any client traffic.
+Each proposal separates existing source facts from proposed changes and unmeasured benefits.
+
+These designs do not include a compact runtime `Par` representation.
+The [Par schema](../../models/src/main/protobuf/RhoTypes.proto) has many collection headers, but its live allocation count remains unknown.
+The [hot store](../../rspace++/src/rspace/hot_store.rs) already shares datums and continuations through `Arc` and uses persistent checkpoint maps.
+Further runtime sharing needs measurements that account for those existing optimizations.
+Storage-subtree deduplication does not itself reduce decoded runtime objects.
 
 ## Measurement Baseline
 
@@ -53,7 +75,7 @@ Replica copies must not count as deduplication opportunities within one node.
 
 ## Shared Contract
 
-In these proposals, canonical bytes mean the exact bytes exposed by the existing logical cold store.
+In the storage proposals, canonical bytes mean the exact bytes exposed by the existing logical cold store.
 The physical storage representation can change only below that interface.
 
 Let `U` be the existing bincode encoding of `PersistedData`.
@@ -88,3 +110,75 @@ The current snapshot alone does not establish production savings.
 Numerical performance thresholds remain open until the baseline benchmark exists.
 
 See the [storage diagrams](../erd/storage/README.md) for the current structure.
+
+## Memory Source Baseline
+
+The memory proposals use the following source snapshot, not a heap capture.
+Document-relative source links in each proposal provide navigation to the current checkout.
+These pinned references preserve the inspected implementations:
+
+- [Trace response conversion](https://github.com/machieke/f1r3node-rust/blob/d6e53417848947e6c60c348c883734a4cbea6651/node/src/rust/web/reporting_routes.rs)
+  (local Git: `d6e53417848947e6c60c348c883734a4cbea6651:node/src/rust/web/reporting_routes.rs`).
+- [WebSocket conversion and replay](https://github.com/machieke/f1r3node-rust/blob/d6e53417848947e6c60c348c883734a4cbea6651/node/src/rust/web/events_info.rs)
+  (local Git: `d6e53417848947e6c60c348c883734a4cbea6651:node/src/rust/web/events_info.rs`).
+- [Event publication and ownership](https://github.com/machieke/f1r3node-rust/blob/d6e53417848947e6c60c348c883734a4cbea6651/shared/src/rust/shared/f1r3fly_events.rs)
+  (local Git: `d6e53417848947e6c60c348c883734a4cbea6651:shared/src/rust/shared/f1r3fly_events.rs`).
+- [Queue event parsing](https://github.com/machieke/f1r3node-rust/blob/d6e53417848947e6c60c348c883734a4cbea6651/deploy-queue/src/events.rs)
+  (local Git: `d6e53417848947e6c60c348c883734a4cbea6651:deploy-queue/src/events.rs`).
+- [Radix node representation and caches](https://github.com/machieke/f1r3node-rust/blob/d6e53417848947e6c60c348c883734a4cbea6651/rspace%2B%2B/src/rspace/history/radix_tree.rs)
+  (local Git: `d6e53417848947e6c60c348c883734a4cbea6651:rspace++/src/rspace/history/radix_tree.rs`).
+- [RSpace hash wrapper](https://github.com/machieke/f1r3node-rust/blob/d6e53417848947e6c60c348c883734a4cbea6651/rspace%2B%2B/src/rspace/hashing/blake2b256_hash.rs)
+  (local Git: `d6e53417848947e6c60c348c883734a4cbea6651:rspace++/src/rspace/hashing/blake2b256_hash.rs`).
+
+The [memory catalog](../erd/memory/README.md) and [size rules](../erd/memory/sizing.md) describe layouts and known owner limits.
+The cold-store measurement baseline does not establish live heap counts.
+Its retained versions and replica copies must not become multipliers for a single process's memory estimate.
+
+## Memory Evaluation Contract
+
+The following conditions are proposed acceptance criteria, not completed implementation claims.
+No proposal changes deploy scheduling, canonical inclusion, finalization, or chain-state retention.
+No proposal increases concurrency, cache limits, or timeout values to hide a regression.
+
+### Compatibility
+
+- Keep external JSON schemas, byte encodings, and protocol versions unchanged unless a separately reviewed behavior change is necessary.
+- Keep canonical serialized values, physical keys, consensus hashes, and state roots unchanged.
+- Preserve order, multiplicity, errors, cancellation, and ownership lifetimes.
+- Preserve lag recovery, bounded queues, replay admission, root pins, and pruning coordination.
+- Apply the existing [correctness evidence requirements](../cbc-verification-tiers.md) to affected implementation files.
+
+A smaller in-memory representation is not permission to change serde output.
+A cache optimization is not permission to discard unresolved state or change missing-state errors into empty values.
+
+### Measurement
+
+Use a Rust or Bash benchmark against a fixed revision and reproducible synthetic fixtures.
+Use disposable shards for end-to-end traffic.
+Do not profile, restart, or mutate the current shard as an implicit part of this documentation work.
+Any future live capture needs separate operational approval.
+
+For each benchmark, record:
+
+- The revision, build profile, compiler, architecture, allocator, and workload.
+- Live owner counts, container capacities, and unique shared allocation counts.
+- Retained heap before and after the workload, peak live heap, total allocated bytes, and allocation count.
+- Process resident memory, allocator-retained pages, and file-backed pages as separate measurements where available.
+- CPU time, throughput, and latency at the 50th, 95th, and 99th percentiles.
+- Cache hits, conversions, event lag, and client count where applicable.
+- Finalized state correctness, deploy completion, finalization progress, and node restart counts for shard tests.
+
+Count each shared allocation once, including its reference counters and alignment.
+Account for transient overlap during conversion and for callers retaining values after cache eviction.
+Measure node and deploy-queue processes separately.
+Use bounded metric labels such as component, representation, and result.
+Do not export contract contents, signatures, hashes, or client identifiers as metric labels.
+
+Compare one change at a time before testing combinations.
+Do not add independent percentage savings because the same allocation can appear in multiple proposals.
+Run repeated warmed and cold trials with the same resource limits.
+Set numerical acceptance thresholds from the baseline before evaluating the candidate.
+
+The result should name measured savings, uncertainty, latency costs, and regressions.
+Layout estimates alone do not justify a default change.
+Successful rollback should require only the previous binary because these memory proposals do not alter stored formats.
