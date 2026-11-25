@@ -1,1 +1,1 @@
-{"artifact":"block-storage/src/rust/dag/carrier_index.rs","claim_ids":["CLAIM-DAG-INSERT-BATCH-001"],"schema":"cbc-claim-set/v1"}
+{"artifact":"block-storage/src/rust/dag/carrier_index.rs","claim_ids":["CLAIM-DAG-INSERT-BATCH-001","CLAIM-FINALITY-002"],"schema":"cbc-claim-set/v1"}

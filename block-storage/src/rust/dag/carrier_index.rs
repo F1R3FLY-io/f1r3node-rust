@@ -520,30 +520,115 @@ mod tests {
         assert_eq!(seed_writes.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
+    fn pre_change_record_once(
+        index: &CarrierIndex,
+        sig: &[u8],
+        seed: &[u8],
+        height: i64,
+        block_hash: ByteString,
+    ) -> Result<(), KvStoreError> {
+        let mut seed_row = index
+            .seed_carriers
+            .get_one(&seed.to_vec())?
+            .unwrap_or_default();
+        if !seed_row
+            .iter()
+            .any(|e| e.block_hash == block_hash && e.sig == sig)
+        {
+            seed_row.push(SeedCarrierEntry {
+                height,
+                block_hash: block_hash.clone(),
+                sig: sig.to_vec(),
+            });
+            index.seed_carriers.put_one(seed.to_vec(), seed_row)?;
+        }
+        let mut row = index.carriers.get_one(&sig.to_vec())?.unwrap_or_default();
+        if row.iter().any(|e| e.block_hash == block_hash) {
+            return Ok(());
+        }
+        row.push(CarrierEntry { height, block_hash });
+        index.carriers.put_one(sig.to_vec(), row)
+    }
+
+    fn blocks_with_repeats() -> Vec<(i64, ByteString, Vec<(ByteString, ByteString)>)> {
+        let mut with_duplicate = block_deploys(20);
+        with_duplicate.push(with_duplicate[4].clone());
+        vec![
+            (7, vec![9; 32], with_duplicate),
+            (8, vec![8; 32], block_deploys(12)),
+            (7, vec![9; 32], block_deploys(20)),
+        ]
+    }
+
     #[test]
-    fn a_block_record_matches_one_record_for_each_deploy() {
+    fn a_block_record_matches_the_pre_change_per_deploy_writer() {
         let batched = CarrierIndex::in_memory();
-        let single = CarrierIndex::in_memory();
-        let deploys = block_deploys(20);
-        for (height, block) in [(7, vec![9; 32]), (8, vec![8; 32]), (7, vec![9; 32])] {
+        let reference = CarrierIndex::in_memory();
+        for (height, block, deploys) in blocks_with_repeats() {
             batched
                 .record_block(height, &block, &deploys)
                 .expect("record block");
             for (sig, seed) in &deploys {
-                single
-                    .record_once(sig, seed, height, block.clone())
+                pre_change_record_once(&reference, sig, seed, height, block.clone())
                     .expect("record deploy");
             }
         }
 
         assert_eq!(
             batched.carriers.to_map().expect("read"),
-            single.carriers.to_map().expect("read")
+            reference.carriers.to_map().expect("read")
         );
         assert_eq!(
             batched.seed_carriers.to_map().expect("read"),
-            single.seed_carriers.to_map().expect("read")
+            reference.seed_carriers.to_map().expect("read")
         );
+    }
+
+    #[test]
+    fn a_block_record_stores_one_entry_for_each_carrier() {
+        let index = CarrierIndex::in_memory();
+        for (height, block, deploys) in blocks_with_repeats() {
+            index
+                .record_block(height, &block, &deploys)
+                .expect("record block");
+        }
+
+        let carriers = |sig: &[u8]| {
+            index
+                .carriers
+                .get_one(&sig.to_vec())
+                .expect("read")
+                .unwrap_or_default()
+        };
+        assert_eq!(carriers(&[b's', 4]), vec![
+            CarrierEntry {
+                height: 7,
+                block_hash: vec![9; 32],
+            },
+            CarrierEntry {
+                height: 8,
+                block_hash: vec![8; 32],
+            },
+        ]);
+        assert_eq!(carriers(&[b's', 15]), vec![CarrierEntry {
+            height: 7,
+            block_hash: vec![9; 32],
+        }]);
+        let seed_row = index
+            .seed_carriers
+            .get_one(&vec![b'n', 0])
+            .expect("read")
+            .expect("row");
+        let mut stored: Vec<(i64, ByteString)> =
+            seed_row.into_iter().map(|e| (e.height, e.sig)).collect();
+        stored.sort();
+        let mut expected: Vec<(i64, ByteString)> = (0u8..20)
+            .filter(|i| i % 3 == 0)
+            .map(|i| (7, vec![b's', i]))
+            .chain((0u8..12).filter(|i| i % 3 == 0).map(|i| (8, vec![b's', i])))
+            .collect();
+        expected.sort();
+        assert_eq!(stored, expected);
     }
 
     #[test]

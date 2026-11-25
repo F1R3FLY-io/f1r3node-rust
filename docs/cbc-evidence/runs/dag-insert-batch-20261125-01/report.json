@@ -4,14 +4,14 @@
   "claim_id": "CLAIM-DAG-INSERT-BATCH-001",
   "claim": {
     "path": "docs/claims/dag-insert-batched-writes.md",
-    "sha256": "fe6cda7a1ea060d65685fce04cd2e887b67fc9afb1a1dc910ec2f39e7af0a50f"
+    "sha256": "1418e4bb4c83b6b0fa9bc2ba69ba2d25156cebe396282e11c319de75590b04be"
   },
   "base_commit": "1caf7b8cfdf7e8d447b348af1c90ae3615f19010",
   "branch": "fix/1151-dag-insert-lock-stall",
   "sources": {
-    "block-storage/src/rust/dag/carrier_index.rs": "8f2538bb8a51370d49490823e7cc04e7a26b5b9f5c0d34262ca0fd42d137361d",
+    "block-storage/src/rust/dag/carrier_index.rs": "d4e5194f73b4a861aab3bef6c9cdbf3ea9e7f7afc53a6c25330989a51c1b4ce9",
     "block-storage/src/rust/dag/block_dag_key_value_storage.rs": "a247350dda3ee9a9e6e355cd3d7f709e9f13ce23dddace5f4bf80b47c8b23d6a",
-    "block-storage/src/rust/dag/deploy_lifecycle_types.rs": "4176ff399fcd66e5950e16a1f97342a56a456d1d2e8741943a12baec228b83be"
+    "block-storage/src/rust/dag/deploy_lifecycle_types.rs": "2a9e8f70bbb7034991fd67a9c3e251ba07d14f4af7bd5fe8000cc508a0fef94d"
   },
   "status": "discharged",
   "tiers": {
@@ -22,23 +22,26 @@
   },
   "unit_tests": {
     "command": "cargo test --release -p block-storage --lib -- carrier_index:: deploy_lifecycle_types::",
-    "result": "19 passed, 0 failed",
+    "result": "21 passed, 0 failed",
     "log": {
       "path": "docs/cbc-evidence/runs/dag-insert-batch-20261125-01/unit-tests.txt",
-      "sha256": "bcf27dfb1c2311ccfda7e2ba8abb4121c7ce0b23de6d4acd4f467866cfb2f790"
+      "sha256": "b78ded776dbfeece4223892983521a0a73d8d31c6f1f512c8460a96150f39bc9"
     },
     "claim_tests": [
       "a_block_records_its_carriers_in_one_write_for_each_table",
       "a_redelivered_block_writes_nothing",
-      "a_block_record_matches_one_record_for_each_deploy",
       "a_block_appends_its_events_in_one_write",
-      "a_block_append_matches_one_append_for_each_event"
-    ]
+      "a_block_record_matches_the_pre_change_per_deploy_writer",
+      "a_block_record_stores_one_entry_for_each_carrier",
+      "a_block_append_matches_the_pre_change_per_event_writer",
+      "a_block_append_stores_each_event_once_and_skips_terminal_sigs"
+    ],
+    "reference": "The equivalence tests compare the batch writers with test copies of the pre-change per-deploy writers, which use only put_one and append_events. Two tests check the stored rows directly."
   },
   "suite": {
     "command": "cargo test --release -p block-storage",
     "result": "273 passed, 0 failed, 1 ignored",
-    "note": "Run before rustfmt reformatted one statement in deploy_lifecycle_types.rs. The change is formatting only."
+    "note": "Run on 534e78f2e before the review changes. The review changes add and replace tests only, and the 21 claim tests pass on the current tree."
   },
   "red": "The claim tests did not compile before the change, because CarrierIndex::record_block and DeployLifecycleTables::append_events_once_batch did not exist. The behavior change is in the load measurement.",
   "load_measurement": {

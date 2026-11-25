@@ -527,38 +527,98 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_block_append_matches_one_append_for_each_event() {
-        let batched = DeployLifecycleTables::in_memory();
-        let single = DeployLifecycleTables::in_memory();
-        for tables in [&batched, &single] {
-            tables
-                .put_terminal_if_absent(&[b's', 3], terminal(TerminalState::Finalized))
-                .expect("terminal sig");
+    fn pre_change_append_event_once(
+        tables: &DeployLifecycleTables,
+        sig: &[u8],
+        valid_after: Option<i64>,
+        event: LifecycleEvent,
+    ) -> Result<(), KvStoreError> {
+        if let Some(row) = tables.get_events(sig)? {
+            let duplicate = row.events.iter().any(|e| {
+                e.block_hash == event.block_hash
+                    && std::mem::discriminant(&e.kind) == std::mem::discriminant(&event.kind)
+            });
+            if duplicate {
+                return Ok(());
+            }
         }
-        for height in [4, 5, 4] {
-            let items = block_events(20, height);
+        tables.append_events(sig, valid_after, vec![event])
+    }
+
+    fn batches_with_repeats() -> Vec<Vec<(ByteString, Option<i64>, LifecycleEvent)>> {
+        let mut with_duplicate = block_events(20, 4);
+        with_duplicate.push((vec![b's', 1], Some(1), included(4, true)));
+        vec![with_duplicate, block_events(12, 5), block_events(20, 4)]
+    }
+
+    fn tables_with_terminal_sig() -> DeployLifecycleTables {
+        let tables = DeployLifecycleTables::in_memory();
+        tables
+            .put_terminal_if_absent(&[b's', 3], terminal(TerminalState::Finalized))
+            .expect("terminal sig");
+        tables
+    }
+
+    #[test]
+    fn a_block_append_matches_the_pre_change_per_event_writer() {
+        let batched = tables_with_terminal_sig();
+        let reference = tables_with_terminal_sig();
+        for items in batches_with_repeats() {
             batched
                 .append_events_once_batch(items.clone())
                 .expect("append block events");
             for (sig, valid_after, event) in items {
-                single
-                    .append_event_once(&sig, valid_after, event)
+                pre_change_append_event_once(&reference, &sig, valid_after, event)
                     .expect("append event");
             }
         }
 
-        assert_eq!(
-            batched
-                .open_rows()
-                .expect("read")
-                .into_iter()
-                .collect::<std::collections::BTreeMap<_, _>>(),
-            single
+        let rows = |tables: &DeployLifecycleTables| {
+            tables
                 .open_rows()
                 .expect("read")
                 .into_iter()
                 .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        assert_eq!(rows(&batched), rows(&reference));
+    }
+
+    #[test]
+    fn a_block_append_stores_each_event_once_and_skips_terminal_sigs() {
+        let tables = tables_with_terminal_sig();
+        for items in batches_with_repeats() {
+            tables
+                .append_events_once_batch(items)
+                .expect("append block events");
+        }
+
+        assert!(tables.get_events(&[b's', 3]).expect("read").is_none());
+        let row = tables.get_events(&[b's', 0]).expect("read").expect("row");
+        assert_eq!(row.valid_after, Some(1));
+        assert_eq!(row.events, vec![
+            included(4, true),
+            LifecycleEvent {
+                height: 4,
+                block_hash: vec![4; 32],
+                kind: LifecycleEventKind::Rejected { duplicate: true },
+            },
+            included(5, true),
+            LifecycleEvent {
+                height: 5,
+                block_hash: vec![5; 32],
+                kind: LifecycleEventKind::Rejected { duplicate: true },
+            },
+        ]);
+        let row = tables.get_events(&[b's', 1]).expect("read").expect("row");
+        assert_eq!(row.events, vec![included(4, false), included(5, false)]);
+        assert!(tables.get_events(&[b's', 15]).expect("read").is_some());
+        assert_eq!(
+            tables
+                .get_events(&[b's', 15])
+                .expect("read")
+                .expect("row")
+                .events,
+            vec![included(4, false)]
         );
     }
 }

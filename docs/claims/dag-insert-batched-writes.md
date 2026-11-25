@@ -39,13 +39,14 @@ references:
 
 - `KeyValueTypedStore::put` with several pairs writes all of them in one LMDB write transaction (`LmdbKeyValueStore::put`).
 - Reads in `record_block` and `append_events_once_batch` see the committed rows. The caller holds the write lock of the carrier index or of the lifecycle tables for the whole call. No other writer of those tables can change the rows during the call. The insert path also holds the DAG global write lock, and `validation_dispatcher.rs` holds only the lifecycle lock.
+- The seed-carrier write and the carrier write of `record_block` are two commits. A failure between them leaves seed rows without their carrier rows for one block. The block is not visible in the DAG until the insert completes. A redelivery writes the missing rows, because both writes are idempotent per (key, block_hash). The per-deploy path had the same gap for one deploy.
 
 ## Tiers
 
 | Property | Tier reached | Evidence |
 |---|---|---|
 | P1 | Binding | `a_block_records_its_carriers_in_one_write_for_each_table`, `a_redelivered_block_writes_nothing`, and `a_block_appends_its_events_in_one_write` count the table writes with a counting store. A local subprocess `test_load` run measured 3 commits for each insert, against about 25 before the change. |
-| P2 | Binding, for the tested instances | `a_block_record_matches_one_record_for_each_deploy` and `a_block_append_matches_one_append_for_each_event` compare both paths over 20 deploys, three shared seeds, a terminal sig, a rejected record, and a redelivered block. The unbounded equivalence needs a construction-tier proof. `construction: pending` |
+| P2 | Binding, for the tested instances | `a_block_record_matches_the_pre_change_per_deploy_writer` and `a_block_append_matches_the_pre_change_per_event_writer` compare the batch writers with test copies of the pre-change writers, which use only `put_one` and `append_events`. `a_block_record_stores_one_entry_for_each_carrier` and `a_block_append_stores_each_event_once_and_skips_terminal_sigs` check the stored rows directly. The cases include shared seeds, a repeated deploy, a terminal sig, a rejected record, a repeated event of one sig, and a redelivered block. The unbounded equivalence needs a construction-tier proof (`construction: pending`). |
 | P3 | Not changed | The call order in `insert_internal`. The block-storage suite passes (273 tests). |
 
 The new tests did not compile before the change, because the batch writers did not exist. The evidence for the change in behavior is the commit count of the local run in the run package.
