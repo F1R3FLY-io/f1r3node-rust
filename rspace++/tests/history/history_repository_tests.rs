@@ -899,6 +899,8 @@ struct EmptyImporter;
 
 impl RSpaceImporter for EmptyImporter {
     fn get_history_item(&self, _hash: KeyHash) -> Option<ByteVector> { todo!() }
+
+    fn has_data_items(&self, _hashes: &[KeyHash]) -> Vec<bool> { todo!() }
 }
 
 impl TrieImporter for EmptyImporter {

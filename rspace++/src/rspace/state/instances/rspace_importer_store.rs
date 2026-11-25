@@ -42,6 +42,29 @@ impl RSpaceImporter for RSpaceImporterImpl {
             .next()
             .flatten()
     }
+
+    fn has_data_items(&self, hashes: &[KeyHash]) -> Vec<bool> {
+        let contains = |keys: Vec<ByteVector>| {
+            self.value_store
+                .contains(&keys)
+                .expect("RSpace Importer: value store lookup failed")
+        };
+        let mut held = contains(hashes.iter().map(|hash| hash.bytes()).collect());
+        let absent: Vec<usize> = (0..hashes.len()).filter(|index| !held[*index]).collect();
+        let serialized = contains(
+            absent
+                .iter()
+                .map(|index| {
+                    bincode::serialize(&hashes[*index])
+                        .expect("RSpace Importer: hash serialization failed")
+                })
+                .collect(),
+        );
+        for (index, present) in absent.into_iter().zip(serialized) {
+            held[index] = present;
+        }
+        held
+    }
 }
 
 impl TrieImporter for RSpaceImporterImpl {
