@@ -276,6 +276,14 @@ where
         panic!("\nERROR: RSpace check_replay_data should not be called here");
     }
 
+    async fn search_candidates(
+        &self,
+        _pre_state: &SoftCheckpoint<C, P, A, K>,
+        _term_log: std::ops::Range<usize>,
+    ) -> Result<u64, RSpaceError> {
+        Err(RSpaceError::BugFoundError("only replay recomputes what searches cost".to_string()))
+    }
+
     async fn is_replay(&self) -> bool { false }
 
     async fn update_produce(&self, produce_ref: Produce) -> () {

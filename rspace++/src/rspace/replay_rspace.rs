@@ -18,6 +18,7 @@ use serde::Serialize;
 use super::checkpoint::SoftCheckpoint;
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
+use super::hashing::stable_hash_provider::hash;
 use super::history::history_reader::HistoryReader;
 use super::history::instances::radix_history::RadixHistory;
 use super::logging::{BasicLogger, RSpaceLogger};
@@ -32,6 +33,7 @@ use super::metrics_constants::{
 use super::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceResult,
 };
+use super::search_charge;
 use super::striped_locks::{self, ChannelLockGuard};
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
@@ -66,6 +68,13 @@ pub struct ReplayRSpace<C, P, A, K> {
     // to the full multiset scan, so behavior is unchanged in edge cases.
     consume_replay_index:
         Arc<Mutex<HashMap<Blake2b256Hash, HashMap<Blake2b256Hash, Vec<Arc<COMM>>>>>>,
+    // The rigged log in recorded order, every channel replay has used since
+    // by hash, and the channels of every receive it has made, in the order
+    // they are stored under, by the receive's hash: what recomputing a
+    // deploy's search charge reads.
+    rigged_log: Arc<Mutex<Log>>,
+    channels: Arc<dashmap::DashMap<Blake2b256Hash, C>>,
+    receive_channels: Arc<dashmap::DashMap<Blake2b256Hash, Vec<C>>>,
     logger: Arc<Mutex<Box<dyn RSpaceLogger<C, P, A, K>>>>,
     replay_waiting_continuations_estimate: Arc<AtomicI64>,
     // Fixed-size striped locks — mirrors the RSpace fix in rspace.rs (PR #72).
@@ -98,6 +107,12 @@ where
             .read()
             .expect("history read lock")
             .clone()
+    }
+
+    fn note_channel(&self, channel_hash: &Blake2b256Hash, channel: &C) {
+        self.channels
+            .entry(channel_hash.clone())
+            .or_insert_with(|| channel.clone());
     }
 
     async fn consume_lock(&self, channel_hashes: &[u64]) -> (ChannelLockGuard, ChannelLockGuard) {
@@ -284,6 +299,12 @@ where
             panic!("RUST ERROR: channels.length must equal patterns.length");
         } else {
             let consume_ref = Consume::create(&channels, &patterns, &continuation, persist);
+            for channel in &channels {
+                self.note_channel(&hash(channel), channel);
+            }
+            self.receive_channels
+                .entry(consume_ref.hash.clone())
+                .or_insert_with(|| channels.clone());
             let channel_hashes: Vec<u64> = channels
                 .iter()
                 .map(|ch| striped_locks::channel_hash(ch))
@@ -307,6 +328,7 @@ where
         persist: bool,
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
         let produce_ref = Produce::create(&channel, &data, persist);
+        self.note_channel(&produce_ref.channel_hash, &channel);
         let _lock_guard = self.produce_lock(&channel).await;
         metrics::counter!("replay_rspace.produce.calls", "source" => "rspace").increment(1);
         let start = Instant::now();
@@ -377,8 +399,47 @@ where
                 )),
             }?
         }
+        drop(consume_index);
+        drop(replay_data);
+        drop(new_stuff);
 
+        self.channels.clear();
+        self.receive_channels.clear();
+        *self.rigged_log.lock().expect("rigged log lock") = log;
         Ok(())
+    }
+
+    async fn search_candidates(
+        &self,
+        pre_state: &SoftCheckpoint<C, P, A, K>,
+        term_log: std::ops::Range<usize>,
+    ) -> Result<u64, RSpaceError> {
+        let log = self.rigged_log.lock().expect("rigged log lock");
+        let term = log.get(term_log.clone()).ok_or_else(|| {
+            RSpaceError::SearchMismatch(format!(
+                "the deploy's term logged events {}..{}, outside the {} the deploy logged",
+                term_log.start,
+                term_log.end,
+                log.len()
+            ))
+        })?;
+        let history = self.get_history_repository();
+        let history_reader = history.get_history_reader(&history.root())?;
+        let store = HotStoreInstances::create_from_hs_and_hr(
+            pre_state.cache_snapshot.clone(),
+            history_reader.base(),
+        );
+        let channels: HashMap<Blake2b256Hash, C> = self
+            .channels
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
+        let receive_channels: HashMap<Blake2b256Hash, Vec<C>> = self
+            .receive_channels
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
+        search_charge::walk_candidates(&*store, &channels, &receive_channels, term)
     }
 
     async fn check_replay_data(&self) -> Result<(), RSpaceError> {
@@ -480,6 +541,9 @@ where
             produce_counter: Arc::new(Mutex::new(BTreeMap::new())),
             replay_data: Arc::new(Mutex::new(MultisetMultiMap::empty())),
             consume_replay_index: Arc::new(Mutex::new(HashMap::new())),
+            rigged_log: Arc::new(Mutex::new(Vec::new())),
+            channels: Arc::new(dashmap::DashMap::new()),
+            receive_channels: Arc::new(dashmap::DashMap::new()),
             logger: Arc::new(Mutex::new(Box::new(BasicLogger::new()))),
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
             phase_a_locks: Self::new_striped_locks(),
@@ -509,6 +573,9 @@ where
             produce_counter: Arc::new(Mutex::new(BTreeMap::new())),
             replay_data: Arc::new(Mutex::new(MultisetMultiMap::empty())),
             consume_replay_index: Arc::new(Mutex::new(HashMap::new())),
+            rigged_log: Arc::new(Mutex::new(Vec::new())),
+            channels: Arc::new(dashmap::DashMap::new()),
+            receive_channels: Arc::new(dashmap::DashMap::new()),
             logger: Arc::new(Mutex::new(logger)),
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
             phase_a_locks: Self::new_striped_locks(),

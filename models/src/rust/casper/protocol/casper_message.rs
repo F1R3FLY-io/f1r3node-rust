@@ -1,5 +1,7 @@
 // See models/src/main/scala/coop/rchain/casper/protocol/CasperMessage.scala
 
+use std::ops::Range;
+
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
 use crypto::rust::signatures::signed::{Signed, ToMessage};
@@ -1168,6 +1170,7 @@ pub struct ProcessedDeploy {
     pub deploy: Signed<DeployData>,
     pub cost: PCost,
     pub deploy_log: Vec<Event>,
+    pub user_log: Range<usize>,
     pub is_failed: bool,
     pub system_deploy_error: Option<String>,
 }
@@ -1184,6 +1187,7 @@ impl ProcessedDeploy {
             deploy,
             cost: PCost { cost: 0 },
             deploy_log: Vec::new(),
+            user_log: 0..0,
             is_failed: false,
             system_deploy_error: None,
         }
@@ -1215,6 +1219,20 @@ impl ProcessedDeploy {
     }
 
     pub fn from_proto(proto: ProcessedDeployProto) -> Result<Self, String> {
+        let deploy_log = proto
+            .deploy_log
+            .into_iter()
+            .map(|e| Event::from_proto(e))
+            .collect::<Result<Vec<Event>, String>>()?;
+        let user_log = proto.user_log_start as usize..proto.user_log_end as usize;
+        if user_log.start > user_log.end || user_log.end > deploy_log.len() {
+            return Err(format!(
+                "user log {}..{} is not a range of the {} logged events",
+                user_log.start,
+                user_log.end,
+                deploy_log.len()
+            ));
+        }
         Ok(Self {
             deploy: DeployData::from_proto(
                 proto
@@ -1222,11 +1240,8 @@ impl ProcessedDeploy {
                     .ok_or_else(|| "Missing deploy field".to_string())?,
             )?,
             cost: proto.cost.ok_or_else(|| "Missing cost field".to_string())?,
-            deploy_log: proto
-                .deploy_log
-                .into_iter()
-                .map(|e| Event::from_proto(e))
-                .collect::<Result<Vec<Event>, String>>()?,
+            deploy_log,
+            user_log,
             is_failed: proto.errored,
             system_deploy_error: {
                 if proto.system_deploy_error.is_empty() {
@@ -1245,6 +1260,10 @@ impl ProcessedDeploy {
             deploy_log: self.deploy_log.into_iter().map(|e| e.to_proto()).collect(),
             errored: self.is_failed,
             system_deploy_error: self.system_deploy_error.unwrap_or_default(),
+            user_log_start: u32::try_from(self.user_log.start)
+                .expect("a deploy log holds fewer than 2^32 events"),
+            user_log_end: u32::try_from(self.user_log.end)
+                .expect("a deploy log holds fewer than 2^32 events"),
         }
     }
 }
@@ -2337,6 +2356,7 @@ mod tests {
             deploy: deploy.clone(),
             cost: PCost { cost: 100 },
             deploy_log: vec![Event::Produce(produce_event())],
+            user_log: 0..1,
             is_failed: true,
             system_deploy_error: Some("boom".to_string()),
         };
@@ -2364,6 +2384,29 @@ mod tests {
         assert!(info.errored);
         assert_eq!(info.system_deploy_error, "boom".to_string());
         assert_eq!(info.sig, hex::encode(&deploy.sig));
+    }
+
+    #[test]
+    fn a_user_log_outside_the_deploy_log_is_rejected() {
+        let logged = |user_log_start, user_log_end| ProcessedDeployProto {
+            user_log_start,
+            user_log_end,
+            ..ProcessedDeploy {
+                deploy: signed_deploy(),
+                cost: PCost { cost: 1 },
+                deploy_log: vec![Event::Produce(produce_event())],
+                user_log: 0..1,
+                is_failed: false,
+                system_deploy_error: None,
+            }
+            .to_proto()
+        };
+        assert!(ProcessedDeploy::from_proto(logged(0, 2)).is_err());
+        assert!(ProcessedDeploy::from_proto(logged(1, 0)).is_err());
+        assert_eq!(
+            ProcessedDeploy::from_proto(logged(1, 1)).unwrap().user_log,
+            1..1
+        );
     }
 
     fn commitment(seed: u8) -> BlockCommitment {

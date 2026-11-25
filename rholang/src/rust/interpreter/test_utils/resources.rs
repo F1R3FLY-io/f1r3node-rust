@@ -1,23 +1,29 @@
 // See rholang/src/test/scala/coop/rchain/rholang/Resources.scala
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::MB;
 use rspace_plus_plus::rspace::shared::rspace_store_manager::mk_rspace_store_manager;
+use rspace_plus_plus::rspace::trace::Log;
 use tempfile::Builder;
 
+use crate::rust::interpreter::accounting::costs::{search_cost, Cost};
+use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::external_services::ExternalServices;
+use crate::rust::interpreter::interpreter::EvaluateResult;
 use crate::rust::interpreter::matcher::r#match::Matcher;
 use crate::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
 use crate::rust::interpreter::rho_runtime;
 use crate::rust::interpreter::rho_runtime::{
-    create_replay_rho_runtime, create_rho_runtime, RhoRuntimeImpl,
+    create_replay_rho_runtime, create_rho_runtime, RhoRuntime, RhoRuntimeImpl,
 };
 use crate::rust::interpreter::system_processes::Definition;
 #[cfg(feature = "chromadb")]
@@ -95,6 +101,30 @@ where
     .unwrap();
 
     f(runtime).await
+}
+
+/// Replays `term` against play's `log` as casper does: evaluates it from the
+/// replay runtime's current state, then adds the charge for the searches
+/// play's operations paid for, recomputed from the log.
+pub async fn replay_charged<R: RhoRuntime>(
+    replay: &mut R,
+    log: Log,
+    term: &str,
+    initial_phlo: Cost,
+    normalizer_env: HashMap<String, Par>,
+    rand: Blake2b512Random,
+) -> Result<EvaluateResult, InterpreterError> {
+    let term_log = 0..log.len();
+    replay.rig(log).await?;
+    let pre_state = replay.create_soft_checkpoint().await;
+    let mut result = replay
+        .evaluate(term, initial_phlo.clone(), normalizer_env, rand)
+        .await?;
+    if result.pays_for_search() {
+        let candidates = replay.search_candidates(&pre_state, term_log).await?;
+        result.charge_search(search_cost(candidates), initial_phlo.value);
+    }
+    Ok(result)
 }
 
 pub async fn create_runtimes(

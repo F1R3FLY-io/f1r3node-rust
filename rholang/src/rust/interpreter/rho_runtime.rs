@@ -257,6 +257,14 @@ pub trait RhoRuntime: HasCost {
     async fn rig(&self, log: Log) -> Result<(), InterpreterError>;
 
     async fn check_replay_data(&self) -> Result<(), InterpreterError>;
+
+    /// The candidates a deploy term's searches paid for in play, recomputed
+    /// from `term_log`, its events in the rigged log, from `pre_state`.
+    async fn search_candidates(
+        &self,
+        pre_state: &SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+        term_log: std::ops::Range<usize>,
+    ) -> Result<u64, InterpreterError>;
 }
 
 /*
@@ -728,6 +736,18 @@ impl RhoRuntime for RhoRuntimeImpl {
     async fn check_replay_data(&self) -> Result<(), InterpreterError> {
         self.reducer.space.check_replay_data().await?;
         Ok(())
+    }
+
+    async fn search_candidates(
+        &self,
+        pre_state: &SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+        term_log: std::ops::Range<usize>,
+    ) -> Result<u64, InterpreterError> {
+        Ok(self
+            .reducer
+            .space
+            .search_candidates(pre_state, term_log)
+            .await?)
     }
 }
 

@@ -512,7 +512,9 @@ impl RuntimeOps {
                         metrics::histogram!(BLOCK_PLAY_DEPLOY_EVALUATE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                             .record(evaluate_start.elapsed().as_secs_f64());
                         let deploy_log = mem::take(&mut pd.deploy_log);
+                        let user_log_start = eval_collector_state.event_log.len();
                         eval_collector_state.add(deploy_log, mc);
+                        pd.user_log = user_log_start..eval_collector_state.event_log.len();
                         pd
                     }
                 };
@@ -656,6 +658,7 @@ impl RuntimeOps {
         let deploy_result = ProcessedDeploy {
             deploy,
             cost: Cost::to_proto(eval_result.cost),
+            user_log: 0..deploy_log.len(),
             deploy_log: deploy_log
                 .into_iter()
                 .map(|event| event_converter::to_casper_event(event))

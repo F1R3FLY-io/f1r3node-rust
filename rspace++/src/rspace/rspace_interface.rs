@@ -320,6 +320,15 @@ pub trait ISpace<
 
     async fn check_replay_data(&self) -> Result<(), RSpaceError>;
 
+    /// The candidates the searches of a deploy's term paid for in play,
+    /// recomputed from `term_log`, the term's events in the rigged log, from
+    /// `pre_state`, the state the term started from. Replay only.
+    async fn search_candidates(
+        &self,
+        pre_state: &SoftCheckpoint<C, P, A, K>,
+        term_log: std::ops::Range<usize>,
+    ) -> Result<u64, RSpaceError>;
+
     async fn is_replay(&self) -> bool;
 
     async fn update_produce(&self, produce: Produce) -> ();

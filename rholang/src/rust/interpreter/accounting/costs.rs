@@ -109,6 +109,17 @@ pub fn comparison_cost() -> Cost { Cost::create(3, "comparison") }
 // A match step is a pattern level or an element a split reads or copies.
 pub fn match_steps_cost(steps: usize) -> Cost { Cost::create(steps as i64, "match steps") }
 
+// Rejecting a candidate takes about as long as three phlo of evaluation.
+const SEARCH_CANDIDATE_COST: i64 = 3;
+
+// A send's or receive's search for its match, by the candidates it could
+// examine.
+pub fn search_cost(candidates: u64) -> Cost {
+    // Saturates: a charge past i64::MAX is past every phlo limit.
+    let candidates = i64::try_from(candidates).unwrap_or(i64::MAX);
+    Cost::create(candidates.saturating_mul(SEARCH_CANDIDATE_COST), "search")
+}
+
 // Strings compare byte by byte up to the shorter one's length.
 pub fn string_comparison_cost(left_len: usize, right_len: usize) -> Cost {
     Cost::create(
