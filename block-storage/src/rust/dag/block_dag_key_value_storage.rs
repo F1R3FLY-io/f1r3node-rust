@@ -1965,10 +1965,9 @@ impl BlockDagKeyValueStorage {
     /// repeat writes nothing.
     pub fn record_deploy_events(&self, block: &BlockMessage) -> Result<(), KvStoreError> {
         let block_number = block.body.state.block_number;
-        let lifecycle_guard = self.lifecycle.write();
-        for pd in &block.body.deploys {
-            lifecycle_guard.append_event_once(
-                &pd.deploy.sig,
+        let included = block.body.deploys.iter().map(|pd| {
+            (
+                pd.deploy.sig.to_vec(),
                 Some(pd.deploy.data.valid_after_block_number),
                 LifecycleEvent {
                     height: block_number,
@@ -1977,18 +1976,20 @@ impl BlockDagKeyValueStorage {
                         is_failed: pd.is_failed,
                     },
                 },
-            )?;
-        }
-        for rd in &block.body.rejected_deploys {
-            lifecycle_guard.append_event_once(&rd.sig, None, LifecycleEvent {
+            )
+        });
+        let rejected = block.body.rejected_deploys.iter().map(|rd| {
+            (rd.sig.to_vec(), None, LifecycleEvent {
                 height: block_number,
                 block_hash: block.block_hash.to_vec(),
                 kind: LifecycleEventKind::Rejected {
                     duplicate: rd.duplicate,
                 },
-            })?;
-        }
-        Ok(())
+            })
+        });
+        self.lifecycle
+            .write()
+            .append_events_once_batch(included.chain(rejected).collect())
     }
 
     /// Internal method to insert without acquiring lock.
@@ -2183,16 +2184,22 @@ impl BlockDagKeyValueStorage {
             // ancestor scan never reads them, and the carrier index must
             // not ingest attacker-chosen keys.
             {
-                let block_number = block.body.state.block_number;
-                let carrier_guard = self.carrier_index.write();
-                for pd in &block.body.deploys {
-                    carrier_guard.record_once(
-                        &pd.deploy.sig,
-                        &models::rust::deploy_seed::deploy_name_seed(&pd.deploy),
-                        block_number,
-                        block.block_hash.to_vec(),
-                    )?;
-                }
+                let deploys: Vec<_> = block
+                    .body
+                    .deploys
+                    .iter()
+                    .map(|pd| {
+                        (
+                            pd.deploy.sig.to_vec(),
+                            models::rust::deploy_seed::deploy_name_seed(&pd.deploy),
+                        )
+                    })
+                    .collect();
+                self.carrier_index.write().record_block(
+                    block.body.state.block_number,
+                    &block.block_hash.to_vec(),
+                    &deploys,
+                )?;
             }
 
             // Lifecycle event ingest, before the block is DAG-visible: a
