@@ -208,16 +208,14 @@ impl ChargingRSpace {
                 pattern: Vec<BindPattern>,
             ) -> Result<Option<(TaggedContinuation, Vec<ListParWithRandom>)>, RSpaceError>
             {
-                let consume_res = self
-                    .space
-                    .consume(
-                        channel,
-                        pattern,
-                        TaggedContinuation::default(),
-                        false,
-                        BTreeSet::new(),
-                    )
-                    .await?;
+                let consume_res = search_charge::uncharged(self.space.consume(
+                    channel,
+                    pattern,
+                    TaggedContinuation::default(),
+                    false,
+                    BTreeSet::new(),
+                ))
+                .await?;
                 Ok(unpack_option(&consume_res))
             }
 

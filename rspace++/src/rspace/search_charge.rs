@@ -58,6 +58,13 @@ pub async fn charged<F: Future>(charger: SearchCharger, future: F) -> F::Output 
     CHARGER.scope(charger, future).await
 }
 
+/// Runs `future` with its searches free: a read the node makes for itself,
+/// such as a system deploy reading its result back, which no deploy pays for
+/// and no deploy's log records.
+pub async fn uncharged<F: Future>(future: F) -> F::Output {
+    CHARGER.scope(Arc::new(|_| true), future).await
+}
+
 /// Charges the running operation for `work`. Outside [[charged]], a space
 /// that `required` charging has run a search no deploy pays for, which is a
 /// bug; any other space searches for free.
