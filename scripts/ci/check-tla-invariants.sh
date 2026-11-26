@@ -119,6 +119,7 @@ POST_FIX_CONFIGS=(
     node_observation/MC_DisplayProjection
     scope_trapped_gc/MC_ScopeTrappedGC
     below_horizon_recovery/MC_BelowHorizonRecovery
+    justification_history/MC_JustificationHistory
 )
 
 TLC_WORKERS=auto
@@ -281,6 +282,7 @@ NEGATIVE_CONTROLS=(
     casper_soak/MC_CasperSoakHarness_control_unsafe:ControlVerdictExact
     scope_trapped_gc/MC_ScopeTrappedGC_payload_leak_pre_fix:Inv_N_NeverInParkedData
     scope_trapped_gc/MC_ScopeTrappedGC_body_mention_pre_fix:Inv_N_NeverInParkedBodyOnForgeable
+    justification_history/MC_JustificationHistory_local_latest_unsafe:HistoryRelative
 )
 
 # Areas whose expected-violation configurations are all registered. A

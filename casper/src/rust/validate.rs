@@ -1848,18 +1848,23 @@ impl Validate {
     /// lower sequence number. Both blocks are signed and `b` cites the
     /// previous one, so every node holding `b` reaches the same verdict. The
     /// sender's own entry is not compared: the equivocation check judges it.
+    /// A missing previous block or witness returns `Undecidable` with its hash.
     pub fn justification_regressions(
         b: &BlockMessage,
         s: &mut CasperSnapshot,
     ) -> ValidBlockProcessing {
-        let previous = proto_util::creator_justification_block_message(b)
-            .map(|justification| s.dag.lookup_unsafe(&justification.latest_block_hash))
-            .transpose();
-        match previous {
-            Ok(None) => Either::Right(ValidBlock::Valid),
-            Ok(Some(previous)) => {
-                let new_lms = proto_util::to_latest_message_hashes(&b.justifications);
-                let cur_lms = proto_util::to_latest_message_hashes(&previous.justifications);
+        let predecessor_hash = match proto_util::creator_justification_block_message(b) {
+            Some(justification) => justification.latest_block_hash,
+            None => return Either::Right(ValidBlock::Valid),
+        };
+        match s.dag.lookup(&predecessor_hash) {
+            Ok(None) => Either::Left(BlockError::Undecidable(predecessor_hash)),
+            Ok(Some(cur_senders_block)) => {
+                let new_sender_block = b;
+                let new_lms =
+                    proto_util::to_latest_message_hashes(&new_sender_block.justifications);
+                let cur_lms =
+                    proto_util::to_latest_message_hashes(&cur_senders_block.justifications);
 
                 let log_warn =
                     |current_hash: &BlockHash, regressive_hash: &BlockHash, sender: &Validator| {
@@ -1884,16 +1889,26 @@ impl Validate {
                         continue;
                     };
 
-                    let new_justification = match s.dag.lookup_unsafe(new_justification_hash) {
-                        Ok(metadata) => metadata,
+                    let new_justification = match s.dag.lookup(new_justification_hash) {
+                        Ok(Some(metadata)) => metadata,
+                        Ok(None) => {
+                            return Either::Left(BlockError::Undecidable(
+                                new_justification_hash.clone(),
+                            ))
+                        }
                         Err(e) => {
                             return Either::Left(BlockError::from_validation_error(
                                 CasperError::from(e),
                             ))
                         }
                     };
-                    let cur_justification = match s.dag.lookup_unsafe(cur_justification_hash) {
-                        Ok(metadata) => metadata,
+                    let cur_justification = match s.dag.lookup(cur_justification_hash) {
+                        Ok(Some(metadata)) => metadata,
+                        Ok(None) => {
+                            return Either::Left(BlockError::Undecidable(
+                                cur_justification_hash.clone(),
+                            ))
+                        }
                         Err(e) => {
                             return Either::Left(BlockError::from_validation_error(
                                 CasperError::from(e),
