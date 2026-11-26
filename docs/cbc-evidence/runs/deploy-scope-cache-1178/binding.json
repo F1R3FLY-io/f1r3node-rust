@@ -1,0 +1,162 @@
+{
+  "claim_id": "CLAIM-DEPLOY-SCOPE-CACHE-001",
+  "verified_at": "2026-11-26T21:17:40Z",
+  "base_commit": "5a06e45e67e4a9445e5a243d9db850645d17abb3",
+  "original_pr_commit": "d697cb384a09fea493f3842558bcbf2521799597",
+  "sources_sha256": {
+    "casper/src/rust/engine/multi_parent_casper/snapshot.rs": "db3b5d6faefd58adf60100afa966344bfc6e73747e3d7f7cbf2f33a5a6af06bc",
+    "shared/src/rust/store/lmdb_key_value_store.rs": "6160e41ac80dae0c8e4d7b87145c89d41d6410fc93c7f5e621ca08eee1f6c20b",
+    "block-storage/src/rust/key_value_block_store.rs": "87da56669fd243c1f6449b3e8985a6998b5d0af7d4c5ab92a49542deba5911c7",
+    "docs/claims/deploy-scope-cache.md": "2c89743fc2f746582aebecc581949dca0ff354f8ce56b2201f9447d99775c4a3"
+  },
+  "rust_toolchain": "nightly-2026-02-09",
+  "tests": [
+    {
+      "command": "cargo test --locked --offline --release -p shared --lib rust::store::lmdb_key_value_store::",
+      "passed": 25,
+      "failed": 0,
+      "ignored": 1
+    },
+    {
+      "command": "cargo test --locked --offline --release -p block-storage --lib rust::key_value_block_store::tests::",
+      "passed": 36,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test --locked --offline --release -p shared --test soak_snapshot",
+      "passed": 19,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test --locked --offline --release -p block-storage --test soak_snapshot",
+      "passed": 29,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test --locked --offline --release -p casper --lib rust::util::mergeable_channels_gc::",
+      "passed": 41,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test --locked --offline --release -p casper --lib rust::api::block_api::",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test --locked --offline --release -p casper --test mod scope_walk_metadata_reads_spec",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "formatting": "cargo fmt --all -- --check passed",
+  "clippy": "cargo clippy --locked --offline --release -p shared -p block-storage -p casper --lib passed",
+  "snapshot": {
+    "fixture": "One frozen LMDB genesis restored in a fresh process per run, 40 ancestors with four deploys each, 80 seed groups and eight retained rejections. Empty, duplicate and kept records occur in the same DAG.",
+    "repetitions_per_revision_and_size": 2,
+    "process_order": [
+      [
+        "base",
+        "original",
+        "revised"
+      ],
+      [
+        "revised",
+        "original",
+        "base"
+      ]
+    ],
+    "snapshot_calls_verified": 234,
+    "warm_medians": [
+      {
+        "variant": "base",
+        "additional_bytes_per_block": 0,
+        "warm_calls": 24,
+        "cold_calls": 2,
+        "warm_median_ms": 10.89
+      },
+      {
+        "variant": "original",
+        "additional_bytes_per_block": 0,
+        "warm_calls": 24,
+        "cold_calls": 2,
+        "warm_median_ms": 10.772
+      },
+      {
+        "variant": "revised",
+        "additional_bytes_per_block": 0,
+        "warm_calls": 24,
+        "cold_calls": 2,
+        "warm_median_ms": 10.826
+      },
+      {
+        "variant": "base",
+        "additional_bytes_per_block": 131072,
+        "warm_calls": 24,
+        "cold_calls": 2,
+        "warm_median_ms": 17.234
+      },
+      {
+        "variant": "original",
+        "additional_bytes_per_block": 131072,
+        "warm_calls": 24,
+        "cold_calls": 2,
+        "warm_median_ms": 10.927
+      },
+      {
+        "variant": "revised",
+        "additional_bytes_per_block": 131072,
+        "warm_calls": 24,
+        "cold_calls": 2,
+        "warm_median_ms": 11.026
+      },
+      {
+        "variant": "base",
+        "additional_bytes_per_block": 1048576,
+        "warm_calls": 24,
+        "cold_calls": 2,
+        "warm_median_ms": 62.202
+      },
+      {
+        "variant": "original",
+        "additional_bytes_per_block": 1048576,
+        "warm_calls": 24,
+        "cold_calls": 2,
+        "warm_median_ms": 12.087
+      },
+      {
+        "variant": "revised",
+        "additional_bytes_per_block": 1048576,
+        "warm_calls": 24,
+        "cold_calls": 2,
+        "warm_median_ms": 11.788
+      }
+    ],
+    "pruning": "After pruning a height-10 body outside the scope, cold and warm rebuilds on the revised binary both returned the reference signatures, rejections and seed holders."
+  },
+  "generated_row_cases": [
+    "absent, valid empty, valid short, valid 64 KiB and truncated bincode rows",
+    "warm empty results after filtering 1024 duplicate records",
+    "inner allocation exceeding the limit with one live byte",
+    "oversized retained rejections, two repeated reads with the same identity allocation",
+    "1024 absent and 1024 failed probes with cached identities after body pruning",
+    "replacement invalidates an in-flight read",
+    "failed disk presence check preserves a valid pending copy"
+  ],
+  "retained_lab_blocks": {
+    "source": "Bounded read-only LMDB sample from a previously completed isolated network. The subsequent cache and prune operations ran only on a private copy.",
+    "blocks": 128,
+    "deploy_identities": 0,
+    "kept_rejections": 0,
+    "empty_rejections": 128,
+    "compressed_bytes": 1021049,
+    "copied_bodies_pruned": 128,
+    "warm_lookups_verified": 1024
+  },
+  "evidence_tier": "Finite Rust binding evidence. No formal discharge or maintainer acceptance is asserted."
+}

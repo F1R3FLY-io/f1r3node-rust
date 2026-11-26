@@ -205,17 +205,18 @@ impl KeyValueBlockStore {
         &self,
         block_hash: &BlockHash,
     ) -> Result<Option<Vec<Vec<u8>>>, KvStoreError> {
-        let entry = self.deploy_sig_entry(block_hash);
-        if let Some(sigs) = entry.rejected.get() {
-            return Ok(self.disk_contains(block_hash)?.then(|| (**sigs).clone()));
-        }
-        let bytes = match self.store.get_one(&block_hash.to_vec())? {
-            Some(bytes) => bytes,
-            None => return Ok(None),
-        };
-        let body = Self::decode_block_deploy_sigs(&bytes)?;
-        let sigs = entry.kept_rejections(body.rejected_deploys);
-        Ok(Some(Arc::unwrap_or_clone(sigs)))
+        self.with_deploy_sig_entry(block_hash, |entry| {
+            if let Some(sigs) = entry.rejected.get() {
+                return Ok(self.disk_contains(block_hash)?.then(|| (**sigs).clone()));
+            }
+            let Some(bytes) = self.store.get_one(&block_hash.to_vec())? else {
+                return Ok(None);
+            };
+            let body = Self::decode_block_deploy_sigs(&bytes)?;
+            Ok(Some(Arc::unwrap_or_clone(
+                entry.kept_rejections(body.rejected_deploys),
+            )))
+        })
     }
 
     /// Fetch deploy signatures for a block without decoding a full BlockMessage.
@@ -239,27 +240,31 @@ impl KeyValueBlockStore {
         &self,
         block_hash: &BlockHash,
     ) -> Result<Option<Arc<Vec<DeployIdentity>>>, KvStoreError> {
-        let entry = self.deploy_sig_entry(block_hash);
-        if let Some(identities) = entry.identities.get() {
-            return Ok(Some(identities.clone()));
-        }
-        Ok(self
-            .read_deploy_scope(block_hash, &entry)?
-            .map(|scope| scope.identities))
+        self.with_deploy_sig_entry(block_hash, |entry| {
+            if let Some(identities) = entry.identities.get() {
+                return Ok(Some(identities.clone()));
+            }
+            Ok(self
+                .read_deploy_scope(block_hash, entry)?
+                .map(|scope| scope.identities))
+        })
     }
 
     pub fn deploys_for_scope(
         &self,
         block_hash: &BlockHash,
     ) -> Result<Option<BlockDeployScope>, KvStoreError> {
-        let entry = self.deploy_sig_entry(block_hash);
-        if let (Some(identities), Some(rejected)) = (entry.identities.get(), entry.rejected.get()) {
-            return Ok(Some(BlockDeployScope {
-                identities: identities.clone(),
-                rejected: self.disk_contains(block_hash)?.then(|| rejected.clone()),
-            }));
-        }
-        self.read_deploy_scope(block_hash, &entry)
+        self.with_deploy_sig_entry(block_hash, |entry| {
+            if let (Some(identities), Some(rejected)) =
+                (entry.identities.get(), entry.rejected.get())
+            {
+                return Ok(Some(BlockDeployScope {
+                    identities: identities.clone(),
+                    rejected: self.disk_contains(block_hash)?.then(|| rejected.clone()),
+                }));
+            }
+            self.read_deploy_scope(block_hash, entry)
+        })
     }
 
     fn read_deploy_scope(
@@ -277,9 +282,14 @@ impl KeyValueBlockStore {
             }
         };
         let body = Self::decode_block_deploy_sigs(&bytes)?;
-        let identities = Arc::new(Self::decode_deploy_identities(block_hash, body.deploys)?);
+        let identities = match entry.identities.get() {
+            Some(identities) => identities.clone(),
+            None => {
+                let decoded = Arc::new(Self::decode_deploy_identities(block_hash, body.deploys)?);
+                entry.identities.get_or_init(|| decoded).clone()
+            }
+        };
         let rejected = entry.kept_rejections(body.rejected_deploys);
-        let _ = entry.identities.set(identities.clone());
         Ok(Some(BlockDeployScope {
             identities,
             rejected: Some(rejected),
@@ -627,17 +637,39 @@ impl KeyValueBlockStore {
         Self::compress_bytes(&block_proto.encode_to_vec())
     }
 
-    fn deploy_sig_entry(&self, hash: &BlockHash) -> Arc<DeploySigEntry> {
+    fn with_deploy_sig_entry<T>(
+        &self,
+        hash: &BlockHash,
+        read: impl FnOnce(&DeploySigEntry) -> Result<T, KvStoreError>,
+    ) -> Result<T, KvStoreError> {
+        let mut cache = Self::deploy_sig_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let owner = Arc::downgrade(&self.store);
+        if let Some(entry) = cache
+            .entries
+            .get(hash)
+            .filter(|e| e.store.ptr_eq(&owner))
+            .cloned()
+        {
+            drop(cache);
+            return read(&entry);
+        }
+        let entry = cache.begin_read(hash, owner);
+        drop(cache);
+        let result = read(&entry);
         Self::deploy_sig_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .entry(&self.store, hash)
+            .finish_read(hash, &entry);
+        result
     }
 
     fn forget_deploy_sigs(hash: &BlockHash) {
         let mut cache = Self::deploy_sig_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        cache.loading.remove(hash);
         if cache.entries.remove(hash).is_some() {
             cache.order.retain(|key| key != hash);
         }
@@ -682,6 +714,7 @@ pub struct DeployIdentity {
 struct DeploySigCache {
     entries: HashMap<BlockHash, Arc<DeploySigEntry>>,
     order: VecDeque<BlockHash>,
+    loading: HashMap<BlockHash, (Arc<DeploySigEntry>, usize)>,
 }
 
 pub struct BlockDeployScope {
@@ -690,18 +723,15 @@ pub struct BlockDeployScope {
 }
 
 impl DeploySigCache {
-    fn entry(&mut self, store: &Arc<dyn KeyValueStore>, hash: &BlockHash) -> Arc<DeploySigEntry> {
-        let owner = Arc::downgrade(store);
-        if let Some(entry) = self.entries.get(hash) {
+    fn begin_read(
+        &mut self,
+        hash: &BlockHash,
+        owner: Weak<dyn KeyValueStore>,
+    ) -> Arc<DeploySigEntry> {
+        if let Some((entry, readers)) = self.loading.get_mut(hash) {
             if entry.store.ptr_eq(&owner) {
+                *readers += 1;
                 return entry.clone();
-            }
-        } else {
-            self.order.push_back(hash.clone());
-            if self.order.len() > KeyValueBlockStore::DEPLOY_SIG_CACHE_MAX_ENTRIES {
-                if let Some(oldest) = self.order.pop_front() {
-                    self.entries.remove(&oldest);
-                }
             }
         }
         let entry = Arc::new(DeploySigEntry {
@@ -709,8 +739,33 @@ impl DeploySigCache {
             identities: OnceLock::new(),
             rejected: OnceLock::new(),
         });
-        self.entries.insert(hash.clone(), entry.clone());
+        self.loading.insert(hash.clone(), (entry.clone(), 1));
         entry
+    }
+
+    fn finish_read(&mut self, hash: &BlockHash, entry: &Arc<DeploySigEntry>) {
+        let Some((slot, readers)) = self.loading.get_mut(hash) else {
+            return;
+        };
+        if !Arc::ptr_eq(slot, entry) {
+            return;
+        }
+        if entry.identities.get().is_none() && entry.rejected.get().is_none() {
+            *readers -= 1;
+            if *readers == 0 {
+                self.loading.remove(hash);
+            }
+            return;
+        }
+        self.loading.remove(hash);
+        if self.entries.insert(hash.clone(), entry.clone()).is_none() {
+            self.order.push_back(hash.clone());
+            if self.order.len() > KeyValueBlockStore::DEPLOY_SIG_CACHE_MAX_ENTRIES {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.entries.remove(&oldest);
+                }
+            }
+        }
     }
 }
 
@@ -722,15 +777,14 @@ struct DeploySigEntry {
 
 impl DeploySigEntry {
     fn kept_rejections(&self, records: Vec<BlockDeploySigsRejectedDeploy>) -> Arc<Vec<Vec<u8>>> {
-        let sigs: Vec<_> = records
+        let mut sigs: Vec<_> = records
             .into_iter()
             .filter(|r| !r.duplicate)
             .map(|r| r.sig)
             .collect();
-        let size = sigs
-            .iter()
-            .map(|sig| size_of::<Vec<u8>>() + sig.len())
-            .sum::<usize>();
+        sigs.shrink_to_fit();
+        let size =
+            sigs.capacity() * size_of::<Vec<u8>>() + sigs.iter().map(Vec::capacity).sum::<usize>();
         let sigs = Arc::new(sigs);
         if size <= 16 * 1024 {
             let _ = self.rejected.set(sigs.clone());
@@ -1505,7 +1559,10 @@ mod tests {
         block.body.rejected_deploys.clear();
         assert_eq!(store.rejected_deploy_sigs(&hash).unwrap(), None);
         store.put_block_message(&block).unwrap();
-        let old_entry = store.deploy_sig_entry(&hash);
+        let old_entry = KeyValueBlockStore::deploy_sig_cache()
+            .lock()
+            .unwrap()
+            .begin_read(&hash, Arc::downgrade(&disk));
         let sig = vec![0xA2; 64];
         let mut replacement = block.clone();
         replacement.body.rejected_deploys.push(RejectedDeploy {
@@ -1515,6 +1572,10 @@ mod tests {
         });
         other_handle.put_block_message(&replacement).unwrap();
         old_entry.kept_rejections(Vec::new());
+        KeyValueBlockStore::deploy_sig_cache()
+            .lock()
+            .unwrap()
+            .finish_read(&hash, &old_entry);
         assert_eq!(
             store.rejected_deploy_sigs(&hash).unwrap(),
             Some(vec![sig.clone()])
@@ -1557,7 +1618,8 @@ mod tests {
         assert_eq!(first.rejected_deploy_sigs(hash).unwrap(), Some(Vec::new()));
         assert_eq!(disk.delete(vec![hash.to_vec()]).unwrap(), 1);
         assert_eq!(first.rejected_deploy_sigs(hash).unwrap(), None);
-        assert!(first.deploys_for_scope(hash).unwrap().is_none());
+        let pruned = first.deploys_for_scope(hash).unwrap().unwrap();
+        assert!(pruned.rejected.is_none());
         first
             .put_pending(&block, encoded(&block), PendingClass::Solicited)
             .unwrap();
@@ -1595,7 +1657,7 @@ mod tests {
         let (_, disk) = in_mem_store();
         let mut cache = DeploySigCache::default();
         let first_hash = BlockHash::from(vec![0xff; 32]);
-        let entry = cache.entry(&disk, &first_hash);
+        let entry = cache.begin_read(&first_hash, Arc::downgrade(&disk));
         let oversized = vec![42; 16 * 1024];
         assert_eq!(
             entry.kept_rejections(vec![BlockDeploySigsRejectedDeploy {
@@ -1605,14 +1667,105 @@ mod tests {
             Arc::new(vec![oversized])
         );
         assert!(entry.rejected.get().is_none());
-        for n in 0..KeyValueBlockStore::DEPLOY_SIG_CACHE_MAX_ENTRIES {
-            cache.entry(&disk, &BlockHash::from(n.to_le_bytes().to_vec()));
+        let mut reserved = Vec::with_capacity(16 * 1024);
+        reserved.push(42);
+        let sigs = entry.kept_rejections(vec![BlockDeploySigsRejectedDeploy {
+            sig: reserved,
+            duplicate: false,
+        }]);
+        assert_eq!(sigs.as_slice(), &[vec![42]]);
+        assert!(entry.rejected.get().is_none());
+        let duplicate = BlockDeploySigsRejectedDeploy {
+            sig: vec![1; 64],
+            duplicate: true,
+        };
+        let compact = entry.kept_rejections(vec![duplicate; 1024]);
+        assert!(compact.is_empty());
+        assert_eq!(compact.capacity(), 0);
+        cache.finish_read(&first_hash, &entry);
+        for n in 1..KeyValueBlockStore::DEPLOY_SIG_CACHE_MAX_ENTRIES {
+            let hash = BlockHash::from(n.to_le_bytes().to_vec());
+            let entry = cache.begin_read(&hash, Arc::downgrade(&disk));
+            entry.kept_rejections(vec![]);
+            cache.finish_read(&hash, &entry);
         }
+        let missing = BlockHash::from(vec![0xAA; 32]);
+        let read1 = cache.begin_read(&missing, Arc::downgrade(&disk));
+        let read2 = cache.begin_read(&missing, Arc::downgrade(&disk));
+        cache.finish_read(&missing, &read1);
+        cache.finish_read(&missing, &read2);
+        assert!(cache.loading.is_empty());
+        assert!(cache.entries.contains_key(&first_hash));
+        let entry = cache.begin_read(&missing, Arc::downgrade(&disk));
+        entry.kept_rejections(vec![]);
+        cache.finish_read(&missing, &entry);
         assert_eq!(
             cache.entries.len(),
             KeyValueBlockStore::DEPLOY_SIG_CACHE_MAX_ENTRIES
         );
         assert!(!cache.entries.contains_key(&first_hash));
+    }
+
+    #[test]
+    fn missing_and_failed_lookups_leave_pruned_identities_available() {
+        let (store, _) = in_mem_store();
+        let block = random_block();
+        store.put_block_message(&block).unwrap();
+        let ids = store.deploy_identities(&block.block_hash).unwrap().unwrap();
+        assert!(store.discard_stored(&block.block_hash).unwrap());
+        let disk = Arc::new(MockKeyValueStore::new(None));
+        let failing = KeyValueBlockStore::new(disk.clone(), Arc::new(NotImplementedKV));
+        disk.fail_reads
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        for i in 0..KeyValueBlockStore::DEPLOY_SIG_CACHE_MAX_ENTRIES {
+            let hash = BlockHash::from([b"absent".as_slice(), &i.to_le_bytes()].concat());
+            assert!(store.deploys_for_scope(&hash).unwrap().is_none());
+            assert!(failing.deploys_for_scope(&hash).is_err());
+        }
+        let scope = store.deploys_for_scope(&block.block_hash).unwrap().unwrap();
+        assert!(Arc::ptr_eq(&scope.identities, &ids));
+        assert!(scope.rejected.is_none());
+    }
+
+    #[test]
+    fn oversized_rejections_reread_the_body_and_reuse_cached_identities() {
+        use models::rust::casper::protocol::casper_message::RejectedDeploy;
+
+        let mut block = random_block();
+        let sig = vec![7; 16 * 1024];
+        block.body.rejected_deploys = vec![RejectedDeploy {
+            sig: sig.clone().into(),
+            duplicate: false,
+            carrier: block.block_hash.clone(),
+        }];
+        let disk = Arc::new(MockKeyValueStore::new(Some(
+            KeyValueBlockStore::block_proto_to_bytes(&block.to_proto()),
+        )));
+        let store = KeyValueBlockStore::new(disk.clone(), Arc::new(NotImplementedKV));
+        let identities = store.deploy_identities(&block.block_hash).unwrap().unwrap();
+        for _ in 0..2 {
+            let scope = store.deploys_for_scope(&block.block_hash).unwrap().unwrap();
+            assert!(Arc::ptr_eq(&identities, &scope.identities));
+            assert_eq!(
+                scope.rejected.unwrap().as_slice(),
+                std::slice::from_ref(&sig)
+            );
+        }
+        assert_eq!(disk.input_keys.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn pending_body_survives_a_failed_disk_presence_check() {
+        let block = random_block();
+        let disk = Arc::new(MockKeyValueStore::new(None));
+        let store = KeyValueBlockStore::new(disk.clone(), Arc::new(NotImplementedKV));
+        store
+            .put_pending(&block, encoded(&block), PendingClass::Solicited)
+            .unwrap();
+        disk.fail_reads
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(store.persist_block(&block).is_err());
+        assert!(store.is_pending(&block.block_hash));
     }
 
     #[test]
