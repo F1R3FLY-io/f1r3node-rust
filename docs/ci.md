@@ -140,17 +140,17 @@ The `DA` count can be different from the line totals that `cargo llvm-cov report
 The job checks local links and repository-hosting URLs. It excludes one immutable copy of the prior validation ledger: `docs/cbc-evidence/history/f373d6ce5659b6b342c6e7f3e5993b84d770e0e108c24f58a080ac5cfd745f58-casper-src-rust-validate-rs.md`.
 That copy retains links relative to the original ledger directory. Its bytes and content digest remain unchanged. Current ledgers and other history files still receive link checks.
 
-PR #1009 pins the integration harness to system-integration merge `e155ed6d22466747a8fa73d3a2e8d0acf84e59bb`, which includes the standalone recreation fix from PR #182.
-The change replaces stale Docker handles and preserves retired logs and their test ownership. OCI runner launcher files are unchanged from the previous pin.
+PR #1009 uses the integration harness pin of `master`, system-integration `54f89b684fb64aa0357e23d266d734782f17cb62`. It descends from merge `e155ed6d22466747a8fa73d3a2e8d0acf84e59bb`, which includes the standalone recreation fix from PR #182.
+The fix replaces stale Docker handles and preserves retired logs and their test ownership.
 
 ```yaml cross-reference
 reference:
   purpose: evidence
   repository: https://github.com/F1R3FLY-io/system-integration
   checkout: ../../system-integration
-  revision: e155ed6d22466747a8fa73d3a2e8d0acf84e59bb
+  revision: 54f89b684fb64aa0357e23d266d734782f17cb62
   path: integration-tests/test/infra/providers/docker.py
-  url: https://github.com/F1R3FLY-io/system-integration/blob/e155ed6d22466747a8fa73d3a2e8d0acf84e59bb/integration-tests/test/infra/providers/docker.py
+  url: https://github.com/F1R3FLY-io/system-integration/blob/54f89b684fb64aa0357e23d266d734782f17cb62/integration-tests/test/infra/providers/docker.py
 ```
 
 ### Commit Policy

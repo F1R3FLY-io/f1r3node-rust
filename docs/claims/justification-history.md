@@ -12,7 +12,7 @@ For every permitted arrival order, justification regression means a decrease fro
 ## Requirements
 
 1. Select the comparison block through the candidate's creator justification. Use no receiver-local latest-message entry for that selection.
-2. Compare every validator present in both justification maps, including the candidate sender. Reject a lower sequence number, also when the node holds the new witness as invalid. A node holds a witness as invalid when its twin arrived first. An exemption for it would make the verdict depend on the arrival order (PR #968).
+2. Compare every validator other than the candidate sender that is present in both justification maps. The equivocation check judges the sender's own entry, and the sequence check rejects a stale self-reference. Reject a lower sequence number, also when the node holds the new witness as invalid. A node holds a witness as invalid when its twin arrived first. An exemption for it would make the verdict depend on the arrival order (PR #968).
 3. Return `Undecidable` with the missing hash if the predecessor or either required witness is absent. A storage error must remain an error. Missing history must not become an invalid-block verdict or acceptance.
 4. Keep the earlier sequence-number validation. A stale self-reference with a sequence gap must still be rejected.
 

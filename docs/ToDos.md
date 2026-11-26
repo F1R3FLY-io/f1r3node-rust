@@ -644,7 +644,7 @@ tasks:
     notes:
       - "CI run 43350215944 exposed a pre-existing receipt-verifier cancellation test race. The test now waits for detached worker cleanup before asserting that no peer entries remain."
     acceptance:
-      - "All three harness pins name the merged system-integration PR #182 revision."
+      - "All three harness pins name system-integration 54f89b684fb64aa0357e23d266d734782f17cb62, which contains the PR #182 merge e155ed6d22466747a8fa73d3a2e8d0acf84e59bb."
       - "The immutable prior ledger retains its bytes and is excluded from current-path link checks. Current evidence links remain checked."
       - "Cleanup verification passes and renewed acceptance payloads are prepared without changing existing signatures."
       - "The PR description covers the consensus fix, pin update, validation, and remaining maintainer review."

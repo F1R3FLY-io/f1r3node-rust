@@ -5,6 +5,8 @@ VARIABLES previous, candidate, available, latest, verdict
 vars == <<previous, candidate, available, latest, verdict>>
 Validators == {0, 1}
 Seqs == 0..2
+Sender == 0
+Others == Validators \ {Sender}
 Init ==
     /\ previous \in [Validators -> Seqs]
     /\ candidate \in [Validators -> Seqs]
@@ -15,9 +17,7 @@ Pair(v, reference) ==
     IF ~available[v] THEN "deferred"
     ELSE IF candidate[v] < reference[v] THEN "rejected"
     ELSE "valid"
-Judge(reference) ==
-    IF Pair(0, reference) # "valid" THEN Pair(0, reference)
-    ELSE Pair(1, reference)
+Judge(reference) == Pair(CHOOSE v \in Others: TRUE, reference)
 Advance ==
     /\ latest = 0
     /\ latest' = 1
@@ -31,11 +31,11 @@ Next == Advance \/ Validate
 Spec == Init /\ [][Next]_vars
 HistoryRelative ==
     verdict = "pending" \/
-    ((\A v \in Validators: available[v]) => verdict = Judge(previous))
+    ((\A v \in Others: available[v]) => verdict = Judge(previous))
 MissingEvidenceNeverAccepted ==
-    verdict = "valid" => \A v \in Validators: available[v]
+    verdict = "valid" => \A v \in Others: available[v]
 GenuineRegressionRejected ==
-    (\A v \in Validators: available[v]) /\
-    (\E v \in Validators: candidate[v] < previous[v]) /\
+    (\A v \in Others: available[v]) /\
+    (\E v \in Others: candidate[v] < previous[v]) /\
     verdict # "pending" => verdict = "rejected"
 =============================================================================

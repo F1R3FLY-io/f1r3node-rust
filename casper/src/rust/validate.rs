@@ -1842,6 +1842,13 @@ impl Validate {
     }
 
     /// Justification regression check.
+    ///
+    /// Compares the justifications `b`'s own previous block cites for other
+    /// validators against those `b` cites, and rejects any that move back to a
+    /// lower sequence number. Both blocks are signed and `b` cites the
+    /// previous one, so every node holding `b` reaches the same verdict. The
+    /// sender's own entry is not compared: the equivocation check judges it.
+    /// A missing previous block or witness returns `Undecidable` with its hash.
     pub fn justification_regressions(
         b: &BlockMessage,
         s: &mut CasperSnapshot,
@@ -1859,11 +1866,6 @@ impl Validate {
                 let cur_lms =
                     proto_util::to_latest_message_hashes(&cur_senders_block.justifications);
 
-                // Self-regression is checked here too: include the sender's
-                // self-justification so a block that points back to its own
-                // earlier sequence number is detected as JustificationRegression.
-                // See docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.6.
-
                 let log_warn =
                     |current_hash: &BlockHash, regressive_hash: &BlockHash, sender: &Validator| {
                         let msg = format!(
@@ -1880,6 +1882,9 @@ impl Validate {
                 // the prior semantics; the iterator skips senders absent from
                 // `cur_lms` (no justification to compare against).
                 for (sender, new_justification_hash) in &new_lms {
+                    if *sender == b.sender {
+                        continue;
+                    }
                     let Some(cur_justification_hash) = cur_lms.get(sender) else {
                         continue;
                     };

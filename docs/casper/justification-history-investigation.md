@@ -67,7 +67,7 @@ Later settled-history admission does not make either earlier verdict correct. Th
 
 ## Fix and verification
 
-The fix selects the comparison block through the candidate's signed creator justification. It keeps all-validator comparisons and the preceding sequence check. The merge of `master` removed the invalid-witness exemption, as PR #968 did on `master`, so the verdict does not depend on which twin arrived first. Absent predecessor metadata or comparison witnesses now return `Undecidable(hash)` so ingestion can fetch them.
+The fix selects the comparison block through the candidate's signed creator justification. It keeps the comparisons for the other validators and the preceding sequence check. The sender's own entry is not compared, as on `master`. A restored node need not hold the earlier block of the sender that the predecessor cites. The merge of `master` removed the invalid-witness exemption, as PR #968 did on `master`, so the verdict does not depend on which twin arrived first. Absent predecessor metadata or comparison witnesses now return `Undecidable(hash)` so ingestion can fetch them.
 
 The deterministic catch-up regression fails against the original implementation when later sender messages arrive before the historical candidate. A genuine regression still fails before and after that arrival. The missing-evidence test also fails before the fix and checks deferral followed by rejection after hydration.
 
