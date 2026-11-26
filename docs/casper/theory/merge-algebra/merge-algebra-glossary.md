@@ -47,6 +47,8 @@ All mathematical expressions use unicode and are quoted in backticks.
 | **tagged number cell** | A channel whose name carries a registered mergeable tag (IntegerAdd, BitmaskOr). Every write to it records the tag, and the merge folds the recorded writes by the tag's merge type, so it holds exactly one datum; a two-datum IntegerAdd cell trips the IntegerAdd single-value invariant at read (safety **S7**, the finality halt), while a BitmaskOr read folds every datum by OR. Only the tag makes a channel single-valued: an untagged channel holding one integer is ordinary Rholang. |
 | **produce-only write** | A write (a produce landing in `ChannelChange.added`) that does **not** consume the base datum (`removed = ∅`). On an untagged channel it adds a message, as sequential execution would, and the merge keeps it. |
 | **folded-channel check** | `split_untagged_writes_to_folded_channels` (`dag_merger.rs`): rejects a chain that writes a channel another chain in the merge folds as a tagged number channel without recording the tag itself, and the chains that depend on it. Replaces the §3c discriminator, which classified single-value cells by datum shape (a single numeric datum) and so rejected ordinary sends to untagged channels. |
+| **cell creator** | The chain that creates a number cell: its block's pre-state held no value on the cell and its post-state does. The deploys of the block that use the cell's new value are in the same chain. A chain that writes a cell it did not create needs the cell in the base or created by a surviving chain (R-CREATOR, issue #1040). |
+| **rejection group** | A set of branches that rejection selection resolves together (`select_rejection`, `conflict_set_merger.rs`): branches joined by a conflict, or by an IntegerAdd cell on which the overdraw fold can reject a branch (a net debit, or credits that could pass the bound). A group of up to 16 branches is searched exhaustively; a larger one is resolved greedily (R-BOUND). |
 | **number / foldable channel** | A channel whose values fold (`MergeType::IntegerAdd`, `MergeType::BitmaskOr`), so concurrent updates never truly conflict; classified by `is_number_ch`; carried in `NumberChannelsDiff` (`merging_logic.rs:34`). |
 | **`EventLogIndex`** | The per-chain index of produce/consume events; `EventLogIndex::combine` — the `combine` associated function (`event_log_index.rs:343`) — is field-wise **set union**. |
 | **user / system split** | Deploys partitioned by `is_system_deploy_id` into a user and a system event-log index, then combined (`deploy_chain_index.rs:70-88`). |
@@ -68,6 +70,7 @@ All mathematical expressions use unicode and are quoted in backticks.
 | **T-RECOMPUTE** | Block validation recomputes the merge and rejects on any `(pre-state \| rejected-set)` mismatch — why determinism is load-bearing. |
 | **T-APPEND** | The comparator fix is append-only over `v0.4.16` ⟹ rolling-upgrade-safe. |
 | **T-SIBLING** | A removed chain takes with it each kept sibling that shares a non-mergeable channel with it, so no rejected or stale deploy effect reaches the merged state (S8). Rust `merging::rejected_sibling_chain_spec`. |
+| **T-CREATOR** | A chain that writes a number cell it did not create is rejected when neither the base nor a surviving chain holds the cell, so no cell is made from nothing (S9). Rust `merging::number_cell_creator_spec`. |
 
 ---
 
