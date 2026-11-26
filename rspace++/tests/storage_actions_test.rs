@@ -32,6 +32,10 @@ enum Pattern {
 struct StringMatch;
 
 impl Match<Pattern, String, StringsCaptor> for StringMatch {
+    fn pattern_size(&self, _: &Pattern) -> usize { 1 }
+
+    fn data_size(&self, a: &String) -> usize { a.len() }
+
     fn get(&self, p: &Pattern, a: &String) -> Option<String> {
         match p {
             Pattern::Wildcard => Some(a.clone()),

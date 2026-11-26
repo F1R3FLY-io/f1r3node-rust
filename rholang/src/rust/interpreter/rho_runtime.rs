@@ -23,6 +23,7 @@ use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace_interface::IReplayRSpace;
 use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
+use rspace_plus_plus::rspace::search_charge::SearchWork;
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::tuplespace_interface::Tuplespace;
 
@@ -258,13 +259,14 @@ pub trait RhoRuntime: HasCost {
 
     async fn check_replay_data(&self) -> Result<(), InterpreterError>;
 
-    /// The candidates a deploy term's searches paid for in play, recomputed
-    /// from `term_log`, its events in the rigged log, from `pre_state`.
-    async fn search_candidates(
+    /// The work of each search a deploy term paid for in play, one entry per
+    /// charge, recomputed from `term_log`, its events in the rigged log, from
+    /// `pre_state`.
+    async fn search_work(
         &self,
         pre_state: &SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         term_log: std::ops::Range<usize>,
-    ) -> Result<u64, InterpreterError>;
+    ) -> Result<Vec<SearchWork>, InterpreterError>;
 }
 
 /*
@@ -738,16 +740,12 @@ impl RhoRuntime for RhoRuntimeImpl {
         Ok(())
     }
 
-    async fn search_candidates(
+    async fn search_work(
         &self,
         pre_state: &SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         term_log: std::ops::Range<usize>,
-    ) -> Result<u64, InterpreterError> {
-        Ok(self
-            .reducer
-            .space
-            .search_candidates(pre_state, term_log)
-            .await?)
+    ) -> Result<Vec<SearchWork>, InterpreterError> {
+        Ok(self.reducer.space.search_work(pre_state, term_log).await?)
     }
 }
 

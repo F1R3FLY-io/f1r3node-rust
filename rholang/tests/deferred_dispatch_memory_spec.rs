@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use rholang::rust::interpreter::accounting::costs::{search_cost, Cost};
+use rholang::rust::interpreter::accounting::costs::{searches_cost, Cost};
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
@@ -94,13 +94,11 @@ async fn tail_recursive_contract_play_and_replay_do_not_hold_per_iteration_heap(
     let pre_state = replay_runtime.create_soft_checkpoint().await;
 
     let mut replay = evaluate_with_heap_profile(&replay_runtime, &term).await;
-    let candidates = replay_runtime
-        .search_candidates(&pre_state, term_log)
+    let work = replay_runtime
+        .search_work(&pre_state, term_log)
         .await
         .expect("walking the replay log failed");
-    replay
-        .result
-        .charge_search(search_cost(candidates), i64::MAX);
+    replay.result.charge_search(searches_cost(&work), i64::MAX);
     assert!(
         replay.result.errors.is_empty(),
         "replay errors: {:?}",

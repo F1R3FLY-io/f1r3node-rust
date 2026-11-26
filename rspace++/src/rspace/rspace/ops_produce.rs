@@ -19,7 +19,7 @@ use crate::rspace::metrics_constants::{
 use crate::rspace::rspace_interface::{
     MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult,
 };
-use crate::rspace::search_charge;
+use crate::rspace::search_charge::{self, SearchWork};
 use crate::rspace::space_matcher::SpaceMatcher;
 use crate::rspace::trace::event::{COMM, Produce};
 
@@ -128,9 +128,30 @@ where
         self.run_matcher_for_channels(
             grouped_channels,
             bat_channel,
+            data,
             fetch_matching_continuations,
             fetch_matching_data,
         )
+    }
+
+    /// The work a send's search of one join group could do: each waiting
+    /// receive tried against the data on every channel of the group, whose
+    /// counts and summed sizes are `totals` in the group's order.
+    fn join_work<'p>(
+        &self,
+        receives: impl Iterator<Item = &'p Vec<P>>,
+        totals: &[(usize, usize)],
+    ) -> SearchWork
+    where
+        P: 'p,
+    {
+        let mut work = SearchWork::default();
+        for patterns in receives {
+            for (pattern, (count, size)) in patterns.iter().zip(totals) {
+                work += SearchWork::of(*count, *size, self.matcher.pattern_size(pattern), 1);
+            }
+        }
+        work
     }
 
     fn process_match_found(
@@ -207,6 +228,7 @@ where
         &self,
         grouped_channels: Vec<Vec<C>>,
         bat_channel: &C,
+        sent: &Datum<A>,
         fetch_matching_continuations: impl Fn(
             Vec<C>,
         )
@@ -232,13 +254,25 @@ where
 
             if !charged.contains(&channels) {
                 charged.push(channels);
-                search_charge::charge(search_charge::join_candidates(
-                    match_candidates.len(),
-                    channels
-                        .iter()
-                        .map(|channel| channel_to_indexed_data[channel].len())
-                        .sum(),
-                ))?;
+                let totals: Vec<(usize, usize)> = channels
+                    .iter()
+                    .map(|channel| {
+                        let data = &channel_to_indexed_data[channel];
+                        let size = data
+                            .iter()
+                            .map(|(datum, _)| self.matcher.data_size(&datum.a))
+                            .sum();
+                        (data.len(), size)
+                    })
+                    .collect();
+                search_charge::charge(
+                    self.join_work(
+                        match_candidates
+                            .iter()
+                            .map(|(continuation, _)| &continuation.patterns),
+                        &totals,
+                    ),
+                )?;
             }
 
             let t_match = Instant::now();
@@ -258,15 +292,25 @@ where
                         continue;
                     }
                     charged.push(rest);
-                    let data: usize = rest
+                    let totals: Vec<(usize, usize)> = rest
                         .iter()
                         .map(|channel| {
-                            store.get_data_arc(channel).len() + usize::from(channel == bat_channel)
+                            let data = store.get_data_arc(channel);
+                            let size: usize = data
+                                .iter()
+                                .map(|datum| self.matcher.data_size(&datum.a))
+                                .sum();
+                            if channel == bat_channel {
+                                (data.len() + 1, size + self.matcher.data_size(&sent.a))
+                            } else {
+                                (data.len(), size)
+                            }
                         })
-                        .sum();
-                    search_charge::charge(search_charge::join_candidates(
-                        store.get_continuations_arc(rest).len(),
-                        data,
+                        .collect();
+                    let waiting = store.get_continuations_arc(rest);
+                    search_charge::charge(self.join_work(
+                        waiting.iter().map(|continuation| &continuation.patterns),
+                        &totals,
                     ))?;
                 }
                 return Ok(Some(produce_candidate));

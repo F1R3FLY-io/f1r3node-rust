@@ -2004,8 +2004,8 @@ async fn replaycomputestate_should_catch_discrepancies_in_initial_and_replay_cos
             initial_cost,
             replay_cost,
         })) => {
-            assert_eq!(initial_cost, 325);
-            assert_eq!(replay_cost, 326);
+            assert_eq!(initial_cost, 329);
+            assert_eq!(replay_cost, 330);
         }
         _ => panic!("Expected ReplayCostMismatch error"),
     }

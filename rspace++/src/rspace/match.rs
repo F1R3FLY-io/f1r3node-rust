@@ -16,6 +16,14 @@ pub trait Match<P, A, K>: Send + Sync {
     // Only the matched result (Option<A>) is allocated, on success.
     fn get(&self, p: &P, a: &A) -> Option<A>;
 
+    /// The size of a pattern, in the unit `get`'s work grows with: matching
+    /// `p` against `a` costs at most in proportion to
+    /// `pattern_size(p) + data_size(a)`.
+    fn pattern_size(&self, p: &P) -> usize;
+
+    /// The size of a datum, in the same unit as `pattern_size`.
+    fn data_size(&self, a: &A) -> usize;
+
     /// Called once per candidate consume after every spatial bind has
     /// matched and the continuation is about to commit. Default is
     /// always-true (no guard, no veto). Returning `false` rolls the

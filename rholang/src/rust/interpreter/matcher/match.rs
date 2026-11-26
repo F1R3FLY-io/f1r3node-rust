@@ -66,6 +66,13 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
         }
     }
 
+    fn pattern_size(&self, pattern: &BindPattern) -> usize { pattern.encoded_len() }
+
+    // Matching walks the data's terms, never its random state.
+    fn data_size(&self, data: &ListParWithRandom) -> usize {
+        data.pars.iter().map(|par| par.encoded_len()).sum()
+    }
+
     /// Cross-channel `where`-clause guard. Called by the matcher
     /// coordinator after every spatial bind has produced a
     /// `ListParWithRandom`. The bound variables of every bind are

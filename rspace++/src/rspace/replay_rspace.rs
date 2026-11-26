@@ -33,7 +33,7 @@ use super::metrics_constants::{
 use super::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceResult,
 };
-use super::search_charge;
+use super::search_charge::{self, SearchWork, TermOperations};
 use super::striped_locks::{self, ChannelLockGuard};
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
@@ -68,13 +68,15 @@ pub struct ReplayRSpace<C, P, A, K> {
     // to the full multiset scan, so behavior is unchanged in edge cases.
     consume_replay_index:
         Arc<Mutex<HashMap<Blake2b256Hash, HashMap<Blake2b256Hash, Vec<Arc<COMM>>>>>>,
-    // The rigged log in recorded order, every channel replay has used since
-    // by hash, and the channels of every receive it has made, in the order
-    // they are stored under, by the receive's hash: what recomputing a
-    // deploy's search charge reads.
+    // The rigged log in recorded order, and since then every channel replay
+    // has used by hash, the channels of every receive it has made, in the
+    // order they are stored under, with its patterns' sizes, by the receive's
+    // hash, and the size of every datum it has sent, by the datum's hash: what
+    // recomputing a deploy's search charge reads.
     rigged_log: Arc<Mutex<Log>>,
     channels: Arc<dashmap::DashMap<Blake2b256Hash, C>>,
-    receive_channels: Arc<dashmap::DashMap<Blake2b256Hash, Vec<C>>>,
+    receives: Arc<dashmap::DashMap<Blake2b256Hash, (Vec<C>, Vec<usize>)>>,
+    data_sizes: Arc<dashmap::DashMap<Blake2b256Hash, usize>>,
     logger: Arc<Mutex<Box<dyn RSpaceLogger<C, P, A, K>>>>,
     replay_waiting_continuations_estimate: Arc<AtomicI64>,
     // Fixed-size striped locks — mirrors the RSpace fix in rspace.rs (PR #72).
@@ -302,9 +304,15 @@ where
             for channel in &channels {
                 self.note_channel(&hash(channel), channel);
             }
-            self.receive_channels
+            self.receives
                 .entry(consume_ref.hash.clone())
-                .or_insert_with(|| channels.clone());
+                .or_insert_with(|| {
+                    let sizes = patterns
+                        .iter()
+                        .map(|p| self.matcher.pattern_size(p))
+                        .collect();
+                    (channels.clone(), sizes)
+                });
             let channel_hashes: Vec<u64> = channels
                 .iter()
                 .map(|ch| striped_locks::channel_hash(ch))
@@ -329,6 +337,9 @@ where
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
         let produce_ref = Produce::create(&channel, &data, persist);
         self.note_channel(&produce_ref.channel_hash, &channel);
+        self.data_sizes
+            .entry(produce_ref.hash.clone())
+            .or_insert_with(|| self.matcher.data_size(&data));
         let _lock_guard = self.produce_lock(&channel).await;
         metrics::counter!("replay_rspace.produce.calls", "source" => "rspace").increment(1);
         let start = Instant::now();
@@ -404,16 +415,17 @@ where
         drop(new_stuff);
 
         self.channels.clear();
-        self.receive_channels.clear();
+        self.receives.clear();
+        self.data_sizes.clear();
         *self.rigged_log.lock().expect("rigged log lock") = log;
         Ok(())
     }
 
-    async fn search_candidates(
+    async fn search_work(
         &self,
         pre_state: &SoftCheckpoint<C, P, A, K>,
         term_log: std::ops::Range<usize>,
-    ) -> Result<u64, RSpaceError> {
+    ) -> Result<Vec<SearchWork>, RSpaceError> {
         let log = self.rigged_log.lock().expect("rigged log lock");
         let term = log.get(term_log.clone()).ok_or_else(|| {
             RSpaceError::SearchMismatch(format!(
@@ -429,17 +441,24 @@ where
             pre_state.cache_snapshot.clone(),
             history_reader.base(),
         );
-        let channels: HashMap<Blake2b256Hash, C> = self
-            .channels
-            .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
-            .collect();
-        let receive_channels: HashMap<Blake2b256Hash, Vec<C>> = self
-            .receive_channels
-            .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
-            .collect();
-        search_charge::walk_candidates(&*store, &channels, &receive_channels, term)
+        let operations = TermOperations {
+            channels: self
+                .channels
+                .iter()
+                .map(|entry| (entry.key().clone(), entry.value().clone()))
+                .collect(),
+            receives: self
+                .receives
+                .iter()
+                .map(|entry| (entry.key().clone(), entry.value().clone()))
+                .collect(),
+            data_sizes: self
+                .data_sizes
+                .iter()
+                .map(|entry| (entry.key().clone(), *entry.value()))
+                .collect(),
+        };
+        search_charge::walk_work(&*store, self.matcher.as_ref().as_ref(), &operations, term)
     }
 
     async fn check_replay_data(&self) -> Result<(), RSpaceError> {
@@ -543,7 +562,8 @@ where
             consume_replay_index: Arc::new(Mutex::new(HashMap::new())),
             rigged_log: Arc::new(Mutex::new(Vec::new())),
             channels: Arc::new(dashmap::DashMap::new()),
-            receive_channels: Arc::new(dashmap::DashMap::new()),
+            receives: Arc::new(dashmap::DashMap::new()),
+            data_sizes: Arc::new(dashmap::DashMap::new()),
             logger: Arc::new(Mutex::new(Box::new(BasicLogger::new()))),
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
             phase_a_locks: Self::new_striped_locks(),
@@ -575,7 +595,8 @@ where
             consume_replay_index: Arc::new(Mutex::new(HashMap::new())),
             rigged_log: Arc::new(Mutex::new(Vec::new())),
             channels: Arc::new(dashmap::DashMap::new()),
-            receive_channels: Arc::new(dashmap::DashMap::new()),
+            receives: Arc::new(dashmap::DashMap::new()),
+            data_sizes: Arc::new(dashmap::DashMap::new()),
             logger: Arc::new(Mutex::new(logger)),
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
             phase_a_locks: Self::new_striped_locks(),
@@ -1398,6 +1419,10 @@ mod tests {
     struct AlwaysMatch;
 
     impl Match<Wildcard, String, String> for AlwaysMatch {
+        fn pattern_size(&self, _: &Wildcard) -> usize { 1 }
+
+        fn data_size(&self, a: &String) -> usize { a.len() }
+
         fn get(&self, _: &Wildcard, a: &String) -> Option<String> { Some(a.clone()) }
     }
 

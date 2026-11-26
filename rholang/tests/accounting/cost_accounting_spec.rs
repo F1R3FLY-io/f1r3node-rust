@@ -233,28 +233,28 @@ fn contracts() -> Vec<(String, Expected)> {
       (String::from("@0!(2)"), Exactly(97)),
       (String::from("@0!(2) | @1!(1)"), Exactly(197)),
       (String::from("for(x <- @0){ Nil }"), Exactly(128)),
-      (String::from("for(x <- @0){ Nil } | @0!(2)"), Exactly(333)),
-      (String::from("@0!!(0) | for (_ <- @0) { 0 }"), Exactly(346)),
-      (String::from("@0!!(0) | for (x <- @0) { 0 }"), Exactly(346)),
-      (String::from("@0!!(0) | for (@0 <- @0) { 0 }"), Exactly(340)),
+      (String::from("for(x <- @0){ Nil } | @0!(2)"), Exactly(340)),
+      (String::from("@0!!(0) | for (_ <- @0) { 0 }"), Exactly(352)),
+      (String::from("@0!!(0) | for (x <- @0) { 0 }"), Exactly(353)),
+      (String::from("@0!!(0) | for (@0 <- @0) { 0 }"), Exactly(344)),
       (String::from("@0!!(0) | @0!!(0) | for (_ <- @0) { 0 }"), OrderDependent { without_search: 444 }),
       (String::from("@0!!(0) | @1!!(1) | for (_ <- @0 & _ <- @1) { 0 }"), OrderDependent { without_search: 597 }),
-      (String::from("@0!(0) | for (_ <- @0) { 0 }"), Exactly(337)),
-      (String::from("@0!(0) | for (x <- @0) { 0 }"), Exactly(337)),
-      (String::from("@0!(0) | for (@0 <- @0) { 0 }"), Exactly(331)),
-      (String::from("@0!(0) | for (_ <= @0) { 0 }"), Exactly(358)),
-      (String::from("@0!(0) | for (x <= @0) { 0 }"), Exactly(360)),
-      (String::from("@0!(0) | for (@0 <= @0) { 0 }"), Exactly(345)),
+      (String::from("@0!(0) | for (_ <- @0) { 0 }"), Exactly(343)),
+      (String::from("@0!(0) | for (x <- @0) { 0 }"), Exactly(344)),
+      (String::from("@0!(0) | for (@0 <- @0) { 0 }"), Exactly(335)),
+      (String::from("@0!(0) | for (_ <= @0) { 0 }"), Exactly(364)),
+      (String::from("@0!(0) | for (x <= @0) { 0 }"), Exactly(367)),
+      (String::from("@0!(0) | for (@0 <= @0) { 0 }"), Exactly(349)),
       (String::from("@0!(0) | @0!(0) | for (_ <= @0) { 0 }"), OrderDependent { without_search: 576 }),
       (String::from("@0!(0) | for (@0 <- @0) { 0 } | @0!(0) | for (_ <- @0) { 0 }"), OrderDependent { without_search: 665 }),
       (String::from("@0!(0) | for (@0 <- @0) { 0 } | @0!(0) | for (@1 <- @0) { 0 }"), OrderDependent { without_search: 552 }),
-      (String::from("@0!(0) | for (_ <<- @0) { 0 }"), Exactly(410)),
-      (String::from("@0!!(0) | for (_ <<- @0) { 0 }"), Exactly(347)),
+      (String::from("@0!(0) | for (_ <<- @0) { 0 }"), Exactly(416)),
+      (String::from("@0!!(0) | for (_ <<- @0) { 0 }"), Exactly(353)),
       (String::from("@0!!(0) | @0!!(0) | for (_ <<- @0) { 0 }"), OrderDependent { without_search: 445 }),
-      (String::from("new loop in {\n  contract loop(@n) = {\n    match n {\n      0 => Nil\n      _ => loop!(n-1)\n    }\n  } |\n  loop!(10)\n}"), Exactly(3969)),
-      (String::from("42 | @0!(2) | for (x <- @0) { Nil }"), Exactly(340)),
-      (String::from("@1!(1) |\n        for(x <- @1) { Nil } |\n        new x in { x!(10) | for(X <- x) { @2!(Set(X!(7)).add(*X).contains(10)) }} |\n        match 42 {\n          38 => Nil\n          42 =>\n@3!(42)\n        }\n     "), Exactly(1320)),
-      (String::from("new ret, keccak256Hash(`rho:crypto:keccak256Hash`) in {\n  keccak256Hash!(\"TEST\".toByteArray(), *ret) |\n  for (_ <- ret) { Nil }\n}"), Exactly(795)),
+      (String::from("new loop in {\n  contract loop(@n) = {\n    match n {\n      0 => Nil\n      _ => loop!(n-1)\n    }\n  } |\n  loop!(10)\n}"), Exactly(4046)),
+      (String::from("42 | @0!(2) | for (x <- @0) { Nil }"), Exactly(347)),
+      (String::from("@1!(1) |\n        for(x <- @1) { Nil } |\n        new x in { x!(10) | for(X <- x) { @2!(Set(X!(7)).add(*X).contains(10)) }} |\n        match 42 {\n          38 => Nil\n          42 =>\n@3!(42)\n        }\n     "), Exactly(1334)),
+      (String::from("new ret, keccak256Hash(`rho:crypto:keccak256Hash`) in {\n  keccak256Hash!(\"TEST\".toByteArray(), *ret) |\n  for (_ <- ret) { Nil }\n}"), Exactly(839)),
     ]
 }
 
@@ -593,7 +593,10 @@ async fn byte_array_append_is_charged_by_both_operands() {
 async fn a_map_remainder_is_charged_for_every_entry_it_takes() {
     let mut charged = Vec::new();
     for entries in [10usize, 1_000] {
-        let map = (0..entries).map(|i| format!("{i}: {i}")).collect::<Vec<_>>().join(", ");
+        let map = (0..entries)
+            .map(|i| format!("{i}: {i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let contract = format!("match {{{map}}} {{ {{0: 0 ...rest}} => @0!(1) _ => Nil }}");
         let steps: i64 = charges(contract, "match steps").await.iter().sum();
         assert!(

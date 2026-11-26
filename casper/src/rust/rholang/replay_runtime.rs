@@ -11,7 +11,7 @@ use models::rust::casper::protocol::casper_message::{
     Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
-use rholang::rust::interpreter::accounting::costs::search_cost;
+use rholang::rust::interpreter::accounting::costs::searches_cost;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
@@ -484,10 +484,10 @@ impl ReplayRuntimeOps {
         // Replay follows the recorded COMMs instead of searching, so what the
         // searches cost comes from play's log.
         if user_eval_result.pays_for_search() {
-            let candidates = self
+            let work = self
                 .runtime_ops
                 .runtime
-                .search_candidates(&fallback, processed_deploy.user_log.clone())
+                .search_work(&fallback, processed_deploy.user_log.clone())
                 .await
                 .map_err(|error| match error {
                     InterpreterError::RSpaceError(RSpaceError::SearchMismatch(detail)) => {
@@ -496,7 +496,7 @@ impl ReplayRuntimeOps {
                     error => CasperError::InterpreterError(error),
                 })?;
             user_eval_result.charge_search(
-                search_cost(candidates),
+                searches_cost(&work),
                 processed_deploy.deploy.data.phlo_limit,
             );
         }

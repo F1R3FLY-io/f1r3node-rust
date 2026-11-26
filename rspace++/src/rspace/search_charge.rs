@@ -1,21 +1,52 @@
-// A send or receive pays, before it searches, for every candidate it could
-// examine: a receive for the data waiting on its channels, a send for the data
-// each waiting receive on its channel could take. Replay does not search; it
+// A send or receive pays, before it searches, for the work its search could
+// do: every datum and pattern pair it could try, and how large each pair is. A
+// receive pays for the data waiting on its channels; a send for the data each
+// waiting receive on its channel could take. Replay does not search; it
 // recomputes the same charge from the deploy's log.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::ops::AddAssign;
 use std::sync::Arc;
 
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::hashing::stable_hash_provider::hash;
 use super::hot_store::HotStore;
+use super::r#match::Match;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
 
-/// Pays for a search over the given number of candidates; `false` when the
-/// deploy cannot.
-pub type SearchCharger = Arc<dyn Fn(u64) -> bool + Send + Sync>;
+/// What one search could examine: the datum and pattern pairs it could try,
+/// and the sum of each pair's sizes as the matcher measures them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SearchWork {
+    pub candidates: u64,
+    pub bytes: u64,
+}
+
+impl SearchWork {
+    /// `count` data, `size` in all, each tried against a pattern of
+    /// `pattern_size`, by `receives` receives.
+    pub(crate) fn of(count: usize, size: usize, pattern_size: usize, receives: usize) -> Self {
+        let receives = receives as u64;
+        SearchWork {
+            candidates: receives.saturating_mul(count as u64),
+            bytes: receives.saturating_mul(
+                (size as u64).saturating_add((count as u64).saturating_mul(pattern_size as u64)),
+            ),
+        }
+    }
+}
+
+impl AddAssign for SearchWork {
+    fn add_assign(&mut self, other: Self) {
+        self.candidates = self.candidates.saturating_add(other.candidates);
+        self.bytes = self.bytes.saturating_add(other.bytes);
+    }
+}
+
+/// Pays for one search; `false` when the deploy cannot.
+pub type SearchCharger = Arc<dyn Fn(SearchWork) -> bool + Send + Sync>;
 
 tokio::task_local! {
     static CHARGER: SearchCharger;
@@ -27,53 +58,62 @@ pub async fn charged<F: Future>(charger: SearchCharger, future: F) -> F::Output 
     CHARGER.scope(charger, future).await
 }
 
-/// Charges the running operation for `candidates`. An operation run outside
+/// Charges the running operation for `work`. An operation run outside
 /// [[charged]] belongs to a space that charges nothing, such as replay's.
-pub(crate) fn charge(candidates: u64) -> Result<(), RSpaceError> {
-    match CHARGER.try_with(|charger| charger(candidates)) {
+pub(crate) fn charge(work: SearchWork) -> Result<(), RSpaceError> {
+    match CHARGER.try_with(|charger| charger(work)) {
         Ok(true) | Err(_) => Ok(()),
         Ok(false) => Err(RSpaceError::OutOfPhlogistons),
     }
-}
-
-/// The candidates a receive on `channels` pays for, given how much data waits
-/// on each.
-pub(crate) fn consume_candidates(data_on: impl Iterator<Item = usize>) -> u64 {
-    data_on.map(|n| n as u64).sum()
-}
-
-/// The candidates a send pays for in one join group: each waiting receive
-/// could take the data on every channel of the group, the sent datum included.
-pub(crate) fn join_candidates(receives: usize, data_on_group: usize) -> u64 {
-    receives as u64 * data_on_group as u64
 }
 
 /// A receive's channel hashes in the order its channels are stored under.
 /// Receives on the same channels in another order wait in another group.
 type Group = Vec<Blake2b256Hash>;
 
+/// The data waiting on one channel, by datum hash, with their count and
+/// summed size.
+#[derive(Default)]
+struct Waiting {
+    data: HashMap<Blake2b256Hash, usize>,
+    count: usize,
+    size: usize,
+}
+
+/// What replay saw a deploy's term make: each channel by hash, each receive's
+/// channels in the order it named them with its patterns' sizes, and each
+/// datum's size, by the receive's and the datum's hashes.
+pub struct TermOperations<C> {
+    pub channels: HashMap<Blake2b256Hash, C>,
+    pub receives: HashMap<Blake2b256Hash, (Vec<C>, Vec<usize>)>,
+    pub data_sizes: HashMap<Blake2b256Hash, usize>,
+}
+
 /// The waiting data and receives a deploy's term saw, rebuilt in log order.
 struct Walk<'a, C, P, A, K> {
     store: &'a dyn HotStore<C, P, A, K>,
+    matcher: &'a dyn Match<P, A, K>,
     channels: HashMap<Blake2b256Hash, C>,
     groups: HashMap<Blake2b256Hash, Group>,
-    data: HashMap<Blake2b256Hash, HashMap<Blake2b256Hash, usize>>,
+    pattern_sizes: HashMap<Blake2b256Hash, Vec<usize>>,
+    data_sizes: HashMap<Blake2b256Hash, usize>,
+    data: HashMap<Blake2b256Hash, Waiting>,
     receives: HashMap<Group, HashMap<Blake2b256Hash, usize>>,
     joins: HashMap<Blake2b256Hash, HashSet<Group>>,
     latest: HashMap<Blake2b256Hash, usize>,
 }
 
-/// The candidates the searches of `log` paid for: `log` is the events one
-/// deploy's term logged, in the order play performed them, `store` the state
-/// the term started from, `channels` each channel the term used, by hash, and
-/// `receive_channels` the channels of each receive the term made, in the
-/// order it named them, by the receive's hash.
-pub fn walk_candidates<C, P, A, K>(
+/// The work each charge for the searches of `log` paid for: one per receive
+/// and one per join group a send searched, as play charges them. `log` is the
+/// events one deploy's term logged, in the order play
+/// performed them, `store` the state the term started from, and `term` what
+/// replay saw the term make.
+pub fn walk_work<C, P, A, K>(
     store: &dyn HotStore<C, P, A, K>,
-    channels: &HashMap<Blake2b256Hash, C>,
-    receive_channels: &HashMap<Blake2b256Hash, Vec<C>>,
+    matcher: &dyn Match<P, A, K>,
+    term: &TermOperations<C>,
     log: &[Event],
-) -> Result<u64, RSpaceError>
+) -> Result<Vec<SearchWork>, RSpaceError>
 where
     C: Clone + serde::Serialize + std::hash::Hash + Eq,
     P: Clone,
@@ -82,31 +122,39 @@ where
 {
     let mut walk = Walk {
         store,
-        channels: channels.clone(),
-        groups: receive_channels
+        matcher,
+        channels: term.channels.clone(),
+        groups: term
+            .receives
             .iter()
-            .map(|(receive, channels)| (receive.clone(), channels.iter().map(hash).collect()))
+            .map(|(receive, (channels, _))| (receive.clone(), channels.iter().map(hash).collect()))
             .collect(),
+        pattern_sizes: term
+            .receives
+            .iter()
+            .map(|(receive, (_, sizes))| (receive.clone(), sizes.clone()))
+            .collect(),
+        data_sizes: term.data_sizes.clone(),
         data: HashMap::new(),
         receives: HashMap::new(),
         joins: HashMap::new(),
         latest: HashMap::new(),
     };
-    let mut candidates = 0u64;
+    let mut work = Vec::new();
     for (position, event) in log.iter().enumerate() {
         match event {
             Event::IoEvent(IOEvent::Produce(produce)) => {
-                candidates += walk.produce(produce)?;
+                work.extend(walk.produce(produce)?);
                 walk.latest.insert(produce.hash.clone(), position);
             }
             Event::IoEvent(IOEvent::Consume(consume)) => {
-                candidates += walk.consume(consume)?;
+                work.push(walk.consume(consume)?);
                 walk.latest.insert(consume.hash.clone(), position);
             }
             Event::Comm(comm) => walk.comm(comm)?,
         }
     }
-    Ok(candidates)
+    Ok(work)
 }
 
 fn mismatch(detail: String) -> RSpaceError { RSpaceError::SearchMismatch(detail) }
@@ -124,26 +172,39 @@ where
         })
     }
 
-    fn data_on(
-        &mut self,
-        channel_hash: &Blake2b256Hash,
-    ) -> Result<&mut HashMap<Blake2b256Hash, usize>, RSpaceError> {
+    fn data_size(&self, datum: &Blake2b256Hash) -> Result<usize, RSpaceError> {
+        self.data_sizes.get(datum).copied().ok_or_else(|| {
+            mismatch(format!(
+                "the log names datum {datum}, which replay never sent and no search found waiting"
+            ))
+        })
+    }
+
+    fn data_on(&mut self, channel_hash: &Blake2b256Hash) -> Result<&mut Waiting, RSpaceError> {
         if !self.data.contains_key(channel_hash) {
-            let mut waiting = HashMap::new();
+            let mut waiting = Waiting::default();
             for datum in self.store.get_data_arc(self.channel(channel_hash)?) {
-                *waiting.entry(datum.source.hash.clone()).or_default() += 1;
+                let size = *self
+                    .data_sizes
+                    .entry(datum.source.hash.clone())
+                    .or_insert_with(|| self.matcher.data_size(&datum.a));
+                *waiting.data.entry(datum.source.hash.clone()).or_default() += 1;
+                waiting.count += 1;
+                waiting.size += size;
             }
             self.data.insert(channel_hash.clone(), waiting);
         }
         Ok(self.data.get_mut(channel_hash).expect("loaded above"))
     }
 
-    fn data_count(&mut self, channel_hash: &Blake2b256Hash) -> Result<usize, RSpaceError> {
-        Ok(self.data_on(channel_hash)?.values().sum())
+    /// The count and summed size of the data waiting on a channel.
+    fn totals(&mut self, channel_hash: &Blake2b256Hash) -> Result<(usize, usize), RSpaceError> {
+        let waiting = self.data_on(channel_hash)?;
+        Ok((waiting.count, waiting.size))
     }
 
     /// The receives waiting in `group`. Loading them from the store records
-    /// the group of each.
+    /// the group and pattern sizes of each.
     fn receives_on(
         &mut self,
         group: &Group,
@@ -158,6 +219,15 @@ where
                 self.groups
                     .entry(receive.source.hash.clone())
                     .or_insert_with(|| group.clone());
+                self.pattern_sizes
+                    .entry(receive.source.hash.clone())
+                    .or_insert_with(|| {
+                        receive
+                            .patterns
+                            .iter()
+                            .map(|pattern| self.matcher.pattern_size(pattern))
+                            .collect()
+                    });
                 *waiting.entry(receive.source.hash.clone()).or_default() += 1;
             }
             self.receives.insert(group.clone(), waiting);
@@ -174,6 +244,13 @@ where
                  waiting"
             ))
         })
+    }
+
+    fn pattern_sizes_of(&self, receive: &Blake2b256Hash) -> Vec<usize> {
+        self.pattern_sizes
+            .get(receive)
+            .cloned()
+            .expect("a receive's pattern sizes are recorded with its group")
     }
 
     /// The join groups on a channel, each with its waiting receives loaded.
@@ -196,40 +273,55 @@ where
         Ok(self.joins.get_mut(channel_hash).expect("loaded above"))
     }
 
-    fn produce(&mut self, produce: &Produce) -> Result<u64, RSpaceError> {
+    fn produce(&mut self, produce: &Produce) -> Result<Vec<SearchWork>, RSpaceError> {
+        let sent_size = self.data_size(&produce.hash)?;
         let groups: Vec<Group> = self
             .joins_on(&produce.channel_hash)?
             .iter()
             .cloned()
             .collect();
-        let mut candidates = 0;
+        let mut charges = Vec::with_capacity(groups.len());
         for group in groups {
-            let receives: usize = self
+            let mut work = SearchWork::default();
+            let mut totals = Vec::with_capacity(group.len());
+            for channel_hash in &group {
+                let (count, size) = self.totals(channel_hash)?;
+                totals.push(if *channel_hash == produce.channel_hash {
+                    (count + 1, size + sent_size)
+                } else {
+                    (count, size)
+                });
+            }
+            let receives: Vec<(Blake2b256Hash, usize)> = self
                 .receives
                 .get(&group)
                 .expect("every join group is loaded with its receives")
-                .values()
-                .sum();
-            let mut data = 0;
-            for channel_hash in &group {
-                data += self.data_count(channel_hash)? +
-                    usize::from(*channel_hash == produce.channel_hash);
+                .iter()
+                .map(|(receive, count)| (receive.clone(), *count))
+                .collect();
+            for (receive, count) in receives {
+                for ((data, size), pattern_size) in
+                    totals.iter().zip(self.pattern_sizes_of(&receive))
+                {
+                    work += SearchWork::of(*data, *size, pattern_size, count);
+                }
             }
-            candidates += join_candidates(receives, data);
+            charges.push(work);
         }
-        *self
-            .data_on(&produce.channel_hash)?
-            .entry(produce.hash.clone())
-            .or_default() += 1;
-        Ok(candidates)
+        let waiting = self.data_on(&produce.channel_hash)?;
+        *waiting.data.entry(produce.hash.clone()).or_default() += 1;
+        waiting.count += 1;
+        waiting.size += sent_size;
+        Ok(charges)
     }
 
-    fn consume(&mut self, consume: &Consume) -> Result<u64, RSpaceError> {
-        let mut data = Vec::with_capacity(consume.channel_hashes.len());
-        for channel_hash in &consume.channel_hashes {
-            data.push(self.data_count(channel_hash)?);
-        }
+    fn consume(&mut self, consume: &Consume) -> Result<SearchWork, RSpaceError> {
         let group = self.group_of(&consume.hash)?;
+        let mut work = SearchWork::default();
+        for (channel_hash, pattern_size) in group.iter().zip(self.pattern_sizes_of(&consume.hash)) {
+            let (count, size) = self.totals(channel_hash)?;
+            work += SearchWork::of(count, size, pattern_size, 1);
+        }
         *self
             .receives_on(&group)?
             .entry(consume.hash.clone())
@@ -237,7 +329,7 @@ where
         for channel_hash in &group {
             self.joins_on(channel_hash)?.insert(group.clone());
         }
-        Ok(consume_candidates(data.into_iter()))
+        Ok(work)
     }
 
     /// Removes what a COMM consumed. The participant logged last is the
@@ -264,7 +356,11 @@ where
         }
         for (produce, position) in comm.produces.iter().zip(produce_positions) {
             if !produce.persistent || triggered(position) {
-                take(self.data_on(&produce.channel_hash)?, &produce.hash, "datum")?;
+                let size = self.data_size(&produce.hash)?;
+                let waiting = self.data_on(&produce.channel_hash)?;
+                take(&mut waiting.data, &produce.hash, "datum")?;
+                waiting.count -= 1;
+                waiting.size -= size;
             }
         }
         Ok(())

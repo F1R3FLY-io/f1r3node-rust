@@ -13,7 +13,7 @@ use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceResult,
 };
-use rspace_plus_plus::rspace::search_charge::{self, SearchCharger};
+use rspace_plus_plus::rspace::search_charge::{self, SearchCharger, SearchWork};
 use rspace_plus_plus::rspace::trace::event::Produce;
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::util::unpack_option;
@@ -258,12 +258,12 @@ impl ChargingRSpace {
                 self.space.check_replay_data().await
             }
 
-            async fn search_candidates(
+            async fn search_work(
                 &self,
                 pre_state: &SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
                 term_log: std::ops::Range<usize>,
-            ) -> Result<u64, RSpaceError> {
-                self.space.search_candidates(pre_state, term_log).await
+            ) -> Result<Vec<SearchWork>, RSpaceError> {
+                self.space.search_work(pre_state, term_log).await
             }
 
             async fn is_replay(&self) -> bool { self.space.is_replay().await }
@@ -282,7 +282,7 @@ impl ChargingRSpace {
 
         let search_charger: SearchCharger = {
             let cost = cost.clone();
-            Arc::new(move |candidates| cost.charge(search_cost(candidates)).is_ok())
+            Arc::new(move |work| cost.charge(search_cost(work)).is_ok())
         };
         ChargingRSpace {
             space,

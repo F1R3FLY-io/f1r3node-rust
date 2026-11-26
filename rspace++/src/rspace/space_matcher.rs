@@ -223,6 +223,10 @@ mod tests {
     struct PatternMatch;
 
     impl Match<Pattern, String, String> for PatternMatch {
+        fn pattern_size(&self, _: &Pattern) -> usize { 1 }
+
+        fn data_size(&self, a: &String) -> usize { a.len() }
+
         fn get(&self, pattern: &Pattern, a: &String) -> Option<String> {
             match pattern {
                 Pattern::Any => Some(a.clone()),

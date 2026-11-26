@@ -15,7 +15,7 @@ use crate::rspace::metrics_constants::{
     CONSUME_COMM_LABEL, LOCKED_CONSUME_SPAN, RSPACE_METRICS_SOURCE,
 };
 use crate::rspace::rspace_interface::{ContResult, MaybeConsumeResult, RSpaceResult};
-use crate::rspace::search_charge;
+use crate::rspace::search_charge::{self, SearchWork};
 use crate::rspace::space_matcher::SpaceMatcher;
 use crate::rspace::trace::event::{COMM, Consume, Produce};
 
@@ -48,11 +48,16 @@ where
         let mut channel_to_indexed_data = self.fetch_channel_to_index_data(channels);
         metrics::counter!("rspace.consume.fetch_data_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t1.elapsed().as_nanos() as u64);
-        search_charge::charge(search_charge::consume_candidates(
-            channels
+        let mut work = SearchWork::default();
+        for (channel, pattern) in channels.iter().zip(patterns) {
+            let data = &channel_to_indexed_data[channel];
+            let size = data
                 .iter()
-                .map(|channel| channel_to_indexed_data[channel].len()),
-        ))?;
+                .map(|(datum, _)| self.matcher.data_size(&datum.a))
+                .sum();
+            work += SearchWork::of(data.len(), size, self.matcher.pattern_size(pattern), 1);
+        }
+        search_charge::charge(work)?;
 
         let t2 = Instant::now();
         let zipped: Vec<(C, P)> = channels

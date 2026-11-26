@@ -58,6 +58,27 @@ fn is_oop(result: &EvaluateResult) -> bool {
         .any(|e| matches!(e, InterpreterError::OutOfPhlogistonsError))
 }
 
+fn map(entries: usize, offset: usize) -> String {
+    let entries: Vec<String> = (0..entries)
+        .map(|i| format!("{}: {i}", i + offset))
+        .collect();
+    format!("{{{}}}", entries.join(", "))
+}
+
+/// Maps of different sizes on `c`, receives that reject them late through a
+/// remainder pattern, and one that takes a map, wrapped in `open` and `close`.
+fn map_remainders(open: &str, close: &str) -> String {
+    let sends: Vec<String> = [5, 40, 120, 40]
+        .iter()
+        .enumerate()
+        .map(|(i, n)| format!("c!({})", map(*n, i)))
+        .collect();
+    format!(
+        "{open}{} | for (@{{-1: 0 ...rest}} <- c) {{ Nil }} | for (@{{-1: 0 ...rest}} <- c) {{ Nil }} | for (@{{1: 0 ...rest}} <- c) {{ Nil }}{close}",
+        sends.join(" | ")
+    )
+}
+
 fn shapes() -> Vec<(&'static str, String)> {
     let junk = format!(
         "new c in {{ {} | {} | c!(-1) | for (@-1 <- c) {{ Nil }} }}",
@@ -107,6 +128,7 @@ fn shapes() -> Vec<(&'static str, String)> {
                 .to_string(),
         ),
         ("junk", junk),
+        ("map remainders", map_remainders("new c in { ", " }")),
         (
             "chain",
             "new a, b, c in { a!(1) | for (@x <- a) { b!(x) | b!(x + 1) } | for (@y <- b) { c!(y) } | for (@z <- b) { c!(z) } | for (@_ <- c) { Nil } | for (@_ <- c) { Nil } }"
@@ -187,6 +209,16 @@ async fn play_and_replay_after(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replay_charges_searches_over_what_earlier_terms_left_waiting() {
+    let maps_setup = format!(
+        "@\"m\"!({}) | @\"m\"!({}) | @\"m\"!({})",
+        map(120, 0),
+        map(30, 1),
+        map(60, 2)
+    );
+    let maps_term = format!(
+        "for (@{{-1: 0 ...rest}} <- @\"m\") {{ Nil }} | @\"m\"!({}) | for (@{{1: 0 ...rest}} <- @\"m\") {{ Nil }}",
+        map(80, 3)
+    );
     let cases = [
         (
             "joins on a channel the term never touches",
@@ -197,6 +229,11 @@ async fn replay_charges_searches_over_what_earlier_terms_left_waiting() {
             "peeks",
             r#"for (_ <<- @"r") { Nil } | for (_ <<- @"r") { Nil } | for (_ <- @"r" & _ <- @"s") { Nil }"#,
             r#"@"r"!(1) | for (_ <- @"r") { Nil } | @"s"!(1)"#,
+        ),
+        (
+            "maps waiting for remainder patterns",
+            maps_setup.as_str(),
+            maps_term.as_str(),
         ),
         (
             "data",

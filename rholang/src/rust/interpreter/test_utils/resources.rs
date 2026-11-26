@@ -15,7 +15,7 @@ use rspace_plus_plus::rspace::shared::rspace_store_manager::mk_rspace_store_mana
 use rspace_plus_plus::rspace::trace::Log;
 use tempfile::Builder;
 
-use crate::rust::interpreter::accounting::costs::{search_cost, Cost};
+use crate::rust::interpreter::accounting::costs::{searches_cost, Cost};
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::external_services::ExternalServices;
 use crate::rust::interpreter::interpreter::EvaluateResult;
@@ -121,8 +121,8 @@ pub async fn replay_charged<R: RhoRuntime>(
         .evaluate(term, initial_phlo.clone(), normalizer_env, rand)
         .await?;
     if result.pays_for_search() {
-        let candidates = replay.search_candidates(&pre_state, term_log).await?;
-        result.charge_search(search_cost(candidates), initial_phlo.value);
+        let work = replay.search_work(&pre_state, term_log).await?;
+        result.charge_search(searches_cost(&work), initial_phlo.value);
     }
     Ok(result)
 }

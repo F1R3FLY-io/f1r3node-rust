@@ -276,11 +276,11 @@ where
         panic!("\nERROR: RSpace check_replay_data should not be called here");
     }
 
-    async fn search_candidates(
+    async fn search_work(
         &self,
         _pre_state: &SoftCheckpoint<C, P, A, K>,
         _term_log: std::ops::Range<usize>,
-    ) -> Result<u64, RSpaceError> {
+    ) -> Result<Vec<crate::rspace::search_charge::SearchWork>, RSpaceError> {
         Err(RSpaceError::BugFoundError("only replay recomputes what searches cost".to_string()))
     }
 
