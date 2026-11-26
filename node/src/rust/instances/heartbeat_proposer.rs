@@ -1871,6 +1871,67 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn a_deploy_held_only_by_the_cooldown_is_checked_again_when_the_cooldown_ends() {
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let mut snapshot =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                validator_id.clone().into(),
+            );
+            snapshot
+                .dag
+                .fixture_mut()
+                .latest_messages_map
+                .insert(validator_id, test_hash(0x19));
+            let casper_impl =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new_with_pending_deploys(
+                    snapshot,
+                    create_lfb_with_age(100),
+                    1,
+                );
+            let mut own_block = models::rust::block_implicits::get_random_block_default();
+            own_block.block_hash = test_hash(0x19);
+            own_block.header.timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64
+                - 1_000;
+            casper_impl.insert_block(&own_block);
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(casper_impl);
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let config = HeartbeatConf {
+                enabled: true,
+                check_interval: Duration::from_secs(60),
+                max_lfb_age: Duration::from_secs(10),
+                self_propose_cooldown: Duration::from_secs(3),
+                ..HeartbeatConf::default()
+            };
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+
+            let outcome = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await
+            .expect("do_heartbeat_check");
+
+            assert_eq!(propose_count.load(Ordering::SeqCst), 0);
+            let next_check = next_heartbeat_sleep(config.check_interval, outcome.recheck_after);
+            assert!(
+                next_check <= Duration::from_secs(2) && next_check > Duration::from_millis(1_500),
+                "the next check must come at the end of the cooldown, not after {:?}",
+                next_check
+            );
+        }
+
+        #[tokio::test]
         async fn do_heartbeat_check_triggers_propose_when_lfb_stale() {
             // Create validator identity
             let validator = create_test_validator_identity();
