@@ -15,12 +15,11 @@ fn main() {
         "CasperMessage.proto",
         "DeployServiceCommon.proto",
         "DeployServiceV1.proto",
+        "DeployQueueV1.proto",
         "ProposeServiceCommon.proto",
         "ProposeServiceV1.proto",
         "RhoTypes.proto",
         "ServiceError.proto",
-        "ExternalCommunicationServiceCommon.proto",
-        "ExternalCommunicationServiceV1.proto",
         "routing.proto",
     ];
 
@@ -36,7 +35,10 @@ fn main() {
         scala_proto_base_dir.join("scalapb/scalapb.proto").display()
     );
 
+    let out_dir = std::path::PathBuf::from(env::var("OUT_DIR").unwrap());
+
     tonic_prost_build::configure()
+        .file_descriptor_set_path(out_dir.join("models_descriptor.bin"))
         .build_client(true)
         .build_server(true)
         .btree_map(".")

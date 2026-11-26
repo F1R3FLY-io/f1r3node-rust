@@ -10,7 +10,6 @@ pub trait ProcessContextExt {
 impl ProcessContextExt for ProcessContext {
     fn contract_call(&self) -> ContractCall {
         ContractCall {
-            space: self.space.clone(),
             dispatcher: self.dispatcher.clone(),
         }
     }

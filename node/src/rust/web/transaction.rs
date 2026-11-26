@@ -1,4 +1,5 @@
 use models::rhoapi::Par;
+use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -7,7 +8,9 @@ use utoipa::ToSchema;
 pub struct Transaction {
     pub from_addr: String,
     pub to_addr: String,
-    pub amount: i64,
+    #[serde(with = "shared::rust::decimal::signed")]
+    #[schema(value_type = String)]
+    pub amount: BigInt,
     #[serde(skip, default)]
     pub ret_unforgeable: Par,
     pub fail_reason: Option<String>,
@@ -51,15 +54,18 @@ pub struct TransactionResponse {
 /// 3. The random seed algorithm for unforgeable name of the deploy is changed
 pub fn transfer_unforgeable() -> Par {
     use casper::rust::genesis::contracts::standard_deploys::{
-        to_public, SYSTEM_VAULT_PK, SYSTEM_VAULT_TIMESTAMP,
+        to_public, GENESIS_VALID_AFTER_BLOCK_NUMBER, SYSTEM_VAULT_PK, SYSTEM_VAULT_TIMESTAMP,
     };
     use casper::rust::util::rholang::tools::Tools;
     use models::rhoapi::g_unforgeable::UnfInstance;
     use models::rhoapi::{GPrivate, GUnforgeable};
 
     let system_vault_pub_key = to_public(SYSTEM_VAULT_PK);
-    let mut seed_for_system_vault =
-        Tools::unforgeable_name_rng(&system_vault_pub_key, SYSTEM_VAULT_TIMESTAMP);
+    let mut seed_for_system_vault = Tools::unforgeable_name_rng(
+        &system_vault_pub_key,
+        SYSTEM_VAULT_TIMESTAMP,
+        GENESIS_VALID_AFTER_BLOCK_NUMBER,
+    );
 
     // the 11th unforgeable name (drop 10, take the next one)
     for _ in 0..10 {
@@ -79,6 +85,8 @@ pub fn transfer_unforgeable() -> Par {
 
 pub mod helpers {
     use models::rust::par_ext::ParExt;
+    use num_bigint::BigInt;
+    use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoNumber};
 
     use crate::rust::web::transaction::Transaction;
 
@@ -92,7 +100,9 @@ pub mod helpers {
         if pars.len() >= 6 {
             let from_addr = pars[0].get_g_string()?;
             let to_addr = pars[2].get_g_string()?;
-            let amount = pars[3].get_g_int()?;
+            let amount = RhoNumber::unapply(&pars[3])
+                .map(BigInt::from)
+                .or_else(|| RhoBigInt::unapply(&pars[3]))?;
             let ret_unforgeable = pars[5].clone();
 
             Some(Transaction {

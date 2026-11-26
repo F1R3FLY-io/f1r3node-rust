@@ -22,9 +22,7 @@
 //
 // This file provides the pure-utility chunker + Merkle-root
 // derivation + verify primitives.  The network-layer
-// `SnapshotChunkRetriever` (paralleling `BlockRetriever` at
-// `casper/src/rust/engine/block_retriever.rs`) is a follow-up slice
-// that consumes these primitives.
+// `SnapshotChunkRetriever` consumes them.
 //
 // # Chunk size
 //

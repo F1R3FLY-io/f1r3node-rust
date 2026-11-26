@@ -4,8 +4,6 @@
 /ci/check-tla-invariants.sh cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /ci/test-check-tla-invariants.sh cbc=mandatory cbc-weight=high
 /ci/check-formal-invariants.sh cbc=mandatory cbc-weight=high
-/run-merge-recovery-soak.sh cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
-/bench/test-run-merge-recovery-soak.sh cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /bench/test-soak-disk-admission-timing.sh cbc=mandatory cbc-weight=high
 /bench/write-soak-summary.sh cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /casper-soak/** cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
@@ -16,3 +14,18 @@
 /bench/test-soak-disk-admission.sh cbc-evidence=docs/casper/cbc-evidence
 /bench/casper_soak_manifest.py cbc-evidence=docs/casper/cbc-evidence
 /bench/test_casper_soak_manifest.py cbc-evidence=docs/casper/cbc-evidence
+/bench/test-run-merge-recovery-soak.sh cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/bench/test-soak-segment-cleanup.sh cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/casper-soak/src/host_control.rs cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/cbc.sh cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/ci/check-soak-cleanup.sh cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/ci/configure-cbc-trust.sh cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/ci/test-soak-cleanup-model.sh cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/ci/test-soak-cleanup-regressions.sh cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/ci/test-soak-cleanup.sh cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/ci/verify-soak-cleanup.sh cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/run-merge-recovery-soak.sh cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/cbc-runtime.lock.json cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/ci/install-cbc-runtime.sh cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/ci/test-cbc-runtime.sh cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/ci/soak-cleanup-lock-closure.sh cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence

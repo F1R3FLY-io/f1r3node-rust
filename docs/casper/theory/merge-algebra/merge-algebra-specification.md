@@ -64,21 +64,25 @@ Given a base state and a set of deploy chains to merge:
   caught by the retained double-consume / same-IO-event race detector (`conflicts`,
   Check #1) **or** be an intrinsically-mergeable number/foldable channel. No real conflict
   may be silently dropped.
-- **R-SVC.** A merge that would leave a **single-value NUMBER cell** holding more than one
-  datum **MUST** be rejected. On the **non-mergeable** path (a channel not folded as a
-  number channel this merge), if the base is a single numeric datum and the post-merge
-  cardinality `result_len = |multiset_diff(base, removed)| + |added|` exceeds 1, the merge
-  **MUST** fail (`check_single_value_cell_not_overfilled`, `rholang_merging_logic.rs:194`,
-  wired at `dag_merger.rs:965`). This covers the **produce-only write** — a produce that
-  does **not** consume the base — that R-CONFLICT's consume-then-produce model
-  (`svc_update = consumes ∧ produces`) is **vacuous** for and cannot see. Non-numeric bases
-  (registry / `TreeHashMap` leaves) are **exempt** (they merge freely). Rationale: a RhoVM
-  read of an over-filled single-value cell trips the IntegerAdd single-value invariant and
-  **halts finalization** (safety **S7**).
+- **R-SVC.** A **tagged number cell** (a channel whose name carries a registered mergeable
+  tag: IntegerAdd, BitmaskOr) **MUST** hold exactly one datum after a merge. Every write to a
+  tagged channel records its tag, including a system process's reply (`ContractCall`); the
+  merge folds the recorded writes by the tag's merge type into one datum; and a chain that
+  writes a channel another chain folds without recording the tag **MUST** be rejected
+  (`split_untagged_writes_to_folded_channels`). An **untagged** channel has no cardinality
+  rule: a **produce-only write** (a produce that does not consume the base) adds a message,
+  exactly as running the branches one after the other would, so the merge keeps every such
+  write. Protection is decided by the authenticated tag, never by the shape of a datum
+  (ratified 2026-08-22). Rationale: a RhoVM read of an IntegerAdd cell holding two datums
+  trips the IntegerAdd single-value invariant and **halts finalization** (safety **S7**). A
+  BitmaskOr read folds every datum by OR, so it has no such invariant.
 - **R-SPLIT.** `combine(fold user, fold system)` **MUST** equal `fold(all deploys)` on the
   conflict-relevant produce/consume fields, so conflict detection on the split index equals
   detection on the monolithic index. The user/system partition **MUST NOT** hide a
   cross-partition conflict.
+- **R-SIBLING.** Every chain of one block carries the block's pre→post diff on each channel that the chain touches. On a channel that 2 chains of one block share, the diff of each chain thus also holds the effect of the other chain. When the merge removes a chain (any rejection, a dedup drop of a stale copy, or a drop of a chain reusing another deploy's name seed), it **MUST** also reject each kept chain of the same source block that shares a non-mergeable datum channel or a continuation key with the removed chain (`reject_siblings_sharing_channels`, `dag_merger.rs`). A seed-dropped chain's effect is absent from the base, so it also seeds the lineage expansion; a dedup-dropped chain's effect is in the base, so it does not. The rule and the lineage expansion (`reject_stale_diff_descendants`) run inside the unavailable retry loop, after the branch walk and `split_untagged_writes_to_folded_channels`. The loop then resolves the conflicts again without the chains that they reject. Thus the walk and the untagged-write rule see the final survivor set. The rule applies again to each chain that it rejects, until no chain changes. A channel that the kept chain folds as a number channel is exempt, because the merge recomputes it from the per-deploy number diffs. Settled (pinned) chains stay exempt (#341). The result is the least fixed point of a pairwise relation over on-DAG data, so it is a pure function of the chain set (R-DET). Without this rule, a kept sibling applies the effect of a rejected deploy, and the effect applies again when recovery re-proposes the deploy (safety **S8**, issue #873).
+- **R-CREATOR.** A chain's delta on a tagged number cell applies to the base's value of the cell, and an absent cell reads as 0. A chain creates a cell when its block's pre-state held no value there and its post-state does. Within a block, a deploy that consumes or peeks the value another deploy left on a cell the block's pre-state lacks belongs to that deploy's chain (`depends_within_block`, `block_index.rs`), so the creator of a cell and the deploys of its block that use it form one chain. A chain that holds a value on a cell it did not create computed its delta on a value that its block's pre-state held. The merge **MUST** reject such a chain when the base holds no value on the cell and no surviving chain of the merge creates it (`split_unavailable_branch_consumes`, `dag_merger.rs`). Then the work that created the cell is absent, for example because an earlier merge rejected it, and the delta would make the cell from nothing. When recovery re-runs the creator, the creator makes the cell again, so the cell holds 2 values (safety **S9**, issue #1040). The check runs inside the unavailable retry loop, so a chain whose creator the same pass rejects is caught on the next pass. The inputs are the chains' recorded state changes and the base state, so the result is a pure function of the merge inputs (R-DET).
+- **R-BOUND.** Rejection selection (`select_rejection`, `conflict_set_merger.rs`) splits the branches into groups that it resolves independently. 2 branches are in one group when they conflict, or when they both touch an IntegerAdd cell on which the overdraw fold can reject a branch: a cell where the net diff of some branch is negative, or a cell where the base value plus the positive net diffs of all branches would exceed the IntegerAdd bound (2^256 − 1). On any other cell, every subset of the branches applies, so a split there cannot change which branches survive. A group of at most `REJECTION_SEARCH_GROUP_BRANCH_CAP` (16) branches is resolved exactly: the merge enumerates the group's rejection options, prefers the options that keep every pinned chain, and selects by prior loss, then cost. A larger group **MUST** be resolved greedily (`greedy_rejection`): the merge keeps branches in the order pinned first, then the highest prior losses, then the highest cost, then `compare_branches`, skips a branch that conflicts with a kept one, and passes the result through the same overdraw fold. The enumeration is exponential in a group's conflicting pairs, and the deploys of the merged blocks decide those pairs. Without the bound, a client that sends many pairs of conflicting deploys to 2 validators at once makes every merge that holds both blocks run out of time and memory, so finality stops (safety **S10**). The greedy order is a pure function of the branch set, so the result is a pure function of the merge inputs (R-DET).
 
 ## 3. Determinism (normative — the safety core)
 
@@ -110,6 +114,9 @@ Given a base state and a set of deploy chains to merge:
   unchanged. A hardened node therefore **never disagrees** with a live `v0.4.16` node on
   any input the old comparator ordered deterministically, and is deterministic on **all**
   inputs — safe under a mixed-version (rolling) upgrade.
+- **R-SIBLING is a hard fork.** R-SIBLING changes the merged post-state and the rejected-deploy set of each merge that removes a chain and keeps a sibling that shares a non-mergeable channel with it. A node without R-SIBLING computes a different result for such a merge, so the shard **MUST** upgrade all validators together. A merge that keeps all such siblings, or removes all of them, gives the same result as before. The lineage expansion also moved into the retry loop, so conflict resolution runs again without the chains that it rejects. A chain that lost a conflict only to such a chain can now be kept.
+- **R-CREATOR is a hard fork.** R-CREATOR rejects a chain that a node without it applies, in each merge where a chain writes a number cell that neither the base nor a surviving chain holds. The within-block link also changes the chains of each block in which one deploy uses a number cell another deploy created, so a merge of such a block can reject the 2 deploys together where a node without it keeps one. A node without R-CREATOR computes a different result for such a merge, so the shard **MUST** upgrade all validators together. Every other merge gives the same result as before.
+- **R-BOUND is a hard fork.** R-BOUND can change the rejected set of a merge in 3 cases: a group of more than 16 branches, which the greedy pass resolves where the exhaustive search could select a different option; a merge whose groups the narrower coupling splits, because the selection across groups can then break a tie differently; and a merge with pinned chains, which is now split into groups like any other merge, where before it searched all branches at once. A node without R-BOUND computes a different result for such a merge, so the shard **MUST** upgrade all validators together.
 
 ## 5. Disclosed algebraic properties (normative)
 
@@ -131,10 +138,15 @@ Given a base state and a set of deploy chains to merge:
   eliminated. Any implementation **MUST NOT** alter the observable merge result under the
   guise of a determinism fix. The determinism guarantee is *byte-identical recomputation of
   the current semantics*, **not** a redefinition of the merge.
+  - **R-SIBLING is a correctness fix, not a determinism fix.** It changes which chains the merge applies, and it does not change the `combine` operator or the fold order. N-SEMANTICS does not apply to it.
+  - **R-CREATOR is a correctness fix, not a determinism fix,** for the same reason.
   - **Runtime guard (allowed, semantics-preserving).** The *assumption* R-ORDER relies on —
     that no order-dependent survivor pair reaches apply — **MAY** be enforced by a
     detection-only runtime guard (`OrderDependenceGuard`, `conflict_set_merger.rs`) that trips
-    iff a datum is contributed to a side by ≥ 2 distinct survivors on a non-mergeable channel.
+    iff, on a non-mergeable channel, a datum is contributed to a side by ≥ 2 distinct source
+    blocks, or by ≥ 2 sibling survivors of one block while another survivor contributes it to
+    the opposite side. Sibling chains of one block carry that block's whole diff, so their
+    repeated contribution alone is not order-dependent.
     Such a guard is permitted **because it changes no post-state** (`debug_assert!` + release
     log/metric only); it does **not** alter the operator or the merge result. Sound by
     `ChannelNetting.v combine_max_order_independent_under_no_dup`.
@@ -149,7 +161,10 @@ Given a base state and a set of deploy chains to merge:
 | **S4** | The removed single-value-cell check silently dropped a real, non-number conflict (violates R-CONFLICT) — **GAP-3**. |
 | **S5** | The user/system event-log split hides a cross-partition conflict (violates R-SPLIT) — **P2**. |
 | **S6** | A comparator hardening breaks agreement with a live `v0.4.16` node on an input the old order already resolved deterministically (violates R-APPEND). |
-| **S7** | A merge persists a **single-value NUMBER cell** holding > 1 datum (a produce-only over-fill), so a later RhoVM read trips the IntegerAdd single-value invariant and **halts finalization** (violates R-SVC) — **§3c**, RCA-asi-devnet-finality-halt. |
+| **S7** | A merge persists an IntegerAdd **tagged number cell** holding > 1 datum, so a later RhoVM read trips the IntegerAdd single-value invariant and **halts finalization** (violates R-SVC) — RCA-asi-devnet-finality-halt. |
+| **S8** | A kept chain applies the effect of a removed sibling chain of the same block on a shared non-mergeable channel. A rejected deploy then has a partial effect, and its effect applies twice after recovery (violates R-SIBLING) — issue #873. |
+| **S9** | A kept chain applies its delta to a number cell whose creator is absent from the merged state. The cell is made from nothing, recovery creates it again, and it holds 2 values, so every later merge that reads it fails (violates R-CREATOR) — issue #1040. |
+| **S10** | Rejection selection takes time or memory exponential in the conflicting pairs of one group. Deploys sent at once to 2 validators decide those pairs, so every merge that holds both blocks stalls and the validators run out of memory (violates R-BOUND). |
 
 ## 8. Conformance
 

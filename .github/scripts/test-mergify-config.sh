@@ -11,8 +11,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONFIG="${1:-$ROOT/.mergify.yml}"
 
-DEV_REQUIRED='Static Checks|Script Tests|Soak Harness Tests|cargo-deny|Test (block-storage)|Test (comm)|Test (crypto)|Test (graphz)|Test (models)|Test (rholang)|Test (node)|Test (shared)|Integration Gate (amd64)|Integration Gate (arm64)|Test (casper 1/2)|Test (casper 2/2)|Test (rspace_plus_plus)|Commit Policy'
-MASTER_REQUIRED='Static Checks|Script Tests|Soak Harness Tests|Test Gate (casper)|Test (rspace_plus_plus)|Test (rholang)|Test (shared)|Test (node)|Test (models)|Test (crypto)|Test (block-storage)|Test (comm)|Test (graphz)|cargo-deny|Commit Policy|Promotion Source'
+if awk '
+  /^  - name:/ { canary = ($0 ~ /^  - name: ca-(item|daily)$/) }
+  canary && /^[[:space:]]*-[[:space:]]/ && /ca-soak|Soak Gate/ { found = 1 }
+  END { exit !found }
+' "$CONFIG"; then
+  printf 'FAIL: a ca-canary queue requires a soak before merge\n' >&2
+  exit 1
+fi
+
+DEV_REQUIRED='Static Checks|Script Tests|Soak Harness Tests|cargo-deny|Test (block-storage)|Test (comm)|Test (crypto)|Test (graphz)|Test (deploy-queue)|Test (models)|Test (rholang)|Test (node)|Test (shared)|Integration Gate (amd64)|Integration Gate (arm64)|Test (casper 1/2)|Test (casper 2/2)|Test (rspace_plus_plus)|Commit Policy'
+MASTER_REQUIRED='Static Checks|Script Tests|Soak Harness Tests|Test Gate (casper)|Test (rspace_plus_plus)|Test (rholang)|Test (shared)|Test (node)|Test (models)|Test (crypto)|Test (block-storage)|Test (comm)|Test (graphz)|Test (deploy-queue)|cargo-deny|Commit Policy|Promotion Source'
 
 CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIRED="$MASTER_REQUIRED" ruby -ryaml -e '
   doc = YAML.load_file(ARGV[0])
@@ -33,10 +42,27 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
 
   expected = %w[dev master ca-item ca-daily ca-release]
   errors << "the queues are #{queues.keys.sort.join(", ")}, not #{expected.sort.join(", ")}" unless queues.keys.sort == expected.sort
+  queues.each do |name, q|
+    parity = checks.(q).include?("CI Parity")
+    errors << "queue ca-release does not require CI Parity" if name == "ca-release" && !parity
+    errors << "queue #{name} requires CI Parity, which runs only for a ca-release promotion" if name != "ca-release" && parity
+  end
 
   mq = doc["merge_queue"] || {}
   errors << "the merge queue is not serial" unless mq["mode"] == "serial"
   errors << "the merge queue checks more than one pull request at a time" unless mq["max_parallel_checks"] == 1
+  errors << "the initial queue checkbox is not enabled" unless mq["queue_controls_comment"] == true
+  errors << "merge queue status comments are not enabled for all pull requests" unless mq["status_comments"] == "all"
+  automatic = doc.dig("merge_protections_settings", "auto_merge_conditions")
+  errors << "repository auto-merge would bypass explicit queue requests" unless automatic.nil? || automatic == false
+
+  automatic_rules = rules.select { |r| r.fetch("actions", {}).key?("queue") }
+  daily_conditions = ["base=ca-canary", "head~=^backmerge/ca-release-[0-9a-f]{12}$", "author=f1r3node-promotion[bot]",
+    "body~=created by the scheduled Release Train Daily Back-merge workflow"]
+  if automatic_rules.size != 1 || automatic_rules.first.dig("actions", "queue", "name") != "ca-daily" ||
+      automatic_rules.first["conditions"] != daily_conditions
+    errors << "only the promotion app daily release back-merge may queue automatically"
+  end
 
   queues.each do |name, q|
     errors << "queue #{name} does not check one pull request at a time" unless q["batch_size"] == 1
@@ -48,7 +74,7 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
 
   {
     "dev" => ENV.fetch("DEV_REQUIRED").split("|") - heavy + ["Promotion Source"],
-    "master" => ENV.fetch("MASTER_REQUIRED").split("|") + heavy,
+    "master" => ENV.fetch("MASTER_REQUIRED").split("|"),
   }.each do |name, required|
     q = queues[name] or next
     (required - checks.(q)).each { |c| errors << "queue #{name} does not require #{c}" }
@@ -57,7 +83,7 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
   %w[dev master ca-item ca-release].each do |name|
     q = queues[name] or next
     c = conds.(q)
-    if %w[dev ca-item].include?(name)
+    if %w[dev master ca-item].include?(name)
       errors << "queue #{name} does not require ci-heavy with both Integration gates, or a ci-maintainers waiver" unless Array(q["queue_conditions"]).include?(heavy_or)
       errors << "queue #{name} requires ci-heavy outside the waiver block" if c.include?("label=ci-heavy")
     else
@@ -73,7 +99,7 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
       (maintained - c).each { |r| errors << "queue #{name} does not require #{r}" }
     else
       (review - c).each { |r| errors << "queue #{name} does not require #{r}" }
-      errors << "queue #{name} accepts a merge without an approval" if Array(q["queue_conditions"]).any? { |x| x.is_a?(Hash) }
+      errors << "queue #{name} accepts a merge without an approval" if Array(q["queue_conditions"]).any? { |x| x.is_a?(Hash) && x != heavy_or }
     end
   end
 
@@ -109,10 +135,6 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
    "ca-daily" => "base=ca-canary", "ca-release" => "base=ca-release"}.each do |name, base|
     q = queues[name] or next
     errors << "queue #{name} does not require #{base}" unless conds.(q).include?(base)
-    routed = rules.any? do |r|
-      r.dig("actions", "queue", "name") == name && Array(r["conditions"]).map(&:to_s).include?(base)
-    end
-    errors << "no pull request rule queues #{base} into #{name}" unless routed
   end
 
   if (q = queues["master"])
@@ -153,14 +175,60 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
     ["head-repo-full-name=#{repo}", "-label=ci-heavy", "-closed", "-draft", "-head~=^backmerge/ca-release-", "-head~=^(dev|master|ca-canary|ca-release)$"].each do |x|
       errors << "the ci-heavy rule does not require #{x}" unless c.include?(x)
     end
-    waiver = {"or" => ["-label=ci-heavy-waived", "base~=^(master|ca-release)$"]}
-    errors << "the ci-heavy rule ignores a waiver into dev or ca-canary, or honors one into master or ca-release" unless Array(label.first["conditions"]).include?(waiver)
+    waiver = {"or" => ["-label=ci-heavy-waived", "-author=@F1R3FLY-io/ci-maintainers", "base=ca-release"]}
+    errors << "the ci-heavy rule ignores a ci-maintainers waiver into dev, master, or ca-canary, or honors another waiver or one into ca-release" unless Array(label.first["conditions"]).include?(waiver)
     errors << "the ci-heavy rule still waits for an approval" if c.any? { |x| x.include?("approved-reviews-by") }
     ca_heads = {"or" => ["-base=ca-canary", "head~=^ca/"]}
     errors << "the ci-heavy rule labels a ca-canary pull request that is not a ca/ item" unless Array(label.first["conditions"]).include?(ca_heads)
   end
 
+  prio = doc["priority_rules"]
+  if !prio.is_a?(Array) || prio.empty?
+    errors << "there are no priority rules"
+  else
+    match = lambda do |c, pr|
+      case c
+      when Hash
+        c["or"] ? c["or"].any? { |x| match.(x, pr) } : c["and"].all? { |x| match.(x, pr) }
+      when /\Alabel=(.+)\z/ then pr[:labels].include?($1)
+      when /\Ahead~=(.+)\z/ then Regexp.new($1).match?(pr[:head])
+      when /\Abase=(.+)\z/ then pr[:base] == $1
+      else errors << "the priority rules use the unknown condition #{c}"; false
+      end
+    end
+    rank = lambda do |head, base, labels = []|
+      pr = {head: head, base: base, labels: labels}
+      r = prio.find { |x| Array(x["conditions"]).all? { |c| match.(c, pr) } }
+      [r ? r["priority"] : 2000, r ? r["allow_checks_interruption"] : false]
+    end
+    {
+      ["hotfix/security-tls", "master"] => 6000, ["fix/rustsec-2026-0387", "dev"] => 6000,
+      ["hotfix/crypto-bigint-0.7.9", "master", ["security"]] => 6000, ["feature/x", "dev", ["security"]] => 6000,
+      ["hotfix/tls", "master"] => 5000, ["fix/tls", "dev"] => 5000, ["fix/tls", "master"] => 2000, ["hotfix/tls", "dev"] => 2000,
+      ["promote/20261020-040859", "master"] => 4000, ["backmerge/master-0123456789ab", "dev"] => 4000,
+      ["ca/sync-dev-0123456789ab", "ca-canary"] => 4000, ["promote/ca-release-20261020-040859", "ca-release"] => 4000,
+      ["perf/x", "dev"] => 3000, ["perf/x", "master"] => 3000, ["ci/x", "dev"] => 2500,
+      ["feat/x", "dev"] => 2000, ["feature/x", "dev"] => 2000, ["docs/x", "dev"] => 2000,
+    }.each do |(head, base, labels), want|
+      got, interrupt = rank.(head, base, labels || [])
+      errors << "#{head} into #{base}#{labels ? " with #{labels.join(",")}" : ""} gets priority #{got}, not #{want}" unless got == want
+      errors << "#{head} into #{base} interrupts the checks that run" if interrupt && want != 6000
+      errors << "#{head} into #{base} does not interrupt the checks that run" if want == 6000 && interrupt != true
+    end
+    prio.each do |r|
+      errors << "the priority rule #{r["name"]} does not set allow_checks_interruption" unless [true, false].include?(r["allow_checks_interruption"])
+    end
+    sec = rules.select { |r| Array(r.dig("actions", "label", "add")).include?("security") }
+    if sec.size != 1
+      errors << "#{sec.size} pull request rules add the security label, not 1"
+    else
+      re = Regexp.new(Array(sec.first["conditions"]).map(&:to_s).map { |x| x[/\Ahead~=(.+)\z/, 1] }.compact.first.to_s)
+      %w[hotfix/security-tls fix/RUSTSEC-2026-0387].each { |h| errors << "the security label rule skips #{h}" unless re.match?(h) }
+      %w[hotfix/tls feature/x].each { |h| errors << "the security label rule labels #{h}" if re.match?(h) }
+    end
+  end
+
   abort errors.map { |e| "FAIL: #{e}" }.join("\n") unless errors.empty?
 ' "$CONFIG"
 
-printf 'PASS: Mergify has a queue and a queue rule for dev, master, ca-canary, and ca-release. The queue is serial, and each queue checks one pull request in place, without retries, and with identical queue and merge conditions. Each queue merges with a merge commit. The dev and master queues require every ruleset check. The master and ca-release queues require ci-heavy and both Integration gates. The dev and ca-item queues require them or a ci-heavy-waived label with a ci-maintainers author. Each heavy queue requires a review and a head of this repository. One rule adds ci-heavy to every pull request, except a protected head, a ca-canary pull request that is not a ca/ item, and a waived pull request into dev or ca-canary.\n'
+printf 'PASS: manual queue controls are enabled. Only the promotion app daily release back-merge queues automatically. Existing eligibility, checks, reviews, merge methods, and priorities pass.\n'

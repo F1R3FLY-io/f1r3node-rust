@@ -10,14 +10,22 @@ use std::sync::Arc;
 use axum::routing::get;
 use axum::Router;
 
-use crate::handler::{get_file, AppState};
+use crate::handler::{get_file, list_dir, AppState};
 use crate::index::FileReadIndex;
 
-/// Build the axum router with the sidecar's single route.
+/// Build the axum router with the sidecar's routes.
+///
+/// * `GET /files/{logical}` — serve bytes (optionally with
+///   `?sub_rel`, `?offset`, `?length`) for `oracle-static-*` or
+///   `consensus-static-dirs` entries.
+/// * `GET /list/{logical}?prefix=` — enumerate immediate children
+///   of a Dir entry.  Bypasses the chain's stream-backed
+///   `Dir.entries()` which is refused on consensus caps.
 pub fn router(index: Arc<FileReadIndex>) -> Router {
     let state = Arc::new(AppState { index });
     Router::new()
         .route("/files/{logical}", get(get_file))
+        .route("/list/{logical}", get(list_dir))
         .with_state(state)
 }
 

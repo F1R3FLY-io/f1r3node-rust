@@ -1,7 +1,7 @@
 ---
 doc_type: user_stories
 version: "1.1"
-last_updated: 2026-09-30
+last_updated: 2026-11-17
 ---
 
 # User Stories
@@ -22,6 +22,55 @@ This document captures user stories that drive feature development. User stories
 ---
 
 ## Active Stories
+
+#### US-010: Refuse excess deploy intake and record expiry drops
+
+As a deploy client, I want an explicit overload refusal so that I can retry or use another validator.
+I want an expiry outcome for an accepted deploy that no block includes.
+
+**Implemented in:** EPIC-012
+
+**Value Stream:** Transaction Processing
+
+**Status:** In progress
+
+**Acceptance Criteria:**
+
+- The deploy pool is bounded by record count and encoded bytes.
+- A full pool and admission contention return stable, retryable API errors without saving the candidate.
+- Concurrent requests cannot share the last free slot.
+- Admission saves the lifecycle row before the pool insert.
+- Lifecycle evaluation preserves consensus bounds and terminal records.
+
+**Design:** [Deploy admission](designs/deploy-admission.md).
+**Specification:** [Deploy admission](specs/deploy-admission.md).
+
+---
+
+#### US-014: Verified soak segment cleanup
+
+> As a **release engineer**, I want **verified segment cleanup and source-bound launch checks** so that **a scheduled soak cannot use an unverified cleanup implementation**.
+
+**Implemented in:** EPIC-030
+
+**Value Stream:** Release Assurance
+
+**Status:** In progress
+
+**Acceptance Criteria:**
+
+- [x] Two consecutive segments stop detached writers and preserve failure information.
+- [x] Negative controls demonstrate that missing cleanup and ignored failures fail verification.
+- [x] Launch checks bind the actual control checkout to current evidence and signed maintainer acceptance.
+- [x] Git attributes route mandatory artifacts to their claim and verification records.
+- [x] A pinned external CbC runtime supplies shared verification commands without copied runtime source.
+- [x] Missing or modified runtime files prevent verification and launch.
+
+- [ ] A maintainer independently accepts the verified cleanup sources before launch.
+
+**Design:** [Soak cleanup verification](designs/soak-cleanup-verification.md).
+
+---
 
 #### US-013: Trusted daily back-merges
 
@@ -255,3 +304,18 @@ Use this template when adding new user stories:
 ```
 
 ---
+
+#### US-015: Exact token amounts
+
+> As a node operator, I want all token amount paths to support unsigned 256-bit values so that large balances, bonds, and fees remain exact.
+
+**Implemented in:** EPIC-031
+
+**Value Stream:** Node reliability
+
+**Acceptance Criteria:**
+
+- [ ] Genesis, transfers, bonds, fees, APIs, and persistence retain exact amounts.
+- [ ] Consensus and replay agree for amounts above the 64-bit range.
+- [ ] The default maximum bond is 2^256-1 and invalid amounts are rejected.
+- [ ] The Integration gates pass with clients that send the new encoding.

@@ -259,6 +259,8 @@ pub fn union(bitset1: Vec<u8>, bitset2: Vec<u8>) -> Vec<u8> {
     result
 }
 
+pub fn bitset_contains(bitset: &[u8], i: usize) -> bool { bitset.get(i).copied().unwrap_or(0) != 0 }
+
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParSpatialMatcherUtils.scala - noFrees[Par]
 pub fn no_frees(par: &Par) -> Par { par.clone_with_exprs(no_frees_exprs(&par.exprs)) }
 

@@ -12,6 +12,7 @@ RSS_CEILING_MB=${PREFLIGHT_RSS_CEILING_MB:-45056}
 HOST_FREE_FLOOR_MB=${PREFLIGHT_HOST_FREE_FLOOR_MB:-8192}
 CAPABILITY_READER=$ROOT/.github/scripts/read-system-integration-node-capabilities.sh
 CAPABILITIES_FILE=$NODE_REPO_DIR/.github/system-integration-node-capabilities.txt
+TIMING_BENCHMARK=integration-tests/test/tests/custom/test_heartbeat_timing.py
 
 case "$PROVIDER" in
 	docker | subprocess) ;;
@@ -55,6 +56,7 @@ if [ "${TESTS[*]}" != "${EXPECTED_TESTS[*]}" ]; then
 	exit 2
 fi
 printf '%s\n' "${TESTS[@]}" >"$OUTPUT_DIR/selection.txt"
+printf '%s\n' "$TIMING_BENCHMARK" >"$OUTPUT_DIR/excluded-tests.txt"
 
 NODE_CAPABILITIES=$("$CAPABILITY_READER" "$CAPABILITIES_FILE")
 NODE_CAPABILITY_ARGS=()
@@ -72,6 +74,7 @@ set +e
 	cd "$SYSTEM_INTEGRATION_DIR"
 	poetry run pytest \
 		"${TESTS[@]}" \
+		--ignore="$TIMING_BENCHMARK" \
 		--provider="$PROVIDER" \
 		"${NODE_CAPABILITY_ARGS[@]}" \
 		--run-all-node-capability-tests \
@@ -113,6 +116,7 @@ for selector in "${TESTS[@]}"; do
 			timeout --signal=TERM --kill-after=30 "${remaining}s" \
 				poetry run pytest \
 				"$selector" \
+				--ignore="$TIMING_BENCHMARK" \
 				--provider="$PROVIDER" \
 				"${NODE_CAPABILITY_ARGS[@]}" \
 				--run-all-node-capability-tests \

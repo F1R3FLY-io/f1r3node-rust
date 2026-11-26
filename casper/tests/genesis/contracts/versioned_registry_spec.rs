@@ -9,12 +9,15 @@
 // a probe that silently never reaches an `assert` fails loudly instead
 // of passing for nothing.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use casper::rust::helper::test_result_collector::TestResultCollector;
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::normalizer_env::with_deployer_id;
 use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 
@@ -66,9 +69,23 @@ async fn versioned_registry_spec() {
         crate::util::rholang::test_rho_loader::load_test_rho("VersionedRegistryTest.rho")
             .expect("Failed to load VersionedRegistryTest.rho");
 
+    // The probe binds `deployerId(`rho:system:deployerId`)` and
+    // threads it into every mutator call.  The URN resolves at
+    // normalization time against this env — we hand it the same
+    // pubkey the RhoSpec setup deploy signs with, because that's
+    // what `set_deploy_data` has left in the runtime by the time the
+    // test source runs.  The probe also reads `rho:deploy:data` to
+    // build URNs, and the mutator stores entries under
+    // `(pkHex, projectId)` derived from the compile-time deployerId;
+    // keeping both pubkeys in sync is what makes lookupVersion hit.
+    let sk_bytes = hex::decode("abaa20c1d578612b568a7c3d9b16e81c68d73b931af92cf79727e02011c558c6")
+        .expect("Invalid RHO_SPEC_PRIVATE_KEY hex");
+    let rho_spec_pk = Secp256k1.to_public(&PrivateKey::from_bytes(&sk_bytes));
+    let normalizer_env = with_deployer_id(&rho_spec_pk);
+
     let compiled = CompiledRholangSource::new(
         test_object,
-        HashMap::new(),
+        normalizer_env,
         "VersionedRegistryTest.rho".to_string(),
     )
     .expect("Failed to compile VersionedRegistryTest.rho");

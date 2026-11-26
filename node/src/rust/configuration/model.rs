@@ -173,11 +173,21 @@ pub struct ApiServer {
     #[serde(rename = "http-max-body-bytes", deserialize_with = "de_bytes")]
     pub http_max_body_bytes: u32,
 
+    #[serde(rename = "deploy-max-inflight", default)]
+    pub deploy_max_inflight: Option<usize>,
+
     #[serde(rename = "max-blocks-limit")]
     pub max_blocks_limit: u32,
 
     #[serde(rename = "enable-reporting")]
     pub enable_reporting: bool,
+
+    #[serde(
+        rename = "report-cache-retention-blocks",
+        default,
+        deserialize_with = "de_report_cache_retention"
+    )]
+    pub report_cache_retention_blocks: u32,
 
     #[serde(rename = "exploratory-deploy-max-concurrent")]
     pub exploratory_deploy_max_concurrent: usize,
@@ -489,4 +499,18 @@ where D: serde::Deserializer<'de> {
             parse_bytes(&s).ok_or_else(|| D::Error::custom(format!("invalid byte size {s:?}")))
         }
     }
+}
+
+// The HOCON deserializer casts integers, so a negative or too large value
+// would wrap into the u32 range; read it as i64 and check the range.
+fn de_report_cache_retention<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where D: serde::Deserializer<'de> {
+    use serde::de::Error as _;
+    let value = i64::deserialize(deserializer)?;
+    u32::try_from(value).map_err(|_| {
+        D::Error::custom(format!(
+            "report-cache-retention-blocks must be between 0 and {}, got {value}",
+            u32::MAX
+        ))
+    })
 }

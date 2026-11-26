@@ -179,7 +179,12 @@ waiver_terms = ["github.event.label.name == 'ci-heavy-waived'", "github.event.ac
 fail_if(rerun && waiver_terms.any? { |x| !rerun["if"].to_s.include?(x) }, "CI Heavy Label must rerun CI when a waiver takes effect: ci-heavy-waived present and ci-heavy absent")
 rerun_env = rerun && rerun.fetch("steps", []).map { |step| step["env"] }.compact.reduce({}, :merge)
 fail_if(rerun && rerun_env["WANT_HEAVY"] != "${{ contains(github.event.pull_request.labels.*.name, 'ci-heavy') }}", "CI Heavy Label must pass the current ci-heavy state as WANT_HEAVY")
-fail_if(rerun && rerun["permissions"] != {"actions" => "write", "contents" => "read"}, "CI Heavy Label must hold only actions: write and contents: read")
+fail_if(rerun && rerun["permissions"] != {"actions" => "write", "contents" => "read", "pull-requests" => "write"}, "CI Heavy Label must hold only actions: write, contents: read, and pull-requests: write for labels")
+removal_terms = ["github.event.sender.login == github.event.pull_request.user.login", "contains(fromJSON('[\"OWNER\", \"MEMBER\"]'), github.event.pull_request.author_association)", "github.event.pull_request.base.ref != 'ca-release'"]
+fail_if(rerun && removal_terms.any? { |x| !rerun["if"].to_s.include?(x) }, "CI Heavy Label must treat a ci-heavy removal by an organization member who authored the pull request as a waiver, except into ca-release")
+record = rerun && rerun.fetch("steps", []).find { |step| step["run"].to_s.include?("record-ci-heavy-waiver.sh") }
+fail_if(rerun && (record.nil? || (removal_terms + ["!contains(github.event.pull_request.labels.*.name, 'ci-heavy-waived')"]).any? { |x| !record["if"].to_s.include?(x) }), "CI Heavy Label must record the author's removal as ci-heavy-waived before the rerun")
+fail_if(rerun && record && rerun["steps"].index(record) > rerun["steps"].index { |step| step["run"].to_s.include?("rerun-ci-for-heavy-label.sh") }.to_i, "CI Heavy Label must record the waiver before it reruns CI")
 fail_if(rerun && rerun.fetch("steps", []).any? { |step| step.dig("with", "ref") }, "CI Heavy Label must check out the base branch")
 fail_if(!File.read(ci_path).include?("pull_request_has_heavy_label"), "Resolve Target must read the current ci-heavy label for a rerun")
 promote_flow = YAML.load_file("#{File.dirname(ci_path)}/promote-and-backmerge.yml")

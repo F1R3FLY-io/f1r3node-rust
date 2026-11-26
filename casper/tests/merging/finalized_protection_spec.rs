@@ -45,6 +45,18 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 fn block_hash(seed: u8) -> BlockHash { Bytes::from(vec![seed; 32]) }
 
+/// A distinct name seed per deploy: these specs are not about seed reuse.
+fn distinct_name_seeds(chains: &[&DeployChainIndex]) -> dag_merger::NameSeeds {
+    dag_merger::NameSeeds {
+        of_scope_deploys: chains
+            .iter()
+            .flat_map(|chain| chain.deploys_with_cost.0.iter())
+            .map(|deploy| (deploy.deploy_id.clone(), deploy.deploy_id.to_vec()))
+            .collect(),
+        held_by_base: std::collections::HashMap::new(),
+    }
+}
+
 fn produce_on(channel_byte: u8, salt: u8) -> Produce {
     let mut ch = [0u8; 32];
     ch[0] = channel_byte;
@@ -165,7 +177,11 @@ fn dag_with_finalized_sibling(
     finalized_blocks_set.insert(genesis.clone());
     finalized_blocks_set.insert(finalized_sibling.clone());
 
-    KeyValueDagRepresentation {
+    block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+        history: None,
+        view_sequence: u64::MAX,
+        pruning_cutoff: 0,
+        view_max_height: None,
         dag_set,
         latest_messages_map: imbl::HashMap::new(),
         child_map,
@@ -173,7 +189,6 @@ fn dag_with_finalized_sibling(
         block_number_map,
         main_parent_map,
         self_justification_map: imbl::HashMap::new(),
-        invalid_blocks_set: imbl::HashSet::new(),
         last_finalized_block_hash: finalized_sibling.clone(),
         finalized_blocks_set,
         block_metadata_index: Arc::new(PlRwLock::new(BlockMetadataStore::new(metadata_store))),
@@ -184,6 +199,7 @@ fn dag_with_finalized_sibling(
             block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
         )),
     }
+    .build()
 }
 
 /// A settled sibling's deploy conflicts with a far more expensive scope
@@ -223,7 +239,8 @@ async fn a_finalized_siblings_deploy_is_never_rejected_by_cost_adjudication() {
     let finalized_sibling_for_index = finalized_sibling.clone();
     let contender_for_index_hash = contender.clone();
 
-    let (_state, rejected, _mergeable, _applied) = dag_merger::merge(
+    let name_seeds = distinct_name_seeds(&[&finalized_chain, &contender_chain]);
+    let (_state, rejected, _applied) = dag_merger::merge(
         &dag,
         &base,
         &base_post_state,
@@ -245,6 +262,7 @@ async fn a_finalized_siblings_deploy_is_never_rejected_by_cost_adjudication() {
         &|sig| Ok(sig[0] == FINALIZED_DEPLOY),
         &HashSet::new(),
         &std::collections::HashMap::new(),
+        &name_seeds,
     )
     .expect("merge");
 
@@ -305,7 +323,8 @@ async fn a_settled_carriers_closed_window_deploy_is_not_window_rejected() {
     let settled_sibling_for_index = settled_sibling.clone();
     let late_contender_for_index = late_contender.clone();
 
-    let (_state, rejected, _mergeable, _applied) = dag_merger::merge(
+    let name_seeds = distinct_name_seeds(&[&settled_chain, &late_chain]);
+    let (_state, rejected, _applied) = dag_merger::merge(
         &dag,
         &base,
         &base_post_state,
@@ -327,6 +346,7 @@ async fn a_settled_carriers_closed_window_deploy_is_not_window_rejected() {
         &|sig| Ok(sig[0] == SETTLED_DEPLOY),
         &HashSet::new(),
         &std::collections::HashMap::new(),
+        &name_seeds,
     )
     .expect("merge");
 

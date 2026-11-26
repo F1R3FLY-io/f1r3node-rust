@@ -50,6 +50,7 @@ grep -Fxq "api repos/example/repo/git/refs -f ref=refs/heads/promote/20261009-09
 	fail "the promote branch was not created at the dev commit: $(cat "$TMP/gh.log")"
 grep -q '^pr create --repo example/repo --base master --head promote/20261009-0945 ' "$TMP/gh.log" ||
 	fail "the pull request was not opened from the promote branch to master: $(cat "$TMP/gh.log")"
+grep -Fq '@Mergifyio queue' "$TMP/gh.log" || fail 'the promotion does not explain the explicit merge request'
 if grep -q -- '--head dev' "$TMP/gh.log"; then
 	fail "the pull request used dev as its head branch"
 fi
@@ -117,6 +118,7 @@ grep -q '^pr create --repo example/repo --base ca-release --head promote/ca-rele
 	fail "the pull request was not opened from the promote branch to ca-release: $(cat "$TMP/gh.log")"
 grep -Fq 'created by `just ca-promote`.' "$TMP/gh.log" ||
 	fail "the just ca-promote body does not name just ca-promote: $(cat "$TMP/gh.log")"
+grep -Fq '@Mergifyio queue' "$TMP/gh.log" || fail 'the release promotion does not explain the explicit merge request'
 if grep -q -- '--head ca-canary' "$TMP/gh.log"; then
 	fail "the pull request used ca-canary as its head branch"
 fi

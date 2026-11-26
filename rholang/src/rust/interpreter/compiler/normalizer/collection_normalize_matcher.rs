@@ -37,8 +37,10 @@ pub fn normalize_collection<'ast>(
     where
         F: Fn(Vec<Par>, Vec<u8>, bool) -> Expr,
     {
-        let init = (vec![], known_free.clone(), Vec::new(), false);
-        let (mut acc_pars, mut result_known_free, mut locally_free, mut connective_used) = init;
+        let mut acc_pars = Vec::with_capacity(elements.len());
+        let mut result_known_free = known_free;
+        let mut locally_free = Vec::new();
+        let mut connective_used = false;
 
         for element in elements {
             let result = normalize_ann_proc(
@@ -46,16 +48,16 @@ pub fn normalize_collection<'ast>(
                 ProcVisitInputs {
                     par: Par::default(),
                     bound_map_chain: input.bound_map_chain.clone(),
-                    free_map: result_known_free.clone(),
+                    free_map: result_known_free,
                 },
                 env,
                 parser,
             )?;
 
-            acc_pars.push(result.par.clone());
-            result_known_free = result.free_map.clone();
-            locally_free = union(locally_free, result.par.locally_free);
+            result_known_free = result.free_map;
+            locally_free = union(locally_free, result.par.locally_free.clone());
             connective_used = connective_used || result.par.connective_used;
+            acc_pars.push(result.par);
         }
 
         let constructed_expr: Expr = constructor(acc_pars, locally_free, connective_used);
@@ -75,9 +77,10 @@ pub fn normalize_collection<'ast>(
         env: &HashMap<String, Par>,
         parser: &'ast rholang_parser::RholangParser<'ast>,
     ) -> Result<CollectVisitOutputs, InterpreterError> {
-        let init = (vec![], known_free.clone(), Vec::new(), false);
-
-        let (mut acc_pairs, mut result_known_free, mut locally_free, mut connective_used) = init;
+        let mut acc_pairs = Vec::with_capacity(pairs.len());
+        let mut result_known_free = known_free;
+        let mut locally_free = Vec::new();
+        let mut connective_used = false;
 
         for key_value_pair in pairs {
             let key_result = normalize_ann_proc(
@@ -85,7 +88,7 @@ pub fn normalize_collection<'ast>(
                 ProcVisitInputs {
                     par: Par::default(),
                     bound_map_chain: input.bound_map_chain.clone(),
-                    free_map: result_known_free.clone(),
+                    free_map: result_known_free,
                 },
                 env,
                 parser,
@@ -96,21 +99,24 @@ pub fn normalize_collection<'ast>(
                 ProcVisitInputs {
                     par: Par::default(),
                     bound_map_chain: input.bound_map_chain.clone(),
-                    free_map: key_result.free_map.clone(),
+                    free_map: key_result.free_map,
                 },
                 env,
                 parser,
             )?;
 
-            acc_pairs.push((key_result.par.clone(), value_result.par.clone()));
-            result_known_free = value_result.free_map.clone();
+            result_known_free = value_result.free_map;
             locally_free = union(
                 locally_free,
-                union(key_result.par.locally_free, value_result.par.locally_free),
+                union(
+                    key_result.par.locally_free.clone(),
+                    value_result.par.locally_free.clone(),
+                ),
             );
             connective_used = connective_used
                 || key_result.par.connective_used
                 || value_result.par.connective_used;
+            acc_pairs.push((key_result.par, value_result.par));
         }
 
         let remainder_connective_used = match remainder {
@@ -126,12 +132,10 @@ pub fn normalize_collection<'ast>(
         let expr = Expr {
             expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
                 ParMap {
-                    ps: SortedParMap::create_from_vec(
-                        acc_pairs.clone().into_iter().rev().collect(),
-                    ),
+                    ps: SortedParMap::create_from_vec(acc_pairs.into_iter().rev().collect()),
                     connective_used: connective_used || remainder_connective_used,
                     locally_free: union(locally_free, remainder_locally_free),
-                    remainder: remainder.clone(),
+                    remainder,
                 },
             ))),
         };

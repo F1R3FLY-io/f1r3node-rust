@@ -48,7 +48,7 @@ participant "EquivocationDetector" as D #FFECB3
 participant "MultiParentCasperImpl" as C #FFECB3
 participant "BlockDagStorage"    as DS  #C8E6C9
 participant "EquivocationTrackerStore" as T #C8E6C9
-participant "CasperSnapshot\n(in-memory snapshot of\nDAG + on-chain state\npre-loaded by block_processor)" as CS #C8E6C9
+participant "CasperSnapshot\n(in-memory snapshot of\nDAG + on-chain state\npre-loaded by block ingest)" as CS #C8E6C9
 participant "BlockCreator"       as BC  #B2DFDB
 participant "SlashDeploy\n(system_deploys[0])" as SD #B2DFDB
 participant "PoS Rholang"        as PoS #D1C4E9
@@ -91,7 +91,7 @@ deactivate C
 A -[#C62828]> V ++ : signed block b1' @ seqN  (b1' ≠ b1)
 note over V
   requested_as_dependency = ⊤ is computed
-  upstream by the block-processor (not by D);
+  upstream by the block ingest (not by D);
   it is passed in as a parameter.
 end note
 V -[#1565C0]> D ++ : check_equivocations(b1',\n  requested_as_dependency = ⊤, snapshot)
@@ -126,7 +126,7 @@ P -[#00838F]> BC ++ : propose new block at seqM\n(seqM > seqN, P scheduled by\nl
 note over BC
   prepare_slashing_deploys reads from a
   CasperSnapshot pre-loaded by the
-  block-processor — NOT live DS calls.
+  block ingest — NOT live DS calls.
 end note
 BC -[#1565C0]> CS  : casper_snapshot.dag.invalid_blocks()
 CS -[#1565C0]-> BC : { (A, b1', epoch e) }

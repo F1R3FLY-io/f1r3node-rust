@@ -19,3 +19,5 @@ pub mod stream_handler;
 pub mod stream_observable;
 pub mod tls_conf;
 pub mod transport_layer;
+
+pub(crate) const GRPC_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);

@@ -1,0 +1,1 @@
+legacy soak driver tests passed (fail-closed + deadline + segment writer stop + disk-band + restart reason + writer stop failure + evidence scope + failed reset + restart state + residual writer stop + stale session scope)

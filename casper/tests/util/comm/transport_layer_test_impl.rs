@@ -139,6 +139,8 @@ impl TransportLayerTestImpl {
 
 #[async_trait]
 impl TransportLayer for TransportLayerTestImpl {
+    fn queued_stream_bytes(&self) -> usize { 0 }
+
     async fn send(&self, peer: &PeerNode, msg: &Protocol) -> Result<(), CommError> {
         // Add the peer if it doesn't exist
         let _ = self.test_network.add_peer(peer);
@@ -161,7 +163,12 @@ impl TransportLayer for TransportLayerTestImpl {
 
     async fn stream_mult(&self, peers: &[PeerNode], blob: &Blob) -> Result<(), CommError> {
         // Convert blob to protocol message using protocol_helper
-        let protocol_msg = protocol_helper::packet(&blob.sender, "test", blob.packet.clone());
+        let protocol_msg = protocol_helper::packet(
+            &blob.sender,
+            "test",
+            prost::bytes::Bytes::new(),
+            blob.packet.clone(),
+        );
 
         // Broadcast the protocol message
         self.broadcast(peers, &protocol_msg).await
@@ -213,6 +220,7 @@ impl TransportLayerServer for TransportLayerServerTestImpl {
             .await?;
 
         // Return a no-op cancelable since we've already processed everything
-        Ok(tokio::spawn(async {}))
+        let (shutdown, _) = tokio::sync::oneshot::channel();
+        Ok(Cancelable::new(tokio::spawn(async {}), shutdown))
     }
 }

@@ -2,14 +2,15 @@ use crypto::rust::signatures::signed::Signed;
 use models::casper::v1::deploy_service_client::DeployServiceClient;
 use models::casper::v1::{
     block_info_response, block_response, bond_status_response, continuation_at_name_response,
-    deploy_response, find_deploy_response, is_finalized_response, last_finalized_block_response,
-    machine_verify_response, rho_data_response, status_response, visualize_blocks_response,
-    RhoDataPayload,
+    deploy_response, event_info_response, exploratory_deploy_response, find_deploy_response,
+    is_finalized_response, last_finalized_block_response, machine_verify_response,
+    rho_data_response, status_response, visualize_blocks_response, RhoDataPayload,
 };
 use models::casper::{
-    BlockQuery, BlocksQuery, BondStatusQuery, ContinuationAtNameQuery, ContinuationsWithBlockInfo,
-    DataAtNameByBlockQuery, FindDeployQuery, IsFinalizedQuery, LastFinalizedBlockQuery,
-    LightBlockInfo, MachineVerifyQuery, VisualizeDagQuery,
+    BlockEventInfo, BlockQuery, BlocksQuery, BondStatusQuery, ContinuationAtNameQuery,
+    ContinuationsWithBlockInfo, DataAtNameByBlockQuery, DataWithBlockInfo, ExploratoryDeployQuery,
+    FindDeployQuery, IsFinalizedQuery, LastFinalizedBlockQuery, LightBlockInfo, MachineVerifyQuery,
+    ReportQuery, VisualizeDagQuery,
 };
 use models::rhoapi::Par;
 use models::rust::casper::protocol::casper_message::DeployData;
@@ -33,6 +34,11 @@ pub trait DeployService {
         &mut self,
         q: DataAtNameByBlockQuery,
     ) -> ServiceResult<(Vec<Par>, LightBlockInfo)>;
+    async fn exploratory_deploy(
+        &mut self,
+        q: ExploratoryDeployQuery,
+    ) -> ServiceResult<(DataWithBlockInfo, u64)>;
+    async fn get_event_by_hash(&mut self, q: ReportQuery) -> ServiceResult<BlockEventInfo>;
     async fn last_finalized_block(&mut self) -> ServiceResult<String>;
     async fn is_finalized(&mut self, q: IsFinalizedQuery) -> ServiceResult<String>;
     async fn bond_status(&mut self, q: BondStatusQuery) -> ServiceResult<String>;
@@ -83,6 +89,17 @@ impl DeployService for GrpcDeployService {
         q: DataAtNameByBlockQuery,
     ) -> ServiceResult<(Vec<Par>, LightBlockInfo)> {
         self.get_data_at_par_impl(q).await
+    }
+
+    async fn exploratory_deploy(
+        &mut self,
+        q: ExploratoryDeployQuery,
+    ) -> ServiceResult<(DataWithBlockInfo, u64)> {
+        self.exploratory_deploy_impl(q).await
+    }
+
+    async fn get_event_by_hash(&mut self, q: ReportQuery) -> ServiceResult<BlockEventInfo> {
+        self.get_event_by_hash_impl(q).await
     }
 
     async fn last_finalized_block(&mut self) -> ServiceResult<String> {
@@ -209,6 +226,12 @@ impl GrpcDeployService {
                         proto_string(&bi)
                     );
                 }
+                // `getBlocks` never emits these, but the oneof is shared
+                // with `getBlocksByHeights` (#1087). Ignore unexpected
+                // variants so an unrelated proto addition can't break
+                // this CLI path.
+                Some(block_info_response::Message::Pruned(_))
+                | Some(block_info_response::Message::Unavailable(_)) => {}
                 None => return Err(vec!["empty BlockInfoResponse.message".into()]),
             }
         }
@@ -250,7 +273,61 @@ impl GrpcDeployService {
             Some(rho_data_response::Message::Payload(RhoDataPayload { par, block })) => {
                 Ok((par, block.unwrap_or_default()))
             }
+            // Issue #1157: the target block's state has been swept past the
+            // retention floor; render as a structured client error so the
+            // caller can route to an archive node.
+            Some(rho_data_response::Message::Pruned(info)) => Err(vec![format!(
+                "pruned_state: target_block_height={}, retention_floor={}",
+                info.target_block_height, info.retention_floor
+            )]),
             None => Err(vec!["empty RhoDataResponse.message".into()]),
+        }
+    }
+
+    async fn exploratory_deploy_impl(
+        &mut self,
+        q: ExploratoryDeployQuery,
+    ) -> ServiceResult<(DataWithBlockInfo, u64)> {
+        let resp = self
+            .client
+            .exploratory_deploy(q)
+            .await
+            .map_err(error_to_vec)?;
+
+        let resp = resp.into_inner();
+        let cost = resp.cost;
+        match resp.message {
+            Some(exploratory_deploy_response::Message::Error(err)) => Err(error_to_vec(err)),
+            Some(exploratory_deploy_response::Message::Result(data)) => Ok((data, cost)),
+            // Issue #1166: the target block's state has been swept past the
+            // retention floor; mirror the data-at-par prose so CLI callers
+            // see one shape for all pruned-state refusals.
+            Some(exploratory_deploy_response::Message::Pruned(info)) => Err(vec![format!(
+                "pruned_state: target_block_height={}, retention_floor={}",
+                info.target_block_height, info.retention_floor
+            )]),
+            None => Err(vec!["empty ExploratoryDeployResponse.message".into()]),
+        }
+    }
+
+    async fn get_event_by_hash_impl(&mut self, q: ReportQuery) -> ServiceResult<BlockEventInfo> {
+        let resp = self
+            .client
+            .get_event_by_hash(q)
+            .await
+            .map_err(error_to_vec)?;
+
+        match resp.into_inner().message {
+            Some(event_info_response::Message::Error(err)) => Err(error_to_vec(err)),
+            Some(event_info_response::Message::Result(info)) => Ok(info),
+            // Issue #1166: the block whose replay would produce events has a
+            // pruned post-state; render with the same prose shape so the CLI
+            // path is uniform across pruned-state refusals.
+            Some(event_info_response::Message::Pruned(info)) => Err(vec![format!(
+                "pruned_state: target_block_height={}, retention_floor={}",
+                info.target_block_height, info.retention_floor
+            )]),
+            None => Err(vec!["empty EventInfoResponse.message".into()]),
         }
     }
 
@@ -315,3 +392,107 @@ impl GrpcDeployService {
 /// If your generated types implement `Debug`, this default works.
 /// This is a simplified analogue of Scala-like `toProtoString`.
 fn proto_string<T: std::fmt::Debug>(t: &T) -> String { format!("{t:#?}") }
+
+#[cfg(test)]
+mod exhaustive_arm_guards {
+    //! Issue #1166: compile-time guards that every oneof arm on the three
+    //! retention-aware response types is matched to a distinct label by the
+    //! gRPC client. If the proto adds a new arm (another pruned/unavailable
+    //! shape), these stub matches stop compiling — forcing the client-side
+    //! helpers above to be updated instead of silently falling into a
+    //! catch-all. The functions are never called at runtime.
+    use models::casper::v1::{event_info_response, exploratory_deploy_response, rho_data_response};
+
+    #[allow(dead_code)]
+    fn rho_data_arms(msg: rho_data_response::Message) -> &'static str {
+        match msg {
+            rho_data_response::Message::Error(_) => "error",
+            rho_data_response::Message::Payload(_) => "payload",
+            rho_data_response::Message::Pruned(_) => "pruned",
+        }
+    }
+
+    #[allow(dead_code)]
+    fn exploratory_deploy_arms(msg: exploratory_deploy_response::Message) -> &'static str {
+        match msg {
+            exploratory_deploy_response::Message::Error(_) => "error",
+            exploratory_deploy_response::Message::Result(_) => "result",
+            exploratory_deploy_response::Message::Pruned(_) => "pruned",
+        }
+    }
+
+    #[allow(dead_code)]
+    fn event_info_arms(msg: event_info_response::Message) -> &'static str {
+        match msg {
+            event_info_response::Message::Error(_) => "error",
+            event_info_response::Message::Result(_) => "result",
+            event_info_response::Message::Pruned(_) => "pruned",
+        }
+    }
+
+    #[test]
+    fn arms_are_distinguishable_across_response_types() {
+        // Build each oneof variant with default inner payloads and confirm
+        // every arm maps to a distinct label. Detects both silent-drops
+        // (two arms collapsing to the same string) and inadvertent arm
+        // removal.
+        use std::collections::HashSet;
+
+        use models::casper::v1::{PrunedStateInfo, RhoDataPayload};
+        use models::casper::{BlockEventInfo, DataWithBlockInfo};
+        use models::servicemodelapi::ServiceError;
+
+        let rho: HashSet<_> = [
+            rho_data_arms(rho_data_response::Message::Error(ServiceError::default())),
+            rho_data_arms(rho_data_response::Message::Payload(
+                RhoDataPayload::default(),
+            )),
+            rho_data_arms(rho_data_response::Message::Pruned(
+                PrunedStateInfo::default(),
+            )),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            rho.len(),
+            3,
+            "rho_data_response arms collapsed to same label"
+        );
+
+        let expl: HashSet<_> = [
+            exploratory_deploy_arms(exploratory_deploy_response::Message::Error(
+                ServiceError::default(),
+            )),
+            exploratory_deploy_arms(exploratory_deploy_response::Message::Result(
+                DataWithBlockInfo::default(),
+            )),
+            exploratory_deploy_arms(exploratory_deploy_response::Message::Pruned(
+                PrunedStateInfo::default(),
+            )),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            expl.len(),
+            3,
+            "exploratory_deploy_response arms collapsed to same label"
+        );
+
+        let event: HashSet<_> = [
+            event_info_arms(event_info_response::Message::Error(ServiceError::default())),
+            event_info_arms(event_info_response::Message::Result(
+                BlockEventInfo::default(),
+            )),
+            event_info_arms(event_info_response::Message::Pruned(
+                PrunedStateInfo::default(),
+            )),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            event.len(),
+            3,
+            "event_info_response arms collapsed to same label"
+        );
+    }
+}

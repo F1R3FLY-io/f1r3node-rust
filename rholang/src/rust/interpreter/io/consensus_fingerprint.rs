@@ -458,7 +458,16 @@ mod tests {
         // (Consensus-observable: divergent caps fork at the
         //  `FSERR_QUOTA_EXCEEDED` boundary — a validator with a
         //  lower cap rejects a 32-MiB write that another accepts.)
-        const EXPECTED_FOR_CURRENT: &str = "7133cf8a9b60f538";
+        // fs_mkdir (WalOp::Mkdir variant + SNAPSHOT_FORMAT_VERSION
+        // bump 6 → 7) → `dd40a754542ccc54`.  Rolls two orders in
+        // one slice:
+        //    3  WAL_OP_VARIANTS         16 → 17 (u64_be)
+        //   15  SNAPSHOT_FORMAT_VERSION  6 → 7  (u8_raw)
+        // (Both are consensus-observable: WAL op discriminants are
+        //  wire bytes embedded in every WAL entry, and the snapshot
+        //  version is the leading byte of the encoded slice whose
+        //  Blake2b256 root is the on-chain commitment.)
+        const EXPECTED_FOR_CURRENT: &str = "dd40a754542ccc54";
         assert_eq!(
             fp, EXPECTED_FOR_CURRENT,
             "fingerprint changed — a `register_consensus_constant!` \

@@ -9,13 +9,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use casper::rust::api::block_api::BlockAPI;
-use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
-use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_SEC};
 use crypto::rust::public_key::PublicKey;
+use shared::rust::token_amount::TokenAmount;
 
 use crate::helper::bonding_util;
 use crate::helper::test_node::TestNode;
@@ -24,31 +23,7 @@ use crate::util::genesis_builder::{GenesisBuilder, DEFAULT_VALIDATOR_KEY_PAIRS};
 /// Queries the PoS `bondStatus` for `public_key` against `node`'s current state (mirrors the
 /// helper in `api::bonded_status_api_test`).
 async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
-    let casper_for_engine = Arc::new(MultiParentCasperImpl {
-        observer: std::sync::OnceLock::new(),
-        divergence_monitor: node.casper.divergence_monitor.clone(),
-        block_retriever: node.casper.block_retriever.clone(),
-        event_publisher: node.casper.event_publisher.clone(),
-        runtime_manager: node.casper.runtime_manager.clone(),
-        estimator: node.casper.estimator.clone(),
-        block_store: node.casper.block_store.clone(),
-        block_dag_storage: node.casper.block_dag_storage.clone(),
-        deploy_storage: node.casper.deploy_storage.clone(),
-        rejected_deploy_buffer: node.casper.rejected_deploy_buffer.clone(),
-        deploy_lifecycle: node.casper.deploy_lifecycle.clone(),
-        casper_buffer_storage: node.casper.casper_buffer_storage.clone(),
-        validator_id: node.casper.validator_id.clone(),
-        finalized_bond_cache: node.casper.finalized_bond_cache.clone(),
-        casper_shard_conf: node.casper.casper_shard_conf.clone(),
-        approved_block: node.casper.approved_block.clone(),
-        finalization_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_task_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_task_queued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
-        deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
-        active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-    });
-    let engine = EngineWithCasper::new(casper_for_engine);
+    let engine = EngineWithCasper::new(node.casper.clone());
     let engine_cell = EngineCell::init();
     engine_cell.set(Arc::new(engine)).await;
     BlockAPI::bond_status(&engine_cell, &public_key.bytes.to_vec())
@@ -57,9 +32,7 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
 }
 
 #[tokio::test]
-async fn multi_parent_casper_should_allow_bonding() {
-    // First 3 validators are bonded at genesis; the 4th (n4) uses the DEFAULT keypair — which
-    // owns genesisVaults[0] (9,000,000 REV) so it can pay for its own bond — and is UNBONDED.
+async fn multi_parent_casper_should_allow_uint256_bonding() {
     let validator_key_pairs = vec![
         DEFAULT_VALIDATOR_KEY_PAIRS[0].clone(),
         DEFAULT_VALIDATOR_KEY_PAIRS[1].clone(),
@@ -70,14 +43,24 @@ async fn multi_parent_casper_should_allow_bonding() {
         .iter()
         .map(|(_, pk)| pk.clone())
         .collect();
-    let bonds: HashMap<PublicKey, i64> = validator_pks
+    let bonds: HashMap<PublicKey, TokenAmount> = validator_pks
         .iter()
         .take(3)
         .enumerate()
-        .map(|(i, pk)| (pk.clone(), 2 * i as i64 + 1))
+        .map(|(i, pk)| (pk.clone(), 2 * i as u64 + 1))
+        .map(|(key, stake)| {
+            (
+                key,
+                TokenAmount::new(num_bigint::BigInt::from(stake) << 128).unwrap(),
+            )
+        })
         .collect();
 
-    let parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);
+    let mut parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);
+    parameters.2.proof_of_stake.maximum_bond = TokenAmount::max();
+    parameters.2.vaults[0].initial_balance =
+        TokenAmount::new(parameters.2.vaults[0].initial_balance.to_bigint() << 128usize).unwrap();
+    let amount = TokenAmount::new(num_bigint::BigInt::from(1000) << 128usize).unwrap();
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
         .await
@@ -95,11 +78,36 @@ async fn multi_parent_casper_should_allow_bonding() {
     );
 
     // n4 signs a bond deploy; a bonded validator (node 0) carries it into a block.
-    let bond_deploy = bonding_util::bonding_deploy(1000, &DEFAULT_SEC, Some(shard_id.clone()))
-        .expect("bond deploy");
-    let _b1 = TestNode::propagate_block_at_index(&mut nodes, 0, &[bond_deploy])
+    let bond_deploy =
+        bonding_util::bonding_deploy(amount.clone(), &DEFAULT_SEC, Some(shard_id.clone()))
+            .expect("bond deploy");
+    let b1 = nodes[0]
+        .add_block_from_deploys(&[bond_deploy])
         .await
-        .expect("propagate the bond block");
+        .unwrap();
+    for node in nodes.iter_mut().skip(1) {
+        let validation = node.process_block(b1.clone()).await.unwrap();
+        assert!(
+            matches!(
+                validation,
+                rspace_plus_plus::rspace::history::Either::Right(_)
+            ),
+            "{validation:?}"
+        );
+    }
+
+    for node in &nodes {
+        let bonds = node
+            .runtime_manager
+            .compute_bonds(&b1.body.state.post_state_hash)
+            .await
+            .unwrap();
+        let bonded = bonds
+            .iter()
+            .find(|bond| bond.validator == DEFAULT_PUB.bytes)
+            .unwrap();
+        assert_eq!(bonded.stake, amount);
+    }
 
     // Advance the DAG with the bonded genesis validators until b1 (the bond) finalizes.
     for round in 0..4 {
@@ -148,11 +156,12 @@ async fn a_new_bond_enters_the_lfb_committee_after_an_epoch_boundary() {
         .iter()
         .map(|(_, pk)| pk.clone())
         .collect();
-    let bonds: HashMap<PublicKey, i64> = validator_pks
+    let bonds: HashMap<PublicKey, TokenAmount> = validator_pks
         .iter()
         .take(3)
         .enumerate()
-        .map(|(i, pk)| (pk.clone(), 2 * i as i64 + 1))
+        .map(|(i, pk)| (pk.clone(), 2 * i as u64 + 1))
+        .map(|(key, stake)| (key, stake.into()))
         .collect();
 
     let mut parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);
@@ -231,7 +240,7 @@ async fn a_new_bond_enters_the_lfb_committee_after_an_epoch_boundary() {
     // Sanity: the bond reached PoS `allBonds` (compute_bonds over the LFB state).
     let lfb = nodes[0]
         .casper
-        .last_finalized_block()
+        .finalize()
         .await
         .expect("last finalized block");
     let lfb_state = &lfb.body.state.post_state_hash;
@@ -275,7 +284,7 @@ async fn a_new_bond_enters_the_lfb_committee_after_an_epoch_boundary() {
     // The merge proposer (node 2) must finalize the same committee view.
     let lfb_n2 = nodes[2]
         .casper
-        .last_finalized_block()
+        .finalize()
         .await
         .expect("last finalized block on node 2");
     assert_eq!(
@@ -311,11 +320,12 @@ async fn a_finalized_bond_survives_an_epoch_boundary_merge() {
         .iter()
         .map(|(_, pk)| pk.clone())
         .collect();
-    let bonds: HashMap<PublicKey, i64> = validator_pks
+    let bonds: HashMap<PublicKey, TokenAmount> = validator_pks
         .iter()
         .take(3)
         .enumerate()
-        .map(|(i, pk)| (pk.clone(), 2 * i as i64 + 1))
+        .map(|(i, pk)| (pk.clone(), 2 * i as u64 + 1))
+        .map(|(key, stake)| (key, stake.into()))
         .collect();
 
     let mut parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);

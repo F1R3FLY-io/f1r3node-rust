@@ -127,7 +127,7 @@ Proof.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   §4 — Objective invalidity / local-fault separation (block_processor.rs)
+   §4 — Objective invalidity / local-fault separation (validation_worker.rs)
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 Inductive BlockOutcome : Type :=

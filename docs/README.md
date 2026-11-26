@@ -12,7 +12,7 @@ The Cargo workspace contains 10 crates:
 | [`rspace++`](../rspace++/) | Tuple space engine: produce/consume matching, LMDB-backed trie history | [docs](./rspace/) |
 | [`rholang`](../rholang/) | Rholang interpreter: parser, normalizer, reducer, cost accounting, system processes | [docs](./rholang/) |
 | [`casper`](../casper/) | CBC Casper consensus: block creation/validation, DAG, safety oracle, finalization | [docs](./casper/) |
-| [`block-storage`](../block-storage/) | Block persistence, DAG storage (imbl), casper buffer, deploy index | [docs](./block-storage/) |
+| [`block-storage`](../block-storage/) | Block persistence, DAG storage (imbl), pending blocks, deploy index | [docs](./block-storage/) |
 | [`comm`](../comm/) | P2P networking: Kademlia DHT, TLS transport, connection management | [docs](./comm/) |
 | [`node`](../node/) | Binary entry point: boot sequence, gRPC/HTTP servers, CLI, diagnostics | [docs](./node/) |
 | [`graphz`](../graphz/) | Graphviz DOT generation for DAG visualization | [docs](./graphz/) |
@@ -136,6 +136,7 @@ The native token's name, symbol, and decimals are configured before genesis and 
 | [CbC Verification Tiers](./cbc-verification-tiers.md) | Refutation with TLC, construction with Rocq, binding with Rust tests, and the promotion rule between them |
 | [Consensus-Neutral Execution](./artifacts/f1r3fly-consensus-neutral-sm.md) | Two execution machines, four ordering media, and the verification split by machine and medium |
 | [Release Process](./release-process.md) | Exact-SHA canary, stable release, and Deployment Train strategy |
+| [Security Advisory Process](./security-advisory-process.md) | Maintainer procedure from a vulnerability report to the published advisory |
 | [Task Tracking](./task-tracking.md) | Value streams, user stories, epics, tasks, task claims, and the Smart Assets skills |
 | [RNode API](./rnode-api/) | Protocol Buffer API documentation (legacy Scala reference) |
 | [LFS Requester Architecture](./plans/lfs_tuple_space_requester_concurrency_architecture.md) | LFS tuple space concurrency design |

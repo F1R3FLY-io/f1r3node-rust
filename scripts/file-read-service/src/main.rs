@@ -21,9 +21,12 @@
 //
 // # Scope
 //
-// Oracular files + dirs only in v1.  Consensus-mode entries
-// return 503 with a specific diagnostic (sidecar can't resolve
-// `/@bundle/<X>` without the node's `RootIdentityRegistry`).
+// Serves Oracular files + dirs, plus operator-declared
+// consensus-static-dirs (the node writes the WAL-replicated bytes
+// into `entry.path` verbatim; sidecar reads from the same path).
+// Consensus-static-FILES remain 503 — their on-disk layout runs
+// through `fs_bundle_staging` and isn't stable from HOCON alone,
+// so the sidecar would need the node's `RootIdentityRegistry`.
 //
 // # Operator notes
 //

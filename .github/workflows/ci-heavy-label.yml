@@ -6,6 +6,13 @@ name: CI Heavy Label
 # its OCI jobs first. build_base reads the current labels, so a waived rerun
 # skips the heavy pipeline, and both Integration Gate checks report skipped.
 #
+# The author of a pull request into dev, master, or ca-canary waives the heavy
+# pipeline by removing ci-heavy. record-ci-heavy-waiver.sh then adds
+# ci-heavy-waived, so Mergify does not add ci-heavy again. A label that the
+# actions token changes starts no workflow, so this job reruns CI itself. The
+# queues accept the waiver only from a ci-maintainers author. For another
+# author, Mergify adds ci-heavy again, and the heavy pipeline runs.
+#
 # ci.yml does not run on labeled events. A labeled run replaces the checks of
 # the pull request head with pending checks. The merge queue adds the queued
 # label when it queues a pull request, so the required checks became pending,
@@ -36,12 +43,17 @@ jobs:
         (contains(github.event.pull_request.labels.*.name, 'ci-heavy-waived') &&
           !contains(github.event.pull_request.labels.*.name, 'ci-heavy') &&
           ((github.event.action == 'labeled' && github.event.label.name == 'ci-heavy-waived') ||
-            (github.event.action == 'unlabeled' && github.event.label.name == 'ci-heavy'))))
+            (github.event.action == 'unlabeled' && github.event.label.name == 'ci-heavy'))) ||
+        (github.event.action == 'unlabeled' && github.event.label.name == 'ci-heavy' &&
+          github.event.sender.login == github.event.pull_request.user.login &&
+          contains(fromJSON('["OWNER", "MEMBER"]'), github.event.pull_request.author_association) &&
+          github.event.pull_request.base.ref != 'ca-release'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       actions: write
       contents: read
+      pull-requests: write
     steps:
       # No ref: under pull_request_target, checkout fetches the base branch.
       - name: Checkout base branch scripts
@@ -49,6 +61,20 @@ jobs:
         with:
           persist-credentials: false
           sparse-checkout: .github/scripts
+
+      - name: Record the author's ci-heavy removal as a waiver
+        if: >-
+          github.event.action == 'unlabeled' && github.event.label.name == 'ci-heavy' &&
+          github.event.sender.login == github.event.pull_request.user.login &&
+          contains(fromJSON('["OWNER", "MEMBER"]'), github.event.pull_request.author_association) &&
+          github.event.pull_request.base.ref != 'ca-release' &&
+          !contains(github.event.pull_request.labels.*.name, 'ci-heavy-waived')
+        shell: bash -euo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: bash .github/scripts/record-ci-heavy-waiver.sh
 
       - name: Rerun the newest CI run of the pull request head
         shell: bash -euo pipefail {0}

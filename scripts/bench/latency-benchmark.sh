@@ -46,7 +46,7 @@ DEPLOYER_KEY="${DEPLOYER_KEY:?DEPLOYER_KEY must be set}"
 # Status polling
 POLL_INTERVAL="${POLL_INTERVAL:-3}"
 PREFLIGHT_TIMEOUT="${PREFLIGHT_TIMEOUT:-120}"
-HTTP_PORT="${HTTP_PORT:-40413}" # validator1 HTTP port in local shard.yml
+HTTP_PORT="${HTTP_PORT:-40413}" # validator1's HTTP port in local shard.yml, served by its deploy queue
 
 # --- Logging ---
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }

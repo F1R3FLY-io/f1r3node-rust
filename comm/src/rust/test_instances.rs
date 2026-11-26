@@ -6,10 +6,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use models::routing::Protocol;
+use prost::bytes::Bytes;
 
 use crate::rust::discovery::node_discovery::NodeDiscovery;
 use crate::rust::errors::CommError;
 use crate::rust::peer_node::PeerNode;
+use crate::rust::rp::chain_id::ChainIdCell;
 use crate::rust::rp::protocol_helper;
 use crate::rust::rp::rp_conf::{ClearConnectionsConf, RPConf};
 use crate::rust::transport::transport_layer::{Blob, TransportLayer};
@@ -48,6 +50,7 @@ pub fn create_rp_conf_ask(
     RPConf {
         local: local.clone(),
         network_id: NETWORK_ID.to_string(),
+        chain_id: ChainIdCell::unknown(),
         bootstrap: Some(local),
         default_timeout: default_timeout.unwrap_or(Duration::from_millis(1)),
         max_num_of_connections: 20,
@@ -115,6 +118,8 @@ impl TransportLayerStub {
 
 #[async_trait]
 impl TransportLayer for TransportLayerStub {
+    fn queued_stream_bytes(&self) -> usize { 0 }
+
     async fn send(&self, peer: &PeerNode, msg: &Protocol) -> Result<(), CommError> {
         // Add request to the list
         {
@@ -156,7 +161,8 @@ impl TransportLayer for TransportLayerStub {
     }
 
     async fn stream_mult(&self, peers: &[PeerNode], blob: &Blob) -> Result<(), CommError> {
-        let protocol_msg = protocol_helper::packet(&blob.sender, NETWORK_ID, blob.packet.clone());
+        let protocol_msg =
+            protocol_helper::packet(&blob.sender, NETWORK_ID, Bytes::new(), blob.packet.clone());
         self.broadcast(peers, &protocol_msg).await
     }
 

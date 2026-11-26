@@ -1,9 +1,16 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+use rspace_plus_plus::rspace::errors::RadixTreeError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::cold_store::{
+    ContinuationsLeaf, DataLeaf, JoinsLeaf, PersistedData,
+};
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepositoryInstances;
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
+use rspace_plus_plus::rspace::history::radix_tree::{
+    ExportData, ExportDataSettings, Item, empty_node, hash_node, sequential_export, try_decode,
+};
 use rspace_plus_plus::rspace::hot_store::{HotStoreInstances, HotStoreState};
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -12,7 +19,9 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
-use rspace_plus_plus::rspace::state::rspace_importer::{RSpaceImporter, RSpaceImporterInstance};
+use rspace_plus_plus::rspace::state::rspace_importer::{
+    RSpaceImporter, RSpaceImporterInstance, StateItemsError,
+};
 use serde::{Deserialize, Serialize};
 use shared::rust::{Byte, ByteVector};
 
@@ -84,6 +93,7 @@ async fn export_and_import_of_one_page_should_works_correctly() {
         &history_items,
         &data_items,
         init_start_path,
+        &export_data.0.last_path,
         page_size,
         start_skip,
         importer1,
@@ -157,6 +167,7 @@ async fn multipage_export_should_work_correctly() {
             &history_items_page,
             &data_items_page,
             start_path,
+            &last_path,
             page_size,
             start_skip,
             importer1,
@@ -275,6 +286,7 @@ async fn multipage_export_with_skip_should_work_correctly() {
             &history_items_page,
             &data_items_page,
             start_path.clone(),
+            &export_data.0.last_path,
             page_size,
             skip,
             importer1,
@@ -445,6 +457,134 @@ async fn imported_state_exports_its_data_items() {
     );
 }
 
+#[tokio::test]
+async fn a_page_with_a_swapped_leaf_kind_is_rejected() {
+    let (space1, exporter1, _, _, _, importer2) = test_setup().await;
+    for i in 0..10 {
+        space1
+            .produce(format!("ch{}", i), format!("data{}", i), false)
+            .await
+            .unwrap();
+    }
+    space1
+        .consume(
+            vec!["waiting".to_string()],
+            vec![Pattern::Wildcard],
+            "continuation".to_string(),
+            false,
+            BTreeSet::new(),
+        )
+        .await
+        .unwrap();
+    let root = space1.create_checkpoint().await.unwrap().root;
+    let start_path = vec![(root, None)];
+    let (history, data) =
+        RSpaceExporterItems::get_history_and_data(exporter1, start_path.clone(), 0, 1000).unwrap();
+    let validate = |data_items: &[(Blake2b256Hash, ByteVector)]| {
+        RSpaceImporterInstance::validate_state_items(
+            &history.items,
+            data_items,
+            start_path.clone(),
+            &history.last_path,
+            1000,
+            0,
+            importer2.clone(),
+        )
+    };
+    assert_eq!(validate(&data.items), Ok(()));
+
+    let swaps = |persisted: PersistedData| -> Vec<PersistedData> {
+        let original = std::mem::discriminant(&persisted);
+        let bytes = match persisted {
+            PersistedData::Data(DataLeaf { bytes }) |
+            PersistedData::Continuations(ContinuationsLeaf { bytes }) |
+            PersistedData::Joins(JoinsLeaf { bytes }) => bytes,
+        };
+        let all = [
+            PersistedData::Data(DataLeaf {
+                bytes: bytes.clone(),
+            }),
+            PersistedData::Continuations(ContinuationsLeaf {
+                bytes: bytes.clone(),
+            }),
+            PersistedData::Joins(JoinsLeaf { bytes }),
+        ];
+        all.into_iter()
+            .filter(|swapped| std::mem::discriminant(swapped) != original)
+            .collect()
+    };
+    let mut checked = 0;
+    for (index, (_, value)) in data.items.iter().enumerate() {
+        let persisted: PersistedData = bincode::deserialize(value).unwrap();
+        for swapped in swaps(persisted) {
+            let mut forged = data.items.clone();
+            forged[index].1 = bincode::serialize(&swapped).unwrap();
+            assert!(
+                matches!(validate(&forged), Err(StateItemsError::InvalidDataItem(_))),
+                "a data item with only its leaf kind changed must be rejected"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= 2 * 12, "the page must hold data, continuation and join leaves");
+}
+
+#[tokio::test]
+async fn a_page_with_a_forged_last_path_is_rejected() {
+    let (space1, exporter1, _, _, _, importer2) = test_setup().await;
+    for i in 0..100 {
+        space1
+            .produce(format!("ch{}", i), format!("data{}", i), false)
+            .await
+            .unwrap();
+    }
+    let root = space1.create_checkpoint().await.unwrap().root;
+    let start_path = vec![(root, None)];
+    let (history, data) =
+        RSpaceExporterItems::get_history_and_data(exporter1, start_path.clone(), 0, 10).unwrap();
+    assert_ne!(history.last_path, start_path, "the first page must not be the last one");
+    let validate = |last_path: &[(Blake2b256Hash, Option<Byte>)]| {
+        RSpaceImporterInstance::validate_state_items(
+            &history.items,
+            &data.items,
+            start_path.clone(),
+            last_path,
+            10,
+            0,
+            importer2.clone(),
+        )
+    };
+    assert_eq!(validate(&history.last_path), Ok(()));
+
+    let mut redirected = history.last_path.clone();
+    redirected[0] = (Blake2b256Hash::new(b"another root"), None);
+    for forged in [start_path.clone(), redirected, Vec::new()] {
+        assert_eq!(validate(&forged), Err(StateItemsError::LastPathMismatch));
+    }
+}
+
+#[tokio::test]
+async fn malformed_radix_bytes_at_the_start_path_are_an_error_not_a_panic() {
+    let (_, _, _, _, _, importer2) = test_setup().await;
+    let malformed = vec![0x00, 0x05, 0xAA];
+    let hash = Blake2b256Hash::new(&malformed);
+    assert!(try_decode(&malformed).is_err());
+
+    let result = RSpaceImporterInstance::validate_state_items(
+        &[(hash.clone(), malformed)],
+        &[],
+        vec![(hash.clone(), None)],
+        &[(hash, None)],
+        750,
+        0,
+        importer2,
+    );
+    assert!(
+        matches!(result, Err(StateItemsError::Traversal(RadixTreeError::SerializationError(_)))),
+        "got {result:?}"
+    );
+}
+
 async fn test_setup() -> (
     RSpace<String, Pattern, String, String>,
     Arc<dyn RSpaceExporter>,
@@ -508,4 +648,177 @@ async fn test_setup() -> (
     let space2 = RSpace::apply(history_repository2, store2, Arc::new(Box::new(StringMatch)));
 
     (space1, exporter1, importer1, space2, exporter2, importer2)
+}
+
+type NodeStore = HashMap<ByteVector, ByteVector>;
+type NodeReader = Arc<dyn Fn(&ByteVector) -> Option<ByteVector>>;
+
+fn store_radix_node(keys: &[ByteVector], depth: usize, store: &mut NodeStore) -> ByteVector {
+    let mut node = empty_node();
+    for group in keys.chunk_by(|a, b| a[depth] == b[depth]) {
+        let (first, last) = (&group[0], &group[group.len() - 1]);
+        node[first[depth] as usize] = if group.len() == 1 {
+            Item::Leaf {
+                prefix: first[depth + 1..].to_vec(),
+                value: Blake2b256Hash::new(first).bytes(),
+            }
+        } else {
+            let mut child_depth = depth + 1;
+            while first[child_depth] == last[child_depth] {
+                child_depth += 1;
+            }
+            Item::NodePtr {
+                prefix: first[depth + 1..child_depth].to_vec(),
+                ptr: store_radix_node(group, child_depth, store),
+            }
+        };
+    }
+    let (hash, bytes) = hash_node(&node);
+    store.insert(hash.clone(), bytes);
+    hash
+}
+
+fn radix_tree_of(leaf_count: u32) -> (ByteVector, NodeStore) {
+    let mut keys: Vec<ByteVector> = (0..leaf_count)
+        .map(|i| {
+            let mut key = Blake2b256Hash::new(&i.to_le_bytes()).bytes();
+            if i % 7 == 0 {
+                key[..3].copy_from_slice(&[1, 2, 3]);
+            }
+            key
+        })
+        .collect();
+    keys.sort();
+    let mut store = NodeStore::new();
+    let root = store_radix_node(&keys, 0, &mut store);
+    (root, store)
+}
+
+fn depth_first(hash: &ByteVector, prefix: ByteVector, store: &NodeStore, out: &mut ExportData) {
+    out.node_keys.push(hash.clone());
+    for (index, item) in try_decode(&store[hash]).unwrap().into_iter().enumerate() {
+        let mut full = prefix.clone();
+        full.push(index as u8);
+        match item {
+            Item::EmptyItem => {}
+            Item::Leaf { prefix, value } => {
+                full.extend(prefix);
+                out.leaf_prefixes.push(full);
+                out.leaf_values.push(value);
+            }
+            Item::NodePtr { prefix, ptr } => {
+                full.extend(prefix);
+                depth_first(&ptr, full, store, out);
+            }
+        }
+    }
+}
+
+fn export_settings() -> ExportDataSettings {
+    ExportDataSettings {
+        flag_node_prefixes: false,
+        flag_node_keys: true,
+        flag_node_values: false,
+        flag_leaf_prefixes: true,
+        flag_leaf_values: true,
+    }
+}
+
+fn empty_export() -> ExportData {
+    ExportData {
+        node_prefixes: Vec::new(),
+        node_keys: Vec::new(),
+        node_values: Vec::new(),
+        leaf_prefixes: Vec::new(),
+        leaf_values: Vec::new(),
+    }
+}
+
+fn reader(store: &NodeStore) -> NodeReader {
+    let store = store.clone();
+    Arc::new(move |hash: &ByteVector| store.get(hash).cloned())
+}
+
+#[test]
+fn pages_of_any_size_join_into_the_depth_first_export() {
+    let (root, store) = radix_tree_of(2_000);
+    let mut expected = empty_export();
+    depth_first(&root, Vec::new(), &store, &mut expected);
+
+    for take in [1, 2, 7, 64, 1_024, 100_000] {
+        let mut joined = empty_export();
+        let mut last_prefix = None;
+        loop {
+            let (page, next) = sequential_export(
+                root.clone(),
+                last_prefix,
+                0,
+                take,
+                reader(&store),
+                export_settings(),
+            )
+            .unwrap();
+            assert!(page.node_keys.len() <= take as usize);
+            joined.node_keys.extend(page.node_keys);
+            joined.leaf_prefixes.extend(page.leaf_prefixes);
+            joined.leaf_values.extend(page.leaf_values);
+            if next.is_none() {
+                break;
+            }
+            last_prefix = next;
+        }
+        assert_eq!(joined.node_keys, expected.node_keys, "take {take}");
+        assert_eq!(joined.leaf_prefixes, expected.leaf_prefixes, "take {take}");
+        assert_eq!(joined.leaf_values, expected.leaf_values, "take {take}");
+    }
+}
+
+#[test]
+fn a_skip_drops_exactly_the_leading_nodes() {
+    let (root, store) = radix_tree_of(500);
+    let export = |skip, take| {
+        sequential_export(root.clone(), None, skip, take, reader(&store), export_settings())
+            .unwrap()
+            .0
+            .node_keys
+    };
+    let all = export(0, 100_000);
+    assert_eq!(export(5, 20), all[5..25]);
+    assert_eq!(export(1, 1), all[1..2]);
+}
+
+#[test]
+fn an_export_from_an_unknown_path_or_a_missing_node_is_an_error() {
+    let (root, mut store) = radix_tree_of(500);
+    let export = |store: &NodeStore, last_prefix| {
+        sequential_export(root.clone(), last_prefix, 0, 100_000, reader(store), export_settings())
+    };
+    assert!(matches!(export(&store, Some(vec![1, 2])), Err(RadixTreeError::PrefixError(_))));
+    assert!(matches!(export(&store, Some(vec![9; 40])), Err(RadixTreeError::PrefixError(_))));
+
+    let child = export(&store, None).unwrap().0.node_keys[1].clone();
+    store.remove(&child);
+    assert!(matches!(export(&store, None), Err(RadixTreeError::KeyNotFound(_))));
+    assert!(matches!(export(&store, Some(vec![1, 2, 3])), Err(RadixTreeError::KeyNotFound(_))));
+
+    store.remove(&root);
+    let (data, next) = export(&store, None).unwrap();
+    assert!(data.node_keys.is_empty() && next.is_none());
+}
+
+#[test]
+fn the_export_time_of_a_page_is_linear_in_its_size() {
+    let (root, store) = radix_tree_of(100_000);
+    let started = std::time::Instant::now();
+    let (page, next) =
+        sequential_export(root, None, 0, 100_000, reader(&store), export_settings()).unwrap();
+
+    assert_eq!(page.node_keys.len(), store.len());
+    assert!(next.is_none());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "the export of {} nodes took {:?}",
+        store.len(),
+        started.elapsed()
+    );
 }

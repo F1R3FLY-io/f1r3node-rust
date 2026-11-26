@@ -2,7 +2,9 @@
 '
 ' The merge driver's flow:
 '   derive floor(B) → compute Δ → Δ-backstop decision:
-'     Δ > 256 : propose PARKS (Err) / validate REJECTS (deterministic, no fork).
+'     Δ > 256 : propose REFUSES the merge (the block creator proposes a
+'               single-parent witness or holds) / validate REJECTS
+'               (deterministic, no fork).
 '     Δ ≤ 256 : floor-bounded ancestor scan (H3, O(Δ), never cuts above floor)
 '               → merge fold (BitmaskOr semilattice + IntegerAdd checked group)
 '               → post_state = merge(floor.post_state, band writes).
@@ -56,7 +58,7 @@ if (Δ > MAX_FLOOR_DISTANCE (256) ?) then (yes ── backstop)
     NEVER gate admission (only Δ does).
   end note
   if (propose or validate ?) then (propose)
-    :PARK the round (Err);\nretry once finality advances\n& Δ shrinks; <<#FFCDD2>>
+    :REFUSE the merge (Err);\nblock creator proposes a single-parent\nwitness (main parent, every justification)\nor holds a deploy-carrying proposal\nuntil finality advances; <<#FFCDD2>>
     kill
   else (validate)
     :block is deterministically INVALID\n(both sides compute the same Δ)\n⟹ REJECT — no fork; <<#FFCDD2>>

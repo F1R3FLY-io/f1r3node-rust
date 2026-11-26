@@ -1,4 +1,4 @@
-// Tests for replay consistency of non-deterministic processes (OpenAI, gRPC, Ollama).
+// Tests for replay consistency of non-deterministic processes (OpenAI, Ollama).
 // Ensures that replays produce consistent costs and error handling for non-deterministic operations.
 
 use std::collections::HashMap;
@@ -9,44 +9,20 @@ use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::chromadb_service::create_noop_chromadb_service;
 use rholang::rust::interpreter::external_services::ExternalServices;
-use rholang::rust::interpreter::grpc_client_service::{GrpcClientMockConfig, GrpcClientService};
 use rholang::rust::interpreter::interpreter::EvaluateResult;
-use rholang::rust::interpreter::openai_service::{
-    create_mock_openai_service, create_noop_openai_service, OpenAIMockConfig,
-};
+use rholang::rust::interpreter::openai_service::{create_mock_openai_service, OpenAIMockConfig};
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::test_utils::resources::create_runtimes_with_services;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
-/// Helper to create external services with mock OpenAI and optional mock gRPC
-fn create_test_external_services(
-    openai_mock: OpenAIMockConfig,
-    grpc_mock: Option<GrpcClientMockConfig>,
-) -> ExternalServices {
+/// Helper to create external services with mock OpenAI
+fn create_test_external_services(openai_mock: OpenAIMockConfig) -> ExternalServices {
     ExternalServices {
         openai: create_mock_openai_service(openai_mock),
         ollama: rholang::rust::interpreter::ollama_service::create_disabled_ollama_service(),
-        grpc_client: match grpc_mock {
-            Some(config) => GrpcClientService::new_mock(config),
-            None => GrpcClientService::new_noop(),
-        },
         openai_enabled: true,
-        ollama_enabled: false,
-        is_validator: true,
-        chroma: create_noop_chromadb_service(),
-    }
-}
-
-/// Helper to create external services with only mock gRPC
-#[allow(dead_code)]
-fn create_test_external_services_grpc(grpc_mock: GrpcClientMockConfig) -> ExternalServices {
-    ExternalServices {
-        openai: create_noop_openai_service(),
-        ollama: rholang::rust::interpreter::ollama_service::create_disabled_ollama_service(),
-        grpc_client: GrpcClientService::new_mock(grpc_mock),
-        openai_enabled: false,
         ollama_enabled: false,
         is_validator: true,
         chroma: create_noop_chromadb_service(),
@@ -191,7 +167,7 @@ fn assert_replay_consistency(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_gpt4_mock_service_works() {
     let external_services =
-        create_test_external_services(OpenAIMockConfig::single_completion("gpt4 completion"), None);
+        create_test_external_services(OpenAIMockConfig::single_completion("gpt4 completion"));
 
     let result = evaluate_with_mock_service(
         r#"new output, gpt4(`rho:ai:gpt4`) in { gpt4!("abc", *output) }"#,
@@ -208,8 +184,7 @@ async fn test_gpt4_mock_service_works() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_gpt4_mock_error_returns_error() {
-    let external_services =
-        create_test_external_services(OpenAIMockConfig::error_on_first_call(), None);
+    let external_services = create_test_external_services(OpenAIMockConfig::error_on_first_call());
 
     let result = evaluate_with_mock_service(
         r#"new output, gpt4(`rho:ai:gpt4`) in { gpt4!("abc", *output) }"#,
@@ -226,10 +201,9 @@ async fn test_gpt4_mock_error_returns_error() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_dalle3_mock_service_works() {
-    let external_services = create_test_external_services(
-        OpenAIMockConfig::single_dalle3("https://example.com/generated-image.png"),
-        None,
-    );
+    let external_services = create_test_external_services(OpenAIMockConfig::single_dalle3(
+        "https://example.com/generated-image.png",
+    ));
 
     let result = evaluate_with_mock_service(
         r#"new output, dalle3(`rho:ai:dalle3`) in { dalle3!("a cat painting", *output) }"#,
@@ -246,8 +220,7 @@ async fn test_dalle3_mock_service_works() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_dalle3_mock_error_returns_error() {
-    let external_services =
-        create_test_external_services(OpenAIMockConfig::error_on_first_call(), None);
+    let external_services = create_test_external_services(OpenAIMockConfig::error_on_first_call());
 
     let result = evaluate_with_mock_service(
         r#"new output, dalle3(`rho:ai:dalle3`) in { dalle3!("a cat painting", *output) }"#,
@@ -263,10 +236,9 @@ async fn test_dalle3_mock_error_returns_error() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_tts_mock_service_works() {
-    let external_services = create_test_external_services(
-        OpenAIMockConfig::single_tts_audio(b"fake audio bytes".to_vec()),
-        None,
-    );
+    let external_services = create_test_external_services(OpenAIMockConfig::single_tts_audio(
+        b"fake audio bytes".to_vec(),
+    ));
 
     let result = evaluate_with_mock_service(
         r#"new output, tts(`rho:ai:textToAudio`) in { tts!("Hello world", *output) }"#,
@@ -283,8 +255,7 @@ async fn test_tts_mock_service_works() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_tts_mock_error_returns_error() {
-    let external_services =
-        create_test_external_services(OpenAIMockConfig::error_on_first_call(), None);
+    let external_services = create_test_external_services(OpenAIMockConfig::error_on_first_call());
 
     let result = evaluate_with_mock_service(
         r#"new output, tts(`rho:ai:textToAudio`) in { tts!("Hello world", *output) }"#,
@@ -298,51 +269,6 @@ async fn test_tts_mock_error_returns_error() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_grpc_tell_mock_service_works() {
-    let grpc_mock = GrpcClientMockConfig::create("localhost", 8080);
-    let external_services = create_test_external_services_grpc(grpc_mock.clone());
-
-    // gRPC tell uses 3 arguments (host, port, payload) without an ack channel
-    let result = evaluate_with_mock_service(
-        r#"new grpcTell(`rho:io:grpcTell`) in { grpcTell!("localhost", 8080, "payload") }"#,
-        external_services,
-    )
-    .await;
-
-    assert!(
-        result.errors.is_empty(),
-        "gRPC tell with mock service should not have errors: {:?}",
-        result.errors
-    );
-
-    // Verify the mock was called
-    assert!(grpc_mock.was_called(), "gRPC mock should have been called");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_grpc_tell_mock_error_returns_error() {
-    // Mock expects different host/port to trigger an error
-    let grpc_mock = GrpcClientMockConfig::create("different_host", 9999);
-    let external_services = create_test_external_services_grpc(grpc_mock.clone());
-
-    // gRPC tell uses 3 arguments (host, port, payload) without an ack channel
-    let result = evaluate_with_mock_service(
-        r#"new grpcTell(`rho:io:grpcTell`) in { grpcTell!("localhost", 8080, "payload") }"#,
-        external_services,
-    )
-    .await;
-
-    // The gRPC error should be propagated
-    assert!(
-        !result.errors.is_empty(),
-        "gRPC tell with error mock should have errors"
-    );
-
-    // Verify the mock was called
-    assert!(grpc_mock.was_called(), "gRPC mock should have been called");
-}
-
 // =====================================================
 // Replay Consistency Tests
 // These verify play and replay produce identical costs
@@ -352,7 +278,7 @@ async fn test_grpc_tell_mock_error_returns_error() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replay_gpt4_produces_consistent_costs() {
     let external_services =
-        create_test_external_services(OpenAIMockConfig::single_completion("gpt4 completion"), None);
+        create_test_external_services(OpenAIMockConfig::single_completion("gpt4 completion"));
 
     let (play, replay) = evaluate_and_replay(
         r#"new output, gpt4(`rho:ai:gpt4`) in { gpt4!("abc", *output) }"#,
@@ -366,10 +292,8 @@ async fn replay_gpt4_produces_consistent_costs() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replay_gpt4_out_of_phlogistons_consistent_cost() {
-    let external_services = create_test_external_services(
-        OpenAIMockConfig::single_completion(&"a".repeat(1_000_000)),
-        None,
-    );
+    let external_services =
+        create_test_external_services(OpenAIMockConfig::single_completion(&"a".repeat(1_000_000)));
 
     let (play, replay) = evaluate_and_replay(
         r#"new output, gpt4(`rho:ai:gpt4`) in { gpt4!("abc", *output) }"#,
@@ -383,8 +307,7 @@ async fn replay_gpt4_out_of_phlogistons_consistent_cost() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replay_gpt4_service_error_consistent() {
-    let external_services =
-        create_test_external_services(OpenAIMockConfig::error_on_first_call(), None);
+    let external_services = create_test_external_services(OpenAIMockConfig::error_on_first_call());
 
     let (play, replay) = evaluate_and_replay(
         r#"new output, gpt4(`rho:ai:gpt4`) in { gpt4!("abc", *output) }"#,
@@ -398,10 +321,9 @@ async fn replay_gpt4_service_error_consistent() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replay_dalle3_produces_consistent_costs() {
-    let external_services = create_test_external_services(
-        OpenAIMockConfig::single_dalle3("https://example.com/generated-image.png"),
-        None,
-    );
+    let external_services = create_test_external_services(OpenAIMockConfig::single_dalle3(
+        "https://example.com/generated-image.png",
+    ));
 
     let (play, replay) = evaluate_and_replay(
         r#"new output, dalle3(`rho:ai:dalle3`) in { dalle3!("a cat painting", *output) }"#,
@@ -415,8 +337,7 @@ async fn replay_dalle3_produces_consistent_costs() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replay_dalle3_service_error_consistent() {
-    let external_services =
-        create_test_external_services(OpenAIMockConfig::error_on_first_call(), None);
+    let external_services = create_test_external_services(OpenAIMockConfig::error_on_first_call());
 
     let (play, replay) = evaluate_and_replay(
         r#"new output, dalle3(`rho:ai:dalle3`) in { dalle3!("a cat painting", *output) }"#,
@@ -430,10 +351,9 @@ async fn replay_dalle3_service_error_consistent() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replay_tts_produces_consistent_costs() {
-    let external_services = create_test_external_services(
-        OpenAIMockConfig::single_tts_audio(b"fake audio bytes".to_vec()),
-        None,
-    );
+    let external_services = create_test_external_services(OpenAIMockConfig::single_tts_audio(
+        b"fake audio bytes".to_vec(),
+    ));
 
     let (play, replay) = evaluate_and_replay(
         r#"new output, tts(`rho:ai:textToAudio`) in { tts!("Hello world", *output) }"#,
@@ -447,8 +367,7 @@ async fn replay_tts_produces_consistent_costs() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replay_tts_service_error_consistent() {
-    let external_services =
-        create_test_external_services(OpenAIMockConfig::error_on_first_call(), None);
+    let external_services = create_test_external_services(OpenAIMockConfig::error_on_first_call());
 
     let (play, replay) = evaluate_and_replay(
         r#"new output, tts(`rho:ai:textToAudio`) in { tts!("Hello world", *output) }"#,
@@ -458,34 +377,4 @@ async fn replay_tts_service_error_consistent() {
     .await;
 
     assert_replay_consistency(&play, &replay, "Text-to-audio service error replay", true);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replay_grpc_tell_produces_consistent_costs() {
-    let grpc_mock = GrpcClientMockConfig::create("localhost", 8080);
-    let external_services = create_test_external_services_grpc(grpc_mock);
-
-    let (play, replay) = evaluate_and_replay(
-        r#"new grpcTell(`rho:io:grpcTell`) in { grpcTell!("localhost", 8080, "payload") }"#,
-        Cost::create(i64::MAX, "test".to_string()),
-        external_services,
-    )
-    .await;
-
-    assert_replay_consistency(&play, &replay, "gRPC tell replay", false);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replay_grpc_tell_error_consistent() {
-    let grpc_mock = GrpcClientMockConfig::create("different_host", 9999);
-    let external_services = create_test_external_services_grpc(grpc_mock);
-
-    let (play, replay) = evaluate_and_replay(
-        r#"new grpcTell(`rho:io:grpcTell`) in { grpcTell!("localhost", 8080, "payload") }"#,
-        Cost::create(i64::MAX, "test".to_string()),
-        external_services,
-    )
-    .await;
-
-    assert_replay_consistency(&play, &replay, "gRPC tell error replay", true);
 }

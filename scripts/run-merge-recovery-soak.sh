@@ -152,11 +152,10 @@ fi
 # The summary of such a segment keeps the reason of the earlier stop.
 PRIOR_EARLY_EXIT_REASON=""
 if [ -f "$OUTPUT_DIR/early-exit.txt" ]; then
-	printf 'soak already ended (%s); this segment does no work\n' \
-		"$(head -1 "$OUTPUT_DIR/early-exit.txt" 2>/dev/null || echo 'reason unrecorded')"
+	PRIOR_EARLY_EXIT_LINE="$(head -1 "$OUTPUT_DIR/early-exit.txt" 2>/dev/null)" || PRIOR_EARLY_EXIT_LINE=""
+	printf 'soak already ended (%s); this segment does no work\n' "${PRIOR_EARLY_EXIT_LINE:-reason unrecorded}"
 	DEADLINE=0
-	PRIOR_EARLY_EXIT_REASON="$(head -1 "$OUTPUT_DIR/early-exit.txt" 2>/dev/null)" || PRIOR_EARLY_EXIT_REASON=""
-	PRIOR_EARLY_EXIT_REASON="${PRIOR_EARLY_EXIT_REASON%%:*}"
+	PRIOR_EARLY_EXIT_REASON="${PRIOR_EARLY_EXIT_LINE%%:*}"
 	[[ "$PRIOR_EARLY_EXIT_REASON" =~ ^[a-z_]+$ ]] || PRIOR_EARLY_EXIT_REASON=earlier_segment
 fi
 
@@ -362,6 +361,14 @@ SOAK_RUNNER_ROOT="${SOAK_RUNNER_ROOT:-/opt/actions-runner}"
 DISK_STOP_SECONDS="${SOAK_DISK_STOP_SECONDS:-2}"
 if ! [[ "$DISK_STOP_SECONDS" =~ ^[1-5]$ ]]; then
 	printf 'SOAK_DISK_STOP_SECONDS must be an integer from 1 through 5\n' >&2
+	exit 2
+fi
+# The emergency budget above bounds a stop during a host protection breach.
+# The writer stop at the end of a segment has no emergency, and a slow docker
+# daemon must not make it fail.
+WRITER_STOP_SECONDS="${SOAK_WRITER_STOP_SECONDS:-30}"
+if ! [[ "$WRITER_STOP_SECONDS" =~ ^([5-9]|[1-9][0-9]|1[01][0-9]|120)$ ]]; then
+	printf 'SOAK_WRITER_STOP_SECONDS must be an integer from 5 through 120\n' >&2
 	exit 2
 fi
 GUARDIAN_MAX_SILENCE_SECONDS="${SOAK_GUARDIAN_MAX_SILENCE_SECONDS:-10}"
@@ -667,35 +674,67 @@ mark_owned_oom_preferred() {
 	host_control prefer-oom "$SOAK_WRITER_OWNER"
 }
 
+# A container can exit between docker ps and docker inspect or the command, so
+# an error there does not prove a failed stop. A container that docker ps still
+# lists afterwards does. Each failure names its step on stderr. Each confirmed
+# container stops before the next inspect: the docker CLI inspects one container
+# for each request, so a slow daemon must not use the emergency budget on
+# inspects before the first stop.
 stop_node_writer_commands() {
 	local selection="$1"
 	shift
-	local cid owner ids status=0
-	stop_owned_host_writers || status=1
-	ids="$(docker ps "$selection" --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER" 2>/dev/null)" || return 1
+	local cid owner ids remaining status=0
+	local -a unconfirmed=()
+	stop_owned_host_writers || {
+		printf 'host-control stop-owned failed\n' >&2
+		status=1
+	}
+	ids="$(docker ps "$selection" --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER")" || {
+		printf 'docker ps failed\n' >&2
+		return 1
+	}
 	while IFS= read -r cid; do
 		[ -n "$cid" ] || continue
 		if ! [[ "$cid" =~ ^[a-f0-9]{64}$ ]]; then
+			printf 'docker ps listed an invalid container ID: %s\n' "$cid" >&2
 			status=1
 			continue
 		fi
-		owner="$(docker inspect --format '{{index .Config.Labels "io.f1r3fly.soak.owner"}}' "$cid" 2>/dev/null)" || {
-			status=1
-			continue
-		}
-		[ "$owner" = "$SOAK_WRITER_OWNER" ] || {
-			status=1
-			continue
-		}
-		docker "$@" "$cid" 2>/dev/null || status=1
+		if owner="$(docker inspect --format '{{index .Config.Labels "io.f1r3fly.soak.owner"}}' "$cid")"; then
+			if [ "$owner" = "$SOAK_WRITER_OWNER" ]; then
+				docker "$@" "$cid" >/dev/null || unconfirmed+=("$cid")
+			else
+				printf 'container %s has the owner %s\n' "${cid:0:12}" "$owner" >&2
+				status=1
+			fi
+		else
+			unconfirmed+=("$cid")
+		fi
 	done <<<"$ids"
+	[ "${#unconfirmed[@]}" -gt 0 ] || return "$status"
+	remaining="$(docker ps "$selection" --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER")" || {
+		printf 'docker ps failed after docker %s\n' "$*" >&2
+		return 1
+	}
+	for cid in "${unconfirmed[@]}"; do
+		if grep -qxF "$cid" <<<"$remaining"; then
+			printf 'container %s remains after docker %s\n' "${cid:0:12}" "$*" >&2
+			status=1
+		fi
+	done
 	return "$status"
 }
 
-stop_node_writers() (
+stop_node_writers() {
+	stop_node_writers_within "$DISK_STOP_SECONDS" "$@"
+}
+
+stop_node_writers_within() (
+	local budget="$1"
+	shift
 	export SOAK_WRITER_OWNER
 	export -f host_control stop_owned_host_writers stop_node_writer_commands
-	timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" \
+	timeout --signal=TERM --kill-after=1 "$budget" \
 		bash -c 'trap "" TERM; stop_node_writer_commands "$@"' bash "$@"
 )
 
@@ -723,7 +762,7 @@ start_crash_monitor() {
 	CRASH_MONITOR_DIR="$directory"
 	(
 		export SOAK_WRITER_OWNER DISK_STOP_SECONDS
-		export -f host_control stop_owned_host_writers stop_node_writer_commands stop_node_writers crash_monitor
+		export -f host_control stop_owned_host_writers stop_node_writer_commands stop_node_writers stop_node_writers_within crash_monitor
 		exec setsid bash -c 'crash_monitor "$@"' soak-crash-monitor "$$" "$identity" "$directory" "$OUTPUT_DIR"
 	) >"$directory/monitor.log" 2>&1 &
 	monitor=$!
@@ -1656,6 +1695,7 @@ ITERATION_TEE_PID=""
 ITERATION_SNAPSHOT_PID=""
 ITERATION_IO_SAMPLER_PID=""
 ITERATION_FIFO=""
+WRITER_STOP_DONE=0
 cleanup_soak_processes() {
 	[ -z "$HOST_GUARDIAN_PID" ] || kill "$HOST_GUARDIAN_PID" 2>/dev/null || true
 	if [ -n "$BENCHMARK_PID" ]; then
@@ -1685,6 +1725,21 @@ cleanup_soak_processes() {
 			fi
 			persist_soak_state || return 1
 		fi
+	elif [ "$CASPER_RUNTIME" -eq 0 ] && [ "$WRITER_STOP_DONE" -eq 0 ]; then
+		# An exit between iterations, for example after a failed state write,
+		# skips the stop at the end of the segment. The writers of a failed
+		# iteration still run, and no later segment owns them.
+		if ! stop_node_writers_within "$WRITER_STOP_SECONDS" -q kill >"$OUTPUT_DIR/.writer-stop.log" 2>&1; then
+			{
+				printf 'Writer termination is unconfirmed at the exit of the driver.\n'
+				cat "$OUTPUT_DIR/.writer-stop.log"
+			} >"$OUTPUT_DIR/writer-stop-failure.txt"
+			[ -f "$OUTPUT_DIR/early-exit.txt" ] ||
+				publish_record "$OUTPUT_DIR/early-exit.txt" printf 'writer_stop_failed: Writer termination is unconfirmed.\n'
+			[ "$FAILURES" -gt 0 ] || FAILURES=1
+			persist_soak_state || true
+		fi
+		rm -f "$OUTPUT_DIR/.writer-stop.log"
 	fi
 	if [ -n "$CRASH_MONITOR_DIR" ]; then
 		printf 'handled\n' >"$CRASH_MONITOR_DIR/handled-exit"
@@ -2237,6 +2292,19 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		FAILURES="$((FAILURES + 1))"
 		persist_soak_state
 		printf '%s\n' "$STATUS" >"$ITERATION_DIR/exit-code.txt"
+		# A pytest that a signal ends, for example an OOM kill, skips its
+		# teardown, and its nodes would run into the next iterations. Stop the
+		# owned writers before the evidence copy. The stop at the end of the
+		# segment fails the soak if a writer remains.
+		if [ "$STATUS" -ge 128 ]; then
+			ITERATION_STOP_BUDGET="$WRITER_STOP_SECONDS"
+			if [ -n "$EMERGENCY_DEADLINE_EPOCH" ] || [ -s "$HOST_GUARDIAN_BREACH" ]; then
+				ITERATION_STOP_BUDGET="$DISK_STOP_SECONDS"
+			fi
+			stop_node_writers_within "$ITERATION_STOP_BUDGET" -q kill >"$ITERATION_DIR/writer-stop.log" 2>&1 ||
+				printf 'The writer stop after iteration %s is unconfirmed.\n' "$ITERATIONS" >>"$ITERATION_DIR/writer-stop.log"
+			[ -s "$ITERATION_DIR/writer-stop.log" ] || rm -f "$ITERATION_DIR/writer-stop.log"
+		fi
 		for evidence_root in "${HARNESS_TELEMETRY_DIRS[@]}"; do
 			[ -d "$evidence_root" ] || continue
 			# Evidence only — logs, CSVs, configs. A full `cp -a` drags the nodes'
@@ -2332,7 +2400,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 
 	if target_ref_moved; then
 		EARLY_EXIT_REASON="target_advanced"
-		publish_record -t "$OUTPUT_DIR/early-exit.txt" printf '%s advanced past %s; ending soak after iteration %s\n' \
+		publish_record -t "$OUTPUT_DIR/early-exit.txt" printf 'target_advanced: %s advanced past %s; ending soak after iteration %s\n' \
 			"$TARGET_REF" "$TARGET_SHA" "$ITERATIONS"
 		break
 	fi
@@ -2362,10 +2430,27 @@ fi
 # (most likely the disk growth of runs 39194089405 and 39369559337). Kill every
 # owned writer while this segment still owns it. Kill keeps the containers, so
 # their logs remain for the evidence that a deadline stop does not copy. A
-# failed stop makes the soak fail, but it does not raise an existing count:
-# every later segment of the soak repeats the same unconfirmed stop.
-if [ "$CASPER_RUNTIME" -eq 0 ] && ! stop_node_writers -q kill >/dev/null 2>&1; then
-	printf 'Writer termination is unconfirmed at the end of the segment.\n' >"$OUTPUT_DIR/writer-stop-failure.txt"
+# failed stop makes the soak fail with a count of at least 1. It does not raise
+# a higher count, because the soak fails either way, and writer-stop-failure.txt
+# records the stop. The stop has its own budget: a slow docker daemon at the end
+# of a segment is not a host emergency. After a host protection breach, the
+# emergency budget applies, so the stop cannot delay the breach records.
+WRITER_STOP_STATUS=0
+WRITER_STOP_BUDGET="$WRITER_STOP_SECONDS"
+if [ -n "$EMERGENCY_DEADLINE_EPOCH" ] || [ "$EARLY_EXIT_REASON" = host_protection_breach ]; then
+	WRITER_STOP_BUDGET="$DISK_STOP_SECONDS"
+fi
+if [ "$CASPER_RUNTIME" -eq 0 ]; then
+	stop_node_writers_within "$WRITER_STOP_BUDGET" -q kill >"$OUTPUT_DIR/.writer-stop.log" 2>&1 || WRITER_STOP_STATUS=$?
+fi
+if [ "$WRITER_STOP_STATUS" -ne 0 ]; then
+	{
+		printf 'Writer termination is unconfirmed at the end of the segment.\n'
+		if [ "$WRITER_STOP_STATUS" -eq 124 ] || [ "$WRITER_STOP_STATUS" -eq 137 ]; then
+			printf 'The stop did not complete within %s s.\n' "$WRITER_STOP_BUDGET"
+		fi
+		cat "$OUTPUT_DIR/.writer-stop.log"
+	} >"$OUTPUT_DIR/writer-stop-failure.txt"
 	if [ -z "$EARLY_EXIT_REASON" ] && [ -z "$PRIOR_EARLY_EXIT_REASON" ]; then
 		EARLY_EXIT_REASON="writer_stop_failed"
 		publish_record "$OUTPUT_DIR/early-exit.txt" printf 'writer_stop_failed: Writer termination is unconfirmed.\n'
@@ -2374,6 +2459,13 @@ if [ "$CASPER_RUNTIME" -eq 0 ] && ! stop_node_writers -q kill >/dev/null 2>&1; t
 		FAILURES=1
 	fi
 fi
+# A confirmed stop can still report a skipped process or a container that
+# exited during the stop. Keep that output as evidence.
+if [ "$WRITER_STOP_STATUS" -eq 0 ] && [ -s "$OUTPUT_DIR/.writer-stop.log" ]; then
+	mv -f "$OUTPUT_DIR/.writer-stop.log" "$OUTPUT_DIR/writer-stop.log"
+fi
+rm -f "$OUTPUT_DIR/.writer-stop.log"
+WRITER_STOP_DONE=1
 
 # The owner stop above reported success in soak 39711861154, but the nodes of
 # the two deadline-stopped subprocess sessions kept running and filled the disk.
@@ -2398,7 +2490,7 @@ if [ "$CASPER_RUNTIME" -eq 0 ] && [ -d "$SUBPROCESS_DATA_DIR" ]; then
 		--owner "$SOAK_WRITER_OWNER" --quiet-ms "$residual_quiet_ms" "$SUBPROCESS_DATA_DIR" 2>/dev/null)" || residual_status=$?
 	[ -z "$residual_lines" ] || printf '%s\n' "$residual_lines" | sed "s/^/segment=$SEGMENT /" >>"$OUTPUT_DIR/residual-writers.txt"
 	if [ "$residual_status" -ne 0 ]; then
-		printf 'Residual writer termination under .subprocess-data is unconfirmed at the end of the segment.\n' >"$OUTPUT_DIR/writer-stop-failure.txt"
+		printf 'Residual writer termination under .subprocess-data is unconfirmed at the end of the segment.\n' >>"$OUTPUT_DIR/writer-stop-failure.txt"
 		if [ -z "$EARLY_EXIT_REASON" ] && [ -z "$PRIOR_EARLY_EXIT_REASON" ]; then
 			EARLY_EXIT_REASON="writer_stop_failed"
 			publish_record "$OUTPUT_DIR/early-exit.txt" printf 'writer_stop_failed: Writer termination is unconfirmed.\n'

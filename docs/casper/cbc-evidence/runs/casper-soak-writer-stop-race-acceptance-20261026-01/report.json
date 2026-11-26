@@ -1,0 +1,75 @@
+{
+ "approval": {
+  "accepted_by": "jltatbeach",
+  "posted_at": "2026-10-26T23:32:01Z",
+  "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/870#issuecomment-6429833007",
+  "review_body_sha256": "65b85e2a0d6cd35023bb83e68f3c30db1aeec2d3a3cfc04e21f3452556f19d3d",
+  "review_body_sha256_method": "sha256 of the body bytes that the GitHub API returns for the acceptance comment (1636 bytes). The body names the review package, the three source digests, the guarantee, and the four limitations.",
+  "revision": "6dd0290647f420567b958c7eb783ca9806383bb5",
+  "tested_commit": "85b04c07e512a09d5fc87239294ff111f4e88563"
+ },
+ "review": {
+  "ref": "docs/casper/cbc-evidence/runs/casper-soak-writer-stop-race-20261026-01/report.json",
+  "sha256": "194ff7af64cc204c59dc0b18bc051302c5a79ad09022eb1f92f41856621558f5"
+ },
+ "previous_acceptance": {
+  "scripts/run-merge-recovery-soak.sh": {
+   "ref": "docs/casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-acceptance-20261023-01/report.json",
+   "sha256": "c24f610020098e953c6a6ca9194b062fb87c9ccf97b8eb1604dab9c872cde76a"
+  },
+  "scripts/casper-soak/src/host_control.rs": {
+   "ref": "docs/casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-acceptance-20261023-01/report.json",
+   "sha256": "c24f610020098e953c6a6ca9194b062fb87c9ccf97b8eb1604dab9c872cde76a"
+  },
+  "scripts/bench/test-run-merge-recovery-soak.sh": {
+   "ref": "docs/casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-acceptance-20261023-01/report.json",
+   "sha256": "c24f610020098e953c6a6ca9194b062fb87c9ccf97b8eb1604dab9c872cde76a"
+  }
+ },
+ "accepted_scope": {
+  "commits": [
+   "1250e8490",
+   "85b04c07e"
+  ],
+  "guarantee": [
+   "The writer stop fails only when an owned container stays listed as running after its kill.",
+   "It also fails when docker ps, host-control stop-owned, a container ID, or an owner label fails its check.",
+   "Each confirmed container stops before the next inspect.",
+   "The end-of-segment stop has a 30 s default budget outside emergencies.",
+   "An exit before the end-of-segment stop and a signal-ended pytest also stop the owned writers."
+  ],
+  "limitations": [
+   "The owner label is not confirmed for a container that exits before its inspect.",
+   "The end of each segment can take up to SOAK_WRITER_STOP_SECONDS plus 1 s longer (31 s at the default).",
+   "The stop after a signal-ended pytest records a failure only in the writer-stop.log of that iteration.",
+   "The exit stop applies only to a soak without a Casper manifest, and only before the end-of-segment stop has run."
+  ],
+  "excluded": "Node correctness, the profile claims, and a live soak result."
+ },
+ "claim_digests": {
+  "docs/claims/casper-soak-harness.md": "92c82d3eb42331aa2fda2e6c53dd4b74dd3a1cd166855dd0c2db4b38cdbbda2c"
+ },
+ "claim_digests_note": "The claim document adds the acceptance sentence of 2026-10-26 to the section that the review package records.",
+ "claim_discharge": "discharged",
+ "claim_ids": [
+  "CLAIM-CASPER-SOAK-001"
+ ],
+ "node_execution": false,
+ "phase": "pre_pr216_merge",
+ "schema_version": 1,
+ "scope": "bounded-harness-writer-stop-confirmation",
+ "soak": "pending",
+ "source_digests": {
+  "scripts/bench/test-run-merge-recovery-soak.sh": "710adb582faa54c638d8ac6a01e25bbb27aca2c6d0362d92fb021978cb30d632",
+  "scripts/casper-soak/src/host_control.rs": "427e0a7a550156cfc821e37df4fe452a03aae3b9ed8807bd897be0c80b76e6be",
+  "scripts/run-merge-recovery-soak.sh": "b0c9cefec97db5889c49bd37281f6952802f054dc4c4f44b4687b99eaa172028"
+ },
+ "status": "accepted-change",
+ "tiers": {
+  "binding": "passed",
+  "construction": "not-applicable",
+  "refutation": "bounded-safety-pass"
+ },
+ "verified_at": "2026-10-26",
+ "waiver": null
+}

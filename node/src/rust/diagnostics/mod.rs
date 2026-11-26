@@ -3,6 +3,7 @@ pub mod new_prometheus_reporter;
 pub mod prometheus_config;
 pub mod scheduler_delay;
 pub mod sigar_reporter;
+pub mod store_size_reporter;
 pub mod udp_influx_db_reporter;
 pub mod zipkin_reporter;
 
@@ -70,10 +71,22 @@ pub fn initialize_diagnostics(
         );
     }
 
-    if (conf.metrics.prometheus || conf.metrics.influxdb || conf.metrics.influxdb_udp)
-        && scheduler_delay::start_scheduler_delay_probe()
-    {
+    let any_reporter =
+        conf.metrics.prometheus || conf.metrics.influxdb || conf.metrics.influxdb_udp;
+
+    if any_reporter && scheduler_delay::start_scheduler_delay_probe() {
         info!("Runtime scheduler delay probe started.");
+    }
+
+    if any_reporter {
+        store_size_reporter::start_store_size_reporter(
+            conf.storage.data_dir.clone(),
+            metrics_interval,
+        );
+        info!(
+            "Store size reporter started with interval {:?}.",
+            metrics_interval
+        );
     }
 
     Ok(prometheus_reporter)

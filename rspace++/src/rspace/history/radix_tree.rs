@@ -13,7 +13,6 @@ use shared::rust::{Byte, ByteVector};
 use super::history_action::{DeleteAction, HistoryAction, InsertAction};
 use crate::rspace::errors::RadixTreeError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::history::Either;
 use crate::rspace::history::history_action::HistoryActionTrait;
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
@@ -203,7 +202,17 @@ pub fn encode(node: &Node) -> ByteVector {
 /** Deserialization [[ByteVector]] to [[Node]]
  */
 pub fn decode(bv: ByteVector) -> Node {
+    try_decode(&bv).unwrap_or_else(|e| panic!("Error during deserialization: {}", e))
+}
+
+pub fn try_decode(bv: &[u8]) -> Result<Node, RadixTreeError> {
     let max_size = bv.len();
+    let malformed = |reason: &str| {
+        RadixTreeError::SerializationError(format!(
+            "Radix Tree - malformed node of {} bytes: {}",
+            max_size, reason
+        ))
+    };
 
     // If first bit 0 - return true, otherwise false.
     fn is_leaf(second_byte: u8) -> bool { (second_byte & 0x80) == 0x00 }
@@ -212,21 +221,28 @@ pub fn decode(bv: ByteVector) -> Node {
     let mut pos0 = 0;
     while pos0 < max_size {
         let idx_item = byte_to_int(bv[pos0]); // Take first byte - it's item's index
-        assert!(
-            node[idx_item] == Item::EmptyItem,
-            "Error during deserialization: wrong index of item."
-        );
+        if node[idx_item] != Item::EmptyItem {
+            return Err(malformed("wrong index of item"));
+        }
         let pos1 = pos0 + 1;
-        let second_byte = bv[pos1]; // Take second byte
+        let second_byte = *bv
+            .get(pos1)
+            .ok_or_else(|| malformed("truncated item header"))?; // Take second byte
 
         // Decoding prefix
         let prefix_size = (second_byte & 0x7F) as usize; // Lower 7 bits - it's size of prefix (0..127).
         let pos_prefix_start = pos1 + 1;
-        let prefix = bv[pos_prefix_start..pos_prefix_start + prefix_size].to_vec();
+        let pos_val_or_ptr_start = pos_prefix_start + prefix_size;
+        let prefix = bv
+            .get(pos_prefix_start..pos_val_or_ptr_start)
+            .ok_or_else(|| malformed("truncated item prefix"))?
+            .to_vec();
 
         // Decoding leaf or nodePtr data
-        let pos_val_or_ptr_start = pos_prefix_start + prefix_size;
-        let val_or_ptr = bv[pos_val_or_ptr_start..pos_val_or_ptr_start + DEF_SIZE].to_vec();
+        let val_or_ptr = bv
+            .get(pos_val_or_ptr_start..pos_val_or_ptr_start + DEF_SIZE)
+            .ok_or_else(|| malformed("truncated item value"))?
+            .to_vec();
 
         // Decoding type of non-empty item
         node[idx_item] = if is_leaf(second_byte) {
@@ -245,7 +261,7 @@ pub fn decode(bv: ByteVector) -> Node {
         pos0 = pos_val_or_ptr_start + DEF_SIZE;
     }
 
-    node
+    Ok(node)
 }
 
 fn common_prefix(b1: ByteVector, b2: ByteVector) -> (ByteVector, ByteVector, ByteVector) {
@@ -356,447 +372,156 @@ pub fn sequential_export(
     get_node_data_from_store: Arc<dyn Fn(&ByteVector) -> Option<ByteVector>>,
     settings: ExportDataSettings,
 ) -> Result<(ExportData, Option<ByteVector>), RadixTreeError> {
-    #[derive(Clone)]
     struct NodeData {
         prefix: ByteVector,
         decoded: Node,
-        last_item_index: Option<Byte>,
+        next_item_index: usize,
     }
 
-    impl NodeData {
-        fn new(prefix: ByteVector, decoded: Node, last_item_index: Option<Byte>) -> Self {
-            NodeData {
-                prefix,
-                decoded,
-                last_item_index,
-            }
-        }
-    }
-
-    type Path = Vec<NodeData>; // Sequence used in recursions
-
-    struct NodePathData {
-        hash: ByteVector,        // Hash of node for load
-        node_prefix: ByteVector, // Prefix of this node
-        rest_prefix: ByteVector, // Prefix that describes the rest of the Path
-        path: Path,              // Return path
-    }
-
-    /*
-     * Create path from root to lastPrefix node
-     */
-    let init_node_path: Box<
-        dyn Fn(NodePathData) -> Result<Either<NodePathData, Path>, RadixTreeError>,
-    > = Box::new(|p: NodePathData| {
-        let prefix_not_found = || {
-            let mut node_prefix_cloned = p.node_prefix.clone();
-            let mut rest_prefix_cloned = p.rest_prefix.clone();
-            node_prefix_cloned.append(&mut rest_prefix_cloned);
-
-            RadixTreeError::PrefixError(format!(
-                "Radix Tree - Export error: node with prefix {} not found.",
-                hex::encode(node_prefix_cloned)
-            ))
-        };
-
-        let process_child_item = |node: Node| {
-            let item_idx = byte_to_int(*p.rest_prefix.first().unwrap());
-            match node.get(item_idx) {
-                Some(Item::NodePtr {
-                    prefix: ptr_prefix,
-                    ptr,
-                }) => {
-                    let (_, rest_prefix_tail) = p.rest_prefix.split_first().unwrap();
-                    let (mut prefix_common, prefix_rest, ptr_prefix_rest) =
-                        common_prefix(rest_prefix_tail.to_vec(), ptr_prefix.to_vec());
-
-                    if !ptr_prefix_rest.is_empty() {
-                        return Err(prefix_not_found());
-                    }
-
-                    let mut node_prefix_appended = p.node_prefix.clone();
-                    node_prefix_appended.push(*p.rest_prefix.first().unwrap());
-                    node_prefix_appended.append(&mut prefix_common);
-
-                    Ok(Either::Left(NodePathData {
-                        hash: ptr.to_vec(),
-                        node_prefix: node_prefix_appended,
-                        rest_prefix: prefix_rest,
-                        path: {
-                            let mut new_path = Vec::new();
-                            new_path.push(NodeData::new(
-                                p.node_prefix.clone(),
-                                node,
-                                p.rest_prefix.first().copied(),
-                            ));
-
-                            new_path.extend(p.path.clone());
-                            new_path
-                        },
-                    }))
-                }
-                _ => Err(prefix_not_found()),
-            }
-        };
-
-        let node_opt = get_node_data_from_store(&p.hash);
-        if node_opt.is_none() {
-            Err(RadixTreeError::KeyNotFound(format!(
-                "Radix Tree - Export error: node with key {} not found.",
-                { hex::encode(p.hash) }
-            )))
-        } else {
-            let decoded_node = decode(node_opt.unwrap());
-            if p.rest_prefix.is_empty() {
-                let mut new_path = Vec::new();
-                new_path.push(NodeData::new(p.node_prefix, decoded_node, None));
-
-                new_path.extend(p.path);
-                Ok(Either::Right(new_path)) // Happy end
-            } else {
-                process_child_item(decoded_node) // Go dipper
-            }
-        }
-    });
-
-    /*
-     * Find next non-empty item.
-     *
-     * @param node Node to look for
-     * @param lastIdxOpt Last found index (if this node was not searched -
-     * [[None]]) @param settings ExportDataSettings from outer scope
-     * @return [[Some]](idxItem, [[Item]]) if item found, [[None]] if non-empty
-     * item not found
-     */
-    fn find_next_non_empty_item(
-        node: Node,
-        last_idx_opt: Option<Byte>,
-        settings: ExportDataSettings,
-    ) -> Option<(Byte, Item)> {
-        if last_idx_opt == Some(0xFF) {
-            None
-        } else {
-            let cur_idx_int = last_idx_opt.map(|b| byte_to_int(b) + 1).unwrap_or(0);
-            let cur_item = node.get(cur_idx_int).unwrap();
-            let cur_idx = cur_idx_int as u8;
-            match cur_item {
-                Item::EmptyItem => find_next_non_empty_item(node, Some(cur_idx), settings),
-                Item::Leaf {
-                    prefix: _,
-                    value: _,
-                } => {
-                    if settings.flag_leaf_prefixes || settings.flag_leaf_values {
-                        Some((cur_idx, cur_item.clone()))
-                    } else {
-                        find_next_non_empty_item(node, Some(cur_idx), settings)
-                    }
-                }
-                Item::NodePtr { prefix: _, ptr: _ } => Some((cur_idx, cur_item.clone())),
-            }
-        }
-    }
-
-    #[derive(Clone)]
-    struct StepData {
-        path: Path,           // Path of node from current to root
-        skip: i32,            // Skip counter
-        take: i32,            // Take counter
-        exp_data: ExportData, // Result of export
-    }
-
-    impl StepData {
-        fn new(path: Path, skip: i32, take: i32, exp_data: ExportData) -> Self {
-            StepData {
-                path,
-                skip,
-                take,
-                exp_data,
-            }
-        }
-    }
-
-    let add_leaf: Box<
-        dyn Fn(StepData, ByteVector, ByteVector, Byte, ByteVector, Vec<NodeData>) -> StepData,
-    > = Box::new(
-        |p: StepData,
-         leaf_prefix: ByteVector,
-         leaf_value: ByteVector,
-         item_index: Byte,
-         curr_node_prefix: ByteVector,
-         new_path: Vec<NodeData>| {
-            if p.skip > 0 {
-                StepData::new(new_path, p.skip, p.take, p.exp_data)
-            } else {
-                let new_lp = if settings.flag_leaf_prefixes {
-                    let mut new_single_lp = curr_node_prefix;
-                    let mut leaf_prefix_copy = leaf_prefix;
-                    new_single_lp.push(item_index);
-                    new_single_lp.append(&mut leaf_prefix_copy);
-
-                    let mut leaf_prefixes_copy = p.exp_data.leaf_prefixes;
-                    leaf_prefixes_copy.push(new_single_lp);
-                    leaf_prefixes_copy
-                } else {
-                    Vec::new()
-                };
-
-                let new_lv = if settings.flag_leaf_values {
-                    let mut leaf_values_copied = p.exp_data.leaf_values;
-                    leaf_values_copied.push(leaf_value);
-                    leaf_values_copied
-                } else {
-                    Vec::new()
-                };
-
-                let new_export_data = ExportData::new(
-                    p.exp_data.node_prefixes,
-                    p.exp_data.node_keys,
-                    p.exp_data.node_values,
-                    new_lp,
-                    new_lv,
-                );
-
-                StepData::new(new_path, p.skip, p.take, new_export_data)
-            }
-        },
-    );
-
-    let add_node_ptr: Box<
-        dyn Fn(
-            StepData,
-            ByteVector,
-            ByteVector,
-            Byte,
-            ByteVector,
-            Vec<NodeData>,
-        ) -> Result<StepData, RadixTreeError>,
-    > = Box::new(
-        |p: StepData,
-         ptr_prefix: ByteVector,
-         ptr: ByteVector,
-         item_index: Byte,
-         curr_node_prefix: ByteVector,
-         new_path: Vec<NodeData>| {
-            let construct_node_ptr_data =
-                |child_path: Vec<NodeData>, child_np: ByteVector, child_nv: ByteVector| {
-                    let new_np = if settings.flag_node_prefixes {
-                        let mut new = p.exp_data.node_prefixes.clone();
-                        new.push(child_np);
-                        new
-                    } else {
-                        Vec::new()
-                    };
-
-                    let new_nk = if settings.flag_node_keys {
-                        let mut new = p.exp_data.node_keys.clone();
-                        new.push(ptr.clone());
-                        new
-                    } else {
-                        Vec::new()
-                    };
-
-                    let new_nv = if settings.flag_node_values {
-                        let mut new = p.exp_data.node_values.clone();
-                        new.push(child_nv);
-                        new
-                    } else {
-                        Vec::new()
-                    };
-
-                    let new_data = ExportData::new(
-                        new_np,
-                        new_nk,
-                        new_nv,
-                        p.exp_data.leaf_prefixes.clone(),
-                        p.exp_data.leaf_values.clone(),
-                    );
-
-                    StepData::new(child_path, p.skip, p.take - 1, new_data)
-                };
-
-            let child_node_opt = get_node_data_from_store(&ptr);
-            if child_node_opt.is_none() {
-                Err(RadixTreeError::KeyNotFound(format!(
-                    "Radix Tree - Export error: node with key {} not found. here",
-                    { hex::encode(ptr) }
-                )))
-            } else {
-                let child_nv = child_node_opt.unwrap();
-                let child_decoded = decode(child_nv.clone());
-                let mut child_np = curr_node_prefix;
-                child_np.push(item_index);
-                child_np.append(&mut ptr_prefix.clone());
-
-                let child_node_data = NodeData::new(child_np.clone(), child_decoded, None);
-                let mut child_path = vec![child_node_data];
-                child_path.append(&mut new_path.clone());
-
-                if p.skip > 0 {
-                    Ok(StepData::new(child_path, p.skip - 1, p.take, p.exp_data))
-                } else {
-                    Ok(construct_node_ptr_data(child_path, child_np, child_nv))
-                }
-            }
-        },
-    );
-
-    let add_element: Box<
-        dyn Fn(StepData, u8, Item, Vec<Item>, Vec<u8>) -> Result<StepData, RadixTreeError>,
-    > = Box::new(
-        |p: StepData,
-         item_index: Byte,
-         item: Item,
-         curr_node: Node,
-         curr_node_prefix: ByteVector| {
-            let new_curr_node_data =
-                NodeData::new(curr_node_prefix.clone(), curr_node, Some(item_index));
-            let (_, path_tail) = p.path.split_first().unwrap();
-            let mut new_path = vec![new_curr_node_data];
-            new_path.append(&mut path_tail.to_vec());
-
-            match item {
-                Item::EmptyItem => Ok(StepData::new(new_path, p.skip, p.take, p.exp_data)),
-                Item::Leaf { prefix, value } => {
-                    Ok(add_leaf(p, prefix, value, item_index, curr_node_prefix, new_path))
-                }
-                Item::NodePtr { prefix, ptr } => {
-                    Ok(add_node_ptr(p, prefix, ptr, item_index, curr_node_prefix, new_path)?)
-                }
-            }
-        },
-    );
-
-    /*
-     * Export one element (Node or Leaf) and recursively move to the next step.
-     */
-    let export_step: Box<
-        dyn Fn(
-            StepData,
-        )
-            -> Result<Either<StepData, (ExportData, Option<ByteVector>)>, RadixTreeError>,
-    > = Box::new(|p: StepData| {
-        if p.path.is_empty() {
-            // End of Tree
-            Ok(Either::Right((p.exp_data, None)))
-        } else {
-            let curr_node_data = p.path.first().unwrap();
-            let curr_node_prefix = curr_node_data.prefix.clone();
-            let curr_node = curr_node_data.decoded.clone();
-
-            if (p.skip, p.take) == (0, 0) {
-                // End of skip&take counter
-                Ok(Either::Right((p.exp_data, Some(curr_node_prefix))))
-            } else {
-                let next_not_empty_item_opt = find_next_non_empty_item(
-                    curr_node.clone(),
-                    curr_node_data.last_item_index,
-                    settings.clone(),
-                );
-
-                let new_step_data = match next_not_empty_item_opt {
-                    Some((item_index, item)) => {
-                        add_element(p, item_index, item, curr_node, curr_node_prefix)
-                    }
-                    None => Ok({
-                        let (_, path_tail) = p.path.split_first().unwrap();
-                        StepData::new(path_tail.to_vec(), p.skip, p.take, p.exp_data)
-                    }),
-                };
-
-                Ok(Either::Left(new_step_data?))
-            }
-        }
-    });
-
-    fn init_conditions_exception() {
+    if (skip_size, take_size) == (0, 0) {
         panic!("Export error: invalid initial conditions (skipSize, takeSize)==(0,0).")
     }
 
-    fn empty_export_data() -> ExportData {
-        ExportData::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
+    let mut exp_data = ExportData::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+
+    let Some(root_node_ser) = get_node_data_from_store(&root_hash) else {
+        return Ok((exp_data, None));
+    };
+
+    let mut path: Vec<NodeData> = Vec::new();
+    let mut node_prefix: ByteVector = Vec::new();
+    let mut rest_prefix = last_prefix.clone().unwrap_or_default();
+    let mut decoded = try_decode(&root_node_ser)?;
+    while let Some((&item_index, rest_tail)) = rest_prefix.split_first() {
+        let prefix_not_found = || {
+            RadixTreeError::PrefixError(format!(
+                "Radix Tree - Export error: node with prefix {} not found.",
+                hex::encode([node_prefix.as_slice(), rest_prefix.as_slice()].concat())
+            ))
+        };
+        let next_item_index = byte_to_int(item_index);
+        let Some(Item::NodePtr { prefix, ptr }) = decoded.get(next_item_index) else {
+            return Err(prefix_not_found());
+        };
+        let Some(next_rest_prefix) = rest_tail.strip_prefix(prefix.as_slice()) else {
+            return Err(prefix_not_found());
+        };
+        let Some(child_ser) = get_node_data_from_store(ptr) else {
+            return Err(RadixTreeError::KeyNotFound(format!(
+                "Radix Tree - Export error: node with key {} not found.",
+                hex::encode(ptr)
+            )));
+        };
+        let child_decoded = try_decode(&child_ser)?;
+        let mut child_prefix = node_prefix.clone();
+        child_prefix.push(item_index);
+        child_prefix.extend_from_slice(prefix);
+        let next_rest_prefix = next_rest_prefix.to_vec();
+        path.push(NodeData {
+            prefix: std::mem::replace(&mut node_prefix, child_prefix),
+            decoded: std::mem::replace(&mut decoded, child_decoded),
+            next_item_index: next_item_index + 1,
+        });
+        rest_prefix = next_rest_prefix;
     }
-
-    fn empty_result() -> (ExportData, Option<ByteVector>) { (empty_export_data(), None) }
-
-    let do_export: Box<
-        dyn Fn(ByteVector) -> Result<(ExportData, Option<ByteVector>), RadixTreeError>,
-    > = Box::new(|root_node_ser: ByteVector| {
-        let root_params = NodePathData {
-            hash: root_hash.clone(),
-            node_prefix: Vec::new(),
-            rest_prefix: last_prefix.clone().unwrap_or_default(),
-            path: Vec::new(),
-        };
-
-        let no_root_start = (empty_export_data(), skip_size, take_size); // Start from next node after lastPrefix
-        let skipped_start = (empty_export_data(), skip_size - 1, take_size); // Skipped node start
-        let root_export_data = {
-            let new_np = if settings.flag_node_prefixes {
-                vec![Vec::<u8>::new()]
-            } else {
-                Vec::new()
-            };
-
-            let new_nk = if settings.flag_node_keys {
-                vec![root_hash.clone()]
-            } else {
-                Vec::new()
-            };
-
-            let new_nv = if settings.flag_leaf_values {
-                vec![root_node_ser]
-            } else {
-                Vec::new()
-            };
-
-            ExportData::new(new_np, new_nk, new_nv, Vec::new(), Vec::new())
-        };
-
-        let root_start = (root_export_data, skip_size, take_size - 1); // Take root
-
-        // Defining init data
-        let (init_export_data, init_skip_size, init_take_size) = match last_prefix {
-            Some(_) => no_root_start,
-            None => {
-                if skip_size > 0 {
-                    skipped_start
-                } else {
-                    root_start
-                }
-            }
-        };
-
-        let mut state = root_params;
-        let path = loop {
-            match init_node_path(state)? {
-                Either::Left(new_state) => state = new_state,
-                Either::Right(final_state) => break final_state,
-            }
-        };
-
-        let start_params: StepData =
-            StepData::new(path, init_skip_size, init_take_size, init_export_data);
-
-        let mut state = start_params;
-        let r = loop {
-            match export_step(state)? {
-                Either::Left(new_state) => state = new_state,
-                Either::Right(final_state) => break final_state,
-            }
-        };
-
-        Ok(r)
+    path.push(NodeData {
+        prefix: node_prefix,
+        decoded,
+        next_item_index: 0,
     });
 
-    if (skip_size, take_size) == (0, 0) {
-        init_conditions_exception()
+    let mut skip = skip_size;
+    let mut take = take_size;
+    if last_prefix.is_none() {
+        if skip > 0 {
+            skip -= 1;
+        } else {
+            if settings.flag_node_prefixes {
+                exp_data.node_prefixes.push(Vec::new());
+            }
+            if settings.flag_node_keys {
+                exp_data.node_keys.push(root_hash);
+            }
+            if settings.flag_node_values {
+                exp_data.node_values.push(root_node_ser);
+            }
+            take -= 1;
+        }
     }
 
-    let root_node_ser_opt = get_node_data_from_store(&root_hash);
-    match root_node_ser_opt {
-        Some(bytes) => do_export(bytes),
-        None => Ok(empty_result()),
+    while let Some(current) = path.last_mut() {
+        if (skip, take) == (0, 0) {
+            return Ok((exp_data, Some(current.prefix.clone())));
+        }
+
+        let first = current.next_item_index;
+        let found = current.decoded[first..]
+            .iter()
+            .position(|item| match item {
+                Item::EmptyItem => false,
+                Item::Leaf { .. } => settings.flag_leaf_prefixes || settings.flag_leaf_values,
+                Item::NodePtr { .. } => true,
+            })
+            .map(|offset| first + offset);
+        let Some(index) = found else {
+            path.pop();
+            continue;
+        };
+        current.next_item_index = index + 1;
+
+        let item_prefix = |prefix: &ByteVector| {
+            let mut full = Vec::with_capacity(current.prefix.len() + 1 + prefix.len());
+            full.extend_from_slice(&current.prefix);
+            full.push(index as u8);
+            full.extend_from_slice(prefix);
+            full
+        };
+        match &current.decoded[index] {
+            Item::EmptyItem => {}
+            Item::Leaf { prefix, value } => {
+                if skip <= 0 {
+                    if settings.flag_leaf_prefixes {
+                        exp_data.leaf_prefixes.push(item_prefix(prefix));
+                    }
+                    if settings.flag_leaf_values {
+                        exp_data.leaf_values.push(value.clone());
+                    }
+                }
+            }
+            Item::NodePtr { prefix, ptr } => {
+                let Some(child_ser) = get_node_data_from_store(ptr) else {
+                    return Err(RadixTreeError::KeyNotFound(format!(
+                        "Radix Tree - Export error: node with key {} not found. here",
+                        hex::encode(ptr)
+                    )));
+                };
+                let child_decoded = try_decode(&child_ser)?;
+                let child_prefix = item_prefix(prefix);
+                let child_key = ptr.clone();
+                if skip > 0 {
+                    skip -= 1;
+                } else {
+                    if settings.flag_node_prefixes {
+                        exp_data.node_prefixes.push(child_prefix.clone());
+                    }
+                    if settings.flag_node_keys {
+                        exp_data.node_keys.push(child_key);
+                    }
+                    if settings.flag_node_values {
+                        exp_data.node_values.push(child_ser);
+                    }
+                    take -= 1;
+                }
+                path.push(NodeData {
+                    prefix: child_prefix,
+                    decoded: child_decoded,
+                    next_item_index: 0,
+                });
+            }
+        }
     }
+
+    Ok((exp_data, None))
 }
 
 /**
@@ -885,41 +610,33 @@ impl RadixTreeImpl {
         node_ptr: ByteVector,
         no_assert: Option<bool>,
     ) -> Result<Arc<Node>, RadixTreeError> {
-        let no_assert = no_assert.unwrap_or(false);
+        // `no_assert = Some(true)` preserves the legacy "tolerate missing
+        // root" semantics used by `RadixHistory::create` / `::reset`: an
+        // absent root is reported as an empty tree, so a newly-created
+        // history can bootstrap against a not-yet-imported root. Any OTHER
+        // call site now gets a typed `MissingNode` error instead of the
+        // panic it used to get. See issue #923 Option D: the pre-#1045
+        // assert crashed the node on a sweep-vs-write race; the typed error
+        // lets replay / merge / block-report / exploratory-deploy surface
+        // a precise "pruned subtree" answer.
+        let tolerate_missing = no_assert.unwrap_or(false);
 
-        let error_msg = |node_ptr: &[u8]| {
-            assert!(
-                no_assert,
-                "Missing node in database. ptr={:?}",
-                node_ptr
-                    .iter()
-                    .map(|byte| format!("{:02x}", byte))
-                    .collect::<Vec<_>>()
-            );
-        };
+        if let Some(cached) = self.cache_r.get(&node_ptr) {
+            return Ok(Arc::clone(cached.value()));
+        }
 
-        let cache_miss: Box<dyn Fn(ByteVector) -> Result<Arc<Node>, RadixTreeError>> =
-            Box::new(|node_ptr: ByteVector| {
-                let store_node_opt = self.load_node_from_store(&node_ptr)?;
-
-                match store_node_opt {
-                    Some(node) => {
-                        let node_arc = Arc::new(node);
-                        self.cache_r.insert(node_ptr.clone(), Arc::clone(&node_arc));
-                        self.enforce_read_cache_bounds();
-                        Ok(node_arc)
-                    }
-                    None => {
-                        error_msg(&node_ptr);
-                        Ok(Arc::new(empty_node()))
-                    }
-                }
-            });
-
-        let cache_node_opt = self.cache_r.get(&node_ptr);
-        match cache_node_opt {
-            Some(node) => Ok(Arc::clone(node.value())),
-            None => cache_miss(node_ptr),
+        let store_node_opt = self.load_node_from_store(&node_ptr)?;
+        match store_node_opt {
+            Some(node) => {
+                let node_arc = Arc::new(node);
+                self.cache_r.insert(node_ptr.clone(), Arc::clone(&node_arc));
+                self.enforce_read_cache_bounds();
+                Ok(node_arc)
+            }
+            None if tolerate_missing => Ok(Arc::new(empty_node())),
+            None => Err(RadixTreeError::MissingNode {
+                ptr: Blake2b256Hash::from_bytes(node_ptr),
+            }),
         }
     }
 
@@ -1652,5 +1369,57 @@ impl RadixTreeImpl {
             }
         }
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod load_node_arc_tests {
+    //! The missing-node contract. Before issue #923 Option D the assert in
+    //! `load_node_arc` crashed the process when a sweep-vs-write race left
+    //! a descendant pointer dangling. The typed `MissingNode` makes that
+    //! path recoverable, so block-report replay, exploratory-deploy,
+    //! get-data-at-par and merge can surface a precise "pruned subtree"
+    //! answer to their own callers rather than disappear the node.
+
+    use std::sync::Arc;
+
+    use shared::rust::store::key_value_store::KeyValueStore;
+
+    use super::*;
+    use crate::rspace::errors::RadixTreeError;
+    use crate::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+
+    fn empty_store() -> Arc<dyn KeyValueStore> { Arc::new(InMemoryKeyValueStore::new()) }
+
+    #[test]
+    fn missing_pointer_without_no_assert_returns_typed_error() {
+        let imple = RadixTreeImpl::new(empty_store());
+        let bogus = vec![0x42u8; 32];
+        let err = imple
+            .load_node_arc(bogus.clone(), None)
+            .expect_err("a missing pointer must not resolve to an empty node when no_assert=false");
+        match err {
+            RadixTreeError::MissingNode { ptr } => {
+                assert_eq!(
+                    ptr.bytes(),
+                    bogus,
+                    "the error names the pointer that could not be resolved"
+                );
+            }
+            other => panic!("expected MissingNode, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn missing_pointer_with_no_assert_returns_empty_node() {
+        // The legacy escape hatch used by RadixHistory::create / ::reset:
+        // a not-yet-imported root bootstraps to an empty tree instead of
+        // raising.
+        let imple = RadixTreeImpl::new(empty_store());
+        let bogus = vec![0xABu8; 32];
+        let node = imple
+            .load_node_arc(bogus, Some(true))
+            .expect("no_assert=true must tolerate a missing pointer");
+        assert_eq!(node.as_ref(), &empty_node(), "no_assert=true must synthesize an empty node");
     }
 }

@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
 use models::rhoapi::Par;
+use models::rust::rholang::implicits::concatenate_pars;
 use rholang_parser::ast::{AnnProc, Proc};
 
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::normalize::normalize_ann_proc_in_place;
 use crate::rust::interpreter::errors::InterpreterError;
 
 fn flatten_par<'ast>(root: &'ast AnnProc<'ast>) -> Vec<&'ast AnnProc<'ast>> {
@@ -38,24 +39,35 @@ pub fn normalize_p_par<'ast>(
     all_procs.extend(flattened_left);
     all_procs.extend(flattened_right);
 
-    let mut accumulated_par = input.par;
     let mut accumulated_free_map = input.free_map;
     let bound_map_chain = input.bound_map_chain;
 
+    // Each process is normalized into an empty par and the results are joined
+    // once, last first, which is the order prepending each one onto the
+    // accumulated par gave, without copying that par per process.
+    let mut normalized = Vec::with_capacity(all_procs.len());
     for proc in all_procs {
         let proc_input = ProcVisitInputs {
-            par: accumulated_par,
+            par: Par::default(),
             free_map: accumulated_free_map,
             bound_map_chain: bound_map_chain.clone(),
         };
 
-        let proc_result = normalize_ann_proc(proc, proc_input, env, parser)?;
-        accumulated_par = proc_result.par;
+        let proc_result = normalize_ann_proc_in_place(proc, proc_input, env, parser)?;
+        normalized.push(proc_result.par);
         accumulated_free_map = proc_result.free_map;
     }
 
+    let par = normalized
+        .into_iter()
+        .rev()
+        .chain(std::iter::once(input.par))
+        .fold(Par::default(), |joined, next| {
+            concatenate_pars(next, joined)
+        });
+
     Ok(ProcVisitOutputs {
-        par: accumulated_par,
+        par,
         free_map: accumulated_free_map,
     })
 }

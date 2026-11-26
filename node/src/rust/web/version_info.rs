@@ -6,13 +6,13 @@ use axum::Router;
 
 pub fn get_version_info() -> (&'static str, &'static str) {
     let version = env!("CARGO_PKG_VERSION");
-    let git_hash = env!("GIT_HASH_SHORT");
-    (version, git_hash)
+    let build_id = env!("F1R3NODE_BUILD_ID");
+    (version, build_id)
 }
 
 pub fn get_version_info_str() -> String {
-    let (version, git_hash) = get_version_info();
-    format!("F1r3node Rust {} ({})", version, git_hash)
+    let (version, build_id) = get_version_info();
+    format!("F1r3node Rust {} ({})", version, build_id)
 }
 
 pub struct VersionInfo;

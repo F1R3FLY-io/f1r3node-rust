@@ -3,13 +3,17 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use comm::rust::errors::CommError;
+use comm::rust::peer_node::PeerNode;
 use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use models::routing::Packet;
 use prost::bytes::Bytes;
+use shared::rust::tracing_init::EventCapture;
+use tracing::Level;
 
 use crate::transport::transport_layer_runtime::{
-    broadcast_heartbeat, get_free_port, send_heartbeat, TestProtocolDispatcher,
-    TestStreamDispatcher, TransportLayerTestRuntime,
+    broadcast_heartbeat, get_free_port, send_heartbeat, DispatcherCallback, ResponseType,
+    TestProtocolDispatcher, TestStreamDispatcher, TransportLayerTestRuntime,
 };
 
 fn init_logger() { shared::rust::tracing_init::init_for_tests(); }
@@ -275,7 +279,11 @@ async fn sending_empty_message_should_work() {
         .run_two_nodes_test(
             |transport, local, remote| async move {
                 // Create a protocol message with minimal content
-                let msg = comm::rust::rp::protocol_helper::heartbeat(&local, "empty_msg_test");
+                let msg = comm::rust::rp::protocol_helper::heartbeat(
+                    &local,
+                    "empty_msg_test",
+                    Bytes::new(),
+                );
                 transport.send(&remote, &msg).await
             },
             Some(protocol_dispatcher.clone()),
@@ -394,6 +402,7 @@ async fn concurrent_sends_to_same_peer_should_all_succeed() {
                             let msg = comm::rust::rp::protocol_helper::packet(
                                 local,
                                 "concurrent_test",
+                                Bytes::new(),
                                 packet,
                             );
                             transport
@@ -563,7 +572,11 @@ async fn mixed_sends_and_streams_should_all_work() {
             |transport, local, remote| async move {
                 // Mix of sends and streams executed concurrently
                 let send_future = async {
-                    let msg = comm::rust::rp::protocol_helper::heartbeat(&local, "mixed_test");
+                    let msg = comm::rust::rp::protocol_helper::heartbeat(
+                        &local,
+                        "mixed_test",
+                        Bytes::new(),
+                    );
                     transport
                         .send(&remote, &msg)
                         .await
@@ -673,6 +686,110 @@ async fn streaming_to_empty_peer_list_should_succeed() {
     assert!(result.result.is_ok());
 }
 
+#[tokio::test]
+async fn handshake_from_another_chain_is_refused_before_it_is_acknowledged() {
+    init_logger();
+
+    let our_chain = Bytes::from_static(b"genesis-of-this-chain");
+    let runtime =
+        TransportLayerTestRuntime::new("test".to_string()).with_server_chain_id(our_chain.clone());
+    let protocol_dispatcher = TestProtocolDispatcher::new();
+
+    let result = runtime
+        .run_two_nodes_test(
+            |transport, local, remote| async move {
+                let handshake = |chain_id: Bytes| {
+                    comm::rust::rp::protocol_helper::protocol_handshake(&local, "test", chain_id)
+                };
+                (
+                    transport
+                        .send(
+                            &remote,
+                            &handshake(Bytes::from_static(b"genesis-of-old-chain")),
+                        )
+                        .await,
+                    transport.send(&remote, &handshake(our_chain)).await,
+                    transport.send(&remote, &handshake(Bytes::new())).await,
+                )
+            },
+            Some(protocol_dispatcher.clone()),
+            None,
+            false,
+        )
+        .await
+        .expect("Test should succeed");
+
+    let (foreign, same, unnamed) = result.result;
+    assert!(
+        matches!(
+            foreign,
+            Err(comm::rust::errors::CommError::WrongChainId(..))
+        ),
+        "a handshake from another chain must fail at the sender, got {:?}",
+        foreign
+    );
+    assert!(
+        same.is_ok(),
+        "a handshake from this chain must pass: {:?}",
+        same
+    );
+    assert!(
+        unnamed.is_ok(),
+        "a handshake that names no chain is a pull and must pass: {:?}",
+        unnamed
+    );
+    assert_eq!(
+        protocol_dispatcher.received().len(),
+        2,
+        "the refused handshake must not reach the message handler"
+    );
+}
+
+#[tokio::test]
+async fn stream_of_a_push_that_names_no_chain_is_refused_and_a_pull_is_delivered() {
+    init_logger();
+
+    let runtime = TransportLayerTestRuntime::new("test".to_string())
+        .with_server_chain_id(Bytes::from_static(b"genesis-of-this-chain"));
+    let stream_dispatcher = TestStreamDispatcher::new();
+    let content = create_big_content(runtime.max_message_size);
+
+    let result = runtime
+        .run_two_nodes_test(
+            |transport, local, remote| async move {
+                let blob = |type_id: &str| Blob {
+                    sender: local.clone(),
+                    packet: Packet {
+                        type_id: type_id.to_string(),
+                        content: content.clone(),
+                    },
+                };
+                (
+                    transport.stream(&remote, &blob("BlockMessage")).await,
+                    transport.stream(&remote, &blob("BlockRequest")).await,
+                )
+            },
+            None,
+            Some(stream_dispatcher.clone()),
+            true,
+        )
+        .await
+        .expect("Test should succeed");
+
+    let (push, pull) = result.result;
+    assert!(push.is_ok() && pull.is_ok(), "both streams are enqueued");
+    let received: Vec<String> = stream_dispatcher
+        .received()
+        .into_iter()
+        .map(|(_, blob)| blob.packet.type_id)
+        .collect();
+    assert_eq!(
+        received,
+        vec!["BlockRequest".to_string()],
+        "a push that names no chain must not reach the stream handler"
+    );
+}
+
 #[derive(Clone)]
 struct SingleConnection {
     connector: comm::rust::transport::f1r3fly_connector::F1r3flyConnector,
@@ -711,10 +828,12 @@ async fn stream_with_spoofed_sender_should_close_the_connection() {
     init_logger();
 
     let runtime = TransportLayerTestRuntime::new("test".to_string());
-    let local_port = get_free_port().await.unwrap();
-    let remote_port = get_free_port().await.unwrap();
-    let local = runtime.create_environment(local_port).await.unwrap();
-    let remote = runtime.create_environment(remote_port).await.unwrap();
+    let local = runtime
+        .create_environment(get_free_port().await.unwrap())
+        .await
+        .unwrap();
+    let remote = runtime.create_bound_environment().await.unwrap();
+    let remote_port = remote.port;
 
     let server = runtime.create_transport_layer_server(&remote);
     let stream_dispatcher = TestStreamDispatcher::new();
@@ -748,6 +867,7 @@ async fn stream_with_spoofed_sender_should_close_the_connection() {
         protocol: Some(comm::rust::rp::protocol_helper::heartbeat(
             &local.peer,
             "test",
+            Bytes::new(),
         )),
     };
 
@@ -767,6 +887,7 @@ async fn stream_with_spoofed_sender_should_close_the_connection() {
     };
     let chunks = comm::rust::transport::chunker::Chunker::chunk_it(
         "test",
+        Bytes::new(),
         &spoofed,
         runtime.max_message_size as usize,
     );
@@ -779,4 +900,218 @@ async fn stream_with_spoofed_sender_should_close_the_connection() {
 
     assert!(matches!(after_spoofed_stream, Ok(Err(_))));
     assert!(stream_dispatcher.received().is_empty());
+}
+
+/// Sends a heartbeat to `remote` from a fresh peer, bounded by `timeout`.
+async fn heartbeat_from_a_new_peer(
+    runtime: &TransportLayerTestRuntime,
+    remote: &PeerNode,
+    timeout: Duration,
+) -> Result<Result<(), CommError>, tokio::time::error::Elapsed> {
+    let local = runtime
+        .create_environment(get_free_port().await.unwrap())
+        .await
+        .unwrap();
+    let transport = runtime.create_transport_layer(&local).unwrap();
+    tokio::time::timeout(
+        timeout,
+        send_heartbeat(Arc::new(transport), &local.peer, remote, "test"),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_stopped_server_dispatches_nothing() {
+    init_logger();
+
+    let runtime = TransportLayerTestRuntime::new("test".to_string());
+    let remote = runtime
+        .create_environment(get_free_port().await.unwrap())
+        .await
+        .unwrap();
+    let server = runtime.create_transport_layer_server(&remote);
+    let dispatcher = TestProtocolDispatcher::new();
+    let callback = DispatcherCallback::new();
+    server
+        .start(
+            dispatcher.to_handler(remote.peer.clone(), Some(callback.clone())),
+            TestStreamDispatcher::new().to_handler(remote.peer.clone(), None),
+        )
+        .await
+        .unwrap();
+    let connected = runtime
+        .create_environment(get_free_port().await.unwrap())
+        .await
+        .unwrap();
+    let connected_transport: Arc<dyn TransportLayer> =
+        Arc::new(runtime.create_transport_layer(&connected).unwrap());
+    send_heartbeat(
+        connected_transport.clone(),
+        &connected.peer,
+        &remote.peer,
+        "test",
+    )
+    .await
+    .expect("heartbeat before the stop");
+    tokio::time::timeout(Duration::from_secs(5), callback.wait_until_dispatched())
+        .await
+        .expect("the running server dispatches the heartbeat");
+    server.stop().await.unwrap();
+
+    let on_open_connection = tokio::time::timeout(
+        Duration::from_secs(3),
+        send_heartbeat(connected_transport, &connected.peer, &remote.peer, "test"),
+    )
+    .await;
+    let from_new_peer =
+        heartbeat_from_a_new_peer(&runtime, &remote.peer, Duration::from_secs(3)).await;
+    assert_eq!(
+        dispatcher.received().len(),
+        1,
+        "a stopped server dispatched a heartbeat (open connection {on_open_connection:?}, \
+         new peer {from_new_peer:?})"
+    );
+}
+
+#[tokio::test]
+async fn a_server_restarts_on_its_port_after_a_stop() {
+    init_logger();
+
+    let runtime = TransportLayerTestRuntime::new("test".to_string());
+    let remote = runtime
+        .create_environment(get_free_port().await.unwrap())
+        .await
+        .unwrap();
+    let server = runtime.create_transport_layer_server(&remote);
+    let start = |dispatcher: &TestProtocolDispatcher, callback: &DispatcherCallback| {
+        server.start(
+            dispatcher.to_handler(remote.peer.clone(), Some(callback.clone())),
+            TestStreamDispatcher::new().to_handler(remote.peer.clone(), None),
+        )
+    };
+    start(&TestProtocolDispatcher::new(), &DispatcherCallback::new())
+        .await
+        .unwrap();
+    server.stop().await.unwrap();
+
+    let dispatcher = TestProtocolDispatcher::new();
+    let callback = DispatcherCallback::new();
+    start(&dispatcher, &callback)
+        .await
+        .expect("the stopped server released its port");
+    heartbeat_from_a_new_peer(&runtime, &remote.peer, Duration::from_secs(5))
+        .await
+        .expect("heartbeat within the timeout")
+        .expect("heartbeat");
+    tokio::time::timeout(Duration::from_secs(5), callback.wait_until_dispatched())
+        .await
+        .expect("the restarted server dispatches the heartbeat");
+    assert_eq!(dispatcher.received().len(), 1);
+    server.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_dispatch_failure_for_an_unresolvable_peer_is_not_logged_as_an_error() {
+    let capture = EventCapture::new();
+    let _guard = capture.install();
+
+    let runtime = TransportLayerTestRuntime::new("test".to_string());
+    let protocol_dispatcher = TestProtocolDispatcher::with_response_type(ResponseType::Error(
+        CommError::DnsResolutionFailed(
+            "validator6-0.validator6.svc.cluster.local".to_string(),
+            "Name or service not known".to_string(),
+        ),
+    ));
+
+    runtime
+        .run_two_nodes_test(
+            |transport, local, remote| async move {
+                send_heartbeat(Arc::new(transport), &local, &remote, "test").await
+            },
+            Some(protocol_dispatcher.clone()),
+            None,
+            true,
+        )
+        .await
+        .expect("Test should succeed");
+
+    assert_eq!(protocol_dispatcher.received().len(), 1);
+    let dispatch_failures = capture.with_message("gRPC message dispatch failed");
+    assert!(
+        !dispatch_failures.is_empty(),
+        "the failed dispatch is still logged"
+    );
+    assert!(dispatch_failures
+        .iter()
+        .chain(capture.with_message("Send message handler failed").iter())
+        .all(|event| event.level == Level::DEBUG));
+    assert_eq!(capture.at_or_above(Level::ERROR), vec![]);
+}
+
+#[tokio::test]
+async fn a_peer_that_changed_its_identity_is_not_logged_as_an_error() {
+    let capture = EventCapture::new();
+    let _guard = capture.install();
+
+    let runtime = TransportLayerTestRuntime::new("test".to_string());
+    let previous_identity = runtime
+        .create_environment(0)
+        .await
+        .expect("environment")
+        .peer
+        .id;
+
+    let result = runtime
+        .run_two_nodes_test(
+            |transport, local, remote| async move {
+                let stale_peer = PeerNode {
+                    id: previous_identity,
+                    endpoint: remote.endpoint.clone(),
+                };
+                send_heartbeat(Arc::new(transport), &local, &stale_peer, "test").await
+            },
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("Test should succeed");
+
+    assert!(result.result.is_err());
+    assert!(capture
+        .with_message("F1r3flyConnector TLS handshake failed")
+        .iter()
+        .any(|event| event.level == Level::WARN));
+    assert_eq!(capture.at_or_above(Level::ERROR), vec![]);
+}
+
+#[tokio::test]
+async fn a_send_to_an_unreachable_peer_is_not_logged_as_an_error() {
+    let capture = EventCapture::new();
+    let _guard = capture.install();
+
+    let runtime = TransportLayerTestRuntime::new("test".to_string());
+    let result = runtime
+        .run_two_nodes_test_remote_dead(|transport, local, remote| async move {
+            send_heartbeat(Arc::new(transport), &local, &remote, "test").await
+        })
+        .await
+        .expect("Test should succeed");
+
+    assert!(result.result.is_err());
+    let tcp_failures: Vec<_> = capture
+        .with_message("F1r3flyConnector TCP connection")
+        .into_iter()
+        .collect();
+    assert!(
+        !tcp_failures.is_empty(),
+        "the unreachable peer's TCP failure is still logged"
+    );
+    assert!(
+        tcp_failures
+            .iter()
+            .all(|event| event.level == Level::WARN || event.level == Level::DEBUG),
+        "TCP failures must not log at ERROR: {tcp_failures:?}"
+    );
+    assert_eq!(capture.at_or_above(Level::ERROR), vec![]);
 }

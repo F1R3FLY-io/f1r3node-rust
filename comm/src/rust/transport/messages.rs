@@ -1,4 +1,5 @@
 use models::routing::Protocol;
+use prost::bytes::Bytes;
 
 use crate::rust::peer_node::PeerNode;
 
@@ -32,6 +33,8 @@ pub struct StreamMessage {
     pub sender: PeerNode,
     /// Type identifier of the streamed packet
     pub type_id: String,
+    /// Chain identity the sender named in the stream header
+    pub chain_id: Bytes,
     /// Cache key where the streamed data is stored
     pub key: String,
     /// Whether the streamed data is compressed
@@ -45,6 +48,7 @@ impl StreamMessage {
     pub fn new(
         sender: PeerNode,
         type_id: String,
+        chain_id: Bytes,
         key: String,
         compressed: bool,
         content_length: i32,
@@ -52,6 +56,7 @@ impl StreamMessage {
         Self {
             sender,
             type_id,
+            chain_id,
             key,
             compressed,
             content_length,

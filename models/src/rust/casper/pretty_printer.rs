@@ -151,7 +151,7 @@ mod tests {
             DeployData {
                 term: "new x in { x!(1) }".to_string(),
                 time_stamp: 42,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit: 1000,
                 valid_after_block_number: 5,
                 shard_id: "root".to_string(),
@@ -280,7 +280,7 @@ mod tests {
     fn build_string_bond_prints_full_validator_and_stake() {
         let bond = Bond {
             validator: Bytes::from_static(&[0xaa, 0xbb]),
-            stake: 150,
+            stake: 150.into(),
         };
         assert_eq!(PrettyPrinter::build_string_bond(&bond), "aabb: 150");
     }
@@ -299,7 +299,7 @@ mod tests {
         let deploy = DeployData {
             term: "Nil".to_string(),
             time_stamp: 99,
-            phlo_price: 1,
+            phlo_price: (1).into(),
             phlo_limit: 10,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),

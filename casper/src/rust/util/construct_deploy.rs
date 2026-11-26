@@ -1,5 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/util/ConstructDeploy.scala
 
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crypto::rust::private_key::PrivateKey;
@@ -42,7 +43,7 @@ pub fn source_deploy(
     source: String,
     timestamp: i64,
     phlo_limit: Option<i64>,
-    phlo_price: Option<i64>,
+    phlo_price: Option<shared::rust::token_amount::TokenAmount>,
     sec: Option<PrivateKey>,
     valid_after_block_number: Option<i64>,
     shard_id: Option<String>,
@@ -52,7 +53,7 @@ pub fn source_deploy(
     #[cfg(not(any(test, feature = "test-utils")))]
     let sec = sec.expect("ConstructDeploy: private key is required");
     let phlo_limit = phlo_limit.unwrap_or(90000);
-    let phlo_price = phlo_price.unwrap_or(1);
+    let phlo_price = phlo_price.unwrap_or_else(|| 1.into());
     let valid_after_block_number = valid_after_block_number.unwrap_or(0);
     let shard_id = shard_id.unwrap_or_default();
 
@@ -67,7 +68,23 @@ pub fn source_deploy(
         parameters: Vec::new(),
     };
 
+    data.validate_amounts().map_err(CasperError::RuntimeError)?;
     Signed::create(data, Box::new(Secp256k1), sec).map_err(|e| CasperError::SigningError(e))
+}
+
+/// The current time in milliseconds, strictly greater than every earlier
+/// result. A deploy's unforgeable names derive from its key, timestamp and
+/// valid-after block, so two deploys built back to back by one key must not
+/// share a timestamp.
+fn distinct_now_millis() -> Result<i64, CasperError> {
+    static LAST: AtomicI64 = AtomicI64::new(i64::MIN);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
+    let previous = LAST
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |last| {
+            Some(now.max(last.saturating_add(1)))
+        })
+        .expect("the update closure always yields a value");
+    Ok(now.max(previous.saturating_add(1)))
 }
 
 pub fn source_deploy_now(
@@ -76,7 +93,7 @@ pub fn source_deploy_now(
     valid_after_block_number: Option<i64>,
     shard_id: Option<String>,
 ) -> Result<Signed<DeployData>, CasperError> {
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
+    let timestamp = distinct_now_millis()?;
 
     source_deploy(
         source,
@@ -92,13 +109,13 @@ pub fn source_deploy_now(
 pub fn source_deploy_now_full(
     source: String,
     phlo_limit: Option<i64>,
-    phlo_price: Option<i64>,
+    phlo_price: Option<shared::rust::token_amount::TokenAmount>,
     sec: Option<PrivateKey>,
     valid_after_block_number: Option<i64>,
     shard_id: Option<String>,
 ) -> Result<Signed<DeployData>, CasperError> {
     let phlo_limit = phlo_limit.unwrap_or(1000000);
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
+    let timestamp = distinct_now_millis()?;
 
     source_deploy(
         source,

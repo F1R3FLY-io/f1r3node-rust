@@ -33,6 +33,7 @@ case "$*" in
   *"git/commits/"*) emit "{\"tree\": {\"sha\": \"$FAKE_HEAD_TREE\"}}" ;;
   *"pulls/648"*) emit "{\"head\": {\"sha\": \"$FAKE_PULL_HEAD\"}}" ;;
   *"pulls/311"*) cat "$FAKE_PULL" ;;
+  *"pulls/9 "*|*"pulls/9") emit "{\"labels\": ${FAKE_PR_LABELS:-[]}}" ;;
   *"commits/"*) emit "$(cat "$FAKE_COMMIT")" ;;
   *"compare/"*) printf '%s\n' "${FAKE_RELATIONSHIP:-ahead}" ;;
   *"pulls"*) printf '%s\n' "$FAKE_CHILDREN" ;;
@@ -71,6 +72,8 @@ run_case() {
     PR_HEAD_REF="$head_ref" \
     PR_HEAD_REPOSITORY="$head_repo" \
     PR_HAS_HEAVY_LABEL="${PR_HAS_HEAVY_LABEL:-false}" \
+    PR_NUMBER="${PR_NUMBER:-}" \
+    FAKE_PR_LABELS="${FAKE_PR_LABELS:-[]}" \
     MERGE_GROUP_HEAD_REF="${MERGE_GROUP_HEAD_REF:-}" \
     MERGE_GROUP_HEAD_SHA="${MERGE_GROUP_HEAD_SHA:-}" \
     MERGE_GROUP_BASE_SHA="${MERGE_GROUP_BASE_SHA:-}" \
@@ -95,8 +98,17 @@ run_case() {
     return 1
   }
   if [ -n "$target" ]; then
+    [ "$(grep '^target_sha=' "$output" | cut -d= -f2)" = "$target" ] || {
+      printf '%s: exact target was replaced by the workflow revision\n' "$label" >&2
+      return 1
+    }
     [ "$(grep '^merge_base_sha=' "$output" | cut -d= -f2)" = "$MERGE_BASE" ] || {
       printf '%s: exact target did not record the synthetic base\n' "$label" >&2
+      return 1
+    }
+  else
+    [ "$(grep '^target_sha=' "$output" | cut -d= -f2)" = "$SHA" ] || {
+      printf '%s: the event revision was replaced by another checkout ref\n' "$label" >&2
       return 1
     }
   fi
@@ -108,6 +120,12 @@ run_case upper-stack pull_request refs/pull/2/merge feature/one feature/two exam
 run_case fork pull_request refs/pull/3/merge dev feature/three fork/repository '[]' '' '' false
 PR_HAS_HEAVY_LABEL=true \
   run_case labelled-pr pull_request refs/pull/1/merge dev feature/one example/repository '[]' '' '' true
+PR_HAS_HEAVY_LABEL=true PR_NUMBER=9 FAKE_PR_LABELS='[{"name": "ci-heavy-waived"}]' \
+  run_case waived-rerun-of-labelled-push pull_request refs/pull/9/merge dev feature/one example/repository '[]' '' '' false
+PR_HAS_HEAVY_LABEL=false PR_NUMBER=9 FAKE_PR_LABELS='[{"name": "ci-heavy"}]' \
+  run_case labelled-after-run pull_request refs/pull/9/merge dev feature/one example/repository '[]' '' '' true
+PR_HAS_HEAVY_LABEL=true PR_NUMBER=9 FAKE_FAIL_ON=pulls/9 \
+  run_case labels-unreadable pull_request refs/pull/9/merge dev feature/one example/repository '[]' '' '' true
 PR_HAS_HEAVY_LABEL=true \
   run_case labelled-fork pull_request refs/pull/3/merge dev feature/three fork/repository '[]' '' '' false
 PR_HAS_HEAVY_LABEL=true \
@@ -129,6 +147,8 @@ PR_HAS_HEAVY_LABEL=true \
 PR_HAS_HEAVY_LABEL=true \
   run_case labelled-ca-fork pull_request refs/pull/7/merge ca-canary ca/a1a fork/repository '[]' '' '' false
 run_case exact-merge workflow_dispatch refs/heads/master '' '' '' '[]' "$MERGE" 311 true
+run_case branch-dispatch workflow_dispatch refs/heads/ci/workflow-preview '' '' '' '[]' '' '' false
+run_case dev-dispatch workflow_dispatch refs/heads/dev '' '' '' '[]' '' '' false
 
 jq --arg other "$SHA" '.merge_commit_sha = $other' "$TMP/pull.json" >"$TMP/stale-pull.json"
 if run_case stale-merge workflow_dispatch refs/heads/master '' '' '' '[]' "$MERGE" 311 true "$TMP/stale-pull.json" >"$TMP/stale.out" 2>"$TMP/stale.err"; then

@@ -15,12 +15,14 @@ mkdir -p "$TMP/repo/docker" "$TMP/bin" "$TMP/out"
 printf 'BOOTSTRAP_PRIVATE_KEY=fixture\n' >"$TMP/repo/docker/.env"
 
 # Merged compose configuration that the fake docker prints for `config`.
-# validator1 HTTP (container 40403) is published on 14999, not on the 14413 of
-# the real override, so a passing probe check proves the script reads the port.
+# validator1's deploy queue publishes its HTTP (container 40403) on 14999, not
+# on the 14413 of the real override, so a passing probe check proves the script
+# reads the port from the queue.
 cat >"$TMP/config-ok.json" <<'JSON'
 {"services": {
   "boot": {"ports": [{"target": 40403, "published": "14403"}]},
-  "validator1": {"ports": [{"target": 40401, "published": "14411"}, {"target": 40403, "published": "14999"}]},
+  "validator1": {"ports": [{"target": 40400, "published": "14410"}]},
+  "deploy-queue1": {"ports": [{"target": 40401, "published": "14411"}, {"target": 40403, "published": "14999"}]},
   "grafana": {"ports": [{"target": 3000, "published": "3000"}]}
 }}
 JSON
@@ -92,7 +94,7 @@ grep -Fq "compose -f $TMP/repo/docker/shard.yml -f $TMP/repo/docker/ci-ports.sha
 	exit 1
 }
 grep -Fq "http://localhost:14999/api/status" "$TMP/probes" || {
-	echo "readiness probe does not use the validator1 HTTP port from the merged configuration" >&2
+	echo "readiness probe does not use validator1's queue HTTP port from the merged configuration" >&2
 	cat "$TMP/probes" >&2
 	exit 1
 }
@@ -131,18 +133,52 @@ grep -Fq "http://localhost:14413/api/status" "$TMP/probes4" || {
 }
 grep -Fq 'no host port for validator1 HTTP' "$TMP/stderr4" || { echo "fallback is not reported on stderr" >&2; cat "$TMP/stderr4" >&2; exit 1; }
 
+# docker/.env is not tracked (#745). A checkout with only the development
+# template must start the shard from it and take the deployer key from it. A
+# missing deployer key exits 2 before compose, so reaching compose up shows
+# that the key came from the template.
+mkdir -p "$TMP/repo5/docker" "$TMP/out5"
+: >"$TMP/repo5/docker/shard.yml"
+: >"$TMP/repo5/docker/ci-ports.shard.yml"
+printf 'BOOTSTRAP_PRIVATE_KEY=fixture-example\n' >"$TMP/repo5/docker/.env.example"
+status=0
+env -u DEPLOYER_KEY CONFIG_JSON="$TMP/config-ok.json" CALLS="$TMP/calls5" PROBES="$TMP/probes5" READY_TIMEOUT=1 \
+	PATH="$TMP/bin2:$PATH" NODE_REPO_DIR="$TMP/repo5" OUT_DIR="$TMP/out5" \
+	"$ROOT/scripts/bench/run-bench-segment.sh" >"$TMP/stdout5" 2>"$TMP/stderr5" || status=$?
+[ "$status" -eq 1 ] || { echo "expected exit 1 (shard not ready) with only docker/.env.example, got $status" >&2; cat "$TMP/stderr5" >&2; exit 1; }
+grep -Fq "compose --env-file $TMP/repo5/docker/.env.example -f $TMP/repo5/docker/shard.yml -f $TMP/repo5/docker/ci-ports.shard.yml -p soak-bench up -d" "$TMP/calls5" || {
+	echo "compose up does not read the shard keys from docker/.env.example" >&2
+	cat "$TMP/calls5" >&2
+	exit 1
+}
+
+# Without docker/.env, docker/.env.example and DEPLOYER_KEY, the segment
+# stops before compose and names the env file it read.
+mkdir -p "$TMP/repo6/docker" "$TMP/out6"
+: >"$TMP/repo6/docker/shard.yml"
+: >"$TMP/repo6/docker/ci-ports.shard.yml"
+: >"$TMP/calls6"
+status=0
+env -u DEPLOYER_KEY CONFIG_JSON="$TMP/config-ok.json" CALLS="$TMP/calls6" PROBES="$TMP/probes6" READY_TIMEOUT=1 \
+	PATH="$TMP/bin2:$PATH" NODE_REPO_DIR="$TMP/repo6" OUT_DIR="$TMP/out6" \
+	"$ROOT/scripts/bench/run-bench-segment.sh" >"$TMP/stdout6" 2>"$TMP/stderr6" || status=$?
+[ "$status" -eq 2 ] || { echo "expected exit 2 without a deployer key, got $status" >&2; cat "$TMP/stderr6" >&2; exit 1; }
+grep -Fq "no BOOTSTRAP_PRIVATE_KEY in $TMP/repo6/docker/.env" "$TMP/stderr6" || { echo "missing deployer key is not reported" >&2; cat "$TMP/stderr6" >&2; exit 1; }
+[ ! -s "$TMP/calls6" ] || { echo "compose ran without a deployer key" >&2; cat "$TMP/calls6" >&2; exit 1; }
+
 # The real compose files must merge to host ports below the ephemeral floor.
 # This needs docker compose. CI runs this test where Docker exists, so a
-# missing docker compose fails in CI and only skips locally.
+# missing docker compose fails in CI and only skips locally. The shard keys
+# come from docker/.env.example, because docker/.env is not tracked (#745).
 if docker compose version >/dev/null 2>&1; then
-	docker compose -f "$ROOT/docker/shard.yml" -f "$ROOT/docker/ci-ports.shard.yml" -p soak-bench \
+	docker compose --env-file "$ROOT/docker/.env.example" -f "$ROOT/docker/shard.yml" -f "$ROOT/docker/ci-ports.shard.yml" -p soak-bench \
 		config --format json >"$TMP/real-config.json"
 	jq -e '
 	  ([.services[].ports[]? | .published | tonumber] | length) > 0
 	  and ([.services[].ports[]? | .published | tonumber | select(. >= 32768)] | length) == 0
-	  and ([.services.validator1.ports[]? | select(.target == 40403)] | length) == 1
+	  and ([.services["deploy-queue1"].ports[]? | select(.target == 40403)] | length) == 1
 	' "$TMP/real-config.json" >/dev/null || {
-		echo "the real merged compose configuration publishes a host port at or above 32768, or no validator1 HTTP port" >&2
+		echo "the real merged compose configuration publishes a host port at or above 32768, or no HTTP port for validator1's deploy queue" >&2
 		jq -c '[.services | to_entries[] | {(.key): [.value.ports[]? | .published]}]' "$TMP/real-config.json" >&2
 		exit 1
 	}

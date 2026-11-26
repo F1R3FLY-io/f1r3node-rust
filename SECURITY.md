@@ -30,5 +30,11 @@ requiring physical access to or a compromised host.
 
 ## Supported Versions
 
-F1R3FLY is under active development with no released or mainnet versions yet. Report against
-the latest `dev`.
+F1R3FLY is under active development and has no mainnet version. The project publishes stable
+and canary releases. A fix ships in the next release. Report against the latest `dev`, and name
+the release if you found the issue in a release.
+
+## Maintainers
+
+The [security advisory process](docs/security-advisory-process.md) tells maintainers how to
+triage, fix, and publish an advisory.

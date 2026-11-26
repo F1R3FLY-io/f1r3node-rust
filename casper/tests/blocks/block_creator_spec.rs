@@ -16,7 +16,7 @@ use casper::rust::validator_identity::ValidatorIdentity;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::ByteString;
@@ -62,7 +62,7 @@ fn create_deploy(
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0),
-        phlo_price: 1,
+        phlo_price: (1).into(),
         phlo_limit: 1000,
         valid_after_block_number,
         shard_id: "test-shard".to_string(),
@@ -200,19 +200,19 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         height_constraint_threshold: 0,
         deploy_lifespan: DEPLOY_LIFESPAN,
         casper_version: 1,
-        bond_minimum: 0,
-        bond_maximum: i64::MAX,
+        bond_minimum: 0.into(),
+        bond_maximum: (i64::MAX as u64).into(),
         epoch_length: 0,
         quarantine_length: 0,
-        min_phlo_price: 0,
+        min_phlo_price: (0).into(),
         enable_mergeable_channel_gc: false,
         mergeable_channels_gc_depth_buffer: 10,
         disable_validator_progress_check: false,
         ..CasperShardConf::new()
     };
 
-    let mut bonds_map: HashMap<ByteString, i64> = HashMap::new();
-    bonds_map.insert(validator_id.clone(), 100);
+    let mut bonds_map: HashMap<ByteString, num_bigint::BigInt> = HashMap::new();
+    bonds_map.insert(validator_id.clone(), 100.into());
 
     // Set maxSeqNums like Scala does: Map(validatorId -> 0)
     let mut max_seq_nums: HashMap<ByteString, u64> = HashMap::new();
@@ -235,9 +235,11 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         rejected_in_scope: Arc::new(DashSet::new()),
+        seeds_in_scope: Arc::new(DashMap::new()),
         max_block_num,
         max_seq_nums,
         on_chain_state,
+        chain_id: Bytes::new(),
     }
 }
 
@@ -298,6 +300,66 @@ async fn recovery_empty_and_disabled_ordinary_admission_skip_full_pool_reads() {
     assert!(prepared.deploys.is_empty());
     assert_eq!(decoded_pool_deploys(&snapshotter), 0);
     assert!(deploy_storage.contains_sig(&deploy.sig).unwrap());
+}
+
+#[tokio::test]
+async fn a_deploy_already_in_scope_is_counted_in_the_summary_and_not_warned_per_deploy() {
+    use shared::rust::tracing_init::EventCapture;
+    use tracing::Level;
+
+    let capture = EventCapture::new();
+    let _guard = capture.install();
+
+    let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
+    let validator_id: Bytes = ValidatorIdentity::new(&validator_sk)
+        .public_key
+        .bytes
+        .clone();
+    let mut kvm = InMemoryStoreManager::new();
+    let deploy_storage = Arc::new(
+        KeyValueDeployStorage::new(&mut kvm)
+            .await
+            .expect("deploy storage"),
+    );
+    let rejected_deploy_buffer = Arc::new(Mutex::new(
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("rejected deploy buffer"),
+    ));
+    let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+        .await
+        .expect("block store");
+    let mut snapshot = create_snapshot(20, validator_id);
+    snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
+    let deploy = create_deploy(1, None, &validator_sk);
+    deploy_storage
+        .add(vec![deploy.clone()])
+        .expect("add deploy");
+    snapshot.deploys_in_scope.insert(deploy.sig.clone());
+
+    let prepared = block_creator::prepare_user_deploys(
+        &snapshot,
+        200,
+        i64::MAX,
+        deploy_storage,
+        rejected_deploy_buffer,
+        &block_store,
+        true,
+        true,
+    )
+    .await
+    .expect("prepare");
+
+    assert!(prepared.deploys.is_empty());
+    assert!(capture
+        .with_message("alreadyInScope=1")
+        .iter()
+        .any(|event| event.level == Level::INFO));
+    let filtered = capture.with_message("FILTERED (already in scope)");
+    assert!(!filtered.is_empty());
+    assert!(filtered.iter().all(|event| event.level == Level::DEBUG));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

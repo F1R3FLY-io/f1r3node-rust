@@ -29,6 +29,14 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 ## Canonical Terms
 
+### Build identity
+
+A build identity is the source identifier that the node binary stores and reports in its version output.
+The build identity comes from an explicit build input, Git, or the fallback value `unknown`.
+
+**Preferred usage.** Use this term for the value of `F1R3NODE_BUILD_ID`.
+Keep the build identity separate from the package version and image tag.
+
 ### Deploy parameter
 
 A deploy parameter is a named, typed Rholang value included in the signed deploy data.
@@ -41,6 +49,25 @@ Rholang code accesses the value through `rho:deploy:param:<name>`.
 The soak harness is the driver, profile adapters, collectors, and classifier that run [soak profiles](#soak-profile) against a [soak candidate](#soak-candidate) and retain evidence.
 
 **Preferred usage.** Use this term for the harness implementation and its evidence pipeline. The driver is `scripts/run-merge-recovery-soak.sh`. *Distinguish from* the node under test, which the harness observes and never proves. *Avoid*: soak driver for the whole harness, because the driver is one component.
+
+### Control checkout
+
+The control checkout contains the trusted workflow, soak driver, host controls, and their verification records.
+Its revision can differ from the soak candidate revision.
+
+**Preferred usage.** Use this term for the ci-control checkout that supplies soak execution code.
+
+### Cleanup admission
+
+Cleanup admission checks current cleanup evidence and signed maintainer acceptance before a scheduled soak or segment starts.
+
+**Preferred usage.** Use this term for the focused CLAIM-SOAK-CLEANUP-001 gate.
+The gate reports other claim gaps separately.
+
+### Runtime lockfile
+
+A runtime lockfile records the immutable revision and source hashes of the shared CbC tool dependency.
+The launcher uses those hashes to validate the external runtime before execution.
 
 ### Soak candidate
 

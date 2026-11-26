@@ -13,13 +13,14 @@ pub mod dispatch;
 pub mod env;
 pub mod errors;
 pub mod external_services;
-pub mod grpc_client_service;
+pub mod garbage;
 pub mod host_work;
 pub mod interpreter;
 pub mod io;
 pub mod matcher;
 pub mod merging;
 pub mod metrics_constants;
+pub mod nesting;
 pub mod ollama_service;
 pub mod openai_service;
 pub mod pretty_printer;
@@ -32,6 +33,7 @@ pub mod storage;
 pub mod substitute;
 pub mod system_processes;
 pub mod test_utils;
+pub mod typechecker;
 pub mod util;
 
 pub fn unwrap_option_safe<A>(opt: Option<A>) -> Result<A, InterpreterError> {

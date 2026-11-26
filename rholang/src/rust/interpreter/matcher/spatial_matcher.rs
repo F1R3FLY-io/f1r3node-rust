@@ -1,9 +1,13 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - trait SpatialMatcher
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::{single_expr, vector_par};
 use models::rust::utils::*;
+use shared::rust::stack::with_stack_headroom;
 
 use super::exports::*;
 use super::fold_match::FoldMatch;
@@ -31,21 +35,98 @@ pub trait SpatialMatcher<T, P> {
     fn spatial_match(&mut self, target: T, pattern: P) -> Option<()>;
 }
 
+/// Steps every match attempt may take regardless of the size of its inputs.
+/// The test suites and the genesis contracts all match within 256 plus one per
+/// byte; these allow sixteen times that.
+const BASE_MATCH_STEPS: usize = 4096;
+
+/// Steps a match attempt may take per encoded byte of its target and pattern.
+const MATCH_STEPS_PER_BYTE: usize = 16;
+
+/// The steps left to a match attempt, shared by every copy of its context. A
+/// step is a bounded unit of work: a pattern level, a bit or element a split
+/// touches.
+#[derive(Clone)]
+pub struct StepBudget(Rc<(Cell<usize>, Cell<bool>)>);
+
+impl StepBudget {
+    pub fn new(steps: usize) -> Self { StepBudget(Rc::new((Cell::new(steps), Cell::new(false)))) }
+
+    /// Spends `steps`; `None`, spending nothing, when fewer are left. Once a
+    /// spend is refused every later one is too, so an attempt that ran out
+    /// cannot go on to succeed through a cheaper alternative: whether it
+    /// matches would then depend on the size of the budget.
+    pub fn spend(&self, steps: usize) -> Option<()> {
+        let (left, exhausted) = &*self.0;
+        if exhausted.get() {
+            return None;
+        }
+        match left.get().checked_sub(steps) {
+            Some(remaining) => {
+                left.set(remaining);
+                Some(())
+            }
+            None => {
+                exhausted.set(true);
+                None
+            }
+        }
+    }
+
+    pub fn left(&self) -> usize { self.0 .0.get() }
+
+    /// Whether a spend was refused for want of steps.
+    pub fn exhausted(&self) -> bool { self.0 .1.get() }
+}
+
+/// Running out of steps ends the attempt as a failed match. Until then the
+/// outcome depends only on the inputs, so a caller whose budget is not itself
+/// a function of the inputs must treat running out as a failure, not a
+/// non-match.
 #[derive(Clone)]
 pub struct SpatialMatcherContext {
     pub free_map: FreeMap,
+    budget: StepBudget,
 }
 
 impl SpatialMatcherContext {
-    pub fn new() -> Self {
+    /// A context for matching inputs whose encodings total `input_bytes`.
+    pub fn new(input_bytes: usize) -> Self {
+        Self::with_budget(StepBudget::new(
+            BASE_MATCH_STEPS + MATCH_STEPS_PER_BYTE * input_bytes,
+        ))
+    }
+
+    pub fn with_budget(budget: StepBudget) -> Self {
         SpatialMatcherContext {
             free_map: new_free_map(),
+            budget,
         }
     }
+
+    /// Spends one step of the attempt's budget; `None` once it is spent.
+    pub fn step(&self) -> Option<()> { self.budget.spend(1) }
 
     /// Matches `target` against `pattern` and hands back the bindings found.
     pub fn into_match_result(mut self, target: Par, pattern: Par) -> Option<FreeMap> {
         self.spatial_match(target, pattern).map(|_| self.free_map)
+    }
+
+    /// Borrowing variant used by hot `match` fall-through loops that would
+    /// otherwise clone a possibly large scrutinee once per case before
+    /// discovering the case did not match. The literal-pattern fast path
+    /// (shared with `spatial_match<Par, Par>` at `pattern.connective_used ==
+    /// false`) completes without any clone of `target`.
+    pub fn match_result(mut self, target: &Par, pattern: Par) -> Option<FreeMap> {
+        if !pattern.connective_used {
+            return if match_pars(target, &pattern) {
+                Some(self.free_map)
+            } else {
+                None
+            };
+        }
+        self.spatial_match(target.clone(), pattern)
+            .map(|_| self.free_map)
     }
 }
 
@@ -137,6 +218,106 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
                 _ => None,
             },
 
+            Some(ConnInt32(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GInt32(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnUint64(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GUint64(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnUint32(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GUint32(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnUint16(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GUint16(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnUint8(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GUint8(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnFloat64(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GDouble(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnFloat32(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GFloat32(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnBigInt(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GBigInt(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnBigRat(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GBigRat(_)),
+                }) => Some(()),
+                _ => None,
+            },
+
+            Some(ConnFixedPointBody(body)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GFixedPoint(gfp)),
+                }) => {
+                    let scale_target = Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(GInt(gfp.scale as i64)),
+                    }]);
+                    let scale_pattern = body.scale.unwrap_or_default();
+                    self.spatial_match(scale_target, scale_pattern)
+                }
+                _ => None,
+            },
+
+            // CoC Phase 2c: `Type` matches any type-level value. Phase
+            // 2d (typechecker) will refine this to "target typechecks to
+            // Type". For now, match the universe constant, Pi types, and
+            // base-type tokens as the inhabitants.
+            Some(ConnType(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(EPiBody(_)),
+                }) => Some(()),
+                _ => match target.connectives.first() {
+                    Some(c) => match &c.connective_instance {
+                        Some(ConnBool(_))
+                        | Some(ConnInt(_))
+                        | Some(ConnString(_))
+                        | Some(ConnUri(_))
+                        | Some(ConnByteArray(_))
+                        | Some(ConnType(_))
+                        | Some(ConnInt32(_))
+                        | Some(ConnUint64(_))
+                        | Some(ConnUint32(_))
+                        | Some(ConnUint16(_))
+                        | Some(ConnUint8(_))
+                        | Some(ConnFloat64(_))
+                        | Some(ConnFloat32(_))
+                        | Some(ConnBigInt(_))
+                        | Some(ConnBigRat(_))
+                        | Some(ConnFixedPointBody(_)) => Some(()),
+                        _ => None,
+                    },
+                    None => None,
+                },
+            },
+
             None => None,
         }
     }
@@ -145,6 +326,13 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - parSpatialMatcher
 impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Par, pattern: Par) -> Option<()> {
+        self.step()?;
+        with_stack_headroom(|| self.spatial_match_par_level(target, pattern))
+    }
+}
+
+impl SpatialMatcherContext {
+    fn spatial_match_par_level(&mut self, target: Par, pattern: Par) -> Option<()> {
         if !pattern.connective_used {
             // guard(pattern == target)
             guard(match_pars(&target, &pattern))
@@ -223,9 +411,19 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             ) -> Option<Par> {
                 let (con, bounds, remainders) = labeled_connective;
 
-                for sp in sub_pars(&target, &bounds.0, &bounds.1, &remainders.0, &remainders.1) {
-                    if s.spatial_match(sp.0, con.clone()).is_some() {
-                        return Some(sp.1);
+                let budget = s.budget.clone();
+                let mut splits = sub_pars(
+                    &target,
+                    &bounds.0,
+                    &bounds.1,
+                    &remainders.0,
+                    &remainders.1,
+                    &budget,
+                );
+                while let Some(sub) = splits.next() {
+                    s.step()?;
+                    if s.spatial_match(sub, con.clone()).is_some() {
+                        return splits.complement();
                     }
                 }
                 None

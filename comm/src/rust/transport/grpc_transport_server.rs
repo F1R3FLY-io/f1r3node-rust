@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use models::routing::Protocol;
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::rust::errors::CommError;
@@ -20,14 +20,36 @@ use crate::rust::peer_node::PeerNode;
 use crate::rust::rp::rp_conf::RPConf;
 use crate::rust::transport::communication_response::CommunicationResponse;
 use crate::rust::transport::grpc_transport_receiver::{
-    GrpcTransportReceiver, MessageHandlers, PeerBufferSlot,
+    GrpcTransportReceiver, MessageHandlers, PeerBufferSlot, TransportBind,
 };
 use crate::rust::transport::packet_ops::StreamCache;
 use crate::rust::transport::stream_handler::StreamHandler;
 use crate::rust::transport::transport_layer::Blob;
 
-/// Cancelable resource that can be cancelled/stopped
-pub type Cancelable = JoinHandle<()>;
+/// A running server: its task and the signal that shuts it down. Dropping it
+/// also shuts the server down.
+pub struct Cancelable {
+    task: JoinHandle<()>,
+    shutdown: oneshot::Sender<()>,
+}
+
+impl Cancelable {
+    pub fn new(task: JoinHandle<()>, shutdown: oneshot::Sender<()>) -> Self {
+        Self { task, shutdown }
+    }
+
+    /// Shuts the server down and waits for it to end. The server closes every
+    /// connection and its own listening socket before it ends, so once this
+    /// returns nothing more is dispatched.
+    pub async fn stop(self) {
+        let _ = self.shutdown.send(());
+        if let Err(e) = self.task.await {
+            if e.is_panic() {
+                tracing::error!(error = %e, "F1r3fly gRPC server task panicked");
+            }
+        }
+    }
+}
 
 /// Type alias for dispatch function that handles Protocol messages
 pub type DispatchFn = Arc<
@@ -64,8 +86,8 @@ pub struct GrpcTransportServer {
     pub local_peer: RPConf,
     /// Network identifier for this node
     pub network_id: String,
-    /// Port number to bind the gRPC server to
-    pub port: u16,
+    /// Where the gRPC server accepts connections
+    pub bind: TransportBind,
     /// TLS certificate in PEM format
     pub cert: String,
     /// TLS private key in PEM format
@@ -95,7 +117,7 @@ impl GrpcTransportServer {
         Self {
             local_peer,
             network_id,
-            port,
+            bind: TransportBind::Port(port),
             cert,
             key,
             max_message_size,
@@ -104,6 +126,15 @@ impl GrpcTransportServer {
             // Create cache for storing received partial data (streaming packets)
             cache: Arc::new(dashmap::DashMap::new()),
         }
+    }
+
+    /// Serve from a socket the caller already bound instead of binding a port
+    pub fn with_listener(mut self, listener: std::net::TcpListener) -> Result<Self, CommError> {
+        listener.set_nonblocking(true).map_err(|e| {
+            CommError::ConfigError(format!("Failed to make listener non-blocking: {}", e))
+        })?;
+        self.bind = TransportBind::Listener(Arc::new(listener));
+        Ok(self)
     }
 
     /// Create a GrpcTransportServer by reading certificate and key from files
@@ -186,7 +217,7 @@ impl TransportServer {
 
         // Stop any existing server
         if let Some(old_handle) = handle_guard.take() {
-            old_handle.abort();
+            old_handle.stop().await;
         }
 
         // Start new server
@@ -221,7 +252,7 @@ impl TransportServer {
 
         // Stop server if running
         if let Some(handle) = handle_guard.take() {
-            handle.abort();
+            handle.stop().await;
         }
 
         // Update state atomically
@@ -290,7 +321,11 @@ impl TransportLayerServer for GrpcTransportServer {
                                 Ok(())
                             }
                             Err(e) => {
-                                tracing::error!(error = %e, "gRPC message dispatch failed");
+                                if matches!(e, CommError::DnsResolutionFailed(_, _)) {
+                                    tracing::debug!(error = %e, "gRPC message dispatch failed");
+                                } else {
+                                    tracing::error!(error = %e, "gRPC message dispatch failed");
+                                }
                                 Err(e)
                             }
                         }
@@ -334,7 +369,7 @@ impl TransportLayerServer for GrpcTransportServer {
         let server_task = GrpcTransportReceiver::create(
             self.network_id.clone(),
             self.local_peer.clone(),
-            self.port,
+            &self.bind,
             self.cert.clone(),
             self.key.clone(),
             self.max_message_size,

@@ -314,6 +314,7 @@ async fn actual_heartbeat_requests_consume_credit_before_failure_or_busy() {
         own.body.deploys.clear();
         snapshot
             .dag
+            .fixture_mut()
             .latest_messages_map
             .insert(validator.public_key.bytes.clone(), own.block_hash.clone());
         let casper = Arc::new(TestCasperWithSnapshot::new_with_pending_deploys(
@@ -402,6 +403,7 @@ mod additional_tests {
         own.body.deploys.clear();
         snapshot
             .dag
+            .fixture_mut()
             .latest_messages_map
             .insert(validator.public_key.bytes.clone(), own.block_hash.clone());
         let casper = Arc::new(TestCasperWithSnapshot::new_with_pending_deploys(

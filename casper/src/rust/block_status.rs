@@ -33,7 +33,7 @@ pub enum BlockError {
     Undecidable(BlockHash),
     /// Flow signal, not a verdict: the block is settled history below this
     /// node's sync anchor and was admitted hash-checked and unjudged — the
-    /// same door LFS restore used. See `block_processor::admit_as_settled`.
+    /// same door LFS restore used. See block ingest's `Validation::admit_settled`.
     AdmittedSettled,
     /// Validation could not reach a verdict: replay needed the named state
     /// root and this node does not hold it. The state twin of
@@ -54,7 +54,9 @@ impl BlockError {
     /// proposer and must stay distinguishable.
     pub fn from_validation_error(error: CasperError) -> Self {
         use rholang::rust::interpreter::errors::InterpreterError;
-        use rspace_plus_plus::rspace::errors::{HistoryError, RSpaceError, RootError};
+        use rspace_plus_plus::rspace::errors::{
+            HistoryError, RSpaceError, RadixTreeError, RootError,
+        };
 
         match error {
             CasperError::BlockNotHeld(hash, _) => BlockError::Undecidable(hash),
@@ -64,6 +66,24 @@ impl BlockError {
             CasperError::InterpreterError(InterpreterError::RSpaceError(
                 RSpaceError::HistoryError(HistoryError::RootError(RootError::RootNotFound(root))),
             )) => BlockError::AwaitingState(root),
+            // Issue #1157: a mid-walk missing trie node — the root was held
+            // long enough for the walk to start, then a reference into a
+            // subtree the retention sweep had already deleted. Classifies
+            // like `RootNotFound`: a statement about this node's history,
+            // not about the block. Pre-#1157 this propagated as
+            // `BlockException` → `InvalidTransaction` (slashable), minting
+            // evidence against the proposer of a block whose state this
+            // node had GC'd. Both nesting depths appear in the wild — the
+            // walk can descend through either `HistoryError` or straight
+            // into `RadixTreeError` depending on the call site.
+            CasperError::InterpreterError(InterpreterError::RSpaceError(
+                RSpaceError::HistoryError(HistoryError::RadixTreeError(
+                    RadixTreeError::MissingNode { ptr },
+                )),
+            ))
+            | CasperError::InterpreterError(InterpreterError::RSpaceError(
+                RSpaceError::RadixTreeError(RadixTreeError::MissingNode { ptr }),
+            )) => BlockError::AwaitingState(ptr),
             other => BlockError::BlockException(other),
         }
     }
@@ -75,10 +95,9 @@ pub enum InvalidBlock {
     // AdmissibleEquivocation are blocks that would create an equivocation but are
     // pulled in through a justification of another block
     AdmissibleEquivocation,
-    // IgnorableEquivocation: an equivocating block we observe via someone
-    // else's justification but did not pull in as a dependency. Slashable —
-    // the dispatcher mints an EquivocationRecord so the proposer can issue a
-    // SlashDeploy. See docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
+    // IgnorableEquivocation: an equivocating block that was not requested as a
+    // dependency. Slashable — the dispatcher stores it with its sibling, the
+    // pair a proposer slashes with.
     IgnorableEquivocation,
 
     InvalidFormat,
@@ -91,22 +110,23 @@ pub enum InvalidBlock {
     InvalidBlockNumber,
     InvalidRepeatDeploy,
     InvalidParents,
+    // InvalidJustifications: the block cites an equivocation whose contents
+    // are invalid.
+    InvalidJustifications,
     InvalidFollows,
     InvalidSequenceNumber,
     InvalidShardId,
+    // InvalidChainId: the block names a chain other than this node's genesis.
+    InvalidChainId,
     JustificationRegression,
-    NeglectedInvalidBlock,
     NeglectedEquivocation,
     InvalidTransaction,
     InvalidBondsCache,
     InvalidBlockHash,
-    // UnauthorizedSlashDeploy: a block carries a `Slash` system deploy that
-    // fails the authorization predicate (wrong epoch, missing/non-invalid
-    // evidence, unbonded offender, duplicate target, or issuer ≠ sender).
-    // Raised by `Validate::slash_deploy_authorization`; the rules are in
-    // `slashing_authorization.rs::validate_received_slash_deploys` and
-    // proven sufficient by Theorem T-9.13 (see
-    // `formal/rocq/slashing/theories/BugFixSlashAuthorization.v`).
+    // UnauthorizedSlashDeploy: a block carries a `Slash` system deploy whose
+    // evidence proves no equivocation on this shard and chain, whose offender
+    // is unbonded or slashed twice, or whose issuer is not the block's sender
+    // (`slashing_authorization::validate_received_slash_deploys`).
     UnauthorizedSlashDeploy,
     InvalidRejectedDeploy,
     // PrematureDeployRetry: a rejected sig re-included before its latest
@@ -118,6 +138,9 @@ pub enum InvalidBlock {
     ContainsFutureDeploy,
     NotOfInterest,
     LowDeployCost,
+    // ExcessivePhloLimit: a user deploy declares a phlo limit above the
+    // chain's max-phlo-limit.
+    ExcessivePhloLimit,
 }
 
 impl BlockStatus {
@@ -167,12 +190,10 @@ impl BlockStatus {
 
     pub fn invalid_shard_id() -> BlockError { BlockError::Invalid(InvalidBlock::InvalidShardId) }
 
+    pub fn invalid_chain_id() -> BlockError { BlockError::Invalid(InvalidBlock::InvalidChainId) }
+
     pub fn justification_regression() -> BlockError {
         BlockError::Invalid(InvalidBlock::JustificationRegression)
-    }
-
-    pub fn neglected_invalid_block() -> BlockError {
-        BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock)
     }
 
     pub fn neglected_equivocation() -> BlockError {
@@ -242,7 +263,7 @@ impl InvalidBlock {
         // verdict with that property: two signed blocks at the same seq are
         // proof wherever they are examined, in any order. Every other verdict
         // is judged against the receiver's own state — its invalid records,
-        // its equivocation tracker, its parents' replay, its admission order
+        // its parents' replay, its admission order
         // — so two honest nodes can disagree on it, and minting evidence
         // from it lets whoever shapes message delivery burn honest stake
         // (CI run 32588262605: JustificationRegression verdicts issued by
@@ -251,11 +272,8 @@ impl InvalidBlock {
         // weight). A demoted verdict still drops the block — invalidity is
         // untouched; only the economic layer narrows to provable faults.
         match self {
-            // IgnorableEquivocation is slashable per Bug #1 (§9.1). On
-            // dev this variant was a known DOS-vector TODO — equivocations
-            // observed via someone else's justification produced no on-chain
-            // evidence. The dispatcher (`engine::multi_parent_casper::handle_*`)
-            // mints an EquivocationRecord whenever this branch fires.
+            // The dispatcher stores a block with either verdict together
+            // with its sibling: the evidence a slash carries.
             InvalidBlock::AdmissibleEquivocation | InvalidBlock::IgnorableEquivocation => true,
 
             // Non-slashable variants — listed explicitly so the compiler
@@ -265,11 +283,10 @@ impl InvalidBlock {
             //     wire data; the sender is not identifiable (Signature) or
             //     the sender's identity can't be verified (Sender).
             //   • JustificationRegression / UnauthorizedSlashDeploy /
-            //     NeglectedInvalidBlock / NeglectedEquivocation: judged
-            //     against the receiver's own records or tracker — the
-            //     view-relative family observed diverging across honest
-            //     nodes in the run above.
+            //     NeglectedEquivocation: judged against the receiver's own
+            //     view of other blocks, not the signed block alone.
             //   • InvalidTransaction / InvalidBondsCache / InvalidParents /
+            //     InvalidJustifications /
             //     InvalidFollows / InvalidRepeatDeploy / InvalidBlockNumber /
             //     InvalidSequenceNumber / InvalidShardId / InvalidBlockHash /
             //     DeployNotSigned / ContainsExpiredDeploy /
@@ -287,9 +304,11 @@ impl InvalidBlock {
             //     declines the block identically — admission does all the
             //     enforcement, and a gate rule in its proving phase must
             //     never be able to burn honest stake through its own bugs.
+            //   • InvalidChainId: a block of another chain; it says nothing
+            //     about conduct on this one.
             //   • NotOfInterest: local node filtering decision.
-            //   • LowDeployCost: per-deploy cost threshold; rejected at
-            //     admission, not on-chain accountable.
+            //   • LowDeployCost / ExcessivePhloLimit: per-deploy cost
+            //     bounds; rejected at admission, not on-chain accountable.
             InvalidBlock::InvalidFormat
             | InvalidBlock::InvalidSignature
             | InvalidBlock::InvalidSender
@@ -299,11 +318,12 @@ impl InvalidBlock {
             | InvalidBlock::InvalidBlockNumber
             | InvalidBlock::InvalidRepeatDeploy
             | InvalidBlock::InvalidParents
+            | InvalidBlock::InvalidJustifications
             | InvalidBlock::InvalidFollows
             | InvalidBlock::InvalidSequenceNumber
             | InvalidBlock::InvalidShardId
+            | InvalidBlock::InvalidChainId
             | InvalidBlock::JustificationRegression
-            | InvalidBlock::NeglectedInvalidBlock
             | InvalidBlock::NeglectedEquivocation
             | InvalidBlock::InvalidTransaction
             | InvalidBlock::InvalidBondsCache
@@ -315,7 +335,8 @@ impl InvalidBlock {
             | InvalidBlock::InvalidRejectedDeploy
             | InvalidBlock::PrematureDeployRetry
             | InvalidBlock::NotOfInterest
-            | InvalidBlock::LowDeployCost => false,
+            | InvalidBlock::LowDeployCost
+            | InvalidBlock::ExcessivePhloLimit => false,
         }
     }
 }
@@ -408,6 +429,48 @@ mod tests {
             ),
             "the prose variant reports storewide conditions, not a fetchable root, and \
              stays in the exception class"
+        );
+    }
+
+    /// Issue #1157: a mid-walk `MissingNode` is the second availability
+    /// shape and must classify identically to `RootNotFound`. The root was
+    /// held when the walk began, but the retention sweep raced ahead and
+    /// deleted a subtree the walk later followed into — a statement about
+    /// this node's history, not about the block. The pre-#1157 fall-through
+    /// to `BlockException` produced `InvalidTransaction`, slashable, on a
+    /// pure data-locality event.
+    #[test]
+    fn a_missing_trie_node_is_awaiting_state_not_a_verdict() {
+        use rholang::rust::interpreter::errors::InterpreterError;
+        use rspace_plus_plus::rspace::errors::{HistoryError, RSpaceError, RadixTreeError};
+        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+        let ptr = Blake2b256Hash::from_bytes(vec![0xCD; 32]);
+
+        // The deeper nesting — RSpaceError → HistoryError → RadixTreeError —
+        // which is what a reset-and-replay path surfaces.
+        let via_history = CasperError::InterpreterError(InterpreterError::RSpaceError(
+            RSpaceError::HistoryError(HistoryError::RadixTreeError(RadixTreeError::MissingNode {
+                ptr: ptr.clone(),
+            })),
+        ));
+        assert_eq!(
+            BlockError::from_validation_error(via_history),
+            BlockError::AwaitingState(ptr.clone()),
+            "a missing trie node encountered via the history path must carry its ptr \
+             through as AwaitingState, so the state requester fetches and retries"
+        );
+
+        // The shallower nesting — RSpaceError → RadixTreeError — which is
+        // what a direct radix-trie read (e.g. exporter / reporting) raises.
+        let direct = CasperError::InterpreterError(InterpreterError::RSpaceError(
+            RSpaceError::RadixTreeError(RadixTreeError::MissingNode { ptr: ptr.clone() }),
+        ));
+        assert_eq!(
+            BlockError::from_validation_error(direct),
+            BlockError::AwaitingState(ptr),
+            "the direct nesting must classify identically; the sweep race is the same \
+             condition regardless of which call site walked into it"
         );
     }
 }

@@ -1,10 +1,14 @@
 use std::collections::BTreeMap;
+use std::ops::Bound;
 use std::sync::Arc;
 
 use heed::types::SerdeBincode;
 use heed::{Database, Env, Error as HeedError, MdbError, PutFlags};
 
-use super::key_value_store::{KeyValueStore, KvStoreError};
+use super::key_value_store::{
+    check_scan_limit, encode_bincode_key, KeyValueStore, KvStoreError, StorePage,
+};
+use crate::rust::blocking::in_blocking;
 use crate::rust::ByteBuffer;
 
 // `heed::Database` is a `Copy` handle (a `u32` dbi) and is `Send + Sync`; it
@@ -21,28 +25,16 @@ pub struct LmdbKeyValueStore {
     pub db: Database<SerdeBincode<ByteBuffer>, SerdeBincode<ByteBuffer>>,
 }
 
-fn in_blocking<T>(f: impl FnOnce() -> T) -> T {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
-            tokio::task::block_in_place(f)
-        }
-        _ => f(),
-    }
-}
-
 impl KeyValueStore for LmdbKeyValueStore {
     fn as_any(&self) -> &dyn std::any::Any { self }
 
+    // Point reads run on the calling worker. A caller that loops over many of
+    // them hands the worker off around the whole loop with `in_blocking`.
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
-        in_blocking(|| {
-            let reader = self.env.read_txn()?;
-            let results = keys
-                .iter()
-                .map(|key| self.db.get(&reader, key).map_err(|e| e.into()))
-                .collect();
-            drop(reader);
-            results
-        })
+        let reader = self.env.read_txn()?;
+        keys.iter()
+            .map(|key| self.db.get(&reader, key).map_err(|e| e.into()))
+            .collect()
     }
 
     fn put(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
@@ -132,6 +124,48 @@ impl KeyValueStore for LmdbKeyValueStore {
             }
             drop(reader);
             Ok(())
+        })
+    }
+
+    /// Cursor-paginated scan over raw-byte key order.
+    ///
+    /// Reads via `remap_types::<Bytes, Bytes>` to compare keys lexicographically
+    /// over the bincode-encoded form LMDB stores them in. For same-length keys
+    /// (the rspace/history node-hash case this is built for — 32-byte Blake2b)
+    /// that is byte-identical to raw-key order, so the cursor the caller sees
+    /// is the raw key. Values are still bincode-encoded in the env, so we
+    /// deserialize them back on the way out, matching what `get`/`iter_while`
+    /// expose. Same pattern as `atomic_store::scan_lmdb`; one env read
+    /// transaction per page, no cross-page snapshot invariant.
+    fn scan_page(&self, after: Option<&[u8]>, limit: usize) -> Result<StorePage, KvStoreError> {
+        check_scan_limit(limit)?;
+        in_blocking(|| {
+            let reader = self.env.read_txn()?;
+            let raw = self
+                .db
+                .remap_types::<heed::types::Bytes, heed::types::Bytes>();
+            // Keys are stored bincode-encoded: an 8-byte little-endian length
+            // prefix followed by the raw bytes. A raw-byte cursor from a
+            // previous page is the un-prefixed key, so wrap it before passing
+            // to `range`. Values are deserialized back from bincode on the
+            // way out.
+            let encoded_after = after.map(encode_bincode_key);
+            let start: Bound<&[u8]> = match encoded_after.as_ref() {
+                Some(bytes) => Bound::Excluded(bytes.as_slice()),
+                None => Bound::Unbounded,
+            };
+            let range = (start, Bound::<&[u8]>::Unbounded);
+            let mut rows = Vec::with_capacity(limit);
+            for row in raw.range(&reader, &range)?.take(limit) {
+                let (key_bytes, value_bytes) = row?;
+                let key: ByteBuffer = bincode::deserialize(key_bytes)?;
+                let value: ByteBuffer = bincode::deserialize(value_bytes)?;
+                rows.push((key, value));
+            }
+            drop(reader);
+            let next =
+                (rows.len() == limit).then(|| rows.last().expect("positive page limit").0.clone());
+            Ok(StorePage { rows, next })
         })
     }
 
@@ -267,16 +301,30 @@ mod batched_put_tests {
 
     use super::*;
 
-    pub(super) fn open_env() -> Arc<Env> {
+    // Owns a `TempDir` alongside the `Arc<Env>` so that when the test binding
+    // drops, the Env closes before the directory is removed. Leaking the
+    // TempDir (as the pre-#1014 helper did) kept the Env alive until process
+    // exit and, on macOS, leaked one SysV semaphore set per test env.
+    pub(super) struct TestEnv {
+        env: Arc<Env>,
+        _dir: tempfile::TempDir,
+    }
+
+    impl std::ops::Deref for TestEnv {
+        type Target = Arc<Env>;
+        fn deref(&self) -> &Self::Target { &self.env }
+    }
+
+    pub(super) fn open_env() -> TestEnv {
         let dir = tempfile::tempdir().unwrap();
-        // Leak the tempdir path so the Env (and its mmap) stay valid for the
-        // lifetime of the test; each test opens its own directory.
-        let path = Box::leak(Box::new(dir)).path();
         let mut builder = EnvOpenOptions::new();
         builder.map_size(10 * 1024 * 1024);
         builder.max_dbs(4);
-        let env = unsafe { builder.open(path).unwrap() };
-        Arc::new(env)
+        let env = unsafe { builder.open(dir.path()).unwrap() };
+        TestEnv {
+            env: Arc::new(env),
+            _dir: dir,
+        }
     }
 
     pub(super) fn open_store(env: &Arc<Env>, name: &str) -> LmdbKeyValueStore {
@@ -284,6 +332,25 @@ mod batched_put_tests {
         let db = env.create_database(&mut wtxn, Some(name)).unwrap();
         wtxn.commit().unwrap();
         LmdbKeyValueStore::new(env.clone(), db)
+    }
+
+    // Bundles an owned TestEnv with the store so the Env closes and the
+    // TempDir is removed when the test binding drops. Returned by the helper
+    // tests that used to leak the dir.
+    pub(super) struct TestLmdbStore {
+        store: LmdbKeyValueStore,
+        _env: TestEnv,
+    }
+
+    impl std::ops::Deref for TestLmdbStore {
+        type Target = LmdbKeyValueStore;
+        fn deref(&self) -> &Self::Target { &self.store }
+    }
+
+    pub(super) fn open_scoped_store(name: &str) -> TestLmdbStore {
+        let env = open_env();
+        let store = open_store(&env, name);
+        TestLmdbStore { store, _env: env }
     }
 
     pub(super) fn kv(pairs: &[(&str, &str)]) -> Vec<(ByteBuffer, ByteBuffer)> {
@@ -434,11 +501,11 @@ mod batched_put_tests {
 mod store_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::batched_put_tests::{kv, open_env, open_store};
+    use super::batched_put_tests::{kv, open_env, open_scoped_store, open_store, TestLmdbStore};
     use super::*;
 
-    fn seeded_store() -> LmdbKeyValueStore {
-        let store = open_store(&open_env(), "s");
+    fn seeded_store() -> TestLmdbStore {
+        let store = open_scoped_store("s");
         store
             .put(kv(&[("k1", "v1"), ("k2", "v2"), ("k3", "v3")]))
             .unwrap();
@@ -470,7 +537,7 @@ mod store_tests {
 
     #[test]
     fn put_one_if_absent_inserts_once_and_keeps_first_value() {
-        let store = open_store(&open_env(), "s");
+        let store = open_scoped_store("s");
         assert!(store
             .put_one_if_absent(b"k".to_vec(), b"first".to_vec())
             .unwrap());
@@ -590,7 +657,7 @@ mod store_tests {
 
     #[test]
     fn non_empty_flips_when_first_entry_lands() {
-        let store = open_store(&open_env(), "s");
+        let store = open_scoped_store("s");
         assert!(!store.non_empty().unwrap());
         store.put_one(b"k".to_vec(), b"v".to_vec()).unwrap();
         assert!(store.non_empty().unwrap());
@@ -633,5 +700,155 @@ mod store_tests {
             store.get_one(&b"k9".to_vec()).unwrap(),
             Some(b"fresh".to_vec())
         );
+    }
+
+    fn seeded_store_at(keys: &[&[u8]]) -> TestLmdbStore {
+        let store = open_scoped_store("scan");
+        let pairs: Vec<(ByteBuffer, ByteBuffer)> =
+            keys.iter().map(|k| (k.to_vec(), k.to_vec())).collect();
+        store.put(pairs).unwrap();
+        store
+    }
+
+    #[test]
+    fn scan_page_returns_empty_store_without_next() {
+        let store = open_scoped_store("empty");
+        let page = store.scan_page(None, 16).unwrap();
+        assert!(page.rows.is_empty());
+        assert!(page.next.is_none(), "empty store never has a next cursor");
+    }
+
+    #[test]
+    fn scan_page_walks_same_length_keys_in_byte_order() {
+        // 32-byte Blake2b-shaped keys — the rspace/history production case.
+        let keys: Vec<Vec<u8>> = (0u8..10).map(|n| vec![n; 32]).collect();
+        let refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+        let store = seeded_store_at(&refs);
+
+        let mut seen: Vec<ByteBuffer> = Vec::new();
+        let mut cursor: Option<ByteBuffer> = None;
+        loop {
+            let page = store.scan_page(cursor.as_deref(), 3).unwrap();
+            assert!(page.rows.len() <= 3);
+            seen.extend(page.rows.iter().map(|(k, _)| k.clone()));
+            match page.next {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(seen, keys, "every key visited exactly once in byte order");
+    }
+
+    #[test]
+    fn scan_page_cursor_is_exclusive() {
+        let keys: Vec<Vec<u8>> = (0u8..5).map(|n| vec![n; 32]).collect();
+        let refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+        let store = seeded_store_at(&refs);
+
+        let first = store.scan_page(None, 2).unwrap();
+        assert_eq!(first.rows.iter().map(|(k, _)| k).collect::<Vec<_>>(), vec![
+            &keys[0], &keys[1]
+        ]);
+        let second = store.scan_page(first.next.as_deref(), 2).unwrap();
+        assert_eq!(
+            second.rows.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            vec![&keys[2], &keys[3]]
+        );
+        let third = store.scan_page(second.next.as_deref(), 2).unwrap();
+        assert_eq!(third.rows.iter().map(|(k, _)| k).collect::<Vec<_>>(), vec![
+            &keys[4]
+        ]);
+        assert!(
+            third.next.is_none(),
+            "page below limit must not request another"
+        );
+    }
+
+    #[test]
+    fn scan_page_values_round_trip() {
+        let store = open_scoped_store("values");
+        store
+            .put(vec![
+                (b"aa".to_vec(), b"alpha".to_vec()),
+                (b"bb".to_vec(), b"beta".to_vec()),
+            ])
+            .unwrap();
+        let page = store.scan_page(None, 16).unwrap();
+        assert_eq!(page.rows, vec![
+            (b"aa".to_vec(), b"alpha".to_vec()),
+            (b"bb".to_vec(), b"beta".to_vec()),
+        ]);
+    }
+
+    #[test]
+    fn scan_page_limit_out_of_range_is_rejected() {
+        let store = open_scoped_store("bounds");
+        assert!(matches!(
+            store.scan_page(None, 0),
+            Err(KvStoreError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            store.scan_page(None, 1025),
+            Err(KvStoreError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn scan_page_cursor_past_the_end_returns_empty() {
+        let keys: Vec<Vec<u8>> = (0u8..3).map(|n| vec![n; 32]).collect();
+        let refs: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+        let store = seeded_store_at(&refs);
+
+        let past_end = vec![0xff; 32];
+        let page = store.scan_page(Some(&past_end), 16).unwrap();
+        assert!(page.rows.is_empty());
+        assert!(page.next.is_none());
+    }
+
+    // Run manually:
+    // cargo test -p shared --release concurrent_point_reads -- --ignored --nocapture
+    //
+    // Point reads per second from 1, 16 and 64 concurrent tasks on a runtime
+    // with a worker per core. Throughput should grow with the readers; a read
+    // path that serializes callers caps it near the single-reader rate.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[ignore]
+    async fn concurrent_point_reads_scale_with_readers() {
+        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+        let store = open_scoped_store("reads");
+        let keys: Arc<Vec<ByteBuffer>> =
+            Arc::new((0..1024u32).map(|i| i.to_be_bytes().to_vec()).collect());
+        store
+            .put(keys.iter().map(|key| (key.clone(), key.clone())).collect())
+            .unwrap();
+
+        for readers in [1usize, 16, 64] {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let window = std::time::Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + window;
+            let tasks: Vec<_> = (0..readers)
+                .map(|reader| {
+                    let (store, keys, reads) = (store.clone(), keys.clone(), reads.clone());
+                    tokio::spawn(async move {
+                        let mut index = reader;
+                        while std::time::Instant::now() < deadline {
+                            store.get_one(&keys[index % keys.len()]).unwrap();
+                            reads.fetch_add(1, Ordering::Relaxed);
+                            index += readers;
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                })
+                .collect();
+            for task in tasks {
+                task.await.unwrap();
+            }
+            tracing::info!(
+                target: "f1r3.bench.lmdb_point_reads",
+                readers,
+                reads_per_second = reads.load(Ordering::Relaxed) as f64 / window.as_secs_f64(),
+                "concurrent point reads"
+            );
+        }
     }
 }

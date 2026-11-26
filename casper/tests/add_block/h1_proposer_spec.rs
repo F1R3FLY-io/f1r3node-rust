@@ -42,6 +42,7 @@ impl BlockCreator for FixedCreator {
             self.block.clone(),
             Vec::new().into(),
             Vec::new().into(),
+            None,
         ))
     }
 }
@@ -70,14 +71,18 @@ impl ProposeEffectHandler for CountEffects {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
-    fn publish_block_created(&self, _: &BlockMessage) -> Result<(), CasperError> {
+    fn publish_block_created(
+        &self,
+        _: &BlockMessage,
+        _: Option<shared::rust::shared::f1r3fly_event::DeployAdmission>,
+    ) -> Result<(), CasperError> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 }
 
 async fn verify_nonempty_request(kind: u8, too_far: bool, stale: bool) {
-    with_storage(|block_store, block_dag_storage| async move {
+    with_storage(|block_store, _block_dag_storage| async move {
         let runtime = mk_runtime_manager("h1-nonempty-request", None).await;
         let mut block = models::rust::block_implicits::get_random_block_default();
         block.body.deploys.clear();
@@ -124,7 +129,7 @@ async fn verify_nonempty_request(kind: u8, too_far: bool, stale: bool) {
             None,
             Arc::new(runtime),
             block_store,
-            block_dag_storage.get_representation().unwrap(),
+            crate::util::rholang::resources::new_key_value_dag_representation(),
         ));
         let request = if stale {
             ProposeRequest::heartbeat_deploy().after_empty_self(vec![0x7a; 32].into())
@@ -181,13 +186,14 @@ impl casper::rust::blocks::proposer::proposer::CasperSnapshotProvider for Queued
 }
 
 async fn verify_queued_request(changed_self: bool, selected_user: bool) {
-    with_storage(|block_store, block_dag_storage| async move {
+    with_storage(|block_store, _block_dag_storage| async move {
         let runtime = mk_runtime_manager("h1-queued-request", None).await;
         let validator = Arc::new(ValidatorIdentity::new(&DEFAULT_VALIDATOR_SKS[0]));
         let expected: models::rust::block_hash::BlockHash = vec![0x71; 32].into();
         let mut snapshot = crate::util::rholang::resources::mk_dummy_casper_snapshot();
         snapshot
             .dag
+            .fixture_mut()
             .latest_messages_map
             .insert(validator.public_key.bytes.clone(), expected.clone());
         let snapshot = Arc::new(Mutex::new(snapshot));
@@ -221,7 +227,7 @@ async fn verify_queued_request(changed_self: bool, selected_user: bool) {
             None,
             Arc::new(runtime),
             block_store,
-            block_dag_storage.get_representation().unwrap(),
+            crate::util::rholang::resources::new_key_value_dag_representation(),
         ));
         let request = ProposeRequest::heartbeat_deploy().after_empty_self(expected);
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
@@ -234,6 +240,7 @@ async fn verify_queued_request(changed_self: bool, selected_user: bool) {
                     .lock()
                     .unwrap()
                     .dag
+                    .fixture_mut()
                     .latest_messages_map
                     .insert(validator.public_key.bytes.clone(), vec![0x72; 32].into());
             }
