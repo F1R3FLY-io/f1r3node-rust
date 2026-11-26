@@ -258,6 +258,47 @@ pub struct MissingBlockEntry {
     pub block_height: i64,
 }
 
+/// Issue #1157: the target block's rspace STATE has been retention-swept.
+///
+/// Mirrors [`BlockPrunedError`] for the state-reading APIs
+/// (`exploratory_deploy`, `get_data_at_par`, block reports). The DAG still
+/// carries the block's metadata so we can report the height at which it
+/// lived; the trie nodes under its post-state root (or pre-state, for
+/// exploratory reads that walk the pre-state view) have been deleted by
+/// the `enable_history_pruning` sweep. Distinct from
+/// [`BlockPrunedError`] (block BODY vs STATE — the two sweeps have
+/// independent floors on an operator who only enabled one) and from
+/// [`BlockNotFoundError`] ("we have no record of this hash at all").
+#[derive(Debug, Clone)]
+pub struct PrunedStateError {
+    /// Hash of the block whose state the reader was asked for.
+    pub target_block_hash: BlockHash,
+    /// Height of that block when it was retained. Known from the DAG
+    /// metadata index, which is not swept.
+    pub target_block_height: i64,
+    /// The node's current rspace-history retention floor
+    /// (`CasperShardConf::state_retention_floor(LFB_height)`). The target
+    /// block's height is strictly less than this value — blocks at the
+    /// floor itself survive the sweep.
+    pub retention_floor: i64,
+}
+
+impl std::fmt::Display for PrunedStateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Block {} (height {}) state has been swept past this node's rspace-history \
+             retention floor (height {}). Consult an archive node whose retention \
+             window covers it.",
+            PrettyPrinter::build_string_bytes(&self.target_block_hash),
+            self.target_block_height,
+            self.retention_floor
+        )
+    }
+}
+
+impl std::error::Error for PrunedStateError {}
+
 /// Envelope for [`BlockAPI::get_blocks_by_heights`] /
 /// [`BlockAPI::get_blocks_by_heights_full`]. `served` is the flat list
 /// of blocks whose bodies the node still holds, in the same order as
@@ -603,6 +644,49 @@ fn propose_failure_error(status: &ProposeStatus, seq_number: i32) -> eyre::Repor
 
 impl BlockAPI {
     fn find_deploy_scan_depth() -> usize { 128 }
+
+    /// Issue #1157: deterministic retention-floor check for state-reading
+    /// APIs. Called BEFORE a reader walks the trie for a specific block, so
+    /// the API returns a structured [`PrunedStateError`] rather than a
+    /// mid-walk `MissingNode` propagated as a generic error.
+    ///
+    /// Anchor is the local LFB: all honest nodes with the same shard conf
+    /// derive the same floor once they have finalized the same LFB, so the
+    /// response is stable across the honest set.
+    ///
+    /// The post-check race with the GC is covered by also classifying
+    /// `MissingNode` in validation ([`BlockError::from_validation_error`])
+    /// and by reader-side catch sites.
+    ///
+    /// Boundary: the GC retains blocks whose `height ≥ state_retention_floor`
+    /// (see `compute_gc_retention_roots`), so only `target_height < floor`
+    /// means the state has been swept. Genesis at `height = 0` with
+    /// `floor = 0` is retained.
+    async fn pre_check_state_retention(
+        casper: &dyn MultiParentCasper,
+        target_block: &BlockMessage,
+    ) -> Result<(), PrunedStateError> {
+        let lfb = match casper.last_finalized_block().await {
+            Ok(lfb) => lfb,
+            // No LFB yet — the retention sweep cannot have run, so no
+            // block's state can be below the floor. Any genuine
+            // availability issue will surface downstream.
+            Err(_) => return Ok(()),
+        };
+        let floor = casper
+            .casper_shard_conf()
+            .state_retention_floor(lfb.body.state.block_number);
+        let target_height = target_block.body.state.block_number;
+        if target_height < floor {
+            Err(PrunedStateError {
+                target_block_hash: target_block.block_hash.clone(),
+                target_block_height: target_height,
+                retention_floor: floor,
+            })
+        } else {
+            Ok(())
+        }
+    }
 
     async fn find_deploy_by_recent_blocks(
         casper: &dyn MultiParentCasper,
@@ -2282,6 +2366,12 @@ impl BlockAPI {
 
                     match block_opt {
                         Some(b) => {
+                            // Issue #1157: refuse early if the target block's
+                            // state has been swept — a structured answer beats
+                            // a mid-walk `MissingNode` propagated as prose.
+                            Self::pre_check_state_retention(casper.as_ref(), &b)
+                                .await
+                                .map_err(eyre::Report::new)?;
                             let state = if use_pre_state_hash {
                                 proto_util::pre_state_hash(&b)
                             } else {
@@ -2400,6 +2490,12 @@ impl BlockAPI {
                         hash: block_hash.to_string(),
                     })
                 })?;
+            // Issue #1157: pre-check retention floor so the API returns a
+            // structured `PrunedStateError` instead of a mid-walk
+            // `MissingNode` propagated as prose.
+            BlockAPI::pre_check_state_retention(casper, &block)
+                .await
+                .map_err(eyre::Report::new)?;
             let sorted_par = ParSortMatcher::sort_match(par).term;
             let runtime_manager = casper.runtime_manager();
             let data = BlockAPI::get_data_with_block_info(

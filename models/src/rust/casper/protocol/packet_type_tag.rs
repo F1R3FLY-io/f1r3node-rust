@@ -9,7 +9,8 @@ use crate::casper::{
     GetWalPayloadRequestProto, HasBlockProto, HasBlockRequestProto, HasSnapshotProto,
     HasSnapshotRequestProto, HasWalPayloadProto, HasWalPayloadRequestProto,
     NoApprovedBlockAvailableProto, SnapshotChunkResponseProto, StoreItemsMessageProto,
-    StoreItemsMessageRequestProto, UnapprovedBlockProto, WalPayloadResponseProto,
+    StoreItemsMessageRequestProto, StoreItemsPrunedResponseProto, UnapprovedBlockProto,
+    WalPayloadResponseProto,
 };
 use crate::routing::Packet;
 
@@ -78,6 +79,11 @@ impl_packet!(
         Pull
     ),
     (StoreItemsMessageProto, "StoreItemsMessage", Push),
+    (
+        StoreItemsPrunedResponseProto,
+        "StoreItemsPrunedResponse",
+        Push
+    ),
     (FloorCacheRequestProto, "FloorCacheRequest", Pull),
     (FloorCacheResponseProto, "FloorCacheResponse", Push),
     (
