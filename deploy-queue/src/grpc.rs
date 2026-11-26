@@ -149,22 +149,40 @@ impl DeployService for QueueGrpc {
             .status(sig)
             .await
             .map_err(|e| Status::unavailable(e.to_string()))?;
-        match view {
-            Some(view) => Ok(Response::new(DeployFinalizationStatusResponse {
-                message: Some(deploy_finalization_status_response::Message::Status(
-                    DeployFinalizationStatusInfo {
-                        state: state_proto(view.state) as i32,
-                        rejection_count: view.rejection_count,
-                        latest_block_hash: view.latest_block_hash.map(Into::into),
-                    },
-                )),
-            })),
-            None => {
-                self.node()
-                    .deploy_finalization_status(request.into_inner())
-                    .await
+        let Some(view) = view else {
+            return self.node().deploy_finalization_status(request).await;
+        };
+        let query = request.into_inner();
+        if let Some(proto) = query.deploy {
+            let verified = if proto.sig == query.deploy_sig {
+                DeployData::from_proto(proto).map(|_| ())
+            } else {
+                Err("deploy.sig does not match the queried deploySig".to_string())
+            };
+            if let Err(message) = verified {
+                return Ok(Response::new(DeployFinalizationStatusResponse {
+                    message: Some(deploy_finalization_status_response::Message::Error(
+                        ServiceError {
+                            messages: vec![message],
+                        },
+                    )),
+                }));
             }
         }
+        Ok(Response::new(DeployFinalizationStatusResponse {
+            message: Some(deploy_finalization_status_response::Message::Status(
+                DeployFinalizationStatusInfo {
+                    state: state_proto(view.state) as i32,
+                    rejection_count: view.rejection_count,
+                    latest_block_hash: view.latest_block_hash.map(Into::into),
+                    // The queue's own view carries no verdict basis; a
+                    // forwarded query (#1103 deploy) keeps whatever the
+                    // node answers.
+                    basis_block_hash: None,
+                    basis_block_height: None,
+                },
+            )),
+        }))
     }
 
     async fn get_block(

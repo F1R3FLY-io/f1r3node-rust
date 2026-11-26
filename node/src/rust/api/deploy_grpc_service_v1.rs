@@ -9,6 +9,7 @@ use std::sync::Arc;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::api::block_api::{BlockAPI, BlocksByHeightsResponse, ExploratoryDeployRejection};
 use casper::rust::api::block_report_api::BlockReportAPI;
+use casper::rust::api::deploy_reconciliation::ReconciledStatus;
 use casper::rust::api::graph_generator::{GraphConfig, GraphzGenerator};
 use casper::rust::casper::DeployError;
 use casper::rust::engine::engine_cell::EngineCell;
@@ -144,6 +145,27 @@ pub struct DeployGrpcServiceV1Impl {
 }
 
 impl DeployGrpcServiceV1Impl {
+    async fn reconcile_deploy(
+        &self,
+        sig: prost::bytes::Bytes,
+        proto: DeployDataProto,
+    ) -> eyre::Result<ReconciledStatus> {
+        let permit = self.deploy_limiter.try_acquire()?;
+        let engine = self.engine_cell.clone();
+        let shard = self.shard_id.clone();
+        crate::rust::web::shared_handlers::offload(move || async move {
+            let _permit = permit;
+            let deploy =
+                models::rust::casper::protocol::casper_message::DeployData::from_proto(proto)
+                    .map_err(
+                        |message| casper::rust::api::block_api::DeployValidationError { message },
+                    )?;
+            BlockAPI::deploy_finalization_status_reconciled(&engine, &sig, Some(&deploy), &shard)
+                .await
+        })
+        .await
+    }
+
     pub fn new(
         api_max_blocks_limit: i32,
         trigger_propose_f: Option<Arc<ProposeFunction>>,
@@ -844,25 +866,31 @@ impl DeployService for DeployGrpcServiceV1Impl {
         }
     }
 
-    /// Query the finalization status of a deploy by its signature.
+    /// Query the finalization status of a deploy by its signature. When the
+    /// query carries the saved signed deploy (#1103), a sig the register has
+    /// never observed is reconciled against the floor of the adopted last
+    /// finalized block; the response names that basis.
     async fn deploy_finalization_status(
         &self,
         request: tonic::Request<DeployFinalizationStatusQuery>,
     ) -> Result<tonic::Response<DeployFinalizationStatusResponse>, tonic::Status> {
         let request = request.into_inner();
-        match casper::rust::api::block_api::BlockAPI::deploy_finalization_status(
-            &self.engine_cell,
-            &request.deploy_sig,
-        )
-        .await
-        {
-            Ok(status) => Ok(tonic::Response::new(DeployFinalizationStatusResponse {
+        let verdict = match request.deploy {
+            Some(proto) => self.reconcile_deploy(request.deploy_sig, proto).await,
+            None => BlockAPI::deploy_finalization_status(&self.engine_cell, &request.deploy_sig)
+                .await
+                .map(ReconciledStatus::from_lookup),
+        };
+        match verdict {
+            Ok(reconciled) => Ok(tonic::Response::new(DeployFinalizationStatusResponse {
                 message: Some(
                     models::casper::v1::deploy_finalization_status_response::Message::Status(
                         DeployFinalizationStatusInfo {
-                            state: deploy_state_to_proto(status.state) as i32,
-                            rejection_count: status.rejection_count,
-                            latest_block_hash: status.latest_block_hash,
+                            state: deploy_state_to_proto(reconciled.status.state) as i32,
+                            rejection_count: reconciled.status.rejection_count,
+                            latest_block_hash: reconciled.status.latest_block_hash,
+                            basis_block_hash: reconciled.basis.as_ref().map(|f| f.hash.clone()),
+                            basis_block_height: reconciled.basis.as_ref().map(|f| f.block_number),
                         },
                     ),
                 ),
@@ -1904,11 +1932,27 @@ mod tests {
         let finalization = service
             .deploy_finalization_status(tonic::Request::new(DeployFinalizationStatusQuery {
                 deploy_sig: vec![1u8, 2].into(),
+                deploy: None,
             }))
             .await
             .unwrap();
         assert!(matches!(
             finalization.into_inner().message.unwrap(),
+            models::casper::v1::deploy_finalization_status_response::Message::Error(_)
+        ));
+
+        // A query carrying a saved signed deploy (#1103) answers the same
+        // ServiceError before any reconciliation can run: the decode fails
+        // on the unsigned default proto.
+        let reconciled = service
+            .deploy_finalization_status(tonic::Request::new(DeployFinalizationStatusQuery {
+                deploy_sig: vec![1u8, 2].into(),
+                deploy: Some(DeployDataProto::default()),
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(
+            reconciled.into_inner().message.unwrap(),
             models::casper::v1::deploy_finalization_status_response::Message::Error(_)
         ));
 

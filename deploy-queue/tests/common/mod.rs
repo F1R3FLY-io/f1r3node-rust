@@ -61,6 +61,7 @@ impl FakeNode {
             .route("/api/status", get(status))
             .route("/api/deploy", post(take_deploy))
             .route("/api/deploy-finalization-status/{sig}", get(deploy_status))
+            .route("/api/deploy-finalization-status", post(reconcile))
             .route("/ws/events", get(events))
             .with_state(self);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -93,6 +94,11 @@ async fn status(State(node): State<FakeNode>) -> Json<Value> {
 
 async fn deploy_status(State(node): State<FakeNode>) -> Json<Value> {
     Json(node.deploy_status.lock().unwrap().clone())
+}
+
+async fn reconcile(Json(request): Json<DeployRequest>) -> Json<Value> {
+    request.to_signed().expect("forwarded signed deploy");
+    Json(json!({"state":"Expired","basisBlockHash":"ab","basisBlockHeight":9}))
 }
 
 async fn take_deploy(State(node): State<FakeNode>, Json(request): Json<DeployRequest>) -> Response {

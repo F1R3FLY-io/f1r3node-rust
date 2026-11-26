@@ -94,6 +94,12 @@ message IsFinalizedQuery {
 
 message DeployFinalizationStatusQuery {
   bytes deploySig = 1;
+  // The saved signed deploy, for reconciling a sig the lifecycle register has
+  // never observed (#1103). When set, `deploySig` must equal `deploy.sig` and
+  // the deploy's signature is verified before any verdict: a never-observed
+  // sig is then judged against the floor of the adopted last finalized block
+  // instead of answering Pending unconditionally. Absent on pure sig lookups.
+  optional DeployDataProto deploy = 2;
 }
 
 enum DeployFinalizationStateProto {
@@ -112,6 +118,12 @@ message DeployFinalizationStatusInfo {
   // Present when the sig has been included in at least one block.
   // Absent (no field set) when the deploy is unknown to this node.
   optional bytes latestBlockHash     = 3;
+  // The verdict basis a reconciled never-observed verdict (#1103) was judged
+  // against: the floor of the adopted last finalized block. Absent on pure
+  // register lookups and when this node could not resolve a floor. Fields 6+
+  // stay free for the truncation-reporting follow-up (#424).
+  optional bytes basisBlockHash   = 4;
+  optional int64  basisBlockHeight = 5;
 }
 
 message BondStatusQuery {

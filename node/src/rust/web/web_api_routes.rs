@@ -76,6 +76,10 @@ impl WebApiRoutes {
                 "/deploy-finalization-status/{deploy_sig_hex}",
                 get(deploy_finalization_status_handler),
             )
+            .route(
+                "/deploy-finalization-status",
+                post(deploy_finalization_status_reconciled_handler),
+            )
             .route("/pending-deploys", get(pending_deploys_handler))
             .route("/balance/{address}", get(balance_handler))
             .route("/registry/{uri}", get(registry_handler))
@@ -368,6 +372,41 @@ pub async fn deploy_finalization_status_handler(
     let web_api = app_state.web_api.clone();
     match offload(move || async move { web_api.deploy_finalization_status(deploy_sig_hex).await })
         .await
+    {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => AppError(e).into_response(),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/deploy-finalization-status",
+    request_body = models::rust::deploy_request::DeployRequest,
+    responses(
+        (
+            status = 200,
+            description = "Canonical-state finalization status. A sig the register has never observed is reconciled against the floor of the adopted last finalized block (#1103): a deploy proven unable to execute answers Expired, and the verdict basis is named in `basisBlockHash` / `basisBlockHeight`. Every unverifiable case keeps Pending",
+            body = crate::rust::api::web_api::DeployFinalizationStatusJson
+        ),
+        (status = 400, description = "Malformed JSON (`invalid_request_body`); invalid amounts, keys, signature, or shard mismatch (`illegal_argument`)", body = ApiErrorResponse),
+        (status = 413, description = "Request body exceeds the size limit", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 503, description = "Deploy request capacity is occupied", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
+    ),
+    tag = "WebAPI"
+)]
+pub async fn deploy_finalization_status_reconciled_handler(
+    State(app_state): State<AppState>,
+    shared_handlers::DeployJson(request, permit): shared_handlers::DeployJson,
+) -> Response {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move {
+        let _permit = permit;
+        web_api.deploy_finalization_status_reconciled(request).await
+    })
+    .await
     {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
@@ -760,6 +799,12 @@ mod tests {
         async fn deploy_finalization_status(
             &self,
             _: String,
+        ) -> eyre::Result<crate::rust::api::web_api::DeployFinalizationStatusJson> {
+            unimplemented!()
+        }
+        async fn deploy_finalization_status_reconciled(
+            &self,
+            _: DeployRequest,
         ) -> eyre::Result<crate::rust::api::web_api::DeployFinalizationStatusJson> {
             unimplemented!()
         }
@@ -1240,6 +1285,21 @@ mod router_tests {
                 state: "Finalized".to_string(),
                 rejection_count: 0,
                 latest_block_hash: Some("aa".to_string()),
+                basis_block_hash: None,
+                basis_block_height: None,
+            })
+        }
+
+        async fn deploy_finalization_status_reconciled(
+            &self,
+            _: DeployRequest,
+        ) -> eyre::Result<DeployFinalizationStatusJson> {
+            Ok(DeployFinalizationStatusJson {
+                state: "Expired".to_string(),
+                rejection_count: 0,
+                latest_block_hash: None,
+                basis_block_hash: Some("bb".to_string()),
+                basis_block_height: Some(7),
             })
         }
 
@@ -1405,7 +1465,7 @@ mod router_tests {
     fn router() -> Router { WebApiRoutes::create_router().with_state(app_state()) }
 
     #[tokio::test]
-    async fn ingress_shared_permit_rejects_both_http_deploy_routes_before_reading_the_body() {
+    async fn ingress_shared_permit_rejects_signed_deploy_routes_before_reading_the_body() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         use crate::rust::api::DeployRequestLimiter;
@@ -1415,7 +1475,11 @@ mod router_tests {
         let permit = limiter.try_acquire().unwrap();
         let router = Routes::create_main_routes(false, 1024)
             .with_state(app_state().with_deploy_limiter(limiter.clone()));
-        for uri in ["/api/deploy", "/api/v1/deploy"] {
+        for uri in [
+            "/api/deploy",
+            "/api/v1/deploy",
+            "/api/deploy-finalization-status",
+        ] {
             let reads = Arc::new(AtomicUsize::new(0));
             let counter = reads.clone();
             let body = Body::from_stream(futures::stream::once(async move {
@@ -1727,6 +1791,20 @@ mod router_tests {
         let (status, json) = get_response("/deploy-finalization-status/ccdd").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["state"], "Finalized");
+        assert!(json["basisBlockHash"].is_null());
+        assert!(json["basisBlockHeight"].is_null());
+
+        // #1103: POSTing the saved signed deploy reconciles a
+        // never-observed sig and names the verdict basis.
+        let (status, json) = post_response(
+            "/deploy-finalization-status",
+            r#"{"data":{"term":"Nil","timestamp":1,"phloPrice":"1","phloLimit":90000,"validAfterBlockNumber":0,"shardId":"root"},"deployer":"04aa","signature":"bb11","sigAlgorithm":"secp256k1"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["state"], "Expired");
+        assert_eq!(json["basisBlockHash"], "bb");
+        assert_eq!(json["basisBlockHeight"], 7);
 
         let (status, json) = get_response("/pending-deploys?deployer=04aa").await;
         assert_eq!(status, StatusCode::OK);
