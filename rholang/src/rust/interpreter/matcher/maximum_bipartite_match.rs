@@ -60,6 +60,180 @@ where
     }
 }
 
+/// `count` interchangeable remainder patterns, each matching exactly the
+/// targets `fits` allows, with `result` giving what a match returns at the
+/// moment it is made.
+pub struct Remainder<'a, P, R> {
+    pub pattern: P,
+    pub count: usize,
+    pub fits: &'a [bool],
+    pub result: &'a mut dyn FnMut() -> R,
+}
+
+impl<P, T, R> MaximumBipartiteMatch<P, T, R>
+where
+    P: Debug + Clone,
+    T: Debug + Clone + Hash + Eq + Ord,
+    R: Debug + Clone,
+{
+    /// What `find_matches` returns for `remainder.count` copies of
+    /// `remainder.pattern` followed by `terms`, without calling the match
+    /// function for a remainder. The remainders would take the first targets
+    /// that fit them and push each other along on the way, which cost one
+    /// pass over the targets per remainder; here a displaced remainder scans
+    /// forward once, so placing every term costs one pass each. The match
+    /// function sees the same calls in the same order.
+    pub fn find_matches_with_remainder(
+        &mut self,
+        terms: &[P],
+        remainder: Remainder<'_, P, R>,
+        targets: &[T],
+    ) -> Option<Vec<(T, P, R)>> {
+        let first = (remainder.result)();
+        let mut claims: Vec<Option<(Holder, R)>> = (0..targets.len()).map(|_| None).collect();
+        let mut placed = 0;
+        for (target, fits) in remainder.fits.iter().enumerate() {
+            if placed == remainder.count {
+                break;
+            }
+            if *fits {
+                claims[target] = Some((Holder::Remainder, first.clone()));
+                placed += 1;
+            }
+        }
+        if placed < remainder.count {
+            return None;
+        }
+
+        let mut search = RemainderSearch {
+            terms,
+            targets,
+            match_function: &mut self.match_function,
+            fits: remainder.fits,
+            result: remainder.result,
+            claims,
+            seen: vec![false; targets.len()],
+        };
+        for term in 0..terms.len() {
+            search.seen.fill(false);
+            if !search.place_term(term, 0) {
+                return None;
+            }
+        }
+
+        let mut claimed: Vec<(usize, Holder, R)> = search
+            .claims
+            .into_iter()
+            .enumerate()
+            .filter_map(|(target, claim)| claim.map(|(holder, result)| (target, holder, result)))
+            .collect();
+        claimed.sort_by(|(a, _, _), (b, _, _)| targets[*a].cmp(&targets[*b]).then(a.cmp(b)));
+        Some(
+            claimed
+                .into_iter()
+                .map(|(target, holder, result)| {
+                    let pattern = match holder {
+                        Holder::Term(term) => terms[term].clone(),
+                        Holder::Remainder => remainder.pattern.clone(),
+                    };
+                    (targets[target].clone(), pattern, result)
+                })
+                .collect(),
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Holder {
+    Term(usize),
+    Remainder,
+}
+
+/// The augmenting-path search with the remainders folded into one kind of
+/// holder: a remainder pushed off a target looks for the next target that
+/// fits it, which is where every remainder it displaced on the way would
+/// have ended up.
+struct RemainderSearch<'a, P, T, R> {
+    terms: &'a [P],
+    targets: &'a [T],
+    match_function: &'a mut Box<dyn FnMut(P, T) -> Option<R>>,
+    fits: &'a [bool],
+    result: &'a mut dyn FnMut() -> R,
+    claims: Vec<Option<(Holder, R)>>,
+    seen: Vec<bool>,
+}
+
+impl<P: Clone, T: Clone, R> RemainderSearch<'_, P, T, R> {
+    fn place_term(&mut self, term: usize, from: usize) -> bool {
+        for target in from..self.targets.len() {
+            if self.seen[target] {
+                continue;
+            }
+            if let Some(result) =
+                (self.match_function)(self.terms[term].clone(), self.targets[target].clone())
+            {
+                self.seen[target] = true;
+                return self.claim(target, term, result);
+            }
+        }
+        false
+    }
+
+    /// Places a displaced remainder on the first unseen target from `from` on
+    /// that fits it. Each target it passes that another remainder holds gets
+    /// a fresh result, as that remainder's own move would have given it.
+    fn place_remainder(&mut self, from: usize) -> bool {
+        let mut passed: Vec<(usize, R)> = Vec::new();
+        for target in from..self.targets.len() {
+            if self.seen[target] || !self.fits[target] {
+                continue;
+            }
+            self.seen[target] = true;
+            let result = (self.result)();
+            match self.claims[target] {
+                Some((Holder::Remainder, _)) => passed.push((target, result)),
+                None => {
+                    self.claims[target] = Some((Holder::Remainder, result));
+                    for (held, result) in passed {
+                        self.claims[held] = Some((Holder::Remainder, result));
+                    }
+                    return true;
+                }
+                Some((Holder::Term(term), _)) => {
+                    if self.place_term(term, target) {
+                        self.claims[target] = Some((Holder::Remainder, result));
+                        for (held, result) in passed {
+                            self.claims[held] = Some((Holder::Remainder, result));
+                        }
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn claim(&mut self, target: usize, term: usize, result: R) -> bool {
+        let previous = match &self.claims[target] {
+            None => {
+                self.claims[target] = Some((Holder::Term(term), result));
+                return true;
+            }
+            Some((previous, _)) => *previous,
+        };
+        let moved = match previous {
+            Holder::Term(holder) => self.place_term(holder, target),
+            Holder::Remainder => self.place_remainder(target),
+        };
+        if moved {
+            self.claims[target] = Some((Holder::Term(term), result));
+            true
+        } else {
+            self.place_term(term, target)
+        }
+    }
+}
+
 /// One run of the augmenting-path search over borrowed patterns and targets.
 /// `claims[t]` is the pattern holding target `t` and what matching it gave;
 /// `seen[t]` marks the targets tried while placing the current pattern.
@@ -125,7 +299,11 @@ mod tests {
 
     impl<P: Clone, T: Clone + Ord, R: Clone> Reference<P, T, R> {
         fn find_matches(&mut self, patterns: Vec<P>, targets: Vec<T>) -> Option<Vec<(T, P, R)>> {
-            let ts: Vec<(T, usize)> = targets.into_iter().enumerate().map(|(i, t)| (t, i)).collect();
+            let ts: Vec<(T, usize)> = targets
+                .into_iter()
+                .enumerate()
+                .map(|(i, t)| (t, i))
+                .collect();
             for p in patterns {
                 self.seen.clear();
                 if !self.find_match((p, ts.clone())) {
@@ -225,7 +403,97 @@ mod tests {
             let found = search.find_matches(&patterns, &targets);
 
             assert_eq!(found, expected, "targets {targets:?}");
-            assert_eq!(*log.borrow(), *reference_log.borrow(), "targets {targets:?}");
+            assert_eq!(
+                *log.borrow(),
+                *reference_log.borrow(),
+                "targets {targets:?}"
+            );
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    enum Slot {
+        Term(u8),
+        Rest,
+    }
+
+    /// Accepts a term as `accepts` says and a remainder wherever the target
+    /// fits, answering either with the number of term calls made so far, as
+    /// the matcher answers with the bindings found so far. Only term calls
+    /// are logged and counted: a remainder match has no effect.
+    fn terms_and_rest(
+        accepts: Rc<Vec<Vec<bool>>>,
+        fits: Rc<Vec<bool>>,
+        calls: Rc<std::cell::Cell<u32>>,
+        log: Rc<RefCell<Vec<(u8, u8)>>>,
+    ) -> Box<dyn FnMut(Slot, u8) -> Option<u32>> {
+        Box::new(move |slot, t| match slot {
+            Slot::Term(p) => {
+                calls.set(calls.get() + 1);
+                log.borrow_mut().push((p, t));
+                accepts[p as usize][t as usize].then_some(calls.get())
+            }
+            Slot::Rest => fits[t as usize].then_some(calls.get()),
+        })
+    }
+
+    #[test]
+    fn folding_the_remainders_makes_the_same_term_calls_and_matches() {
+        use super::Remainder;
+
+        let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+        for _ in 0..20_000 {
+            let terms_len = rng.next(5) as u8;
+            let targets_len = rng.next(12) as usize;
+            let rest = rng.next(targets_len as u64 + 1) as usize;
+            let density = 1 + rng.next(4);
+            let accepts: Rc<Vec<Vec<bool>>> = Rc::new(
+                (0..terms_len)
+                    .map(|_| (0..16).map(|_| rng.next(density) == 0).collect())
+                    .collect(),
+            );
+            let fit_density = 1 + rng.next(3);
+            let fits: Rc<Vec<bool>> =
+                Rc::new((0..16).map(|_| rng.next(fit_density) != 0).collect());
+            let targets: Vec<u8> = (0..targets_len).map(|_| rng.next(16) as u8).collect();
+            let terms: Vec<Slot> = (0..terms_len).map(Slot::Term).collect();
+
+            let expected_calls = Rc::new(std::cell::Cell::new(0));
+            let expected_log = Rc::new(RefCell::new(Vec::new()));
+            let mut all = vec![Slot::Rest; rest];
+            all.extend(terms.iter().cloned());
+            let expected = MaximumBipartiteMatch::new(terms_and_rest(
+                accepts.clone(),
+                fits.clone(),
+                expected_calls.clone(),
+                expected_log.clone(),
+            ))
+            .find_matches(&all, &targets);
+
+            let calls = Rc::new(std::cell::Cell::new(0));
+            let log = Rc::new(RefCell::new(Vec::new()));
+            let target_fits: Vec<bool> = targets.iter().map(|t| fits[*t as usize]).collect();
+            let counted = calls.clone();
+            let mut result = move || counted.get();
+            let found =
+                MaximumBipartiteMatch::new(terms_and_rest(accepts, fits, calls, log.clone()))
+                    .find_matches_with_remainder(
+                        &terms,
+                        Remainder {
+                            pattern: Slot::Rest,
+                            count: rest,
+                            fits: &target_fits,
+                            result: &mut result,
+                        },
+                        &targets,
+                    );
+
+            assert_eq!(found, expected, "targets {targets:?}, {rest} remainders");
+            assert_eq!(
+                *log.borrow(),
+                *expected_log.borrow(),
+                "targets {targets:?}, {rest} remainders"
+            );
         }
     }
 }

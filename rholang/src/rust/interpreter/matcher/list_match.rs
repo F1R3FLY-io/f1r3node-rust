@@ -99,40 +99,51 @@ macro_rules! list_match {
                   remainder: Option<i32>,
                   wildcard: bool,
               ) -> Option<()> {
-                let remainder_patterns: Vec<Pattern<$type>> = remainder
-                    .map(|level| vec![Pattern::Remainder(level); targets.len() - patterns.len()])
-                    .unwrap_or(Vec::new());
-                let mut all_patterns: Vec<Pattern<$type>> = remainder_patterns;
-                all_patterns.extend(patterns.into_iter().map(Pattern::Term));
-
-                let mut cloned_self = self.clone();
-                let _match_function = Box::new(move |pattern, t| cloned_self.match_function(pattern, t));
+                let terms: Vec<Pattern<$type>> = patterns.into_iter().map(Pattern::Term).collect();
+                let state = std::rc::Rc::new(std::cell::RefCell::new(self.clone()));
+                let matcher = state.clone();
+                let _match_function = Box::new(move |pattern, t| matcher.borrow_mut().match_function(pattern, t));
                 // NOTE: Bypassing 'memoizeInHashMap' here
                 let mut maximum_bipartite_match: MaximumBipartiteMatch<Pattern<$type>, $type, FreeMap> = MaximumBipartiteMatch::new(_match_function);
 
-                let matches = maximum_bipartite_match.find_matches(&all_patterns, &targets)?;
+                let matches = match remainder {
+                    Some(level) => {
+                        let fits: Vec<bool> = targets.iter().map(|t| t.locally_free(0).is_empty()).collect();
+                        let snapshot = state.clone();
+                        let mut result = move || snapshot.borrow().free_map.clone();
+                        maximum_bipartite_match.find_matches_with_remainder(
+                            &terms,
+                            $crate::rust::interpreter::matcher::maximum_bipartite_match::Remainder {
+                                pattern: Pattern::Remainder(level),
+                                count: targets.len() - terms.len(),
+                                fits: &fits,
+                                result: &mut result,
+                            },
+                            &targets,
+                        )?
+                    }
+                    None => maximum_bipartite_match.find_matches(&terms, &targets)?,
+                };
 
-                let free_maps: Vec<FreeMap> = matches
+                let remainder_targets: std::collections::HashSet<&$type> = matches
                     .iter()
-                    .map(|(_, _, free_map)| free_map.clone())
+                    .filter(|(_, pattern, _)| matches!(pattern, Pattern::Remainder(_)))
+                    .map(|(target, _, _)| target)
                     .collect();
-
-                let updated_free_map = aggregate_updates(self.free_map.clone(), free_maps)?;
-                self.free_map = updated_free_map;
-
-                let remainder_targets: Vec<$type> = matches
-                    .iter()
-                    .filter_map(|(target, pattern, _)| match pattern {
-                        Pattern::Remainder(_) => Some(target.clone()),
-                        _ => None,
-                    })
-                    .collect();
-
                 let remainder_targets_sorted: Vec<$type> = targets
                     .iter()
                     .filter(|target| remainder_targets.contains(target))
                     .cloned()
                     .collect();
+                drop(remainder_targets);
+
+                let free_maps: Vec<FreeMap> = matches
+                    .into_iter()
+                    .map(|(_, _, free_map)| free_map)
+                    .collect();
+
+                let updated_free_map = aggregate_updates(self.free_map.clone(), free_maps)?;
+                self.free_map = updated_free_map;
 
                 match remainder {
                     None => {
@@ -179,7 +190,9 @@ macro_rules! list_match {
                          self.spatial_match(t, p)
                       }
                   }
-                  Pattern::Remainder(_) => guard(t.locally_free(0).is_empty()),
+                  Pattern::Remainder(_) => unreachable!(
+                      "a remainder takes the targets that fit it without being matched"
+                  ),
                 };
 
                 match match_effect {
