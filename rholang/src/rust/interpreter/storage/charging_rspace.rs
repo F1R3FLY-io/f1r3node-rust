@@ -258,6 +258,8 @@ impl ChargingRSpace {
                 self.space.check_replay_data().await
             }
 
+            fn require_search_charging(&self) { self.space.require_search_charging() }
+
             async fn search_work(
                 &self,
                 pre_state: &SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
@@ -280,6 +282,7 @@ impl ChargingRSpace {
             }
         }
 
+        space.require_search_charging();
         let search_charger: SearchCharger = {
             let cost = cost.clone();
             Arc::new(move |work| cost.charge(search_cost(work)).is_ok())

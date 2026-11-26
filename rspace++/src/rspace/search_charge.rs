@@ -58,12 +58,17 @@ pub async fn charged<F: Future>(charger: SearchCharger, future: F) -> F::Output 
     CHARGER.scope(charger, future).await
 }
 
-/// Charges the running operation for `work`. An operation run outside
-/// [[charged]] belongs to a space that charges nothing, such as replay's.
-pub(crate) fn charge(work: SearchWork) -> Result<(), RSpaceError> {
+/// Charges the running operation for `work`. Outside [[charged]], a space
+/// that `required` charging has run a search no deploy pays for, which is a
+/// bug; any other space searches for free.
+pub(crate) fn charge(work: SearchWork, required: bool) -> Result<(), RSpaceError> {
     match CHARGER.try_with(|charger| charger(work)) {
-        Ok(true) | Err(_) => Ok(()),
+        Ok(true) => Ok(()),
         Ok(false) => Err(RSpaceError::OutOfPhlogistons),
+        Err(_) if required => Err(RSpaceError::BugFoundError(
+            "a search ran outside the charging scope its space requires".to_string(),
+        )),
+        Err(_) => Ok(()),
     }
 }
 

@@ -276,6 +276,11 @@ where
         panic!("\nERROR: RSpace check_replay_data should not be called here");
     }
 
+    fn require_search_charging(&self) {
+        self.search_charging_required
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     async fn search_work(
         &self,
         _pre_state: &SoftCheckpoint<C, P, A, K>,

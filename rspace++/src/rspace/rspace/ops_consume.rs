@@ -57,7 +57,7 @@ where
                 .sum();
             work += SearchWork::of(data.len(), size, self.matcher.pattern_size(pattern), 1);
         }
-        search_charge::charge(work)?;
+        search_charge::charge(work, self.search_charging_required())?;
 
         let t2 = Instant::now();
         let zipped: Vec<(C, P)> = channels

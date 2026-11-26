@@ -421,6 +421,8 @@ where
         Ok(())
     }
 
+    fn require_search_charging(&self) {}
+
     async fn search_work(
         &self,
         pre_state: &SoftCheckpoint<C, P, A, K>,

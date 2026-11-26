@@ -35,6 +35,49 @@ async fn make_rspace() -> RSpace<String, Wildcard, String, Cont> {
     RSpace::create(store, Arc::new(Box::new(AlwaysMatch))).unwrap()
 }
 
+#[tokio::test]
+async fn a_search_outside_the_charging_scope_its_space_requires_fails() {
+    use crate::rspace::errors::RSpaceError;
+    use crate::rspace::rspace_interface::MaybeConsumeResult;
+    use crate::rspace::search_charge::{self, SearchWork};
+
+    async fn receive(
+        space: &RSpace<String, Wildcard, String, Cont>,
+    ) -> Result<MaybeConsumeResult<String, Wildcard, String, Cont>, RSpaceError> {
+        space
+            .consume(
+                vec!["ch".to_string()],
+                vec![Wildcard],
+                Cont,
+                false,
+                std::collections::BTreeSet::new(),
+            )
+            .await
+    }
+
+    let free = make_rspace().await;
+    assert!(receive(&free).await.is_ok(), "a space no charging space wraps searches for free");
+
+    let charged_space = make_rspace().await;
+    charged_space.require_search_charging();
+    assert!(matches!(receive(&charged_space).await, Err(RSpaceError::BugFoundError(_))));
+
+    let paid = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let charger = {
+        let paid = paid.clone();
+        Arc::new(move |work: SearchWork| {
+            paid.lock().unwrap().push(work);
+            true
+        })
+    };
+    assert!(
+        search_charge::charged(charger, receive(&charged_space))
+            .await
+            .is_ok()
+    );
+    assert_eq!(paid.lock().unwrap().len(), 1, "the receive is charged once");
+}
+
 // Measures contention on the event_log mutex while N concurrent tasks call
 // produce() on separate channels. The log is pre-filled to PRE_FILL entries
 // before the concurrent phase so every insert starts with a large existing

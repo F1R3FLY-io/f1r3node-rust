@@ -320,6 +320,11 @@ pub trait ISpace<
 
     async fn check_replay_data(&self) -> Result<(), RSpaceError>;
 
+    /// Makes every later search on this space fail unless a charging scope
+    /// pays for it. A space that does not charge searches, such as replay's,
+    /// has nothing to require.
+    fn require_search_charging(&self);
+
     /// The work of each search a deploy's term paid for in play, one entry
     /// per charge, recomputed from `term_log`, the term's events in the rigged
     /// log, from `pre_state`, the state the term started from. Replay only.

@@ -272,6 +272,7 @@ where
                             .map(|(continuation, _)| &continuation.patterns),
                         &totals,
                     ),
+                    self.search_charging_required(),
                 )?;
             }
 
@@ -308,10 +309,13 @@ where
                         })
                         .collect();
                     let waiting = store.get_continuations_arc(rest);
-                    search_charge::charge(self.join_work(
-                        waiting.iter().map(|continuation| &continuation.patterns),
-                        &totals,
-                    ))?;
+                    search_charge::charge(
+                        self.join_work(
+                            waiting.iter().map(|continuation| &continuation.patterns),
+                            &totals,
+                        ),
+                        self.search_charging_required(),
+                    )?;
                 }
                 return Ok(Some(produce_candidate));
             }
