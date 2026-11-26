@@ -589,4 +589,28 @@ message StoreItemsMessageProto {
   repeated StoreItemProto dataItems    = 4 [(scalapb.field).collection_type="collection.immutable.List"];
 }
 
+// Responder's answer when a requested rspace-history subtree has been
+// retention-swept. Mirrors `BlockPrunedResponseProto` on the peer-to-peer
+// wire so a joiner asking for state below the responder's retention floor
+// gets an explicit "pruned below height N" answer instead of a dropped
+// request (pre-#1157 silent-timeout behaviour). Issue #1157.
+//
+// Absence of this response remains valid on the wire for peers that predate
+// it; the requester falls back to the existing timeout path and selects
+// another peer whose window covers the root.
+message StoreItemsPrunedResponseProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  // Echo of the request's startPath so the receiver can route the answer
+  // back to the originating need.
+  repeated StoreNodeKeyProto startPath = 1 [(scalapb.field).collection_type="collection.immutable.List"];
+  // The responder's current rspace-history retention floor, expressed as a
+  // block number. State for every block STRICTLY BELOW this height has
+  // been swept by the `enable_history_pruning` pass; blocks at the floor
+  // itself are retained (`compute_gc_retention_roots` walks
+  // `height ≥ floor`). Derived from
+  // `CasperShardConf::state_retention_floor(LFB_height)` — the same
+  // formula the sweeper uses.
+  int64 retention_floor = 2;
+}
+
 // --------- End Last finalized state  --------

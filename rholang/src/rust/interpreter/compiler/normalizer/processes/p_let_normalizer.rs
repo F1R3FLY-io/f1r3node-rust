@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::exports::InterpreterError;
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::normalize::normalize_ann_proc_in_place;
 use crate::rust::interpreter::compiler::span_utils::SpanContext;
 
 pub fn normalize_p_let<'ast>(
@@ -216,14 +216,14 @@ pub fn normalize_p_let<'ast>(
         };
 
         // Normalize the constructed new process
-        normalize_ann_proc(&new_proc, input, env, parser)
+        normalize_ann_proc_in_place(&new_proc, input, env, parser)
     } else {
         // Sequential let declarations - similar to LinearDecls in original
         // Transform into match process
 
         if bindings.is_empty() {
             // Empty bindings - just normalize the body
-            return normalize_ann_proc(body, input, env, parser);
+            return normalize_ann_proc_in_place(body, input, env, parser);
         }
 
         // For sequential let, we process one binding at a time
@@ -284,7 +284,7 @@ pub fn normalize_p_let<'ast>(
                 span: match_span, // Use derived match span
             };
 
-            normalize_ann_proc(&match_proc, input, env, parser)
+            normalize_ann_proc_in_place(&match_proc, input, env, parser)
         } else {
             // Multiple binding: let x <- (rhs1, rhs2, ...) in body
             // becomes: match [rhs1, rhs2, ...] { [x, _, _, ...] => body }
@@ -360,7 +360,7 @@ pub fn normalize_p_let<'ast>(
                 span: match_span, // Use span from rhs to body
             };
 
-            normalize_ann_proc(&match_proc, input, env, parser)
+            normalize_ann_proc_in_place(&match_proc, input, env, parser)
         }
     }
 }

@@ -78,10 +78,37 @@ service DeployService {
   rpc getPendingDeploys(PendingDeploysQuery) returns (PendingDeploysResponse){}
 }
 
+// Issue #1157: an rspace-state reader's structured "pruned below height N"
+// answer, mirroring `BlockPrunedInfo` for block bodies. The TARGET is a
+// block whose POST-STATE (or pre-state, for exploratory reads that use the
+// pre-state view) the reader was asked to walk; the walk could not proceed
+// because the retention sweep has deleted the trie subtree.
+//
+// Clients that see `pruned` on a response know retry on this node will not
+// succeed — the state is gone, not transiently unavailable. Consult an
+// archive node with a deeper retention window.
+message PrunedStateInfo {
+  // Hash of the block whose state the reader was asked for. Known from the
+  // DAG metadata index, which is not swept.
+  bytes target_block_hash   = 1;
+  // Height of that block when it was retained.
+  int64 target_block_height = 2;
+  // The responder's current rspace-history retention floor. The target's
+  // height is STRICTLY LESS than this value (the GC retains blocks at the
+  // floor itself: `compute_gc_retention_roots` walks `height ≥ floor`).
+  // Derived from `CasperShardConf::state_retention_floor(LFB_height)` —
+  // the same formula the sweeper uses.
+  int64 retention_floor     = 3;
+}
+
 message EventInfoResponse{
   oneof message{
     servicemodelapi.ServiceError error = 1;
     BlockEventInfo result = 2;
+    // Issue #1157: the block whose events were requested is within the DAG
+    // but its state is below the retention window, so replay cannot
+    // produce an event log.
+    PrunedStateInfo pruned = 3;
   }
 }
 
@@ -89,6 +116,9 @@ message ExploratoryDeployResponse{
   oneof message{
     servicemodelapi.ServiceError error = 1;
     DataWithBlockInfo result = 2;
+    // Issue #1157: the target block's state has been swept past the
+    // retention floor, so the deploy cannot be executed against it.
+    PrunedStateInfo pruned = 4;
   }
   uint64 cost = 3;
 }
@@ -175,6 +205,9 @@ message RhoDataResponse {
   oneof message {
     servicemodelapi.ServiceError error     = 1;
     RhoDataPayload payload = 2;
+    // Issue #1157: the block whose state the data read targeted has been
+    // swept past the retention floor.
+    PrunedStateInfo pruned = 3;
   }
 }
 
