@@ -6,6 +6,7 @@ use rholang_parser::ast::Name;
 use crate::rust::interpreter::compiler::exports::{
     NameVisitInputs, ProcVisitInputs, ProcVisitOutputs,
 };
+use crate::rust::interpreter::compiler::normalize::normalize_ann_proc_in_place;
 use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
 use crate::rust::interpreter::errors::InterpreterError;
 
@@ -15,6 +16,23 @@ pub fn normalize_p_eval<'ast>(
     env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
+    if let Name::Quote(quoted) = eval_name {
+        let quoted_result = normalize_ann_proc_in_place(
+            quoted,
+            ProcVisitInputs {
+                par: Par::default(),
+                bound_map_chain: input.bound_map_chain.clone(),
+                free_map: input.free_map.clone(),
+            },
+            env,
+            parser,
+        )?;
+        return Ok(ProcVisitOutputs {
+            par: input.par.append(quoted_result.par),
+            free_map: quoted_result.free_map,
+        });
+    }
+
     let name_match_result = normalize_name(
         eval_name,
         NameVisitInputs {

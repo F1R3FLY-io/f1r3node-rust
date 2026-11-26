@@ -1,0 +1,126 @@
+{
+  "schema": "cbc-run-report/v1",
+  "run_id": "dag-insert-batch-20261125-01",
+  "claim_id": "CLAIM-DAG-INSERT-BATCH-001",
+  "claim": {
+    "path": "docs/claims/dag-insert-batched-writes.md",
+    "sha256": "fb0674b9156b9347c48879b40b427dbc4ed27cfc553711b9eefdb2e3f75b2a59"
+  },
+  "base_commit": "1caf7b8cfdf7e8d447b348af1c90ae3615f19010",
+  "branch": "fix/1151-dag-insert-lock-stall",
+  "sources": {
+    "block-storage/src/rust/dag/carrier_index.rs": "8f2538bb8a51370d49490823e7cc04e7a26b5b9f5c0d34262ca0fd42d137361d",
+    "block-storage/src/rust/dag/block_dag_key_value_storage.rs": "a247350dda3ee9a9e6e355cd3d7f709e9f13ce23dddace5f4bf80b47c8b23d6a",
+    "block-storage/src/rust/dag/deploy_lifecycle_types.rs": "4176ff399fcd66e5950e16a1f97342a56a456d1d2e8741943a12baec228b83be"
+  },
+  "status": "discharged",
+  "tiers": {
+    "P1": "binding",
+    "P2": "binding (tested instances)",
+    "P3": "unchanged",
+    "construction": "pending"
+  },
+  "unit_tests": {
+    "command": "cargo test --release -p block-storage --lib -- carrier_index:: deploy_lifecycle_types::",
+    "result": "19 passed, 0 failed",
+    "log": {
+      "path": "docs/cbc-evidence/runs/dag-insert-batch-20261125-01/unit-tests.txt",
+      "sha256": "bcf27dfb1c2311ccfda7e2ba8abb4121c7ce0b23de6d4acd4f467866cfb2f790"
+    },
+    "claim_tests": [
+      "a_block_records_its_carriers_in_one_write_for_each_table",
+      "a_redelivered_block_writes_nothing",
+      "a_block_record_matches_one_record_for_each_deploy",
+      "a_block_appends_its_events_in_one_write",
+      "a_block_append_matches_one_append_for_each_event"
+    ]
+  },
+  "suite": {
+    "command": "cargo test --release -p block-storage",
+    "result": "273 passed, 0 failed, 1 ignored",
+    "note": "Run before rustfmt reformatted one statement in deploy_lifecycle_types.rs. The change is formatting only."
+  },
+  "red": "The claim tests did not compile before the change, because CarrierIndex::record_block and DeployLifecycleTables::append_events_once_batch did not exist. The behavior change is in the load measurement.",
+  "load_measurement": {
+    "test": "system-integration integration-tests/test/tests/custom/test_load.py, provider subprocess, one iteration, local macOS host",
+    "before": {
+      "result": "1 passed",
+      "per_validator": {
+        "validator1": {
+          "inserts_held_500ms": 9,
+          "max_held_ms": 1151,
+          "carrier_and_lifecycle_commits": 261,
+          "commit_ms": 5725,
+          "reads_waited_500ms": 58,
+          "max_read_wait_ms": 1177
+        },
+        "validator2": {
+          "inserts_held_500ms": 8,
+          "max_held_ms": 1117,
+          "carrier_and_lifecycle_commits": 225,
+          "commit_ms": 4955,
+          "reads_waited_500ms": 40,
+          "max_read_wait_ms": 1194
+        },
+        "validator3": {
+          "inserts_held_500ms": 9,
+          "max_held_ms": 1111,
+          "carrier_and_lifecycle_commits": 228,
+          "commit_ms": 5855,
+          "reads_waited_500ms": 60,
+          "max_read_wait_ms": 1140
+        },
+        "validator4": {
+          "inserts_held_500ms": 10,
+          "max_held_ms": 1020,
+          "carrier_and_lifecycle_commits": 246,
+          "commit_ms": 5719,
+          "reads_waited_500ms": 74,
+          "max_read_wait_ms": 1253
+        }
+      }
+    },
+    "after": {
+      "result": "1 passed",
+      "per_validator": {
+        "validator1": {
+          "inserts_held_500ms": 2,
+          "max_held_ms": 745,
+          "carrier_and_lifecycle_commits": 6,
+          "commit_ms": 437,
+          "reads_waited_500ms": 1,
+          "max_read_wait_ms": 543
+        },
+        "validator2": {
+          "inserts_held_500ms": 1,
+          "max_held_ms": 645,
+          "carrier_and_lifecycle_commits": 3,
+          "commit_ms": 261,
+          "reads_waited_500ms": 0,
+          "max_read_wait_ms": 0
+        },
+        "validator3": {
+          "inserts_held_500ms": 2,
+          "max_held_ms": 751,
+          "carrier_and_lifecycle_commits": 6,
+          "commit_ms": 771,
+          "reads_waited_500ms": 0,
+          "max_read_wait_ms": 0
+        },
+        "validator4": {
+          "inserts_held_500ms": 1,
+          "max_held_ms": 762,
+          "carrier_and_lifecycle_commits": 3,
+          "commit_ms": 198,
+          "reads_waited_500ms": 1,
+          "max_read_wait_ms": 759
+        }
+      }
+    },
+    "method": "Uncommitted timing instrumentation logged each DAG global lock hold of 500 ms or more, with the LMDB commit count and time of each insert step. The instrumentation is not part of the change."
+  },
+  "limits": [
+    "P2 is tested on 20 deploys, three shared seeds, a terminal sig, a rejected record, and a redelivered block. The unbounded equivalence is not proven.",
+    "The load measurement is one local iteration on macOS. A soak on the release train is the acceptance gate in issue #1151."
+  ]
+}
