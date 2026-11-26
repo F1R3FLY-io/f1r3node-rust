@@ -5,7 +5,7 @@ use rholang_parser::ast::{AnnProc, Bind, Id, Name, SendType, SyncSendCont};
 use uuid::Uuid;
 
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::normalize::normalize_ann_proc_in_place;
 use crate::rust::interpreter::errors::InterpreterError;
 
 pub fn normalize_p_send_sync<'ast>(
@@ -106,7 +106,7 @@ pub fn normalize_p_send_sync<'ast>(
         span: *span,
     };
 
-    normalize_ann_proc(&p_new, input, env, parser)
+    normalize_ann_proc_in_place(&p_new, input, env, parser)
 }
 
 #[cfg(test)]

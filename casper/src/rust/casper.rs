@@ -702,6 +702,49 @@ impl CasperShardConf {
             active_validators_cache_max_entries: ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         }
     }
+
+    /// Rspace-history retention floor for an anchor at `anchor_block_number`.
+    ///
+    /// Issue #1157: readers that query state by root compare the target
+    /// block's height against this floor. A block at or below the floor
+    /// has had its state nodes swept by the `enable_history_pruning`
+    /// pass, and the correct answer is an explicit "pruned" response —
+    /// not `MissingNode`, and not a partial walk. See
+    /// [`crate::rust::util::rspace_history_horizon::state_retention_floor`].
+    pub fn state_retention_floor(&self, anchor_block_number: i64) -> i64 {
+        crate::rust::util::rspace_history_horizon::state_retention_floor(
+            anchor_block_number,
+            self.max_parent_depth,
+            self.mergeable_channels_gc_depth_buffer,
+        )
+    }
+}
+
+#[cfg(test)]
+mod retention_floor_tests {
+    use super::*;
+
+    /// Issue #1157: the floor a reader checks must come from the shard-governed
+    /// parameters, not a per-node heuristic. Two configs differing only in
+    /// `max_parent_depth` must give different floors at the same anchor.
+    #[test]
+    fn state_retention_floor_tracks_conf_fields() {
+        let mut conf = CasperShardConf::new();
+        conf.max_parent_depth = 100;
+        conf.mergeable_channels_gc_depth_buffer = 10;
+        assert_eq!(conf.state_retention_floor(200), 90);
+
+        conf.max_parent_depth = 50;
+        assert_eq!(conf.state_retention_floor(200), 140);
+
+        // Below genesis clamps to zero.
+        conf.max_parent_depth = 300;
+        assert_eq!(conf.state_retention_floor(100), 0);
+
+        // Sentinel disables the window — floor at genesis.
+        conf.max_parent_depth = i32::MAX;
+        assert_eq!(conf.state_retention_floor(1_000_000), 0);
+    }
 }
 
 /// Test helpers for creating mock Casper implementations.

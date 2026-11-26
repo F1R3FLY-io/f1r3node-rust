@@ -314,6 +314,9 @@ pub fn compute_gc_retention_roots(
 ///
 /// The `i32::MAX` sentinel disables the depth check, so parents may sit at any
 /// depth and no finite state window is sound; the honest bound is genesis.
+///
+/// Prefer [`state_retention_floor`] for reader-side use: same math, naming
+/// that matches the retention-window vocabulary the API callers see.
 pub fn lfs_min_state_block_number(
     start_block_number: i64,
     max_parent_depth: i32,
@@ -324,6 +327,44 @@ pub fn lfs_min_state_block_number(
     }
     let parent_reach = (max_parent_depth as i64) + (depth_buffer as i64);
     std::cmp::max(0, start_block_number - parent_reach)
+}
+
+/// Canonical rspace-history retention floor every reader consults.
+///
+/// Issue #1157: APIs that read state by root (exploratory_deploy,
+/// get_data_at_par, block reports, state-sync peer serving) must give an
+/// explicit "pruned below height N" answer for a root below the window,
+/// mirroring PR #1097's `BlockPrunedError` for block bodies. "The window"
+/// here is the floor computed by this function.
+///
+/// The formula is identical to [`lfs_min_state_block_number`] — one
+/// implementation, two names — because the retention window a READER
+/// enforces must match the window the SWEEPER uses. The
+/// `enable-history-pruning` sweep calls [`lfs_min_state_block_number`]
+/// with `(LFB_height, max_parent_depth, depth_buffer)`; any reader that
+/// derived a different floor would surface `MissingNode` for roots that
+/// legitimately survived the sweep (or declare "pruned" above the actual
+/// swept range). Two names, one source: callers whose vocabulary is "LFS
+/// state window" keep [`lfs_min_state_block_number`]; callers whose
+/// vocabulary is "retention window" reach for this one.
+///
+/// Determinism: the window is a pure function of the shard-governed
+/// parameters `max_parent_depth` and `mergeable_channels_gc_depth_buffer`
+/// plus a per-block anchor — so two honest validators with the same
+/// `CasperShardConf` and the same anchor derive the same floor. For
+/// readers the anchor is the local LFB (node-local, but identical across
+/// honest nodes once both have finalized it); for validation on an
+/// incoming block the anchor is the block's parent-frontier max (see
+/// `validate::parents`).
+///
+/// The `i32::MAX` sentinel disables the parent-depth check — no finite
+/// window is sound, so the honest floor is genesis.
+pub fn state_retention_floor(
+    anchor_block_number: i64,
+    max_parent_depth: i32,
+    depth_buffer: i32,
+) -> i64 {
+    lfs_min_state_block_number(anchor_block_number, max_parent_depth, depth_buffer)
 }
 
 #[cfg(test)]
@@ -414,6 +455,32 @@ mod tests {
     fn min_block_number_with_the_depth_check_disabled_reaches_genesis() {
         assert_eq!(lfs_min_block_number(200, 50, i32::MAX, 10), 0);
         assert_eq!(lfs_min_block_number(200, 50, i32::MAX, 0), 0);
+    }
+
+    /// Issue #1157: the retention window a reader enforces must be the same
+    /// window the sweeper uses. One implementation; the two names are
+    /// vocabulary-only.
+    #[test]
+    fn state_retention_floor_agrees_with_lfs_min_state_block_number() {
+        // Representative shard geometries.
+        for &(anchor, depth, buffer) in &[
+            (109_i64, 15_i32, 10_i32),
+            (200, 100, 10),
+            (300, 200, 0),
+            (10, 100, 10),       // genesis clamp
+            (200, i32::MAX, 10), // sentinel: no finite window
+            (0, 15, 10),         // genesis anchor
+        ] {
+            assert_eq!(
+                state_retention_floor(anchor, depth, buffer),
+                lfs_min_state_block_number(anchor, depth, buffer),
+                "state_retention_floor must equal lfs_min_state_block_number at \
+                 ({}, {}, {})",
+                anchor,
+                depth,
+                buffer
+            );
+        }
     }
 }
 

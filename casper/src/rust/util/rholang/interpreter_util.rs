@@ -1793,12 +1793,12 @@ pub async fn compute_parents_post_state(
             // its execution, so nothing deeper can hold its effect.
             let settled_walk_bound =
                 floor_block_number - s.on_chain_state.shard_conf.deploy_lifespan;
-            // The base is the main parent, so "already settled in the base"
-            // asks about the MAIN PARENT's state. This is what drops scope
-            // copies of content the parent merged in from elsewhere: those
-            // blocks are not on its ancestry, so the scope filter keeps them,
-            // but their effects are already in the base and re-applying would
-            // double them. The floor context's memo is keyed on the floor and
+            // "Already settled in the base" asks about the state the merge
+            // builds on — the scope anchor, which is the floor when the main
+            // parent's state lacks the floor's settled content. Asking the
+            // main parent there would treat its own lineage's work as present
+            // and drop every scope copy of it, though the floor's state does
+            // not hold it. The floor context's memo is keyed on the floor and
             // cannot answer this question.
             // The probe closures run per unique sig from inside the merge, so
             // the counter handles are registered once here; only the plain
@@ -1828,7 +1828,7 @@ pub async fn compute_parents_post_state(
                         let (sigs, walked) =
                             crate::rust::finality::deploy_lifecycle::settled_sigs_of_lineage(
                                 block_store,
-                                &main_parent_hash,
+                                &scope_anchor_hash,
                                 settled_walk_bound,
                             )?;
                         metrics::histogram!(PARENTS_POST_STATE_SETTLED_INDEX_BUILD_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -1948,7 +1948,7 @@ pub async fn compute_parents_post_state(
                     &s.dag,
                     block_store,
                     &visible_blocks,
-                    &main_parent_hash,
+                    &scope_anchor_hash,
                     &sig_settled_in_base,
                 )
             })?;
