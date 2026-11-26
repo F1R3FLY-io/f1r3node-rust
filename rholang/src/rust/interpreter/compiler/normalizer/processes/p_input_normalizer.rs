@@ -12,7 +12,9 @@ use uuid::Uuid;
 use crate::rust::interpreter::compiler::exports::{
     FreeMap, NameVisitInputs, NameVisitOutputs, ProcVisitInputs, ProcVisitOutputs,
 };
-use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};
+use crate::rust::interpreter::compiler::normalize::{
+    normalize_ann_proc, normalize_ann_proc_in_place, VarSort,
+};
 use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
 use crate::rust::interpreter::compiler::normalizer::processes::utils::fail_on_invalid_connective;
 use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_match_name;
@@ -57,7 +59,7 @@ pub fn normalize_p_input<'ast>(
                 ),
                 span: body.span,
             });
-        return normalize_ann_proc(&desugared, input, env, parser);
+        return normalize_ann_proc_in_place(&desugared, input, env, parser);
     }
 
     let head_receipt = &receipts[0][0];
@@ -225,7 +227,7 @@ pub fn normalize_p_input<'ast>(
         };
 
         // Recursively normalize the desugared process
-        normalize_ann_proc(&final_proc, input, env, parser)
+        normalize_ann_proc_in_place(&final_proc, input, env, parser)
     } else {
         // Simple source handling - similar to original's else branch
 

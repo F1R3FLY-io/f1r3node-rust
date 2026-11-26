@@ -38,6 +38,7 @@ pub enum CasperMessage {
     // Last finalized state messages
     StoreItemsMessageRequest(StoreItemsMessageRequest),
     StoreItemsMessage(StoreItemsMessage),
+    StoreItemsPrunedResponse(StoreItemsPrunedResponse),
     FloorCacheRequest(FloorCacheRequest),
     FloorCacheResponse(FloorCacheResponse),
     // Snapshot chunk-fetch (Wave 3, Phase 7b-1).
@@ -130,6 +131,14 @@ impl CasperMessage {
     pub fn from_store_items_message(proto: StoreItemsMessageProto) -> Result<Self, String> {
         Ok(CasperMessage::StoreItemsMessage(
             StoreItemsMessage::from_proto(proto)?,
+        ))
+    }
+
+    pub fn from_store_items_pruned_response(
+        proto: StoreItemsPrunedResponseProto,
+    ) -> Result<Self, String> {
+        Ok(CasperMessage::StoreItemsPrunedResponse(
+            StoreItemsPrunedResponse::from_proto(proto)?,
         ))
     }
 
@@ -1938,6 +1947,38 @@ impl StoreItemsMessage {
     }
 }
 
+/// Peer's "this subtree has been retention-swept past my horizon" answer to a
+/// [`StoreItemsMessageRequest`]. Issue #1157: mirrors
+/// [`BlockPrunedResponse`] for block bodies onto the rspace-history wire so
+/// a joiner gets an explicit "pruned below height N" answer instead of a
+/// silent dropped request. See `StoreItemsPrunedResponseProto` for the field
+/// semantics.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoreItemsPrunedResponse {
+    pub start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
+    pub retention_floor: i64,
+}
+
+impl StoreItemsPrunedResponse {
+    pub fn from_proto(proto: StoreItemsPrunedResponseProto) -> Result<Self, String> {
+        Ok(Self {
+            start_path: proto
+                .start_path
+                .into_iter()
+                .map(StoreNodeKey::from_proto)
+                .collect::<Result<_, _>>()?,
+            retention_floor: proto.retention_floor,
+        })
+    }
+
+    pub fn to_proto(self) -> StoreItemsPrunedResponseProto {
+        StoreItemsPrunedResponseProto {
+            start_path: self.start_path.iter().map(StoreNodeKey::to_proto).collect(),
+            retention_floor: self.retention_floor,
+        }
+    }
+}
+
 #[cfg(test)]
 mod approved_block_tests {
     use prost::bytes::Bytes;
@@ -2710,6 +2751,25 @@ mod tests {
 
         let pretty = message.pretty();
         assert!(pretty.starts_with("StoreItemsMessage(history: 1, data: 1"));
+    }
+
+    /// Issue #1157: the peer-wire `StoreItemsPrunedResponse` must preserve
+    /// `start_path` and `retention_floor` across the proto boundary. A
+    /// joiner routes responses back to the originating need by comparing
+    /// `start_path` to the request's start_path, and it reads
+    /// `retention_floor` to decide whether to select another peer or
+    /// deepen its own window. Dropping either value on the wire would
+    /// reintroduce the pre-#1157 silent-timeout behaviour.
+    #[test]
+    fn store_items_pruned_response_round_trip() {
+        let response = StoreItemsPrunedResponse {
+            start_path: vec![(hash32(1), Some(0)), (hash32(2), None)],
+            retention_floor: 42,
+        };
+        assert_eq!(
+            StoreItemsPrunedResponse::from_proto(response.clone().to_proto()).unwrap(),
+            response
+        );
     }
 
     #[test]
