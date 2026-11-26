@@ -15,6 +15,8 @@
 // finality layer (`finality::deploy_lifecycle`) — this layer only indexes
 // bodies and enforces write-once.
 
+use std::collections::btree_map::Entry;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
@@ -187,16 +189,56 @@ impl DeployLifecycleTables {
         valid_after: Option<i64>,
         event: LifecycleEvent,
     ) -> Result<(), KvStoreError> {
-        if let Some(row) = self.get_events(sig)? {
-            let duplicate = row.events.iter().any(|e| {
-                e.block_hash == event.block_hash
-                    && std::mem::discriminant(&e.kind) == std::mem::discriminant(&event.kind)
+        self.append_events_once_batch(vec![(sig.to_vec(), valid_after, event)])
+    }
+
+    pub fn append_events_once_batch(
+        &self,
+        items: Vec<(ByteString, Option<i64>, LifecycleEvent)>,
+    ) -> Result<(), KvStoreError> {
+        let mut rows: BTreeMap<ByteString, (Option<LifecycleEvents>, bool, bool)> = BTreeMap::new();
+        for (sig, valid_after, event) in items {
+            let (row, terminal, dirty) = match rows.entry(sig) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let row = self.get_events(entry.key())?;
+                    let terminal = self.get_terminal(entry.key())?.is_some();
+                    entry.insert((row, terminal, false))
+                }
+            };
+            let duplicate = row.as_ref().is_some_and(|row| {
+                row.events.iter().any(|e| {
+                    e.block_hash == event.block_hash
+                        && std::mem::discriminant(&e.kind) == std::mem::discriminant(&event.kind)
+                })
             });
-            if duplicate {
-                return Ok(());
+            if duplicate || *terminal {
+                continue;
             }
+            let row = row.get_or_insert_with(|| LifecycleEvents {
+                valid_after: None,
+                events: Vec::new(),
+            });
+            if row.valid_after.is_none() {
+                row.valid_after = valid_after;
+            }
+            row.events.push(event);
+            *dirty = true;
         }
-        self.append_events(sig, valid_after, vec![event])
+        let writes: Vec<_> = rows
+            .into_iter()
+            .filter_map(|(sig, (row, _, dirty))| {
+                if dirty {
+                    row.map(|row| (sig, row))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if writes.is_empty() {
+            return Ok(());
+        }
+        self.events.put(writes)
     }
 
     pub fn get_terminal(&self, sig: &[u8]) -> Result<Option<TerminalRecord>, KvStoreError> {
@@ -368,6 +410,215 @@ mod tests {
         assert!(
             tables.get_events(b"sig").expect("read").is_none(),
             "no event row may reopen behind a terminal record"
+        );
+    }
+
+    #[derive(Clone)]
+    struct PutCountingStore {
+        inner: InMemoryKeyValueStore,
+        puts: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl KeyValueStore for PutCountingStore {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+
+        fn get(
+            &self,
+            keys: &Vec<shared::rust::ByteBuffer>,
+        ) -> Result<Vec<Option<shared::rust::ByteBuffer>>, KvStoreError> {
+            self.inner.get(keys)
+        }
+
+        fn put(
+            &self,
+            kv_pairs: Vec<(shared::rust::ByteBuffer, shared::rust::ByteBuffer)>,
+        ) -> Result<(), KvStoreError> {
+            self.puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.put(kv_pairs)
+        }
+
+        fn put_one_if_absent(
+            &self,
+            key: shared::rust::ByteBuffer,
+            value: shared::rust::ByteBuffer,
+        ) -> Result<bool, KvStoreError> {
+            self.puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.put_one_if_absent(key, value)
+        }
+
+        fn delete_if_value(&self, key: &Vec<u8>, expected: &Vec<u8>) -> Result<bool, KvStoreError> {
+            self.inner.delete_if_value(key, expected)
+        }
+
+        fn delete(&self, keys: Vec<shared::rust::ByteBuffer>) -> Result<usize, KvStoreError> {
+            self.inner.delete(keys)
+        }
+
+        fn iterate(
+            &self,
+            f: fn(shared::rust::ByteBuffer, shared::rust::ByteBuffer),
+        ) -> Result<(), KvStoreError> {
+            self.inner.iterate(f)
+        }
+
+        fn iterate_while(
+            &self,
+            f: &mut dyn FnMut(
+                shared::rust::ByteBuffer,
+                shared::rust::ByteBuffer,
+            ) -> Result<bool, KvStoreError>,
+        ) -> Result<(), KvStoreError> {
+            self.inner.iterate_while(f)
+        }
+
+        fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
+
+        fn to_map(
+            &self,
+        ) -> Result<
+            std::collections::BTreeMap<shared::rust::ByteBuffer, shared::rust::ByteBuffer>,
+            KvStoreError,
+        > {
+            self.inner.to_map()
+        }
+
+        fn print_store(&self) -> Result<(), KvStoreError> { self.inner.print_store() }
+
+        fn non_empty(&self) -> Result<bool, KvStoreError> { self.inner.non_empty() }
+
+        fn size_bytes(&self) -> usize { self.inner.size_bytes() }
+    }
+
+    fn block_events(count: u8, height: i64) -> Vec<(ByteString, Option<i64>, LifecycleEvent)> {
+        let mut items: Vec<_> = (0..count)
+            .map(|i| (vec![b's', i], Some(1), included(height, i % 2 == 0)))
+            .collect();
+        items.push((vec![b's', 0], None, LifecycleEvent {
+            height,
+            block_hash: vec![height as u8; 32],
+            kind: LifecycleEventKind::Rejected { duplicate: true },
+        }));
+        items
+    }
+
+    #[test]
+    fn a_block_appends_its_events_in_one_write() {
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tables = DeployLifecycleTables::new(
+            Arc::new(PutCountingStore {
+                inner: InMemoryKeyValueStore::new(),
+                puts: puts.clone(),
+            }),
+            Arc::new(InMemoryKeyValueStore::new()),
+        );
+
+        tables
+            .append_events_once_batch(block_events(20, 4))
+            .expect("append block events");
+
+        assert_eq!(puts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        tables
+            .append_events_once_batch(block_events(20, 4))
+            .expect("redeliver block events");
+        assert_eq!(
+            puts.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a redelivered block must write nothing"
+        );
+    }
+
+    fn pre_change_append_event_once(
+        tables: &DeployLifecycleTables,
+        sig: &[u8],
+        valid_after: Option<i64>,
+        event: LifecycleEvent,
+    ) -> Result<(), KvStoreError> {
+        if let Some(row) = tables.get_events(sig)? {
+            let duplicate = row.events.iter().any(|e| {
+                e.block_hash == event.block_hash
+                    && std::mem::discriminant(&e.kind) == std::mem::discriminant(&event.kind)
+            });
+            if duplicate {
+                return Ok(());
+            }
+        }
+        tables.append_events(sig, valid_after, vec![event])
+    }
+
+    fn batches_with_repeats() -> Vec<Vec<(ByteString, Option<i64>, LifecycleEvent)>> {
+        let mut with_duplicate = block_events(20, 4);
+        with_duplicate.push((vec![b's', 1], Some(1), included(4, true)));
+        vec![with_duplicate, block_events(12, 5), block_events(20, 4)]
+    }
+
+    fn tables_with_terminal_sig() -> DeployLifecycleTables {
+        let tables = DeployLifecycleTables::in_memory();
+        tables
+            .put_terminal_if_absent(&[b's', 3], terminal(TerminalState::Finalized))
+            .expect("terminal sig");
+        tables
+    }
+
+    #[test]
+    fn a_block_append_matches_the_pre_change_per_event_writer() {
+        let batched = tables_with_terminal_sig();
+        let reference = tables_with_terminal_sig();
+        for items in batches_with_repeats() {
+            batched
+                .append_events_once_batch(items.clone())
+                .expect("append block events");
+            for (sig, valid_after, event) in items {
+                pre_change_append_event_once(&reference, &sig, valid_after, event)
+                    .expect("append event");
+            }
+        }
+
+        let rows = |tables: &DeployLifecycleTables| {
+            tables
+                .open_rows()
+                .expect("read")
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        assert_eq!(rows(&batched), rows(&reference));
+    }
+
+    #[test]
+    fn a_block_append_stores_each_event_once_and_skips_terminal_sigs() {
+        let tables = tables_with_terminal_sig();
+        for items in batches_with_repeats() {
+            tables
+                .append_events_once_batch(items)
+                .expect("append block events");
+        }
+
+        assert!(tables.get_events(&[b's', 3]).expect("read").is_none());
+        let row = tables.get_events(&[b's', 0]).expect("read").expect("row");
+        assert_eq!(row.valid_after, Some(1));
+        assert_eq!(row.events, vec![
+            included(4, true),
+            LifecycleEvent {
+                height: 4,
+                block_hash: vec![4; 32],
+                kind: LifecycleEventKind::Rejected { duplicate: true },
+            },
+            included(5, true),
+            LifecycleEvent {
+                height: 5,
+                block_hash: vec![5; 32],
+                kind: LifecycleEventKind::Rejected { duplicate: true },
+            },
+        ]);
+        let row = tables.get_events(&[b's', 1]).expect("read").expect("row");
+        assert_eq!(row.events, vec![included(4, false), included(5, false)]);
+        assert!(tables.get_events(&[b's', 15]).expect("read").is_some());
+        assert_eq!(
+            tables
+                .get_events(&[b's', 15])
+                .expect("read")
+                .expect("row")
+                .events,
+            vec![included(4, false)]
         );
     }
 }
