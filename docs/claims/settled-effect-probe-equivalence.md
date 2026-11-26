@@ -61,8 +61,14 @@ The state lineage steps as follows. Each rule is exact:
 
 The probe sites fix the arguments:
 
-- `sig_settled_in_base(sig)` = `settled(main_parent, sig, floor_number −
-  deploy_lifespan)`.
+- `sig_settled_in_base(sig)` = `settled(merge_base, sig, floor_number −
+  deploy_lifespan)`, where `merge_base` is the block whose state the merge
+  builds on: the main parent, or the floor when the main parent's state does
+  not hold the floor's settled content. The name-seed scan (`held_by_base`)
+  walks from the same block. Asking the main parent when the merge builds on
+  the floor treats the main parent's own lineage as present, so the merge
+  drops every scope copy of that work with no rejection record, although the
+  floor's state does not hold it.
 - `sig_settled_in_floor(sig)` = TRUE iff `settled(f.hash, sig,
   f.block_number − deploy_lifespan)` for some settled floor `f` in the
   block's frozen justification snapshot.

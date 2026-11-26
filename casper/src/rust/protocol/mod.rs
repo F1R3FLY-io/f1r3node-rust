@@ -9,7 +9,8 @@ use models::casper::{
     GetWalPayloadRequestProto, HasBlockProto, HasBlockRequestProto, HasSnapshotProto,
     HasSnapshotRequestProto, HasWalPayloadProto, HasWalPayloadRequestProto,
     NoApprovedBlockAvailableProto, SnapshotChunkResponseProto, StoreItemsMessageProto,
-    StoreItemsMessageRequestProto, UnapprovedBlockProto, WalPayloadResponseProto,
+    StoreItemsMessageRequestProto, StoreItemsPrunedResponseProto, UnapprovedBlockProto,
+    WalPayloadResponseProto,
 };
 use models::routing::{Packet, Protocol};
 use models::rust::block_hash::BlockHash;
@@ -74,6 +75,7 @@ pub enum CasperMessageProto {
     NoApprovedBlockAvailable(NoApprovedBlockAvailableProto),
     StoreItemsMessageRequest(StoreItemsMessageRequestProto),
     StoreItemsMessage(StoreItemsMessageProto),
+    StoreItemsPrunedResponse(StoreItemsPrunedResponseProto),
     FloorCacheRequest(FloorCacheRequestProto),
     FloorCacheResponse(FloorCacheResponseProto),
     // Snapshot chunk-fetch (Wave 3, Phase 7b-1).
@@ -110,6 +112,7 @@ pub fn to_casper_message_proto(packet: &Packet) -> PacketParseResult<CasperMessa
         "NoApprovedBlockAvailable" => convert_no_approved_block_available(packet),
         "StoreItemsMessageRequest" => convert_store_items_message_request(packet),
         "StoreItemsMessage" => convert_store_items_message(packet),
+        "StoreItemsPrunedResponse" => convert_store_items_pruned_response(packet),
         "FloorCacheRequest" => parse_packet::<FloorCacheRequestProto>(packet)
             .map(CasperMessageProto::FloorCacheRequest),
         "FloorCacheResponse" => parse_packet::<FloorCacheResponseProto>(packet)
@@ -168,6 +171,9 @@ pub fn casper_message_from_proto(proto: CasperMessageProto) -> Result<CasperMess
         }
         CasperMessageProto::StoreItemsMessage(proto) => {
             CasperMessage::from_store_items_message(proto)
+        }
+        CasperMessageProto::StoreItemsPrunedResponse(proto) => {
+            CasperMessage::from_store_items_pruned_response(proto)
         }
         CasperMessageProto::FloorCacheRequest(proto) => {
             Ok(CasperMessage::from_floor_cache_request(proto))
@@ -255,6 +261,11 @@ fn convert_store_items_message_request(packet: &Packet) -> PacketParseResult<Cas
 
 fn convert_store_items_message(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
     parse_packet::<StoreItemsMessageProto>(packet).map(CasperMessageProto::StoreItemsMessage)
+}
+
+fn convert_store_items_pruned_response(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
+    parse_packet::<StoreItemsPrunedResponseProto>(packet)
+        .map(CasperMessageProto::StoreItemsPrunedResponse)
 }
 
 /// Generic function to parse a packet into a specific protobuf message type
@@ -762,6 +773,63 @@ mod tests {
             .get()
             .expect("dispatch must succeed");
         assert!(matches!(result, CasperMessageProto::HasWalPayload(_)));
+    }
+
+    /// Issue #1157: the peer-wire `StoreItemsPrunedResponseProto` must
+    /// round-trip through the packet dispatcher so a responder's "pruned
+    /// below height N" answer reaches the joiner's state-sync requester
+    /// instead of landing in the `IllegalPacket` arm. Pin type_id, parse
+    /// roundtrip, dispatch, and the domain-model bridge.
+    #[test]
+    fn store_items_pruned_response_parse_roundtrip() {
+        use models::casper::StoreNodeKeyProto;
+        let proto = models::casper::StoreItemsPrunedResponseProto {
+            start_path: vec![StoreNodeKeyProto {
+                hash: prost::bytes::Bytes::from(vec![0xAA; 32]),
+                index: 0,
+            }],
+            retention_floor: 123,
+        };
+        let packet = proto.clone().mk_packet();
+        assert_eq!(packet.type_id, "StoreItemsPrunedResponse");
+
+        let parsed = parse_packet::<models::casper::StoreItemsPrunedResponseProto>(&packet)
+            .get()
+            .expect("parse must succeed");
+        assert_eq!(parsed.retention_floor, proto.retention_floor);
+        assert_eq!(parsed.start_path.len(), 1);
+    }
+
+    #[test]
+    fn to_casper_message_proto_dispatches_store_items_pruned_response() {
+        let proto = models::casper::StoreItemsPrunedResponseProto {
+            start_path: vec![],
+            retention_floor: 0,
+        };
+        let packet = proto.mk_packet();
+        let result = to_casper_message_proto(&packet)
+            .get()
+            .expect("dispatch must succeed");
+        assert!(matches!(
+            result,
+            CasperMessageProto::StoreItemsPrunedResponse(_)
+        ));
+    }
+
+    #[test]
+    fn casper_message_from_proto_bridges_store_items_pruned_response() {
+        use models::casper::StoreNodeKeyProto;
+        use models::rust::casper::protocol::casper_message::CasperMessage as DomainMessage;
+        let proto = models::casper::StoreItemsPrunedResponseProto {
+            start_path: vec![StoreNodeKeyProto {
+                hash: prost::bytes::Bytes::from(vec![0xBB; 32]),
+                index: 7,
+            }],
+            retention_floor: 500,
+        };
+        let domain = casper_message_from_proto(CasperMessageProto::StoreItemsPrunedResponse(proto))
+            .expect("bridge must succeed");
+        assert!(matches!(domain, DomainMessage::StoreItemsPrunedResponse(_)));
     }
 
     #[test]

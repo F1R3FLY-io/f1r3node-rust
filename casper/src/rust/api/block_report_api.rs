@@ -99,6 +99,20 @@ pub enum BlockReportError {
     BlockNotFound(BlockHash),
     #[error("Block report pre-state is unavailable for block {0:?}")]
     StateUnavailable(BlockHash),
+    /// Issue #1157: the target block's state has been swept past the
+    /// rspace-history retention floor, so the replay needed to produce an
+    /// event log can never run on this node. Distinct from
+    /// `StateUnavailable` (which may clear when sync catches up); this is
+    /// permanent on this node.
+    #[error(
+        "Block report cannot replay block {target_block_hash:?} (height {target_block_height}): \
+         state has been swept past retention floor (height {retention_floor})"
+    )]
+    PrunedState {
+        target_block_hash: BlockHash,
+        target_block_height: i64,
+        retention_floor: i64,
+    },
     #[error("Block {block:?} carries a deploy whose phlo limit exceeds the shard cap of {cap}")]
     ExcessivePhloLimit { block: BlockHash, cap: i64 },
     #[error("Block reporter is busy; retry later")]
@@ -274,6 +288,35 @@ impl BlockReportAPI {
         if !force_replay {
             if let Some(cached_report) = self.cached_report(&block.block_hash)? {
                 return Ok(cached_report);
+            }
+        }
+
+        // Issue #1157: a block whose state is below the rspace-history
+        // retention floor cannot be replayed on this node — the trie
+        // nodes are gone. Classify here so the caller gets a typed
+        // `PrunedState` instead of a vaguer `StateUnavailable` (which
+        // promises a retry may succeed).
+        //
+        // Boundary: the GC retains blocks at exactly `state_retention_floor`
+        // (`compute_gc_retention_roots` walks `height ≥ floor`), so only a
+        // target STRICTLY below the floor has been swept. This keeps
+        // genesis-at-height-0 reportable on a fresh chain whose floor is
+        // also 0.
+        let lfb_number = casper
+            .last_finalized_block()
+            .await
+            .ok()
+            .map(|lfb| lfb.body.state.block_number);
+        if let Some(lfb_number) = lfb_number {
+            let retention_floor = casper.casper_shard_conf().state_retention_floor(lfb_number);
+            let target_height = block.body.state.block_number;
+            if target_height < retention_floor {
+                metrics::counter!("block_report.pruned_state", "source" => "casper").increment(1);
+                return Err(BlockReportError::PrunedState {
+                    target_block_hash: block.block_hash.clone(),
+                    target_block_height: target_height,
+                    retention_floor,
+                });
             }
         }
 

@@ -1084,3 +1084,34 @@ async fn a_peer_that_changed_its_identity_is_not_logged_as_an_error() {
         .any(|event| event.level == Level::WARN));
     assert_eq!(capture.at_or_above(Level::ERROR), vec![]);
 }
+
+#[tokio::test]
+async fn a_send_to_an_unreachable_peer_is_not_logged_as_an_error() {
+    let capture = EventCapture::new();
+    let _guard = capture.install();
+
+    let runtime = TransportLayerTestRuntime::new("test".to_string());
+    let result = runtime
+        .run_two_nodes_test_remote_dead(|transport, local, remote| async move {
+            send_heartbeat(Arc::new(transport), &local, &remote, "test").await
+        })
+        .await
+        .expect("Test should succeed");
+
+    assert!(result.result.is_err());
+    let tcp_failures: Vec<_> = capture
+        .with_message("F1r3flyConnector TCP connection")
+        .into_iter()
+        .collect();
+    assert!(
+        !tcp_failures.is_empty(),
+        "the unreachable peer's TCP failure is still logged"
+    );
+    assert!(
+        tcp_failures
+            .iter()
+            .all(|event| event.level == Level::WARN || event.level == Level::DEBUG),
+        "TCP failures must not log at ERROR: {tcp_failures:?}"
+    );
+    assert_eq!(capture.at_or_above(Level::ERROR), vec![]);
+}
