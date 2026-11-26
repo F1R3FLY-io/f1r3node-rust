@@ -50,11 +50,13 @@ The B1 RED control enabled the wake for every startup configuration. The test fa
 
 The B2 test uses a pending deploy and an own block about 1 s old. The cooldown is 3 s and the check interval is 60 s. The production heartbeat check makes zero proposals and computes a delay above 1.5 s and at most 2 s. The test covers the delay calculation. The accounting smoke below exercises the live loop.
 
-The B2 RED control made `cooldown_recheck_delay` return `None` in a scratch copy. The test failed with a 60 s delay. The existing F2 code passed the test before any production edit. The implementing agent reported 57 heartbeat tests passed, with strict Clippy and formatting checks clean.
+The B2 RED control made `cooldown_recheck_delay` return `None` in a scratch copy. The test failed with a 60 s delay. The existing F2 code passed the test before any production edit. An independent run passed all 57 heartbeat tests. The implementing agent also reported that strict Clippy and formatting checks passed.
 
 All eight proposer integration tests passed. The [proposer source](../../../casper/src/rust/blocks/proposer/proposer.rs) has the same bytes as `dev` at `71d435ea6f6a7d766b7e1bda29b96cc0017563ca`. The tests cover proposal constraints, publication effects, and empty recovery under the height constraint.
 
 The [lane binding check](check-lane-binding.sh) compiled the baseline and candidate `decide_lanes` functions and checked 221,184 cases. It covered all 13 Boolean inputs and three relations to each lag cap. The existing lane decisions matched in every case. The new flag was true exactly when an active cooldown was the sole reason the pending-deploy lane was ineligible.
+
+The same check compiled the production `cooldown_recheck_delay` and `next_heartbeat_sleep` functions. It compared the delay and selected sleep against the model's timing rule in 504 cases. It uses the model's time values and minimum recheck delay, both values of the cooldown flag, and an unknown own-block age.
 
 ```bash
 bash formal/tlaplus/heartbeat_wake/check-lane-binding.sh 71d435ea6f6a7d766b7e1bda29b96cc0017563ca
@@ -89,7 +91,7 @@ The standalone protocol-6 smoke applied F1 and F2, including the B1 startup chan
 
 The stored timestamps of the two deploy blocks were 3,008 ms apart with a 3,000 ms cooldown. Blocks 3 and 4 each carried one execution record and zero deploys. The order floor reached block 4. The standalone state-finality floor stayed at genesis during the smoke.
 
-On the same accounting candidate, the three-validator `the_lfb_follows_the_attested_canonical_roots_below_the_order_floor` fixture passed. It checks state-finality progress and canonical execution roots on all validators and logs one cancelled replay warning. The fixture uses direct proposals. B2 adds test coverage on `dev` while preserving the runtime behavior measured here.
+On the same accounting candidate, the three-validator `the_lfb_follows_the_attested_canonical_roots_below_the_order_floor` fixture passed. It checks state-finality progress and canonical execution roots on all validators. The run logged one cancelled replay warning. The fixture uses direct proposals. B2 adds test coverage on `dev` while preserving the runtime behavior measured here.
 
 ## Evidence hashes
 
@@ -101,7 +103,7 @@ e3fe9b556664cebe3552971e65f92cc0feb101ff947642705dd6fec31558b519  formal/tlaplus
 814fbb3c699fc1f2b6cfe1e1b50e5545cd0a830a713842e2504fa3e47be1c2f7  formal/tlaplus/heartbeat_wake/WakeOnRejected.cfg
 94846d945a56f3c520921a4f84224b37f69da98a7a99df328d338dadcc6a470e  formal/tlaplus/heartbeat_wake/BypassCooldown.cfg
 aea3b843d992f1ebc31f9b6a0852b1d5c61a432ad89c67c04d949ab37b1120cc  formal/tlaplus/heartbeat_wake/RecheckDespiteLag.cfg
-ad2abdcc0735bca8c2d5ac14579677eddab3d6be49c6542049c4177120cdfd7e  formal/tlaplus/heartbeat_wake/check-lane-binding.sh
+0c9429936c975ea52ec6fb3d6f3344bf958b9b9fd39325094e5576de033aff6b  formal/tlaplus/heartbeat_wake/check-lane-binding.sh
 a738ece1229e36459e6a80b8c88a65b9a629b80d427b7f42255f38f4f5d990a9  formal/rocq/heartbeat_wake/_CoqProject
 b51339ed1416a0dc79e5c75dc065259e08e812da6988676dc48cefc0f176417a  formal/rocq/heartbeat_wake/theories/MainTheorem.v
 acb8bcab18784bb02b8e5d3e3207d3131eac874de02aec1756d68061dba688e6  scripts/ci/check-formal-gate.sh

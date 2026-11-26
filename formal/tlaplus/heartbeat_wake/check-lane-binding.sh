@@ -4,6 +4,9 @@ set -euo pipefail
 baseline=${1:?dev baseline commit is required}
 artifact=node/src/rust/instances/heartbeat_proposer.rs
 cd "$(git rev-parse --show-toplevel)"
+model_config=formal/tlaplus/heartbeat_wake/HeartbeatWake.cfg
+times=$(sed -nE 's/^[[:space:]]*Times[[:space:]]*=[[:space:]]*\{([0-9, ]+)\}$/\1/p' "$model_config")
+minimum_recheck=$(sed -nE 's/^[[:space:]]*MinimumRecheck[[:space:]]*=[[:space:]]*([0-9]+)$/\1/p' "$model_config")
 scratch=$(mktemp -d)
 trap 'rm -r "$scratch"' EXIT
 git show "$baseline:$artifact" > "$scratch/baseline.rs"
@@ -56,8 +59,55 @@ RUST
 {
     emit_module dev "$scratch/baseline.rs" false
     emit_module candidate "$artifact" result.pending_blocked_by_cooldown
+    printf 'mod timer {\n    use std::time::Duration;\n'
+    sed -n -e '/^fn cooldown_recheck_delay(/,/^}/p' \
+        -e '/^fn next_heartbeat_sleep(/,/^}/p' "$artifact"
     cat <<'RUST'
+    pub fn evaluate(
+        blocked: bool,
+        cooldown: u64,
+        age: Option<u64>,
+        interval: u64,
+    ) -> (Option<u128>, u128) {
+        let recheck = cooldown_recheck_delay(blocked, cooldown.into(), age.map(u128::from));
+        let sleep = next_heartbeat_sleep(Duration::from_millis(interval), recheck);
+        (recheck.map(|delay| delay.as_millis()), sleep.as_millis())
+    }
+}
+
+fn check_cooldown_cases(times: &[u64], minimum_recheck: u64) {
+    let mut rows = 0;
+    for blocked in [false, true] {
+        for &cooldown in times {
+            for age in std::iter::once(None).chain(times.iter().copied().map(Some)) {
+                let remaining = age.and_then(|age| cooldown.checked_sub(age));
+                let expected_delay = remaining.filter(|&remaining| blocked && remaining > 0);
+                for &interval in times {
+                    let expected_sleep = expected_delay
+                        .map(|remaining| interval.min(minimum_recheck.max(remaining)))
+                        .unwrap_or(interval);
+                    assert_eq!(
+                        timer::evaluate(blocked, cooldown, age, interval),
+                        (expected_delay.map(u128::from), u128::from(expected_sleep)),
+                        "blocked={blocked}, cooldown={cooldown}, age={age:?}, interval={interval}",
+                    );
+                    rows += 1;
+                }
+            }
+        }
+    }
+    println!("{rows} heartbeat cooldown timing cases passed");
+}
+
 fn main() {
+    let mut args = std::env::args().skip(1);
+    let times: Vec<u64> = args.next().expect("model times").split(',')
+        .map(|time| time.trim().parse().expect("numeric model time"))
+        .collect();
+    let minimum_recheck: u64 = args.next().expect("model recheck floor")
+        .parse().expect("numeric model recheck floor");
+    check_cooldown_cases(&times, minimum_recheck);
+
     const COOLDOWN: usize = 1 << 6;
     let mut rows = 0;
     for flags in 0..(1 << 13) {
@@ -84,4 +134,4 @@ fn main() {
 RUST
 } > "$scratch/lane_binding.rs"
 rustc --edition 2021 "$scratch/lane_binding.rs" -o "$scratch/lane_binding"
-"$scratch/lane_binding"
+"$scratch/lane_binding" "$times" "$minimum_recheck"
