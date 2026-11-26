@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::api::block_api::{BlockAPI, BlocksByHeightsResponse, ExploratoryDeployRejection};
+use casper::rust::api::block_api::{
+    BlockAPI, BlocksByHeightsResponse, ExploratoryDeployRejection, PrunedStateError,
+};
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::api::deploy_reconciliation::ReconciledStatus;
 use casper::rust::api::graph_generator::{GraphConfig, GraphzGenerator};
@@ -24,7 +26,8 @@ use models::casper::v1::{
     ContinuationAtNameResponse, DeployFinalizationStatusResponse, DeployResponse,
     EventInfoResponse, ExploratoryDeployResponse, FindDeployResponse, IsFinalizedResponse,
     LastFinalizedBlockResponse, MachineVerifyResponse, PendingDeploysResponse,
-    PrivateNamePreviewResponse, RhoDataResponse, StatusResponse, VisualizeBlocksResponse,
+    PrivateNamePreviewResponse, PrunedStateInfo, RhoDataResponse, StatusResponse,
+    VisualizeBlocksResponse,
 };
 use models::casper::{
     BlockQuery, BlocksQuery, BlocksQueryByHeight, BondStatusQuery, ContinuationAtNameQuery,
@@ -63,6 +66,19 @@ impl IntoServiceError for casper::rust::api::block_report_api::BlockReportError 
 
 const FIND_DEPLOY_RETRY_INTERVAL_MS: u64 = 100;
 const FIND_DEPLOY_MAX_ATTEMPTS: u8 = 80;
+
+/// Issue #1157: extract a [`PrunedStateError`] from an `eyre` chain so the
+/// gRPC handler can map it to the `pruned` oneof arm instead of folding
+/// its data into a prose `ServiceError.messages`.
+fn classify_pruned_state(err: &eyre::Error) -> Option<PrunedStateInfo> {
+    err.chain()
+        .find_map(|cause| cause.downcast_ref::<PrunedStateError>())
+        .map(|p| PrunedStateInfo {
+            target_block_hash: p.target_block_hash.clone(),
+            target_block_height: p.target_block_height,
+            retention_floor: p.retention_floor,
+        })
+}
 
 /// Flatten a [`BlocksByHeightsResponse`] into the ordered sequence of
 /// `BlockInfoResponse` items the `getBlocksByHeights` stream emits:
@@ -633,6 +649,15 @@ impl DeployService for DeployGrpcServiceV1Impl {
             }
             Err(e) => {
                 error!("Deploy service method error get_data_at_name: {}", e);
+                // Issue #1157: a pruned-state refusal takes the `pruned`
+                // oneof arm so the caller can route to an archive node.
+                if let Some(pruned) = classify_pruned_state(&e) {
+                    return Ok(tonic::Response::new(RhoDataResponse {
+                        message: Some(models::casper::v1::rho_data_response::Message::Pruned(
+                            pruned,
+                        )),
+                    }));
+                }
                 Ok(tonic::Response::new(RhoDataResponse {
                     message: Some(models::casper::v1::rho_data_response::Message::Error(
                         e.into_service_error(),
@@ -1050,6 +1075,19 @@ impl DeployService for DeployGrpcServiceV1Impl {
                         }
                     });
                 }
+                // Issue #1157: a pruned-state refusal takes the typed
+                // `pruned` oneof arm so the client sees the retention
+                // floor and target height without parsing prose.
+                if let Some(pruned) = classify_pruned_state(&e) {
+                    return Ok(tonic::Response::new(ExploratoryDeployResponse {
+                        message: Some(
+                            models::casper::v1::exploratory_deploy_response::Message::Pruned(
+                                pruned,
+                            ),
+                        ),
+                        cost: 0,
+                    }));
+                }
                 Ok(tonic::Response::new(ExploratoryDeployResponse {
                     message: Some(
                         models::casper::v1::exploratory_deploy_response::Message::Error(
@@ -1096,6 +1134,24 @@ impl DeployService for DeployGrpcServiceV1Impl {
             })),
             Err(e) => {
                 error!("Deploy service method error get_event_by_hash: {}", e);
+                // Issue #1157: a pruned-state refusal from the block-report
+                // replay path takes the typed `pruned` oneof arm.
+                if let casper::rust::api::block_report_api::BlockReportError::PrunedState {
+                    target_block_hash,
+                    target_block_height,
+                    retention_floor,
+                } = &e
+                {
+                    return Ok(tonic::Response::new(EventInfoResponse {
+                        message: Some(models::casper::v1::event_info_response::Message::Pruned(
+                            PrunedStateInfo {
+                                target_block_hash: target_block_hash.clone(),
+                                target_block_height: *target_block_height,
+                                retention_floor: *retention_floor,
+                            },
+                        )),
+                    }));
+                }
                 Ok(tonic::Response::new(EventInfoResponse {
                     message: Some(models::casper::v1::event_info_response::Message::Error(
                         e.into_service_error(),
@@ -2196,5 +2252,36 @@ mod tests {
             }
             other => panic!("expected Unavailable, got {other:?}"),
         }
+    }
+
+    /// Issue #1157: the classifier pulls a `PrunedStateError` out of an
+    /// `eyre` chain even when wrapped — a reader that `.map_err`s or
+    /// `.wrap_err`s the typed refusal must not lose the `pruned` oneof
+    /// routing. The field data (`target_block_height`, `retention_floor`)
+    /// must survive the conversion: those are the values a client parses
+    /// off the response to decide whether to try an archive node.
+    #[test]
+    fn classify_pruned_state_extracts_fields_through_eyre_wrap() {
+        let target = prost::bytes::Bytes::from_static(b"target-block-hash-01234567890abcde");
+        let raw = eyre::Report::new(PrunedStateError {
+            target_block_hash: target.clone(),
+            target_block_height: 42,
+            retention_floor: 90,
+        });
+        let wrapped = raw.wrap_err("while serving exploratory deploy");
+
+        let info = classify_pruned_state(&wrapped).expect("must detect PrunedStateError");
+        assert_eq!(info.target_block_hash, target);
+        assert_eq!(info.target_block_height, 42);
+        assert_eq!(info.retention_floor, 90);
+    }
+
+    /// A non-pruned error must not be misclassified: the classifier must
+    /// walk the chain and return `None` so the generic `error` oneof arm
+    /// still fires. Otherwise every reader failure would read as "pruned".
+    #[test]
+    fn classify_pruned_state_returns_none_for_unrelated_errors() {
+        let unrelated = eyre::eyre!("not a retention event");
+        assert!(classify_pruned_state(&unrelated).is_none());
     }
 }

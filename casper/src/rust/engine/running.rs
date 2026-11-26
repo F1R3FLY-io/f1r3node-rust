@@ -15,9 +15,10 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     self, ApprovedBlock, ApprovedBlockCandidate, BlockPrunedResponse, BlockRequest, CasperMessage,
-    FinalizedFloorSeed, HasBlock, HasBlockRequest,
+    FinalizedFloorSeed, HasBlock, HasBlockRequest, StoreItemsPrunedResponse,
 };
 use models::rust::casper::protocol::packet_type_tag::encoded_block_message_packet;
+use rspace_plus_plus::rspace::errors::RadixTreeError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
@@ -1052,6 +1053,42 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
 
         let (history, data) = match export {
             Ok(items) => items,
+            // Issue #1157: a `MissingNode` on an export walk means the
+            // responder's retention sweep has deleted the trie subtree the
+            // joiner's start_path descends into. Reply with an explicit
+            // `StoreItemsPrunedResponse` carrying this node's retention
+            // floor so the requester can choose another peer rather than
+            // sit through the timeout (pre-#1157 silent-drop behaviour).
+            Err(RadixTreeError::MissingNode { ptr }) => {
+                let lfb_number = match self.casper.last_finalized_block().await {
+                    Ok(lfb) => lfb.body.state.block_number,
+                    Err(_) => 0,
+                };
+                let retention_floor = self
+                    .casper
+                    .casper_shard_conf()
+                    .state_retention_floor(lfb_number);
+                tracing::info!(
+                    %peer,
+                    missing_ptr = %hex::encode(ptr.bytes()),
+                    retention_floor,
+                    "StoreItemsMessageRequest walked into a pruned subtree; replying with \
+                     StoreItemsPrunedResponse"
+                );
+                metrics::counter!(
+                    "state_export.pruned_responses",
+                    "source" => RUNNING_METRICS_SOURCE
+                )
+                .increment(1);
+                let resp = StoreItemsPrunedResponse {
+                    start_path,
+                    retention_floor,
+                };
+                self.transport
+                    .stream_message_to_peer(&self.conf, &peer, Arc::new(resp.to_proto()))
+                    .await?;
+                return Ok(());
+            }
             Err(error) => {
                 tracing::warn!(
                     %error,
