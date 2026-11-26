@@ -5340,6 +5340,7 @@ dependencies = [
  "imbl",
  "itertools 0.14.0",
  "lazy_static",
+ "lz4_flex",
  "metrics 0.23.1",
  "metrics-util 0.17.0",
  "monadic",

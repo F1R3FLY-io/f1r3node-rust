@@ -1,0 +1,52 @@
+[
+  {
+    "node": "boot",
+    "finalized_height": 79,
+    "dag_height": 81,
+    "ready": true,
+    "peers": 4,
+    "running_before_stop": true,
+    "oom": false,
+    "exit_code_before_stop": 0
+  },
+  {
+    "node": "validator1",
+    "finalized_height": 79,
+    "dag_height": 81,
+    "ready": true,
+    "peers": 4,
+    "running_before_stop": true,
+    "oom": false,
+    "exit_code_before_stop": 0
+  },
+  {
+    "node": "validator2",
+    "finalized_height": 79,
+    "dag_height": 81,
+    "ready": true,
+    "peers": 4,
+    "running_before_stop": true,
+    "oom": false,
+    "exit_code_before_stop": 0
+  },
+  {
+    "node": "validator3",
+    "finalized_height": 79,
+    "dag_height": 81,
+    "ready": true,
+    "peers": 4,
+    "running_before_stop": true,
+    "oom": false,
+    "exit_code_before_stop": 0
+  },
+  {
+    "node": "observer",
+    "finalized_height": 79,
+    "dag_height": 81,
+    "ready": true,
+    "peers": 4,
+    "running_before_stop": true,
+    "oom": false,
+    "exit_code_before_stop": 0
+  }
+]

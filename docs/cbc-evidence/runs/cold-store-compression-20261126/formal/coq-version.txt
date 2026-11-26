@@ -1,0 +1,2 @@
+The Coq Proof Assistant, version 8.16.1
+compiled with OCaml 4.13.1

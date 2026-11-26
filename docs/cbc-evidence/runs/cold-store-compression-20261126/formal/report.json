@@ -1,0 +1,16 @@
+{
+  "schema": "cold-store-formal-evidence/v1",
+  "timestamp": "2026-11-26T09:49:06Z",
+  "source_manifest_sha256": "5bd3b4c9d41ed36a9afc55c056b08bd4804b0c0fe8c00dde23624490004bdf15",
+  "tlc": {
+    "positive": 1,
+    "negative_controls": 5
+  },
+  "construction": {
+    "theorems": 16,
+    "axioms": 0,
+    "kernel_checked": true
+  },
+  "rust_binding": "run separately",
+  "maintainer_acceptance": "pending"
+}

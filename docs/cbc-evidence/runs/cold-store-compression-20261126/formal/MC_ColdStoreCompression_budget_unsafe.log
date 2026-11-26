@@ -1,0 +1,55 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 22 and seed -4184477813749294042 with 1 worker on 8 cores with 491MB heap and 64MB offheap memory [pid: 459085] (Linux 5.4.0-216-generic amd64, Ubuntu 17.0.15 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/purplezky/work/asi/f1r3node-rust/target/cold-store-validation/formal/check.n217YS/MC_ColdStoreCompression_budget_unsafe.tla
+Parsing file /home/purplezky/work/asi/f1r3node-rust/target/cold-store-validation/formal/check.n217YS/ColdStoreCompression.tla
+Parsing file /tmp/Integers.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Integers
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module ColdStoreCompression
+Semantic processing of module MC_ColdStoreCompression_budget_unsafe
+Starting... (2026-11-26 09:48:33)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-11-26 09:48:34.
+Error: Invariant BudgetBounded is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ pending = FALSE
+/\ row = [value |-> 0, format |-> "raw", valid |-> FALSE, present |-> FALSE]
+/\ deleteSafe = TRUE
+/\ used = 0
+/\ readSafe = TRUE
+/\ held = <<0, 0, 0>>
+/\ snapshot = [value |-> 0, format |-> "raw", valid |-> FALSE, present |-> FALSE]
+/\ exportSafe = TRUE
+
+State 2: <Acquire line 56, col 12 to line 61, col 84 of module ColdStoreCompression>
+/\ pending = FALSE
+/\ row = [value |-> 0, format |-> "raw", valid |-> FALSE, present |-> FALSE]
+/\ deleteSafe = TRUE
+/\ used = 2
+/\ readSafe = TRUE
+/\ held = <<2, 0, 0>>
+/\ snapshot = [value |-> 0, format |-> "raw", valid |-> FALSE, present |-> FALSE]
+/\ exportSafe = TRUE
+
+State 3: <Acquire line 56, col 12 to line 61, col 84 of module ColdStoreCompression>
+/\ pending = FALSE
+/\ row = [value |-> 0, format |-> "raw", valid |-> FALSE, present |-> FALSE]
+/\ deleteSafe = TRUE
+/\ used = 5
+/\ readSafe = TRUE
+/\ held = <<2, 3, 0>>
+/\ snapshot = [value |-> 0, format |-> "raw", valid |-> FALSE, present |-> FALSE]
+/\ exportSafe = TRUE
+
+325 states generated, 110 distinct states found, 96 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 9 (minimum is 4, the maximum 17 and the 95th percentile is 17).
+Finished in 00s at (2026-11-26 09:48:34)

@@ -1,7 +1,11 @@
 # Storage-Only Compression of Canonical Cold Leaves
 
-Status: draft proposal. No implementation, migration, or performance claim is included.
+Status: experimental implementation available, with compressed writes disabled by default.
 Date: 2026-11-25.
+
+The [implementation record](storage-only-compression-implementation.md) specifies the format, limits, tests, benchmark, and remaining rollout gates.
+The design below remains the proposal baseline.
+No live migration or production performance claim is included.
 
 ## Objective
 

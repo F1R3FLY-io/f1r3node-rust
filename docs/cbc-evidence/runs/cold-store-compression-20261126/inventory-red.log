@@ -1,0 +1,22 @@
+   Compiling rspace_plus_plus v0.1.0 (/home/purplezky/work/asi/f1r3node-rust/rspace++)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.99s
+     Running unittests examples/cold_store_inventory.rs (target/debug/examples/cold_store_inventory-fbf6ea7d4b82da02)
+
+running 1 test
+test tests::read_only_reopen_counts_mixed_rows_without_changing_the_database ... FAILED
+
+failures:
+
+---- tests::read_only_reopen_counts_mixed_rows_without_changing_the_database stdout ----
+
+thread 'tests::read_only_reopen_counts_mixed_rows_without_changing_the_database' (520605) panicked at rspace++/examples/cold_store_inventory.rs:103:54:
+called `Result::unwrap()` on an `Err` value: IoError("Invalid argument (os error 22)")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::read_only_reopen_counts_mixed_rows_without_changing_the_database
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p rspace_plus_plus --example cold_store_inventory`

@@ -218,6 +218,9 @@ pub struct Storage {
     #[serde(rename = "data-dir")]
     pub data_dir: PathBuf,
 
+    #[serde(default, rename = "cold-store-compression")]
+    pub cold_store_compression: bool,
+
     /// File I/O FIP static provisioning: operator-declared
     /// `oracle-static-files` / `oracle-static-dirs` /
     /// `consensus-static-files` / `consensus-static-dirs` HOCON
@@ -250,6 +253,34 @@ pub struct Storage {
     pub cli_consensus_static_files: Vec<CliStaticFileArg>,
     #[serde(skip)]
     pub cli_consensus_static_dirs: Vec<CliStaticDirArg>,
+}
+
+#[cfg(test)]
+mod cold_store_compression_tests {
+    use super::Storage;
+
+    #[test]
+    fn cold_compression_is_explicit_and_disabled_for_legacy_configuration() {
+        let legacy: Storage = hocon::HoconLoader::new()
+            .load_str("data-dir = node-data")
+            .unwrap()
+            .resolve()
+            .unwrap();
+        assert!(!legacy.cold_store_compression);
+        let enabled: Storage = hocon::HoconLoader::new()
+            .load_str("data-dir = node-data\ncold-store-compression = true")
+            .unwrap()
+            .resolve()
+            .unwrap();
+        assert!(enabled.cold_store_compression);
+        let serialized = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(serialized["cold-store-compression"], true);
+        assert!(hocon::HoconLoader::new()
+            .load_str("data-dir = node-data\ncold-store-compression = 12")
+            .unwrap()
+            .resolve::<Storage>()
+            .is_err());
+    }
 }
 
 /// TLS configuration
