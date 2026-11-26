@@ -959,14 +959,17 @@ fn greedy_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
     HashableSet(rejected)
 }
 
-/// IntegerAdd cells some branch takes value from, net over the branch's items.
-/// Only these couple branches in the overdraw fold: a cell every branch adds
-/// to cannot go negative, whatever subset of them survives.
-fn debited_cells<R>(
+/// IntegerAdd cells on which the overdraw fold can reject a branch, judged on
+/// each branch's net diff: a cell some branch takes value from, and a cell the
+/// branches' combined credits could carry past the IntegerAdd bound. Only these
+/// couple branches: on any other cell every subset of the branches applies.
+fn coupling_cells<R>(
     nodes: &[&Branch<R>],
     mergeable_channels: &impl Fn(&R) -> NumberChannelsDiff,
+    base: &HashMap<Blake2b256Hash, BigInt>,
 ) -> HashSet<Blake2b256Hash> {
-    let mut debited = HashSet::new();
+    let mut coupling = HashSet::new();
+    let mut credits: HashMap<Blake2b256Hash, BigInt> = HashMap::new();
     for branch in nodes {
         let mut net: HashMap<Blake2b256Hash, BigInt> = HashMap::new();
         for item in &branch.0 {
@@ -976,13 +979,24 @@ fn debited_cells<R>(
                 }
             }
         }
-        debited.extend(
-            net.into_iter()
-                .filter(|(_, diff)| diff.sign() == Sign::Minus)
-                .map(|(channel, _)| channel),
-        );
+        for (channel, diff) in net {
+            match diff.sign() {
+                Sign::Minus => {
+                    coupling.insert(channel);
+                }
+                Sign::Plus => *credits.entry(channel).or_default() += diff,
+                Sign::NoSign => {}
+            }
+        }
     }
-    debited
+    for (channel, total) in credits {
+        // A cell the base does not hold starts from 0, as in the fold.
+        let start = base.get(&channel).cloned().unwrap_or_default();
+        if apply_mergeable_value(&start, &total, MergeType::IntegerAdd).is_none() {
+            coupling.insert(channel);
+        }
+    }
+    coupling
 }
 
 fn select_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
@@ -1009,12 +1023,12 @@ fn select_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
             }
         }
     }
-    let debited = debited_cells(&nodes, mergeable_channels);
+    let coupling = coupling_cells(&nodes, mergeable_channels, base);
     let mut channel_owner: HashMap<Blake2b256Hash, usize> = HashMap::new();
     for (i, branch) in nodes.iter().enumerate() {
         for item in &branch.0 {
             for channel in mergeable_channels(item).into_keys() {
-                if !debited.contains(&channel) {
+                if !coupling.contains(&channel) {
                     continue;
                 }
                 match channel_owner.get(&channel) {
@@ -2326,6 +2340,37 @@ mod component_selection_tests {
             "twelve pairs searched apart, two options each"
         );
         assert_eq!(rejected.0.len(), 12);
+    }
+
+    #[test]
+    fn credits_that_could_pass_the_bound_join_one_group() {
+        let branches: Vec<Branch<i32>> = (0..2)
+            .map(|i| Arc::new(HashableSet(HashSet::from([i]))))
+            .collect();
+        let conflict_map: HashMap<Branch<i32>, HashableSet<Branch<i32>>> = branches
+            .iter()
+            .map(|b| (b.clone(), HashableSet(HashSet::new())))
+            .collect();
+        let all = HashableSet(branches.iter().cloned().collect());
+        let half: BigInt = BigInt::from(1) << 255usize;
+        let credit_half = |_: &i32| {
+            NumberChannelsDiff::from([(channel(9), (half.clone(), MergeType::IntegerAdd))])
+        };
+        let (rejected, n_options, _) = select_rejection(
+            &all,
+            &conflict_map,
+            &HashMap::from([(channel(9), BigInt::from(0))]),
+            &credit_half,
+            &|_: &i32| 1,
+            &|_: &i32| 0,
+            &HashSet::new(),
+        );
+        assert_eq!(n_options, 1, "the two credits fold as one group");
+        assert_eq!(
+            rejected.0.len(),
+            1,
+            "2^255 + 2^255 is one past the IntegerAdd bound"
+        );
     }
 
     #[test]
