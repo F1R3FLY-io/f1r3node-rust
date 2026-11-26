@@ -5,7 +5,7 @@ use models::rust::rholang::implicits::concatenate_pars;
 use rholang_parser::ast::{AnnProc, Proc};
 
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::normalize::normalize_ann_proc_in_place;
 use crate::rust::interpreter::errors::InterpreterError;
 
 fn flatten_par<'ast>(root: &'ast AnnProc<'ast>) -> Vec<&'ast AnnProc<'ast>> {
@@ -53,7 +53,7 @@ pub fn normalize_p_par<'ast>(
             bound_map_chain: bound_map_chain.clone(),
         };
 
-        let proc_result = normalize_ann_proc(proc, proc_input, env, parser)?;
+        let proc_result = normalize_ann_proc_in_place(proc, proc_input, env, parser)?;
         normalized.push(proc_result.par);
         accumulated_free_map = proc_result.free_map;
     }
