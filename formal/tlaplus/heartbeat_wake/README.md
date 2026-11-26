@@ -48,6 +48,10 @@ The B1 unit test `a_node_wakes_the_heartbeat_on_deploys_only_without_autopropose
 
 The B1 RED control enabled the wake for every startup configuration. The test failed for autopropose with a proposal trigger. The pre-cycle source already produced the expected wake decision through its filtered API proposer. The implementing agent reported 66 focused tests passed on the final B1 source. Strict Clippy and formatting checks passed.
 
+The B2 test uses a pending deploy and an own block about 1 s old. The cooldown is 3 s and the check interval is 60 s. The production heartbeat check makes zero proposals and computes a delay above 1.5 s and at most 2 s. The test covers the delay calculation. The accounting smoke below exercises the live loop.
+
+The B2 RED control made `cooldown_recheck_delay` return `None` in a scratch copy. The test failed with a 60 s delay. The existing F2 code passed the test before any production edit. The implementing agent reported 57 heartbeat tests passed, with strict Clippy and formatting checks clean.
+
 All eight proposer integration tests passed. The [proposer source](../../../casper/src/rust/blocks/proposer/proposer.rs) has the same bytes as `dev` at `71d435ea6f6a7d766b7e1bda29b96cc0017563ca`. The tests cover proposal constraints, publication effects, and empty recovery under the height constraint.
 
 The [lane binding check](check-lane-binding.sh) compiled the baseline and candidate `decide_lanes` functions and checked 221,184 cases. It covered all 13 Boolean inputs and three relations to each lag cap. The existing lane decisions matched in every case. The new flag was true exactly when an active cooldown was the sole reason the pending-deploy lane was ineligible.
@@ -55,6 +59,7 @@ The [lane binding check](check-lane-binding.sh) compiled the baseline and candid
 ```bash
 bash formal/tlaplus/heartbeat_wake/check-lane-binding.sh 71d435ea6f6a7d766b7e1bda29b96cc0017563ca
 cargo test --release -p node --lib heartbeat_proposer::
+cargo nextest run --locked --release -p node -E 'test(/heartbeat/)'
 cargo test --release -p casper --lib a_node_wakes_the_heartbeat_on_deploys_only_without_autopropose
 cargo test --release -p casper --test mod engine::casper_launch_spec
 cargo test --release -p casper --test mod add_block::proposer_spec
@@ -78,6 +83,14 @@ Both runs used `test_heartbeat_timing` with the native subprocess provider, `HEA
 
 Both tests passed and the last finalized block advanced in every phase. This comparison covers the local five-phase profile. The shared merge plan also requires accounting-shard qualification. [Qualification plan](../../../docs/designs/deploy-heartbeat-wake.md#7-shared-merge-plan)
 
+## Accounting-shard smoke and finality fixture
+
+The standalone protocol-6 smoke applied F1 and F2, including the B1 startup change from `fe64a7fe84eaaf633138cea93ba2b9b4441e5477`, to `ca-canary` base `7a684d9fd6d88aaaf56203715e2328d8342be6ac`. With autopropose off, the validator recorded two deploy wakes, one cooldown recheck, and zero A-LIN holds. Both submitted offers executed with outcome `Completed`.
+
+The stored timestamps of the two deploy blocks were 3,008 ms apart with a 3,000 ms cooldown. Blocks 3 and 4 each carried one execution record and zero deploys. The order floor reached block 4. The standalone state-finality floor stayed at genesis during the smoke.
+
+On the same accounting candidate, the three-validator `the_lfb_follows_the_attested_canonical_roots_below_the_order_floor` fixture passed. It checks state-finality progress and canonical execution roots on all validators and logs one cancelled replay warning. The fixture uses direct proposals. B2 adds test coverage on `dev` while preserving the runtime behavior measured here.
+
 ## Evidence hashes
 
 Run `shasum -a 256 -c` from the repository root with this manifest.
@@ -95,7 +108,7 @@ acb8bcab18784bb02b8e5d3e3207d3131eac874de02aec1756d68061dba688e6  scripts/ci/che
 e0ccf0d7ae287f5fe94b8833d6cd86d6062a581617a4336393b6048e50674dba  scripts/ci/check-formal-invariants.sh
 54b10f2ba7e4667ab5ebb6f59b017802bd532cfeba2d6239f85c99469a1a3292  scripts/ci/check-tla-invariants.sh
 98830ea9f2b08b237b718d39a438db3fd182646dacf0371609c726a7ae926f26  scripts/ci/test-check-tla-invariants.sh
-edd5aa018a48170b79bd665a6fb1c2fe37049385c2fe3de137538f871925a3a0  node/src/rust/instances/heartbeat_proposer.rs
+24b96ac9caccc326204610851347e69fa786aa3819e9618420d6b56789a1fd0e  node/src/rust/instances/heartbeat_proposer.rs
 7456a8df25a36b68c13698181189912154322e87073c3701ee02d14e23b2ed3d  node/src/rust/runtime/setup.rs
 cdac4c88a4d782a500fb68813bf0cc7dd0b936c7c3ee1721d7ae9302a86e0505  casper/src/rust/engine/casper_launch.rs
 ebfdb11d68d0e49de763caca5a3dbf2f85581d2eda8fb29099621421dcf4aa2e  casper/src/rust/blocks/proposer/proposer.rs
