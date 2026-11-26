@@ -30,10 +30,12 @@ Install the packages in [Development Setup](#development-setup). Then build, tes
 
 ```bash
 cargo build
-cargo test
+just test
 export STANDALONE_PRIVATE_KEY=<validator key>   # see below
 just run-standalone
 ```
+
+`just test` runs the workspace suite under the host-wide test lock so concurrent runs across sibling checkouts cannot collide on LMDB semaphores, test tempdirs, or sockets. See [DEVELOPER.md](DEVELOPER.md#test) for the lock and the direct `cargo test` opt-out.
 
 `run-standalone` reads `STANDALONE_PRIVATE_KEY` from the environment and `just` resolves it before it builds, so without it the recipe aborts immediately. Use the key that funds your standalone genesis; `docker/.env.example` carries the development key the shipped Docker configs use.
 
@@ -134,10 +136,14 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test
-cargo test --release
-./scripts/run_rust_tests.sh
+just test                         # cargo nextest run, under the host-wide lock
+just test cargo nextest run --release
+just test cargo test -p casper
+./scripts/ci/run-tests.sh         # same lock, forwards "$@" to cargo
+./scripts/run_rust_tests.sh       # legacy per-crate runner, also locked
 ```
+
+The host-wide lock lives in `scripts/lib/test-lock.sh` and is acquired by every sanctioned entry point (`.githooks/pre-push`, `scripts/ci/run-tests.sh`, `just test`, `scripts/run_rust_tests.sh`). Direct `cargo test` / `cargo nextest run` do **not** acquire the lock and may collide with a sibling checkout's test run on the same host; prefer `just test` unless you know you are the only runner. Set `SKIP_TEST_LOCK=1` to opt out explicitly.
 
 ### Formal Verification Tooling
 
@@ -235,7 +241,6 @@ See [`scripts/`](scripts) for the full list.
 Install these tools only for the tier you run.
 
 ```bash
-cargo install cargo-nextest --locked   # loom interleaving tests
 cargo install --locked kani-verifier && cargo kani setup   # Kani proof harnesses
 cargo install --locked cargo-mutants   # mutation coverage
 cargo install --locked cargo-fuzz      # search-horizon fuzz tiers
@@ -244,9 +249,6 @@ cargo install --locked cargo-fuzz      # search-horizon fuzz tiers
 ```bash
 # Property-based tier at the CI case count
 PROPTEST_CASES=2000 cargo test --release -p casper
-
-# Loom exhaustive interleaving check
-cargo nextest run --release -p casper slashing::loom_t_9_2
 
 # One Kani harness
 cargo kani -p casper --harness <harness_name>

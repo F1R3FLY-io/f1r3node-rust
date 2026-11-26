@@ -64,6 +64,8 @@
 merge_queue:
   mode: serial
   max_parallel_checks: 1
+  queue_controls_comment: true
+  status_comments: all
 
 # Priority. The priority rules apply across all queues, and the first rule
 # that matches sets the priority. A pull request that no rule matches gets
@@ -142,7 +144,7 @@ queue_rules:
       - or:
           - author=@F1R3FLY-io/ci-maintainers
           - approved-reviews-by=@F1R3FLY-io/ci-maintainers
-          - '-files~=^(\.github/(workflows|scripts)/|\.github/CODEOWNERS$|\.mergify\.yml$|deny\.toml$|supply-chain/|\.cargo/|Cross\.toml$|rust-toolchain\.toml$|scripts/(ci|supply-chain)/|SECURITY\.md$|docs/security-advisory-process\.md$|(.*/)?(Cargo\.toml|Cargo\.lock|build\.rs|Dockerfile)$)'
+          - '-files~=^(\.github/(workflows|scripts)/|\.github/(CODEOWNERS|cbc-allowed-signers)$|\.mergify\.yml$|deny\.toml$|supply-chain/|\.cargo/|Cross\.toml$|rust-toolchain\.toml$|scripts/(ci|supply-chain)/|SECURITY\.md$|docs/security-advisory-process\.md$|(.*/)?(Cargo\.toml|Cargo\.lock|build\.rs|Dockerfile)$)'
       - "#changes-requested-reviews-by=0"
       - check-success=Static Checks
       - check-success=Script Tests
@@ -154,6 +156,7 @@ queue_rules:
       - check-success=Test (comm)
       - check-success=Test (crypto)
       - check-success=Test (graphz)
+      - check-success=Test (deploy-queue)
       - check-success=Test (models)
       - check-success=Test (rholang)
       - check-success=Test (node)
@@ -181,7 +184,7 @@ queue_rules:
       - or:
           - author=@F1R3FLY-io/ci-maintainers
           - approved-reviews-by=@F1R3FLY-io/ci-maintainers
-          - '-files~=^(\.github/(workflows|scripts)/|\.github/CODEOWNERS$|\.mergify\.yml$|deny\.toml$|supply-chain/|\.cargo/|Cross\.toml$|rust-toolchain\.toml$|scripts/(ci|supply-chain)/|SECURITY\.md$|docs/security-advisory-process\.md$|(.*/)?(Cargo\.toml|Cargo\.lock|build\.rs|Dockerfile)$)'
+          - '-files~=^(\.github/(workflows|scripts)/|\.github/(CODEOWNERS|cbc-allowed-signers)$|\.mergify\.yml$|deny\.toml$|supply-chain/|\.cargo/|Cross\.toml$|rust-toolchain\.toml$|scripts/(ci|supply-chain)/|SECURITY\.md$|docs/security-advisory-process\.md$|(.*/)?(Cargo\.toml|Cargo\.lock|build\.rs|Dockerfile)$)'
       - "#changes-requested-reviews-by=0"
       - check-success=Static Checks
       - check-success=Script Tests
@@ -193,6 +196,7 @@ queue_rules:
       - check-success=Test (comm)
       - check-success=Test (crypto)
       - check-success=Test (graphz)
+      - check-success=Test (deploy-queue)
       - check-success=Test (models)
       - check-success=Test (rholang)
       - check-success=Test (node)
@@ -231,6 +235,7 @@ queue_rules:
       - check-success=Test (comm)
       - check-success=Test (crypto)
       - check-success=Test (graphz)
+      - check-success=Test (deploy-queue)
       - check-success=Test (models)
       - check-success=Test (rholang)
       - check-success=Test (node)
@@ -264,6 +269,7 @@ queue_rules:
       - check-success=Test (comm)
       - check-success=Test (crypto)
       - check-success=Test (graphz)
+      - check-success=Test (deploy-queue)
       - check-success=Test (models)
       - check-success=Test (rholang)
       - check-success=Test (node)
@@ -305,6 +311,7 @@ queue_rules:
       - check-success=Test (comm)
       - check-success=Test (crypto)
       - check-success=Test (graphz)
+      - check-success=Test (deploy-queue)
       - check-success=Test (models)
       - check-success=Test (rholang)
       - check-success=Test (node)
@@ -339,6 +346,7 @@ queue_rules:
       - check-success=Test (comm)
       - check-success=Test (crypto)
       - check-success=Test (graphz)
+      - check-success=Test (deploy-queue)
       - check-success=Test (models)
       - check-success=Test (rholang)
       - check-success=Test (node)
@@ -394,10 +402,12 @@ queue_rules:
       - check-success=cargo-deny
       - check-success=Commit Policy
       - check-success=Promotion Source
+      - check-success=CI Parity
       - check-success=Test (block-storage)
       - check-success=Test (comm)
       - check-success=Test (crypto)
       - check-success=Test (graphz)
+      - check-success=Test (deploy-queue)
       - check-success=Test (models)
       - check-success=Test (rholang)
       - check-success=Test (node)
@@ -421,10 +431,12 @@ queue_rules:
       - check-success=cargo-deny
       - check-success=Commit Policy
       - check-success=Promotion Source
+      - check-success=CI Parity
       - check-success=Test (block-storage)
       - check-success=Test (comm)
       - check-success=Test (crypto)
       - check-success=Test (graphz)
+      - check-success=Test (deploy-queue)
       - check-success=Test (models)
       - check-success=Test (rholang)
       - check-success=Test (node)
@@ -467,40 +479,12 @@ pull_request_rules:
         add:
           - security
 
-  - name: Queue a pull request into dev
-    conditions:
-      - base=dev
-    actions:
-      queue:
-        name: dev
-
-  - name: Queue a pull request into master
-    conditions:
-      - base=master
-    actions:
-      queue:
-        name: master
-
-  - name: Queue a release train item
-    conditions:
-      - base=ca-canary
-      - head~=^ca/
-    actions:
-      queue:
-        name: ca-item
-
   - name: Queue the daily back-merge
     conditions:
       - base=ca-canary
       - head~=^backmerge/ca-release-[0-9a-f]{12}$
       - author=f1r3node-promotion[bot]
+      - body~=created by the scheduled Release Train Daily Back-merge workflow
     actions:
       queue:
         name: ca-daily
-
-  - name: Queue a release train promotion
-    conditions:
-      - base=ca-release
-    actions:
-      queue:
-        name: ca-release

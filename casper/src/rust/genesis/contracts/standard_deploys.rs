@@ -31,7 +31,7 @@ fn embedded_source(name: &str, code: &str) -> CompiledRholangSource {
 // unforgeable name; re-exported here so genesis-deploy code keeps a
 // single import surface.
 pub use rholang::rust::interpreter::merging::mergeable_tags::{
-    NON_NEGATIVE_NUMBER_PK, NON_NEGATIVE_NUMBER_TIMESTAMP,
+    GENESIS_VALID_AFTER_BLOCK_NUMBER, NON_NEGATIVE_NUMBER_PK, NON_NEGATIVE_NUMBER_TIMESTAMP,
 };
 
 // Private keys used to sign blessed (standard) contracts
@@ -129,7 +129,7 @@ fn to_deploy(
         term: compiled_source.code,
         phlo_limit: i64::MAX, // Equivalent to accounting.MAX_VALUE in Scala
         phlo_price: (0).into(),
-        valid_after_block_number: 0,
+        valid_after_block_number: GENESIS_VALID_AFTER_BLOCK_NUMBER,
         shard_id: shard_id.to_string(),
         expiration_timestamp: None,
         parameters: Vec::new(),
@@ -320,6 +320,7 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
             ("maxParentDepth", &pos.max_parent_depth.to_string()),
             ("deployLifespan", &pos.deploy_lifespan.to_string()),
             ("minPhloPrice", &pos.min_phlo_price.to_string()),
+            ("maxPhloLimit", &pos.max_phlo_limit.to_string()),
             (
                 "posMultiSigPublicKeys",
                 &ProofOfStake::public_keys(&pos.pos_multi_sig_public_keys),

@@ -33,12 +33,23 @@ These fire continuously as the node processes blocks.
 
 | Event | Description | Payload |
 |-------|-------------|---------|
-| `block-created` | Block proposed by this validator (before validation) | block-hash, block-number, timestamp, parent-hashes, justification-hashes, deploys, creator, seq-num |
-| `block-added` | Block validated and added to DAG | Same as block-created |
-| `block-finalised` | Block finalized by consensus | Same as block-created |
+| `block-created` | Block proposed by this validator (before validation) | block-hash, block-number, timestamp, parent-hashes, justification-hashes, deploys, creator, seq-num, deploy-admission |
+| `block-added` | Block validated and added to DAG | Same as block-created, without deploy-admission |
+| `block-finalised` | Block finalized by consensus | Same as block-added |
 | `transfers-available` | Transfer data extracted after finalization (readonly only) | block-hash, block-number, deploys (with transfers) |
 
 The `deploys` array in block events contains objects with `id`, `cost`, `deployer`, `errored`, and optionally `transfers` (omitted on `block-created` and `block-added`, as transfer extraction has not yet occurred).
+
+`deploy-admission` on `block-created` says how the block creator took fresh user deploys, and is `null` for a block built without selecting user deploys:
+
+| Field | Description |
+|-------|-------------|
+| `cap` | The most fresh user deploys the block could take |
+| `cap-hit` | Fresh deploys stayed in the pool because the block reached `cap` |
+| `byte-cap-hit` | Fresh deploys stayed in the pool because the block reached its byte budget |
+| `cap-source` | What set the cap: `normal`, `base`, `backlog`, `soft-backlog`, `soft-stalled`, `stale` or `hard` |
+| `backpressure` | The cap was lowered because finality trails the tip or has stalled |
+| `finality-lag` | Heights between the tip and the last finalized block when the block was created |
 
 ### Transfer Extraction Flow
 
@@ -78,6 +89,43 @@ The `transfers-available` payload:
 }
 ```
 
+### Deploy Verdicts
+
+`deploy-verdicts` carries every terminal verdict that one finalization step wrote. A step after a long finality
+jump can decide hundreds of deploys, so they arrive in one event. A deploy gets one verdict and never a second.
+
+```json
+{
+  "event": "deploy-verdicts",
+  "schema-version": 1,
+  "payload": {
+    "verdicts": [
+      {"deploy-id": "3044...", "state": "finalized", "rejection-count": 0, "block-hash": "3bfdf56f..."},
+      {"deploy-id": "3045...", "state": "expired", "rejection-count": 1, "block-hash": null}
+    ]
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `deploy-id` | Hex deploy signature |
+| `state` | `finalized`, `expired` or `failed`, the same verdicts as [`GET /api/deploy-finalization-status`](api-reference.md#get-apideploy-finalization-statusdeploy_sig_hex) |
+| `rejection-count` | Times a merge rejected the deploy |
+| `block-hash` | The latest block that included the deploy; `null` when no block did |
+
+### Stream Lag
+
+A client that reads too slowly loses events. In their place the node sends one `stream-lagged` event with the
+number of events lost:
+
+```json
+{"event": "stream-lagged", "schema-version": 1, "payload": {"skipped": 12}}
+```
+
+The client's view now has a gap. It reads again what it tracks, for example the status of each deploy it waits
+for.
+
 ### Genesis Ceremony
 
 These fire once during node startup when the genesis block is being created and approved.
@@ -114,6 +162,8 @@ Events that arrive both via replay and live stream are deduplicated.
 | `block-added` | `casper/src/rust/engine/multi_parent_casper/mod.rs` |
 | `block-finalised` | `casper/src/rust/engine/multi_parent_casper/mod.rs` |
 | `transfers-available` | `node/src/rust/runtime/setup.rs` (after block report cache warming) |
+| `deploy-verdicts` | `casper/src/rust/engine/multi_parent_casper/finalization_runner.rs` |
+| `stream-lagged` | `node/src/rust/web/events_info.rs` (per subscriber, not on the event bus) |
 | `sent-unapproved-block` | `casper/src/rust/engine/approve_block_protocol.rs` |
 | `block-approval-received` | `casper/src/rust/engine/approve_block_protocol.rs` |
 | `sent-approved-block` | `casper/src/rust/engine/approve_block_protocol.rs` |
@@ -124,7 +174,7 @@ Events that arrive both via replay and live stream are deduplicated.
 ## Implementation
 
 - **Event bus**: `shared/src/rust/shared/f1r3fly_events.rs` — `F1r3flyEvents` struct with tokio broadcast channel (capacity 100) and startup buffer
-- **Event types**: `shared/src/rust/shared/f1r3fly_event.rs` — `F1r3flyEvent` enum with 10 variants
+- **Event types**: `shared/src/rust/shared/f1r3fly_event.rs` — `F1r3flyEvent` enum with 11 variants
 - **WebSocket handler**: `node/src/rust/web/events_info.rs` — handles connection, replay, dedup, and live streaming
 - **Transfer extraction**: `node/src/rust/runtime/setup.rs` — `handle_block_finalized()` extracts transfers from block report and publishes `TransfersAvailable`
 - **Startup seal**: `node/src/rust/runtime/node_runtime.rs` — calls `seal_startup()` after engine_init completes

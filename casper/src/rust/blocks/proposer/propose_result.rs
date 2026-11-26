@@ -4,6 +4,7 @@ use std::fmt;
 
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
+use shared::rust::shared::f1r3fly_event::DeployAdmission;
 use uuid::Uuid;
 
 use crate::rust::block_status::ValidBlock;
@@ -73,8 +74,9 @@ pub enum BlockCreatorResult {
     NoNewDeploys,
     /// The created block together with the pre- and post-state hashes that were computed
     /// during `compute_deploys_checkpoint`. Carrying these hashes avoids re-running the
-    /// expensive checkpoint replay during self-validation.
-    Created(BlockMessage, Bytes, Bytes),
+    /// expensive checkpoint replay during self-validation. The admission says how the
+    /// block took fresh user deploys; `None` when it selected none.
+    Created(BlockMessage, Bytes, Bytes, Option<DeployAdmission>),
 }
 
 impl CheckProposeConstraintsResult {
@@ -154,14 +156,28 @@ impl ProposeResult {
             ProposeStatus::Failure(ProposeFailure::NoNewDeploys)
         )
     }
+
+    pub fn is_not_bonded(&self) -> bool {
+        matches!(
+            self.propose_status,
+            ProposeStatus::Failure(ProposeFailure::CheckConstraintsFailure(
+                CheckProposeConstraintsFailure::NotBonded
+            ))
+        )
+    }
+
+    pub fn is_history_incomplete(&self) -> bool {
+        matches!(
+            self.propose_status,
+            ProposeStatus::Failure(ProposeFailure::CheckConstraintsFailure(
+                CheckProposeConstraintsFailure::HistoryIncomplete
+            ))
+        )
+    }
 }
 
 impl BlockCreatorResult {
     pub fn no_new_deploys() -> Self { BlockCreatorResult::NoNewDeploys }
-
-    pub fn created(b: BlockMessage, pre_state_hash: Bytes, post_state_hash: Bytes) -> Self {
-        BlockCreatorResult::Created(b, pre_state_hash, post_state_hash)
-    }
 }
 
 impl fmt::Display for ProposeStatus {

@@ -18,8 +18,9 @@ use super::LOG_TARGET;
 // The retriever's source label is part of the exported name the block-transfer
 // dashboard reads.
 use crate::rust::metrics_constants::{
-    BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC, BLOCK_INGEST_DROPPED_METRIC,
-    BLOCK_INGEST_EVICTIONS_METRIC, BLOCK_INGEST_METRICS_SOURCE, BLOCK_RETRIEVER_METRICS_SOURCE,
+    BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC, BLOCK_INGEST_BELOW_HORIZON_METRIC,
+    BLOCK_INGEST_DROPPED_METRIC, BLOCK_INGEST_EVICTIONS_METRIC, BLOCK_INGEST_METRICS_SOURCE,
+    BLOCK_INGEST_PRUNED_RESPONSES_METRIC, BLOCK_RETRIEVER_METRICS_SOURCE,
 };
 
 pub const LOCAL_LOOKUPS_PER_TICK: usize = 256;
@@ -57,6 +58,12 @@ enum DropReason {
     Invalid,
     TooLarge,
     StateUnavailable,
+    /// A peer answered `BlockRequest` for a cited dependency with
+    /// `BlockPrunedResponse`; the held blocks whose dependency walk
+    /// reaches that pruned hash can never advance and are evicted so
+    /// the pending area does not accumulate them while the observer
+    /// waits for its restart-into-LFS to catch up (#1059).
+    BelowPruneHorizon,
 }
 
 impl DropReason {
@@ -65,6 +72,7 @@ impl DropReason {
             DropReason::Invalid => "invalid",
             DropReason::TooLarge => "too-large",
             DropReason::StateUnavailable => "state-unavailable",
+            DropReason::BelowPruneHorizon => "below-prune-horizon",
         }
     }
 }
@@ -129,7 +137,13 @@ pub enum StateFetchResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IngestInput {
-    /// Casper runs from an approved block at this height.
+    /// Casper runs from an approved block at this height. The anchor
+    /// here is a snapshot: block-store GC advances the effective
+    /// anchor on the Casper trait, but ingest stays on the initial
+    /// value so vouched below-approved blocks keep their
+    /// settled-history routing while vouched below-GC-anchor blocks
+    /// (on a genesis-rooted node they ARE this node's own history)
+    /// take the normal validation path.
     Attached {
         anchor_height: i64,
     },
@@ -137,6 +151,17 @@ pub enum IngestInput {
     Received(HeldMeta),
     Announced {
         hash: BlockHash,
+        peer: PeerNode,
+    },
+    /// A peer answered a `BlockRequest` with `BlockPrunedResponse`: the
+    /// block body has been retention-swept past the peer's horizon. The
+    /// need is dropped so the retry ladder stops burning network, and the
+    /// peer's `prune_floor` is recorded on the ingest view so the operator
+    /// (or a future launch) can take the last-finalized-state path (#1059).
+    BlockPruned {
+        hash: BlockHash,
+        block_height: i64,
+        prune_floor: i64,
         peer: PeerNode,
     },
     Need {
@@ -235,19 +260,21 @@ enum Shape {
 /// the effects for the owner task to carry out.
 #[derive(Debug)]
 pub struct IngestState {
-    /// Height of the approved block, once casper runs: cited blocks at or
-    /// below it may be admitted as settled history.
+    /// Height of the approved block, once casper runs: cited blocks at
+    /// or below it may be admitted as settled history. Snapshot at
+    /// attach time — GC-advanced effective anchor is NOT reflected
+    /// here, so that a genesis-rooted node (approved block = 0) never
+    /// routes its OWN below-GC-anchor history through the
+    /// settled-admission path.
     anchor_height: Option<i64>,
     /// The most parents a valid block lists; `None` when unlimited.
     max_parents: Option<usize>,
-    /// Blocks inserted while a worker still validated them; their waiters
-    /// are released when the outcome arrives.
-    inserted_while_working: HashSet<BlockHash>,
     /// Needed blocks the pending area keeps room for.
     reserved: HashSet<BlockHash>,
     tracker: DependencyTracker,
     scheduler: FetchScheduler,
     reputation: PeerReputation,
+    view: IngestView,
 }
 
 impl IngestState {
@@ -255,11 +282,11 @@ impl IngestState {
         Self {
             anchor_height: None,
             max_parents: None,
-            inserted_while_working: HashSet::new(),
             reserved: HashSet::new(),
             tracker: DependencyTracker::new(view.clone()),
             scheduler: FetchScheduler::new(view.clone()),
-            reputation: PeerReputation::new(view),
+            reputation: PeerReputation::new(view.clone()),
+            view,
         }
     }
 
@@ -317,14 +344,22 @@ impl IngestState {
                     self.scheduler.announce(&hash, &peer, now_ms);
                 }
             }
+            IngestInput::BlockPruned {
+                hash,
+                block_height,
+                prune_floor,
+                peer,
+            } => self.block_pruned(hash, block_height, prune_floor, peer, &mut effects),
             IngestInput::Need { hash } => {
-                if !stores.in_dag(&hash) && !self.tracker.contains(&hash) {
-                    self.scheduler.need_block(
-                        &hash,
-                        NeedOrigin::Requested,
-                        NeedFacts::default(),
-                        now_ms,
-                    );
+                if self.tracker.contains(&hash) {
+                    self.vouch_for_held(&hash);
+                } else if !stores.in_dag(&hash) {
+                    let facts = NeedFacts {
+                        vouched: true,
+                        ..NeedFacts::default()
+                    };
+                    self.scheduler
+                        .need_block(&hash, NeedOrigin::Requested, facts, now_ms);
                 }
             }
             IngestInput::IntakeRefused(refused) => {
@@ -443,12 +478,9 @@ impl IngestState {
             )
             .record(now_ms.saturating_sub(first_requested_ms) as f64 / 1_000.0);
         }
-        let settled = need.as_ref().is_some_and(|need| {
-            need.facts.cited_by_bonded
-                && self
-                    .anchor_height
-                    .is_some_and(|anchor| anchor > 0 && meta.height <= anchor)
-        });
+        let settled = need
+            .as_ref()
+            .is_some_and(|need| need.facts.vouched && self.at_or_below_anchor(meta.height));
         if meta.solicited {
             meta.pushed_by = None;
         }
@@ -581,10 +613,9 @@ impl IngestState {
 
     fn inserted(&mut self, hash: &BlockHash, now_ms: u64, stores: &dyn StoreReads) {
         // The worker validating `hash` still applies the insert's effects
-        // (latest messages, finalization); its waiters start after its
-        // outcome.
+        // (latest messages, finalization); its outcome finishes the insert,
+        // whichever of the two arrives first.
         if self.tracker.is_working(hash) {
-            self.inserted_while_working.insert(hash.clone());
             return;
         }
         self.finish_insert(hash, now_ms, stores);
@@ -674,16 +705,32 @@ impl IngestState {
         stores: &dyn StoreReads,
         effects: &mut Vec<Effect>,
     ) {
-        if self.inserted_while_working.remove(hash) {
+        if !self.tracker.contains(hash) {
+            return;
+        }
+        if outcome == WorkOutcome::Settled || stores.in_dag(hash) {
             self.finish_insert(hash, now_ms, stores);
             return;
         }
-        let Some(meta) = self.tracker.meta(hash) else {
-            return;
-        };
+        let no_verdict = matches!(
+            outcome,
+            WorkOutcome::AwaitingBlock(_) | WorkOutcome::AwaitingState(_) | WorkOutcome::Failed
+        );
+        if no_verdict {
+            if let Some(departure) = self.tracker.settle_if_vouched(hash) {
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    block = %short(hash),
+                    "Block vouched for during its validation; it is admitted as settled history"
+                );
+                self.released(departure);
+                return;
+            }
+        }
+        let meta = self.tracker.meta(hash).expect("the block is held");
         let facts = citation(meta);
         match outcome {
-            WorkOutcome::Settled => {}
+            WorkOutcome::Settled => unreachable!("a settled block finished its insert above"),
             WorkOutcome::Rejected { invalid_sender } => {
                 let pusher = meta.pushed_by.clone();
                 if let (true, Some(peer)) = (invalid_sender, &pusher) {
@@ -768,14 +815,42 @@ impl IngestState {
         }
     }
 
-    /// Held blocks wait on `missing`: each one not itself held is needed.
+    /// Held blocks wait on `missing`: each one not itself held is needed, and a
+    /// vouched citation of one that is held may make it settled history.
     fn cite(&mut self, missing: &[BlockHash], facts: &NeedFacts, now_ms: u64) {
         for dependency in missing {
             if !self.tracker.contains(dependency) {
                 self.scheduler
                     .need_block(dependency, NeedOrigin::Cited, facts.clone(), now_ms);
+            } else if facts.vouched {
+                self.vouch_for_held(dependency);
             }
         }
+    }
+
+    /// A held block vouched for after it was held is admitted as settled
+    /// history instead of validated, if it is at or below the anchor.
+    fn vouch_for_held(&mut self, hash: &BlockHash) {
+        let Some(height) = self.tracker.meta(hash).map(|meta| meta.height) else {
+            return;
+        };
+        if !self.at_or_below_anchor(height) {
+            return;
+        }
+        if let Some(departure) = self.tracker.vouch(hash) {
+            tracing::debug!(
+                target: LOG_TARGET,
+                block = %short(hash),
+                height,
+                "Block vouched for while held; it is admitted as settled history"
+            );
+            self.released(departure);
+        }
+    }
+
+    fn at_or_below_anchor(&self, height: i64) -> bool {
+        self.anchor_height
+            .is_some_and(|anchor| anchor > 0 && height <= anchor)
     }
 
     /// Needs and state roots no held block waits on any more are dropped.
@@ -833,6 +908,13 @@ impl IngestState {
                 reason = reason.label(),
                 dropped,
                 "Block dropped with the held blocks that wait on it"
+            ),
+            DropReason::BelowPruneHorizon => tracing::info!(
+                target: LOG_TARGET,
+                block = %short(hash),
+                reason = reason.label(),
+                dropped,
+                "Below-horizon cascade: held blocks waiting on pruned ancestor evicted (#1059)"
             ),
         }
         self.departed(departure, effects);
@@ -909,7 +991,7 @@ impl IngestState {
             let facts = NeedFacts {
                 height_hint: Some(meta.height),
                 trusted: meta.trusted,
-                cited_by_bonded: false,
+                vouched: false,
             };
             self.scheduler
                 .need_block(hash, NeedOrigin::Cited, facts, now_ms);
@@ -920,7 +1002,7 @@ impl IngestState {
             let facts = NeedFacts {
                 height_hint: Some(meta.height),
                 trusted: meta.trusted,
-                cited_by_bonded: false,
+                vouched: false,
             };
             self.scheduler
                 .need_block(hash, NeedOrigin::Requested, facts, now_ms);
@@ -1079,6 +1161,68 @@ impl IngestState {
             outcome,
         });
     }
+
+    /// A peer answered `BlockRequest` for `hash` with `BlockPrunedResponse`:
+    /// the body has been retention-swept past the peer's horizon. The need
+    /// is dropped so the retry ladder (see `fetch_scheduler`) stops burning
+    /// network on a block no peer retains. The peer's prune floor is
+    /// recorded on the shared view so a launch probe or operator restart
+    /// can take the last-finalized-state path (#1059). Held blocks whose
+    /// dependency walk reaches the pruned hash are dropped together with
+    /// their dependents: they can never advance while the observer waits
+    /// for its restart-into-LFS, and keeping them in the pending area
+    /// produces the AreaFull drops observed in the soak evidence.
+    fn block_pruned(
+        &mut self,
+        hash: BlockHash,
+        block_height: i64,
+        prune_floor: i64,
+        peer: PeerNode,
+        effects: &mut Vec<Effect>,
+    ) {
+        metrics::counter!(
+            BLOCK_INGEST_PRUNED_RESPONSES_METRIC,
+            "source" => BLOCK_INGEST_METRICS_SOURCE
+        )
+        .increment(1);
+        let was_below = self.view.below_horizon_floor().is_some();
+        self.view.record_below_horizon(prune_floor);
+        if !was_below {
+            metrics::counter!(
+                BLOCK_INGEST_BELOW_HORIZON_METRIC,
+                "source" => BLOCK_INGEST_METRICS_SOURCE
+            )
+            .increment(1);
+            tracing::warn!(
+                target: LOG_TARGET,
+                block = %short(&hash),
+                block_height,
+                prune_floor,
+                peer = %peer,
+                "Peer reports needed block is below its prune horizon. \
+                 This node has fallen past peers' block-store GC horizon and cannot \
+                 catch up by re-requesting blocks (every peer has deleted the bodies). \
+                 Restart this node; the launch-time horizon probe will route to the \
+                 last-finalized-state path (#1059)."
+            );
+        } else {
+            tracing::debug!(
+                target: LOG_TARGET,
+                block = %short(&hash),
+                block_height,
+                prune_floor,
+                peer = %peer,
+                "additional BlockPrunedResponse received while below-horizon flag already set"
+            );
+        }
+        // Drop the need so the retry ladder stops.
+        self.scheduler.remove_block(&hash);
+        // Cascade: evict held blocks whose dependency walk reaches this
+        // pruned hash. They cannot advance; without this the pending area
+        // fills and refuses incoming tips (1825/10min AreaFull drops in
+        // the soak #1059 evidence).
+        self.drop_with_dependents(&hash, DropReason::BelowPruneHorizon, effects);
+    }
 }
 
 /// What a held block's citation tells about the blocks it waits on.
@@ -1086,7 +1230,7 @@ fn citation(meta: &HeldMeta) -> NeedFacts {
     NeedFacts {
         height_hint: Some(meta.height - 1),
         trusted: meta.trusted,
-        cited_by_bonded: meta.bonded_at_anchor,
+        vouched: meta.bonded_at_anchor,
     }
 }
 

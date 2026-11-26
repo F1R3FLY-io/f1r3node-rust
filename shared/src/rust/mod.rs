@@ -6,7 +6,9 @@ pub mod hashable_set;
 pub mod metrics_constants;
 pub mod metrics_semaphore;
 pub mod shared;
+pub mod stack;
 pub mod store;
+pub mod test_tmpdir;
 pub mod token_amount;
 pub mod tracing_init;
 
@@ -32,6 +34,22 @@ pub mod serde_bytes {
         // Deserialize to Vec<u8> and then convert to Bytes
         let bytes: Vec<u8> = ::serde_bytes::deserialize(deserializer)?;
         Ok(Bytes::from(bytes))
+    }
+}
+
+pub mod serde_option_bytes {
+    use prost::bytes::Bytes;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &Option<Bytes>, serializer: S) -> Result<S::Ok, S::Error>
+    where S: Serializer {
+        ::serde_bytes::serialize(&bytes.as_ref().map(|bytes| bytes.as_ref()), serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Bytes>, D::Error>
+    where D: Deserializer<'de> {
+        let bytes: Option<Vec<u8>> = ::serde_bytes::deserialize(deserializer)?;
+        Ok(bytes.map(Bytes::from))
     }
 }
 

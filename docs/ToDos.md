@@ -26,6 +26,50 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 
 ## Active Coordination
 
+- **Maintainer identity ratification (2026-11-13).** Status: implemented locally on `ci/maintainer-identity-ratificatio`, claimed by Codex. The maintainer selected active `ci-maintainers` membership as an additional authority for commit authors. Focused policy, workflow, queue, and release checks passed. The registry proposal was removed. Review, commit, App configuration, and rollout through `master` and `ca-canary` remain pending.
+
+### TASK-031-2: Correct HTTP deploy validation errors
+
+```yaml
+id: TASK-031-2
+epic_id: EPIC-031
+status: completed
+claimed_by: codex-session-http-deploy
+claimed_at: 2026-11-09T12:35:22Z
+branch: fix/http-deploy-error-classification
+pr_base_branch: dev
+user_story: US-015
+acceptance:
+  - "Reject maximum-charge overflow with HTTP 400 illegal_argument before admission."
+  - "Preserve typed client validation errors and HTTP 500 for internal failures."
+  - "Test JSON rejection statuses and valid exact values with existing test infrastructure."
+  - "Document HTTP 400, 415, and 422 in native and static OpenAPI and the API reference."
+```
+
+### TASK-012-33: Bound retained deploy resources
+
+```yaml
+id: TASK-012-33
+epic_id: EPIC-012
+status: in_progress
+claimed_by: semyon-dev
+claimed_at: 2026-11-16T19:54:28Z
+branch: fix/710-bounded-deploy-admission
+pr_base_branch: dev
+pull_request: 789
+acceptance:
+  - "The deploy store keeps record and byte totals of every stored record and checks the limits under the lock of the insert."
+  - "Only a deletion that removed the record, or a quarantine move, releases its charge."
+  - "Concurrent submissions for the last free slot admit exactly one."
+  - "Admission opens the lifecycle row before the pool insert; a never-included deploy settles Expired without a local proposal."
+  - "An independent HTTP and gRPC submission limit applies before decoding and survives cancellation until blocking work completes."
+  - "The API refuses a validity height above the next block number plus max-parent-depth."
+  - "API validation uses the same next block number as the proposer."
+  - "Focused tests, build, formatting, and Clippy pass on the final revision."
+notes:
+  - "Default calibration and joint queue validation with #990 remain separate steps."
+```
+
 ### TASK-031-1: Complete unsigned 256-bit token amount support
 
 ```yaml
@@ -604,6 +648,21 @@ tasks:
       - "The immutable prior ledger retains its bytes and is excluded from current-path link checks. Current evidence links remain checked."
       - "Cleanup verification passes and renewed acceptance payloads are prepared without changing existing signatures."
       - "The PR description covers the consensus fix, pin update, validation, and remaining maintainer review."
+  - id: TASK-023-15
+    title: "Require explicit merge requests and protect workflow revision selection"
+    status: in_progress
+    priority: p2
+    claimed_by: codex-session-manual-queue-ci-refs
+    claimed_at: 2026-11-12T20:41:55Z
+    branch: ci/add-checkbox-merge-use-yml-from-branch
+    pr_base_branch: dev
+    decision: "The user requested manual queue controls and tests of branch CI, with existing security and release policies preserved."
+    acceptance:
+      - "Human-managed pull requests require the queue checkbox or queue comment. The scheduled release back-merge retains automatic queueing."
+      - "Focused tests preserve queue eligibility, required checks, reviews, merge methods, and temporary promotion and back-merge heads."
+      - "Focused tests verify event revision checkouts, local reusable workflows, selected-branch dispatches, and trusted master-only promotion credentials."
+      - "CI, Full OCI validation, soaks, and heartbeat tests use the exact candidate's integration pin. Credential-bearing launchers retain trusted control pins."
+      - "Existing documentation explains the behavior and the remaining rollout steps."
   - id: TASK-023-5
     title: "Measure the disk admission failure rate after the fix"
     status: pending

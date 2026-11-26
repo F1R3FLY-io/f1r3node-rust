@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use casper::rust::api::block_api::{
-    BlockAPI, DeployNotFoundError, InvalidHashError, InvalidPublicKeyError,
+    BlockAPI, DeployNotFoundError, DeployValidationError, InvalidHashError, InvalidPublicKeyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
@@ -14,13 +14,11 @@ use casper::rust::ProposeFunction;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
 use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
-use crypto::rust::signatures::signed::Signed;
 use eyre::{eyre, Result};
 use hex;
 use models::casper::LightBlockInfo;
-use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::deploy_parameters::{DeployParameter, RholangValue};
+use models::rust::deploy_request::DeployRequest;
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use shared::rust::token_amount::TokenAmount;
@@ -29,6 +27,7 @@ use tracing::warn;
 use utoipa::ToSchema;
 
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
+use crate::rust::api::serde_types::blocks_by_heights_response::BlocksByHeightsResponseSerde;
 use crate::rust::api::serde_types::deploy_info::TransferInfoSerde;
 use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
 use crate::rust::web::block_info_enricher::extract_transfers_from_report;
@@ -120,13 +119,21 @@ pub trait WebApi {
         use_pre_state_hash: bool,
     ) -> Result<RhoDataResponse>;
 
-    /// Get blocks by height range
+    /// Get blocks by height range. The envelope carries `pruned`
+    /// entries (`block_height <= prune_floor`, permanent on this node)
+    /// and `unavailable` entries (`block_height > prune_floor`, body
+    /// missing but the retention sweep has not reached the height —
+    /// retry may succeed), plus the `prune_floor` captured at the
+    /// moment of the walk. The route turns this into either the
+    /// pre-#1087 bare array (default) or the full envelope
+    /// (`include_missing=true`); the trait always returns the envelope
+    /// so the handler can decide the wire shape.
     async fn get_blocks_by_heights(
         &self,
         start_block_number: i64,
         end_block_number: i64,
         view: ViewMode,
-    ) -> Result<Vec<BlockInfoSerde>>;
+    ) -> Result<BlocksByHeightsResponseSerde>;
 
     /// Check if a block is finalized
     async fn is_finalized(&self, hash: String) -> Result<bool>;
@@ -479,6 +486,7 @@ impl WebApi for WebApiImpl {
         } else {
             0
         };
+        let pacing = DeployPacing::read(&self.engine_cell).await?;
 
         Ok(ApiStatus {
             version: VersionInfo {
@@ -501,6 +509,11 @@ impl WebApi for WebApiImpl {
             is_ready,
             current_epoch,
             epoch_length,
+            latest_block_number: pacing.map(|p| p.latest_block_number),
+            deploy_lifespan: pacing.map(|p| p.deploy_lifespan),
+            max_user_deploys_per_block: pacing.map(|p| p.max_user_deploys_per_block),
+            max_parent_depth: pacing.map(|p| p.max_parent_depth),
+            max_phlo_limit: pacing.map(|p| p.max_phlo_limit),
         })
     }
 
@@ -515,8 +528,12 @@ impl WebApi for WebApiImpl {
         let names = if let Some(req) = request {
             let deployer_bytes = hex::decode(&req.deployer)
                 .map_err(|e| eyre!("Deployer is not valid hex format: {}", e))?;
-            let name_bytes =
-                BlockAPI::preview_private_names(&deployer_bytes, req.timestamp, req.name_qty)?;
+            let name_bytes = BlockAPI::preview_private_names(
+                &deployer_bytes,
+                req.timestamp,
+                req.valid_after_block_number,
+                req.name_qty,
+            )?;
             name_bytes.into_iter().map(hex::encode).collect()
         } else {
             vec![]
@@ -526,8 +543,11 @@ impl WebApi for WebApiImpl {
     }
 
     async fn deploy(&self, request: DeployRequest) -> Result<String> {
-        // Convert request to signed deploy
-        let signed_deploy = to_signed_deploy(&request)?;
+        let signed_deploy = request.to_signed().map_err(|error| {
+            eyre::Report::new(DeployValidationError {
+                message: error.to_string(),
+            })
+        })?;
 
         // Deploy using BlockAPI
         BlockAPI::deploy(
@@ -753,31 +773,25 @@ impl WebApi for WebApiImpl {
         start_block_number: i64,
         end_block_number: i64,
         view: ViewMode,
-    ) -> Result<Vec<BlockInfoSerde>> {
+    ) -> Result<BlocksByHeightsResponseSerde> {
         if view == ViewMode::Full {
-            let blocks = BlockAPI::get_blocks_by_heights_full(
+            let response = BlockAPI::get_blocks_by_heights_full(
                 &self.engine_cell,
                 start_block_number,
                 end_block_number,
                 self.api_max_blocks_limit,
             )
             .await?;
-            Ok(blocks
-                .into_iter()
-                .map(BlockInfoSerde::try_from)
-                .collect::<Result<Vec<_>, _>>()?)
+            BlocksByHeightsResponseSerde::from_full(response)
         } else {
-            let blocks = BlockAPI::get_blocks_by_heights(
+            let response = BlockAPI::get_blocks_by_heights(
                 &self.engine_cell,
                 start_block_number,
                 end_block_number,
                 self.api_max_blocks_limit,
             )
             .await?;
-            Ok(blocks
-                .into_iter()
-                .map(|block| BlockInfoSerde::from_light(LightBlockInfoSerde::from(block)))
-                .collect())
+            Ok(BlocksByHeightsResponseSerde::from_light(response))
         }
     }
 
@@ -1352,15 +1366,6 @@ pub enum RhoUnforg {
 
 // API request & response types
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct DeployRequest {
-    pub data: DeployData,
-    pub deployer: String,
-    pub signature: String,
-    #[serde(rename = "sigAlgorithm")]
-    pub sig_algorithm: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ExploreDeployRequest {
     pub term: String,
     #[serde(rename = "blockHash")]
@@ -1435,6 +1440,8 @@ pub struct RhoDataResponse {
 pub struct PrepareRequest {
     pub deployer: String,
     pub timestamp: i64,
+    #[serde(rename = "validAfterBlockNumber")]
+    pub valid_after_block_number: i64,
     #[serde(rename = "nameQty")]
     pub name_qty: i32,
 }
@@ -1507,6 +1514,50 @@ pub struct ApiStatus {
     /// Blocks per epoch, from genesis configuration.
     #[serde(rename = "epochLength")]
     pub epoch_length: i32,
+    /// Number of the next block: the highest block number in this node's DAG
+    /// plus one. `null` until casper is up.
+    #[serde(rename = "latestBlockNumber")]
+    pub latest_block_number: Option<i64>,
+    /// Blocks a deploy stays includable after its `validAfterBlockNumber`.
+    /// `null` until casper is up.
+    #[serde(rename = "deployLifespan")]
+    pub deploy_lifespan: Option<i64>,
+    /// Most user deploys one block carries. `null` until casper is up.
+    #[serde(rename = "maxUserDeploysPerBlock")]
+    pub max_user_deploys_per_block: Option<u32>,
+    /// How far below the tip a block may cite. `null` until casper is up.
+    #[serde(rename = "maxParentDepth")]
+    pub max_parent_depth: Option<i32>,
+    /// Largest phlo limit a deploy may declare. `null` until casper is up.
+    #[serde(rename = "maxPhloLimit")]
+    pub max_phlo_limit: Option<i64>,
+}
+
+/// The chain values a deploy client needs to pace and window its deploys,
+/// read from the running casper instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeployPacing {
+    pub latest_block_number: i64,
+    pub deploy_lifespan: i64,
+    pub max_user_deploys_per_block: u32,
+    pub max_parent_depth: i32,
+    pub max_phlo_limit: i64,
+}
+
+impl DeployPacing {
+    pub async fn read(engine_cell: &EngineCell) -> Result<Option<Self>> {
+        let Some(casper) = engine_cell.get().await.with_casper() else {
+            return Ok(None);
+        };
+        let shard_conf = casper.casper_shard_conf();
+        Ok(Some(Self {
+            latest_block_number: casper.block_dag().await?.latest_block_number(),
+            deploy_lifespan: shard_conf.deploy_lifespan,
+            max_user_deploys_per_block: shard_conf.max_user_deploys_per_block,
+            max_parent_depth: shard_conf.max_parent_depth,
+            max_phlo_limit: shard_conf.max_phlo_limit,
+        }))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1733,43 +1784,6 @@ fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
         eyre::Report::new(InvalidPublicKeyError(format!("invalid public key: {}", e)))
     })?;
     Ok(bytes)
-}
-
-// Conversion functions
-
-/// Convert DeployRequest to Signed DeployData
-fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
-    request
-        .data
-        .validate_amounts()
-        .map_err(|error| eyre!("Invalid deploy amount: {error}"))?;
-    models::rust::deploy_parameters::validate_parameters(&request.data.parameters)
-        .map_err(|error| eyre!("Invalid deploy parameters: {}", error))?;
-    // Decode hex strings
-    let pk_bytes = hex::decode(&request.deployer)
-        .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
-
-    let sig_bytes = hex::decode(&request.signature)
-        .map_err(|e| eyre!("Signature is not valid base16 format: {}", e))?;
-
-    // Create public key
-    let pk = PublicKey::from_bytes(&pk_bytes);
-
-    // Look up signature algorithm by name
-    let sig_alg = SignaturesAlgFactory::apply(&request.sig_algorithm).ok_or_else(|| {
-        eyre!(
-            "Signature algorithm not supported: {}",
-            request.sig_algorithm
-        )
-    })?;
-
-    // Create DeployData (use the data from request)
-    let deploy_data = request.data.clone();
-
-    // Create signed deploy
-    Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
-        .map_err(|e| eyre!("Invalid signature: {}", e))?
-        .ok_or_else(|| eyre!("Failed to create signed deploy"))
 }
 
 // Conversion functions for protobuf generated types
@@ -2173,6 +2187,7 @@ mod tests {
     use models::rhoapi::{
         Bundle, EList, EMap, ESet, ETuple, GDeployId, GDeployerId, GPrivate, KeyValuePair,
     };
+    use models::rust::casper::protocol::casper_message::DeployData;
     use models::rust::deploy_parameters::RholangValue;
     use rholang::rust::interpreter::compiler::compiler::Compiler;
 
@@ -2298,37 +2313,6 @@ mod tests {
         let response: ValidatorsResponse = serde_json::from_value(serde_json::json!(
             {"validators": [], "totalStake": total.to_string(), "blockNumber": 0, "blockHash": "hash"})).unwrap();
         assert_eq!(response.total_stake, total);
-    }
-
-    #[test]
-    fn deploy_request_uses_the_protobuf_algorithm_contract() {
-        let deploy = Signed::create(
-            DeployData {
-                term: "Nil".to_string(),
-                time_stamp: 0,
-                phlo_price: 1.into(),
-                phlo_limit: 100_000,
-                valid_after_block_number: 0,
-                shard_id: "root".to_string(),
-                expiration_timestamp: None,
-                parameters: Vec::new(),
-            },
-            Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
-            crypto::rust::private_key::PrivateKey::from_bytes(&[1; 32]),
-        )
-        .unwrap();
-        let mut request = DeployRequest {
-            data: deploy.data.clone(),
-            deployer: hex::encode(&deploy.pk.bytes),
-            signature: hex::encode(&deploy.sig),
-            sig_algorithm: deploy.sig_algorithm.name(),
-        };
-        assert_eq!(to_signed_deploy(&request).unwrap(), deploy);
-        request.sig_algorithm = "ed25519".to_string();
-        assert_eq!(
-            to_signed_deploy(&request).unwrap_err().to_string(),
-            "Signature algorithm not supported: ed25519"
-        );
     }
 
     #[test]
@@ -3482,115 +3466,6 @@ mod tests {
         let (_sk, pk) = crypto::rust::signatures::secp256k1::Secp256k1.new_key_pair();
         let valid = validate_and_decode_pubkey(&hex::encode(&pk.bytes)).unwrap();
         assert_eq!(valid, pk.bytes.to_vec());
-    }
-
-    fn sample_deploy_data() -> DeployData {
-        DeployData {
-            term: "new x in { x!(1) }".to_string(),
-            time_stamp: 1,
-            phlo_price: (1).into(),
-            phlo_limit: 1000,
-            valid_after_block_number: 0,
-            shard_id: "root".to_string(),
-            expiration_timestamp: None,
-            parameters: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn test_to_signed_deploy_accepts_a_correctly_signed_request() {
-        use crypto::rust::signatures::secp256k1::Secp256k1;
-
-        let (sk, _pk) = Secp256k1.new_key_pair();
-        let signed = Signed::create(sample_deploy_data(), Box::new(Secp256k1), sk).unwrap();
-
-        let request = DeployRequest {
-            data: signed.data.clone(),
-            deployer: hex::encode(&signed.pk.bytes),
-            signature: hex::encode(&signed.sig),
-            sig_algorithm: "secp256k1".to_string(),
-        };
-
-        let result = to_signed_deploy(&request).unwrap();
-        assert_eq!(result.sig, signed.sig);
-        assert_eq!(result.pk.bytes, signed.pk.bytes);
-    }
-
-    #[test]
-    fn deploy_parameters_survive_http_requests_and_reject_tampering() {
-        use crypto::rust::signatures::secp256k1::Secp256k1;
-        use models::rust::deploy_parameters::{DeployParameter, RholangValue};
-
-        let (sk, _) = Secp256k1.new_key_pair();
-        let mut data = sample_deploy_data();
-        data.parameters = vec![DeployParameter {
-            name: "input".into(),
-            value: RholangValue::List(vec![RholangValue::Int(-42), RholangValue::Nil]),
-        }];
-        let signed = Signed::create(data, Box::new(Secp256k1), sk).unwrap();
-        let request = DeployRequest {
-            data: signed.data.clone(),
-            deployer: hex::encode(&signed.pk.bytes),
-            signature: hex::encode(&signed.sig),
-            sig_algorithm: "secp256k1".into(),
-        };
-        let json = serde_json::to_string(&request).unwrap();
-        let mut restored: DeployRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(to_signed_deploy(&restored).unwrap(), signed);
-        restored.data.parameters[0].value = RholangValue::Nil;
-        assert!(to_signed_deploy(&restored).is_err());
-        restored.data.parameters[0].name = "invalid:name".into();
-        assert!(to_signed_deploy(&restored)
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid deploy parameters"));
-        assert!(
-            serde_json::from_str::<DeployRequest>(&serde_json::to_string(&restored).unwrap())
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn test_to_signed_deploy_error_paths() {
-        let base = DeployRequest {
-            data: sample_deploy_data(),
-            deployer: "zz".to_string(),
-            signature: "00".to_string(),
-            sig_algorithm: "secp256k1".to_string(),
-        };
-        assert!(to_signed_deploy(&base)
-            .unwrap_err()
-            .to_string()
-            .contains("Public key is not valid base16"));
-
-        let bad_sig_hex = DeployRequest {
-            deployer: "00".to_string(),
-            signature: "zz".to_string(),
-            ..base.clone()
-        };
-        assert!(to_signed_deploy(&bad_sig_hex)
-            .unwrap_err()
-            .to_string()
-            .contains("Signature is not valid base16"));
-
-        let unsupported_alg = DeployRequest {
-            deployer: "00".to_string(),
-            signature: "00".to_string(),
-            sig_algorithm: "rot13".to_string(),
-            ..base.clone()
-        };
-        assert!(to_signed_deploy(&unsupported_alg)
-            .unwrap_err()
-            .to_string()
-            .contains("Signature algorithm not supported"));
-
-        let (_sk, pk) = crypto::rust::signatures::secp256k1::Secp256k1.new_key_pair();
-        let wrong_sig = DeployRequest {
-            deployer: hex::encode(&pk.bytes),
-            signature: "0011".to_string(),
-            ..base
-        };
-        assert!(to_signed_deploy(&wrong_sig).is_err());
     }
 
     #[test]

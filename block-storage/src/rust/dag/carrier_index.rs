@@ -10,8 +10,15 @@
 // the block becomes DAG-visible. The persisted height watermark W is the
 // height since which that contract has held on this database; the fast
 // path engages only for scan windows that start at or above W, so no
-// startup backfill is ever needed. Rows at heights below the expiration
-// window are pruned on floor advances.
+// startup backfill is ever needed. Rows below the node's own expiration
+// window are pruned on finalization, and the recorded prune cutoff bounds
+// the fast path from below as W does: a late block's window can start
+// under it.
+//
+// The same contract covers a second table: per unforgeable-name seed, every
+// carrier of a deploy with that seed, with the deploy's sig. It has its own
+// watermark, because a database that predates it holds sig rows from heights
+// whose seeds were never recorded.
 
 use std::sync::Arc;
 
@@ -28,23 +35,38 @@ pub struct CarrierEntry {
     pub block_hash: ByteString,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeedCarrierEntry {
+    pub height: i64,
+    pub block_hash: ByteString,
+    pub sig: ByteString,
+}
+
 #[derive(Clone)]
 pub struct CarrierIndex {
     carriers: KeyValueTypedStoreImpl<ByteString, Vec<CarrierEntry>>,
+    seed_carriers: KeyValueTypedStoreImpl<ByteString, Vec<SeedCarrierEntry>>,
     meta: KeyValueTypedStoreImpl<String, i64>,
 }
 
 impl CarrierIndex {
     const WATERMARK_KEY: &'static str = "watermark";
+    const SEED_WATERMARK_KEY: &'static str = "seed-watermark";
     const LAST_PRUNE_KEY: &'static str = "last-prune";
+    const PRUNE_CUTOFF_KEY: &'static str = "prune-cutoff";
     /// Pruning walks the whole table, so it runs only when the cutoff has
     /// advanced by at least this many blocks since the last walk.
     const PRUNE_STRIDE: i64 = 64;
     const PRUNE_WRITE_CHUNK: usize = 1024;
 
-    pub fn new(carriers_kv: Arc<dyn KeyValueStore>, meta_kv: Arc<dyn KeyValueStore>) -> Self {
+    pub fn new(
+        carriers_kv: Arc<dyn KeyValueStore>,
+        seed_carriers_kv: Arc<dyn KeyValueStore>,
+        meta_kv: Arc<dyn KeyValueStore>,
+    ) -> Self {
         Self {
             carriers: KeyValueTypedStoreImpl::new(carriers_kv),
+            seed_carriers: KeyValueTypedStoreImpl::new(seed_carriers_kv),
             meta: KeyValueTypedStoreImpl::new(meta_kv),
         }
     }
@@ -54,18 +76,36 @@ impl CarrierIndex {
     pub fn in_memory() -> Self {
         Self {
             carriers: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            seed_carriers: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             meta: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         }
     }
 
-    /// Record one carrier for a sig. Idempotent per (sig, block_hash), so
-    /// a crash-then-redelivery re-run writes nothing twice.
+    /// Record one carrier for a deploy, under its sig and its name seed.
+    /// Idempotent per (key, block_hash), so a crash-then-redelivery re-run
+    /// writes nothing twice.
     pub fn record_once(
         &self,
         sig: &[u8],
+        seed: &[u8],
         height: i64,
         block_hash: ByteString,
     ) -> Result<(), KvStoreError> {
+        let mut seed_row = self
+            .seed_carriers
+            .get_one(&seed.to_vec())?
+            .unwrap_or_default();
+        if !seed_row
+            .iter()
+            .any(|e| e.block_hash == block_hash && e.sig == sig)
+        {
+            seed_row.push(SeedCarrierEntry {
+                height,
+                block_hash: block_hash.clone(),
+                sig: sig.to_vec(),
+            });
+            self.seed_carriers.put_one(seed.to_vec(), seed_row)?;
+        }
         let mut row = self.carriers.get_one(&sig.to_vec())?.unwrap_or_default();
         if row.iter().any(|e| e.block_hash == block_hash) {
             return Ok(());
@@ -74,9 +114,32 @@ impl CarrierIndex {
         self.carriers.put_one(sig.to_vec(), row)
     }
 
+    /// True when the index holds NO carrier of another sig with this seed.
+    /// Sound as an absence proof only when the caller's window starts at or
+    /// above both the seed watermark and the prune cutoff.
+    pub fn seed_proves_unshared(&self, seed: &[u8], sig: &[u8]) -> Result<bool, KvStoreError> {
+        Ok(self.other_seed_carrier(seed, sig)?.is_none())
+    }
+
+    /// The sig of an indexed carrier with this seed other than `sig`.
+    pub fn other_seed_carrier(
+        &self,
+        seed: &[u8],
+        sig: &[u8],
+    ) -> Result<Option<ByteString>, KvStoreError> {
+        Ok(self
+            .seed_carriers
+            .get_one(&seed.to_vec())?
+            .and_then(|row| row.into_iter().find(|e| e.sig != sig).map(|e| e.sig)))
+    }
+
+    pub fn seed_watermark(&self) -> Result<Option<i64>, KvStoreError> {
+        self.meta.get_one(&Self::SEED_WATERMARK_KEY.to_string())
+    }
+
     /// True when the index holds NO carrier for the sig. Sound as an
     /// absence proof only when the caller's scan window starts at or
-    /// above the watermark.
+    /// above both the watermark and the prune cutoff.
     pub fn proves_absence(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
         Ok(self
             .carriers
@@ -88,10 +151,20 @@ impl CarrierIndex {
         self.meta.get_one(&Self::WATERMARK_KEY.to_string())
     }
 
+    /// The highest cutoff any prune walk has started with. Rows below it
+    /// may be gone; rows at or above it are all present.
+    pub fn prune_cutoff(&self) -> Result<Option<i64>, KvStoreError> {
+        self.meta.get_one(&Self::PRUNE_CUTOFF_KEY.to_string())
+    }
+
     /// First-boot initialization: records the height since which every
-    /// insert routes through the carrier recording. Returns the effective
-    /// watermark (the stored one on every later start).
+    /// insert routes through the carrier recording, for each table that has
+    /// none yet. Returns the effective sig watermark (the stored one on every
+    /// later start).
     pub fn set_watermark_if_absent(&self, w: i64) -> Result<i64, KvStoreError> {
+        if self.seed_watermark()?.is_none() {
+            self.meta.put_one(Self::SEED_WATERMARK_KEY.to_string(), w)?;
+        }
         if let Some(existing) = self.watermark()? {
             return Ok(existing);
         }
@@ -99,10 +172,12 @@ impl CarrierIndex {
         Ok(w)
     }
 
-    /// Drop entries below the cutoff (they are below every future scan
-    /// window). Strided: the full-table walk runs only when the cutoff
-    /// advanced by `PRUNE_STRIDE` since the last walk. Returns the number
-    /// of entries removed.
+    /// Drop entries below the cutoff. The cutoff is recorded before any row
+    /// is removed, so a reader that sees `prune_cutoff` at or below its scan
+    /// start after probing knows the walk removed no row it read. Strided:
+    /// the full-table walk runs only when the cutoff advanced by
+    /// `PRUNE_STRIDE` since the last completed walk. Returns the number of
+    /// sig entries removed; the seed table holds one entry per sig entry.
     pub fn prune_below(&self, cutoff: i64) -> Result<u64, KvStoreError> {
         let last = self
             .meta
@@ -110,6 +185,13 @@ impl CarrierIndex {
             .unwrap_or(i64::MIN);
         if last != i64::MIN && cutoff < last.saturating_add(Self::PRUNE_STRIDE) {
             return Ok(0);
+        }
+        if self
+            .prune_cutoff()?
+            .is_none_or(|recorded| recorded < cutoff)
+        {
+            self.meta
+                .put_one(Self::PRUNE_CUTOFF_KEY.to_string(), cutoff)?;
         }
         let mut removed: u64 = 0;
         let mut emptied: Vec<ByteString> = Vec::new();
@@ -133,6 +215,26 @@ impl CarrierIndex {
         for chunk in trimmed.chunks(Self::PRUNE_WRITE_CHUNK) {
             self.carriers.put(chunk.to_vec())?;
         }
+        let mut emptied_seeds: Vec<ByteString> = Vec::new();
+        let mut trimmed_seeds: Vec<(ByteString, Vec<SeedCarrierEntry>)> = Vec::new();
+        for (seed, row) in self.seed_carriers.to_map()? {
+            let kept: Vec<SeedCarrierEntry> =
+                row.iter().filter(|e| e.height >= cutoff).cloned().collect();
+            if kept.len() == row.len() {
+                continue;
+            }
+            if kept.is_empty() {
+                emptied_seeds.push(seed);
+            } else {
+                trimmed_seeds.push((seed, kept));
+            }
+        }
+        for chunk in emptied_seeds.chunks(Self::PRUNE_WRITE_CHUNK) {
+            self.seed_carriers.delete(chunk.to_vec())?;
+        }
+        for chunk in trimmed_seeds.chunks(Self::PRUNE_WRITE_CHUNK) {
+            self.seed_carriers.put(chunk.to_vec())?;
+        }
         self.meta
             .put_one(Self::LAST_PRUNE_KEY.to_string(), cutoff)?;
         Ok(removed)
@@ -143,13 +245,74 @@ impl CarrierIndex {
 mod tests {
     use super::*;
 
+    impl CarrierIndex {
+        /// A carrier whose deploy has a name seed of its own.
+        fn record_sig_once(
+            &self,
+            sig: &[u8],
+            height: i64,
+            block_hash: ByteString,
+        ) -> Result<(), KvStoreError> {
+            self.record_once(sig, sig, height, block_hash)
+        }
+    }
+
+    #[test]
+    fn a_seed_carried_by_another_sig_is_not_proven_unshared() {
+        let index = CarrierIndex::in_memory();
+        assert!(index.seed_proves_unshared(b"seed", b"a").expect("probe"));
+        index
+            .record_once(b"a", b"seed", 5, vec![1; 32])
+            .expect("record");
+        assert!(index.seed_proves_unshared(b"seed", b"a").expect("probe"));
+        assert!(!index.seed_proves_unshared(b"seed", b"b").expect("probe"));
+        index
+            .record_once(b"a", b"seed", 5, vec![1; 32])
+            .expect("re-record");
+        let row = index
+            .seed_carriers
+            .get_one(&b"seed".to_vec())
+            .expect("read")
+            .expect("row");
+        assert_eq!(row.len(), 1, "redelivery must not duplicate");
+    }
+
+    #[test]
+    fn the_seed_watermark_is_set_once_and_alongside_an_older_sig_watermark() {
+        let index = CarrierIndex::in_memory();
+        index
+            .meta
+            .put_one(CarrierIndex::WATERMARK_KEY.to_string(), 3)
+            .expect("an older database's sig watermark");
+        assert_eq!(index.set_watermark_if_absent(40).expect("set"), 3);
+        assert_eq!(index.seed_watermark().expect("read"), Some(40));
+        assert_eq!(index.set_watermark_if_absent(90).expect("re-set"), 3);
+        assert_eq!(index.seed_watermark().expect("read"), Some(40));
+    }
+
+    #[test]
+    fn prune_drops_seed_carriers_below_the_cutoff() {
+        let index = CarrierIndex::in_memory();
+        index
+            .record_once(b"a", b"seed", 10, vec![1; 32])
+            .expect("record");
+        index
+            .record_once(b"b", b"seed", 500, vec![2; 32])
+            .expect("record");
+        index.prune_below(400).expect("prune");
+        assert!(index.seed_proves_unshared(b"seed", b"b").expect("probe"));
+        assert!(!index.seed_proves_unshared(b"seed", b"a").expect("probe"));
+    }
+
     #[test]
     fn record_is_idempotent_per_block_and_absence_flips_on_first_carrier() {
         let index = CarrierIndex::in_memory();
         assert!(index.proves_absence(b"sig").expect("probe"));
-        index.record_once(b"sig", 5, vec![1; 32]).expect("record");
         index
-            .record_once(b"sig", 5, vec![1; 32])
+            .record_sig_once(b"sig", 5, vec![1; 32])
+            .expect("record");
+        index
+            .record_sig_once(b"sig", 5, vec![1; 32])
             .expect("re-record");
         assert!(!index.proves_absence(b"sig").expect("probe"));
         let row = index
@@ -269,13 +432,23 @@ mod tests {
             largest_batch: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             fail_puts: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
-        let index = CarrierIndex::new(Arc::new(carriers), Arc::new(InMemoryKeyValueStore::new()));
+        let index = CarrierIndex::new(
+            Arc::new(carriers),
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        );
         for i in 0u32..200 {
             let sig = format!("old-{i}").into_bytes();
-            index.record_once(&sig, 10, vec![1; 32]).expect("record");
+            index
+                .record_sig_once(&sig, 10, vec![1; 32])
+                .expect("record");
             let sig = format!("mixed-{i}").into_bytes();
-            index.record_once(&sig, 10, vec![2; 32]).expect("record");
-            index.record_once(&sig, 500, vec![3; 32]).expect("record");
+            index
+                .record_sig_once(&sig, 10, vec![2; 32])
+                .expect("record");
+            index
+                .record_sig_once(&sig, 500, vec![3; 32])
+                .expect("record");
         }
         writes.store(0, std::sync::atomic::Ordering::SeqCst);
 
@@ -300,11 +473,17 @@ mod tests {
             largest_batch: largest_batch.clone(),
             fail_puts: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
-        let index = CarrierIndex::new(Arc::new(carriers), Arc::new(InMemoryKeyValueStore::new()));
+        let index = CarrierIndex::new(
+            Arc::new(carriers),
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        );
         let rows = 2 * CarrierIndex::PRUNE_WRITE_CHUNK + 1;
         for i in 0..rows {
             let sig = format!("old-{i}").into_bytes();
-            index.record_once(&sig, 10, vec![1; 32]).expect("record");
+            index
+                .record_sig_once(&sig, 10, vec![1; 32])
+                .expect("record");
         }
         largest_batch.store(0, std::sync::atomic::Ordering::SeqCst);
         writes.store(0, std::sync::atomic::Ordering::SeqCst);
@@ -331,19 +510,32 @@ mod tests {
             largest_batch: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             fail_puts: fail_puts.clone(),
         };
-        let index = CarrierIndex::new(Arc::new(carriers), Arc::new(InMemoryKeyValueStore::new()));
+        let index = CarrierIndex::new(
+            Arc::new(carriers),
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        );
         for i in 0u32..50 {
             index
-                .record_once(format!("old-{i}").as_bytes(), 10, vec![1; 32])
+                .record_sig_once(format!("old-{i}").as_bytes(), 10, vec![1; 32])
                 .expect("record");
             let mixed = format!("mixed-{i}").into_bytes();
-            index.record_once(&mixed, 10, vec![2; 32]).expect("record");
-            index.record_once(&mixed, 500, vec![3; 32]).expect("record");
+            index
+                .record_sig_once(&mixed, 10, vec![2; 32])
+                .expect("record");
+            index
+                .record_sig_once(&mixed, 500, vec![3; 32])
+                .expect("record");
         }
 
         fail_puts.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(index.prune_below(400).is_err());
         fail_puts.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            index.prune_cutoff().expect("cutoff"),
+            Some(400),
+            "a walk that removed rows and then failed has recorded its cutoff"
+        );
 
         let removed = index.prune_below(400).expect("re-run");
 
@@ -375,14 +567,18 @@ mod tests {
     #[test]
     fn prune_drops_below_cutoff_and_strides() {
         let index = CarrierIndex::in_memory();
-        index.record_once(b"old", 10, vec![1; 32]).expect("record");
         index
-            .record_once(b"mixed", 10, vec![2; 32])
+            .record_sig_once(b"old", 10, vec![1; 32])
             .expect("record");
         index
-            .record_once(b"mixed", 500, vec![3; 32])
+            .record_sig_once(b"mixed", 10, vec![2; 32])
             .expect("record");
-        index.record_once(b"new", 500, vec![4; 32]).expect("record");
+        index
+            .record_sig_once(b"mixed", 500, vec![3; 32])
+            .expect("record");
+        index
+            .record_sig_once(b"new", 500, vec![4; 32])
+            .expect("record");
 
         let removed = index.prune_below(400).expect("prune");
         assert_eq!(removed, 2);
@@ -394,7 +590,7 @@ mod tests {
         assert!(!index.proves_absence(b"new").expect("probe"));
 
         index
-            .record_once(b"late", 401, vec![5; 32])
+            .record_sig_once(b"late", 401, vec![5; 32])
             .expect("record");
         let removed = index.prune_below(402).expect("prune inside stride");
         assert_eq!(removed, 0, "a cutoff inside the stride does not walk");

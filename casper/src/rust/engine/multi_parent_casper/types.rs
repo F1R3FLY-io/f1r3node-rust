@@ -6,6 +6,7 @@
 //! plan's "Layout C" entry for the wider context.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, Mutex};
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
@@ -29,10 +30,12 @@ use parking_lot::Mutex as PlMutex;
 use prost::bytes::Bytes;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
+use crate::rust::block_status::InvalidBlock;
 use crate::rust::blocks::ingest::block_ingest::IngestHandle;
 use crate::rust::casper::CasperShardConf;
 use crate::rust::engine::multi_parent_casper::bond_cache::FinalizedBondCache;
 use crate::rust::estimator::Estimator;
+use crate::rust::util::bounded_cache::BoundedCache;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
@@ -77,6 +80,12 @@ pub struct MultiParentCasperImpl {
     // TODO: this should be read from chain, for now read from startup options - OLD
     pub casper_shard_conf: CasperShardConf,
     pub approved_block: BlockMessage,
+    /// Live effective-anchor height. Initialized to the approved block's
+    /// height and advanced by block-store GC past the citation horizon.
+    /// Shared with block ingest (gates settled-history admission) and
+    /// validation (gates deferral vs. invalid-recording) so a single
+    /// store write updates every consumer.
+    pub effective_anchor: Arc<AtomicI64>,
     /// Escalates a persistent containment hold (the shard finalizing floors
     /// this node's LFB is not contained in) to a finality-divergence ERROR
     /// and metric. See `finalization_runner::DivergenceMonitor`.
@@ -102,10 +111,17 @@ pub struct MultiParentCasperImpl {
                 Vec<BlockHash>,
                 Arc<dashmap::DashSet<Bytes>>,
                 Arc<dashmap::DashSet<Bytes>>,
+                Arc<dashmap::DashMap<Vec<u8>, Vec<Bytes>>>,
             )>,
         >,
     >,
     /// Cache for get_active_validators results keyed by post_state_hash bytes.
     /// Avoids re-reading from RSpace when the main parent block hasn't changed.
     pub active_validators_cache: Arc<tokio::sync::Mutex<HashMap<Vec<u8>, Vec<Validator>>>>,
+    /// Final verdicts on the contents of equivocations held as parents.
+    pub judged_twins: Arc<BoundedCache<BlockHash, Result<(), InvalidBlock>>>,
+}
+
+impl MultiParentCasperImpl {
+    pub const MAX_JUDGED_TWINS: usize = 1024;
 }

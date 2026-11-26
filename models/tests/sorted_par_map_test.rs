@@ -4,6 +4,7 @@ use models::rhoapi::{
     connective, g_unforgeable, Bundle, Connective, EMap, GPrivate, GUnforgeable, KeyValuePair, Par,
     Send,
 };
+use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::rholang::sorter::ordering::Ordering;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
@@ -21,21 +22,16 @@ fn to_kv_pair(pair: (Par, Par)) -> KeyValuePair {
     }
 }
 
-fn serialize_emap(map: &SortedParMap) -> Vec<u8> {
-    let kv_pairs: Vec<KeyValuePair> = map
-        .sorted_list
-        .iter()
-        .map(|pair| to_kv_pair(pair.clone()))
-        .collect();
-
+fn emap_of(kvs: &[(Par, Par)]) -> EMap {
     EMap {
-        kvs: kv_pairs,
+        kvs: kvs.iter().map(|pair| to_kv_pair(pair.clone())).collect(),
         locally_free: vec![],
         connective_used: false,
         remainder: None,
     }
-    .encode_to_vec()
 }
+
+fn serialize_emap(map: &SortedParMap) -> Vec<u8> { emap_of(&map.sorted_list).encode_to_vec() }
 
 fn create_pars() -> Vec<(Par, Par)> {
     vec![
@@ -236,38 +232,31 @@ fn sorted_par_map_should_sort_all_input() {
 
     let map = SortedParMap::create_from_vec(kvs.clone());
 
-    if let Some((unsorted_key, _)) = kvs.first() {
+    if let Some((unsorted_key, value)) = kvs.first() {
         let sorted_key = sort(unsorted_key);
 
         check_sorted_input(
-            |key| map.clone().remove(key),
+            |key| removed(&map, &key),
             unsorted_key.clone(),
             sorted_key.clone(),
         );
         check_sorted_input(
-            |key| map.contains(key),
+            |key| inserted(&map, &key, value),
+            unsorted_key.clone(),
+            sorted_key.clone(),
+        );
+        let emap = emap_of(&kvs);
+        check_sorted_input(
+            |key| ParMapTypeMapper::contains_key(&emap, &key),
             unsorted_key.clone(),
             sorted_key.clone(),
         );
         check_sorted_input(
-            |key| map.apply(key),
-            unsorted_key.clone(),
-            sorted_key.clone(),
-        );
-        check_sorted_input(
-            |key| map.get_or_else(key, Par::default()),
+            |key| ParMapTypeMapper::lookup(&emap, &key),
             unsorted_key.clone(),
             sorted_key.clone(),
         );
     }
-
-    let unsorted_keys: Vec<Par> = kvs.iter().map(|(key, _)| key.clone()).collect();
-    let sorted_keys = Ordering::sort_pars(&unsorted_keys);
-    check_sorted_input(
-        |keys| map.clone().remove_multiple(keys),
-        unsorted_keys,
-        sorted_keys,
-    );
 }
 
 #[test]
@@ -292,57 +281,86 @@ fn sorted_par_map_should_preserve_sortedness_for_all_operations() {
     let map1 = SortedParMap::create_from_vec(pairs1);
     let map2 = SortedParMap::create_from_vec(pairs2);
 
-    check_sorted_par_map(&map1);
-    check_sorted_par_map(&map2);
+    check_sorted_entries(&map1.sorted_list);
+    check_sorted_entries(&map2.sorted_list);
 
-    //map1 operations
-    if let Some((key, value)) = map1.sorted_list.first() {
-        check_sorted_par_map(&map1.clone().insert((key.clone(), value.clone())));
-
-        check_sorted_par_map(&map1.clone().remove(key.clone()));
-    }
-
-    //map2 operations
-    if let Some((key, value)) = map2.sorted_list.first() {
-        check_sorted_par_map(&map2.clone().insert((key.clone(), value.clone())));
-
-        check_sorted_par_map(&map2.clone().remove(key.clone()));
+    for map in [&map1, &map2] {
+        if let Some((key, value)) = map.sorted_list.first() {
+            check_sorted_entries(&inserted(map, key, value));
+            check_sorted_entries(&removed(map, key));
+        }
     }
 }
 
-fn check_sorted_par_map(sorted_par_map: &SortedParMap) {
-    check_sorted_vector_par(&sorted_par_map.keys());
+#[test]
+fn canonical_map_operations_match_a_rebuilt_map() {
+    let entry = |k: i64, v: &str| {
+        (
+            new_gint_par(k, vec![], false),
+            new_gstring_par(v.to_string(), vec![], false),
+        )
+    };
+    let canonical = |entries: Vec<(Par, Par)>| SortedParMap::create_from_vec(entries).sorted_list;
+    let map = SortedParMap::create_from_vec(vec![entry(1, "a"), entry(3, "c")]);
 
-    sorted_par_map.values().iter().for_each(|value| {
-        assert!(
-            is_sorted(value),
-            "Value in SortedParMap is not sorted: {:?}",
-            value
-        );
-    });
+    assert_eq!(
+        inserted(&map, &entry(2, "b").0, &entry(2, "b").1),
+        canonical(vec![entry(1, "a"), entry(2, "b"), entry(3, "c")])
+    );
+    assert_eq!(
+        inserted(&map, &entry(3, "z").0, &entry(3, "z").1),
+        canonical(vec![entry(1, "a"), entry(3, "z")])
+    );
+    assert_eq!(
+        removed(&map, &entry(1, "a").0),
+        canonical(vec![entry(3, "c")])
+    );
+    assert_eq!(removed(&map, &entry(2, "b").0), map.sorted_list);
 
-    sorted_par_map.sorted_list.iter().for_each(|(key, value)| {
-        assert!(
-            is_sorted(key),
-            "Key in SortedParMap is not sorted: {:?}",
-            key
-        );
-        assert!(
-            is_sorted(value),
-            "Value in SortedParMap is not sorted: {:?}",
-            value
-        );
+    let kvs = |entries: Vec<(Par, Par)>| emap_of(&canonical(entries)).kvs;
+    let other = kvs(vec![entry(2, "b"), entry(3, "z")]);
+    assert_eq!(
+        ParMapTypeMapper::union(emap_of(&map.sorted_list).kvs, other.clone()),
+        kvs(vec![entry(1, "a"), entry(2, "b"), entry(3, "z")])
+    );
+    assert_eq!(
+        ParMapTypeMapper::diff(emap_of(&map.sorted_list).kvs, &other),
+        kvs(vec![entry(1, "a")])
+    );
+}
 
-        let fetched_value = sorted_par_map
-            .get(key.clone())
-            .expect("Key not found in SortedParMap");
+fn inserted(map: &SortedParMap, key: &Par, value: &Par) -> Vec<(Par, Par)> {
+    let mut kvs = emap_of(&map.sorted_list).kvs;
+    ParMapTypeMapper::insert(&mut kvs, key, value);
+    entries(kvs)
+}
 
+fn removed(map: &SortedParMap, key: &Par) -> Vec<(Par, Par)> {
+    let mut kvs = emap_of(&map.sorted_list).kvs;
+    ParMapTypeMapper::remove(&mut kvs, key);
+    entries(kvs)
+}
+
+fn entries(kvs: Vec<KeyValuePair>) -> Vec<(Par, Par)> {
+    kvs.into_iter()
+        .map(|kv| (kv.key.unwrap(), kv.value.unwrap()))
+        .collect()
+}
+
+fn check_sorted_entries(entries: &[(Par, Par)]) {
+    let keys: Vec<Par> = entries.iter().map(|(key, _)| key.clone()).collect();
+    check_sorted_vector_par(&keys);
+    let emap = emap_of(entries);
+    for (key, value) in entries {
+        assert!(is_sorted(key), "Key is not sorted: {:?}", key);
+        assert!(is_sorted(value), "Value is not sorted: {:?}", value);
+        let fetched = ParMapTypeMapper::lookup(&emap, key).expect("every key is found");
         assert!(
-            is_sorted(&fetched_value),
-            "Fetched value in SortedParMap is not sorted: {:?}",
-            fetched_value
+            is_sorted(&fetched),
+            "Fetched value is not sorted: {:?}",
+            fetched
         );
-    });
+    }
 }
 
 fn check_sorted_vector_par(iterable: &Vec<Par>) {

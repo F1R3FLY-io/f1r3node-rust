@@ -529,6 +529,11 @@ pub struct RunOptions {
     #[arg(value_parser = TokenAmount::parse)]
     pub min_phlo_price: Option<TokenAmount>,
 
+    /// Maximum phlo limit a deploy may declare; written into genesis
+    #[arg(long = "max-phlo-limit")]
+    #[arg(value_parser = clap::value_parser!(i64).range(1..))]
+    pub max_phlo_limit: Option<i64>,
+
     /// Enable ceremony master mode (creates genesis block if none found)
     #[arg(long = "ceremony-master-mode", action = ArgAction::SetTrue)]
     pub ceremony_master_mode: bool,
@@ -541,6 +546,17 @@ pub struct RunOptions {
     /// Takes precedence over --enable-mergeable-channel-gc if both are provided.
     #[arg(long = "disable-mergeable-channel-gc", action = ArgAction::SetTrue)]
     pub disable_mergeable_channel_gc: bool,
+
+    /// Delete old finalized block bodies that no honest validator can still
+    /// cite. Piggybacks on the mergeable-channel GC pass; has no effect when
+    /// mergeable-channel GC is disabled.
+    #[arg(long = "enable-block-store-gc", action = ArgAction::SetTrue)]
+    pub enable_block_store_gc: bool,
+
+    /// Disable block-store garbage collection.
+    /// Takes precedence over --enable-block-store-gc if both are provided.
+    #[arg(long = "disable-block-store-gc", action = ArgAction::SetTrue)]
+    pub disable_block_store_gc: bool,
 
     /// Enable heartbeat block proposing for liveness
     #[arg(long = "heartbeat-enabled", action = ArgAction::SetTrue)]

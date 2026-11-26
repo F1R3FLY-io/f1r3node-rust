@@ -3,8 +3,6 @@
 use std::collections::HashSet;
 
 use super::rholang::sorter::ordering::Ordering;
-use super::rholang::sorter::par_sort_matcher::ParSortMatcher;
-use super::rholang::sorter::sortable::Sortable;
 use crate::rhoapi::Par;
 
 // Enforce ordering and uniqueness.
@@ -14,19 +12,16 @@ use crate::rhoapi::Par;
 pub struct SortedParHashSet {
     pub ps: HashSet<Par>,
     pub sorted_pars: Vec<Par>,
-    pub sorted_ps: HashSet<Par>,
 }
 
 impl SortedParHashSet {
     pub fn create_from_vec(vec: Vec<Par>) -> Self {
-        let set: HashSet<Par> = vec.clone().into_iter().collect();
-        let sorted_pars = Ordering::sort_pars(&set.clone().into_iter().collect());
-        let sorted_ps: HashSet<Par> = sorted_pars.clone().into_iter().collect();
+        let set: HashSet<Par> = vec.into_iter().collect();
+        let sorted_pars = Ordering::sort_pars(&set);
 
         SortedParHashSet {
             ps: set,
             sorted_pars,
-            sorted_ps,
         }
     }
 
@@ -42,34 +37,7 @@ impl SortedParHashSet {
         self.sorted_pars.iter().map(f)
     }
 
-    // alias for '+'
-    pub fn insert(&mut self, elem: Par) -> SortedParHashSet {
-        self.ps.insert(Self::sort(&elem));
-        Self::create_from_set(self.ps.clone())
-    }
-
-    // alias for '-'
-    pub fn remove(&mut self, elem: Par) -> SortedParHashSet {
-        self.ps.remove(&Self::sort(&elem));
-        Self::create_from_set(self.ps.clone())
-    }
-
-    pub fn contains(&self, elem: Par) -> bool { self.sorted_ps.contains(&Self::sort(&elem)) }
-
-    pub fn union(&self, that: HashSet<Par>) -> SortedParHashSet {
-        SortedParHashSet::create_from_set(
-            self.sorted_ps
-                .union(&that.iter().map(Self::sort).collect())
-                .cloned()
-                .collect(),
-        )
-    }
-
     pub fn equals(&self, that: SortedParHashSet) -> bool { self.sorted_pars == that.sorted_pars }
-
-    pub fn length(&self) -> usize { self.sorted_ps.len() }
-
-    pub fn sort(par: &Par) -> Par { ParSortMatcher::sort_match(par).term.clone() }
 }
 
 impl PartialEq for SortedParHashSet {
@@ -83,7 +51,6 @@ impl fmt::Debug for SortedParHashSet {
         f.debug_struct("SortedParHashSet")
             .field("ps", &self.ps)
             .field("sorted_pars", &self.sorted_pars)
-            .field("sorted_ps", &self.sorted_ps)
             .finish()
     }
 }

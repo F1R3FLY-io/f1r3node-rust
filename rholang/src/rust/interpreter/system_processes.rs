@@ -26,7 +26,6 @@ use shared::rust::{BitSet, Byte};
 use super::contract_call::ContractCall;
 use super::dispatch::RhoDispatch;
 use super::errors::{illegal_argument_error, InterpreterError};
-use super::grpc_client_service::GrpcClientService;
 use super::ollama_service::{ChatMessage, SharedOllamaService};
 use super::openai_service::SharedOpenAIService;
 use super::pretty_printer::PrettyPrinter;
@@ -237,8 +236,6 @@ impl FixedChannels {
     /// the rollout; a follow-up cleanup commit will remove it.
     pub fn reg_v1() -> Par { byte_name(24) }
 
-    pub fn grpc_tell() -> Par { byte_name(25) }
-
     pub fn dev_null() -> Par { byte_name(26) }
 
     pub fn abort() -> Par { byte_name(27) }
@@ -448,7 +445,7 @@ impl FixedChannels {
     /// The URN + fixed channel were registered at slice 5.43 so
     /// FsGenesis composition (slice 5.36) could
     /// `new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`)`
-    /// without tripping `eval_new`'s "No value set for URN" check,
+    /// without tripping `eval_new`'s `UnknownUrnError`,
     /// even before the real handler landed.
     pub fn fs_remove_dir() -> Par { byte_name(58) }
 
@@ -484,7 +481,6 @@ impl BodyRefs {
     pub const GPT4: i64 = 18;
     pub const DALLE3: i64 = 19;
     pub const TEXT_TO_AUDIO: i64 = 20;
-    pub const GRPC_TELL: i64 = 23;
     pub const DEV_NULL: i64 = 24;
     pub const ABORT: i64 = 25;
     pub const OLLAMA_CHAT: i64 = 26;
@@ -611,7 +607,6 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::OLLAMA_CHAT,
         BodyRefs::OLLAMA_GENERATE,
         BodyRefs::OLLAMA_MODELS,
-        BodyRefs::GRPC_TELL,
         BodyRefs::CHROMA_QUERY,
         // File I/O: every fs_* syscall reply must be replay-cached so a
         // follower's Oracular-echo path (dispatch_via_trait step 4) sees
@@ -678,7 +673,6 @@ impl ProcessContext {
         urn_map: Arc<HashMap<String, Par>>,
         openai_service: SharedOpenAIService,
         ollama_service: SharedOllamaService,
-        grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
     ) -> Self {
         ProcessContext {
@@ -694,7 +688,6 @@ impl ProcessContext {
                 urn_map,
                 openai_service,
                 ollama_service,
-                grpc_client_service,
                 chromadb_service,
             ),
         }
@@ -853,7 +846,6 @@ pub struct SystemProcesses {
     pub urn_map: Arc<HashMap<String, Par>>,
     openai_service: SharedOpenAIService,
     ollama_service: SharedOllamaService,
-    grpc_client_service: GrpcClientService,
     pretty_printer: PrettyPrinter,
     #[allow(dead_code)] // Note: This isn't dead when the chromadb flag is used
     chromadb_service: SharedChromaDBService,
@@ -867,7 +859,6 @@ impl SystemProcesses {
         urn_map: Arc<HashMap<String, Par>>,
         openai_service: SharedOpenAIService,
         ollama_service: SharedOllamaService,
-        grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
     ) -> Self {
         SystemProcesses {
@@ -877,7 +868,6 @@ impl SystemProcesses {
             urn_map,
             openai_service,
             ollama_service,
-            grpc_client_service,
             pretty_printer: PrettyPrinter::new(),
             chromadb_service,
         }
@@ -1714,84 +1704,6 @@ impl SystemProcesses {
             });
         }
         Ok(output)
-    }
-
-    pub async fn grpc_tell(
-        &self,
-        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
-    ) -> Result<Vec<Par>, InterpreterError> {
-        let Some((_produce, is_replay, previous_output, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
-            return Err(illegal_argument_error("grpc_tell"));
-        };
-
-        // Handle replay case
-        if is_replay {
-            tracing::debug!("grpcTell (replay): args: {:?}", args);
-            return Ok(previous_output);
-        }
-
-        // Handle normal case - expecting clientHost, clientPort, notificationPayload
-        // grpcTell is a fire-and-forget mechanism with no ack channel (arity = 3)
-        match args.as_slice() {
-            [client_host_par, client_port_par, notification_payload_par] => {
-                match (
-                    RhoString::unapply(client_host_par),
-                    RhoNumber::unapply(client_port_par),
-                    RhoString::unapply(notification_payload_par),
-                ) {
-                    (Some(client_host), Some(client_port), Some(notification_payload)) => {
-                        // Convert client_port from i64 to u64
-                        let port = if client_port < 0 {
-                            return Err(InterpreterError::BugFoundError(
-                                "Invalid port number: must be non-negative".to_string(),
-                            ));
-                        } else {
-                            client_port as u64
-                        };
-
-                        // Use GrpcClientService abstraction for proper NoOp handling on observer nodes
-                        match self
-                            .grpc_client_service
-                            .tell(&client_host, port, &notification_payload)
-                            .await
-                        {
-                            Ok(_) => {
-                                tracing::debug!(
-                                    "grpcTell: successfully sent to {}:{}",
-                                    client_host,
-                                    port
-                                );
-                                Ok(vec![Par::default()])
-                            }
-                            Err(e) => {
-                                tracing::warn!("GrpcClient error: {}", e);
-                                Err(InterpreterError::NonDeterministicProcessFailure {
-                                    cause: Box::new(InterpreterError::BugFoundError(format!(
-                                        "gRPC client error: {}",
-                                        e
-                                    ))),
-                                    output_not_produced: vec![],
-                                })
-                            }
-                        }
-                    }
-                    _ => {
-                        tracing::warn!("grpcTell: invalid argument types: {:?}", args);
-                        Err(illegal_argument_error("grpc_tell"))
-                    }
-                }
-            }
-            _ => {
-                tracing::warn!(
-                    "grpcTell: isReplay {} invalid arguments (expected 3): {:?}",
-                    is_replay,
-                    args
-                );
-                Err(illegal_argument_error("grpc_tell"))
-            }
-        }
     }
 
     pub async fn dev_null(

@@ -7,6 +7,7 @@ use axum::Router;
 use serde::Deserialize;
 
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
+use crate::rust::api::serde_types::blocks_by_heights_response::BlocksByHeightsHttpResponse;
 use crate::rust::api::web_api::{
     DataAtNameByBlockHashRequest, DeployResponse, PrepareRequest, PrepareResponse, ReadyResponse,
     RhoDataResponse, WebApi,
@@ -18,6 +19,16 @@ use crate::rust::web::shared_handlers::{
 #[derive(Debug, Deserialize)]
 pub struct ViewQuery {
     pub view: Option<String>,
+}
+
+// Query for `/blocks/{start}/{end}`. `view` behaves as elsewhere;
+// `include_missing` opts into the #1087 `pruned` / `unavailable` /
+// `pruneFloor` envelope. Absent or false keeps the pre-#1087 bare
+// array response so existing clients are unaffected.
+#[derive(Debug, Deserialize)]
+pub struct BlocksByHeightsQuery {
+    pub view: Option<String>,
+    pub include_missing: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,6 +131,8 @@ pub async fn prepare_deploy_get_handler(State(app_state): State<AppState>) -> Re
     responses(
         (status = 200, description = "Next deploy sequence number and pre-generated unforgeable names for the given deployer/timestamp", body = PrepareResponse),
         (status = 400, description = "Malformed request body or invalid deployer hex (`invalid_request_body`, `invalid_hash`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"
@@ -142,6 +155,8 @@ pub async fn prepare_deploy_post_handler(
     responses(
         (status = 200, description = "Channel data at the given name in the specified block", body = RhoDataResponse),
         (status = 400, description = "Malformed request body or invalid block hash (`invalid_request_body`, `invalid_hash`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
     ),
@@ -195,9 +210,10 @@ pub async fn last_finalized_block_handler(
         ("start" = i64, Path, description = "Start block height (inclusive)"),
         ("end" = i64, Path, description = "End block height (inclusive); clamped to the configured maximum range"),
         ("view" = Option<String>, Query, description = "Response view: `summary` (default) returns block headers only; `full` includes deploy list"),
+        ("include_missing" = Option<bool>, Query, description = "Opt into the #1087 envelope: when true, the body is `{ blocks, pruned, unavailable, pruneFloor }` where `pruned` (block_height <= pruneFloor, permanent on this node) and `unavailable` (block_height > pruneFloor, retry eligible) carry hashes topo_sort named at a walked height whose bodies this node no longer holds. Absent or false returns the pre-#1087 bare array of served blocks for backward compatibility."),
     ),
     responses(
-        (status = 200, description = "Blocks in the requested height range; may be empty if no blocks exist yet", body = Vec<BlockInfoSerde>),
+        (status = 200, description = "Bare array of blocks (default) or the #1087 envelope with `blocks`, `pruned`, `unavailable`, and `pruneFloor` when `include_missing=true`. 200 holds for the envelope even when `pruned` or `unavailable` are non-empty — partial success is the normal case under retention sweeps. The `oneOf` reflects the two shapes so code-generated clients can decode either.", body = BlocksByHeightsHttpResponse),
         (status = 400, description = "Non-integer path segment (`invalid_path_parameter`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`, `history_error`)", body = ApiErrorResponse),
     ),
@@ -206,7 +222,7 @@ pub async fn last_finalized_block_handler(
 pub async fn get_blocks_by_heights_handler(
     State(app_state): State<AppState>,
     AppPath((start, end)): AppPath<(i64, i64)>,
-    AppQuery(query): AppQuery<ViewQuery>,
+    AppQuery(query): AppQuery<BlocksByHeightsQuery>,
 ) -> Response {
     use crate::rust::api::web_api::ViewMode;
 
@@ -214,11 +230,22 @@ pub async fn get_blocks_by_heights_handler(
         Some("full") => ViewMode::Full,
         _ => ViewMode::Summary,
     };
+    let include_missing = query.include_missing.unwrap_or(false);
     let web_api = app_state.web_api.clone();
     match offload(move || async move { web_api.get_blocks_by_heights(start, end, view).await })
         .await
     {
-        Ok(response) => Json(response).into_response(),
+        // Default to the pre-#1087 bare array so existing consumers are
+        // unaffected. Only opted-in callers receive the envelope with the
+        // pruned / unavailable / prune_floor metadata. The untagged enum
+        // keeps the wire shape identical to each variant while letting
+        // the response-body schema cover both.
+        Ok(response) if include_missing => {
+            Json(BlocksByHeightsHttpResponse::Envelope(response)).into_response()
+        }
+        Ok(response) => {
+            Json(BlocksByHeightsHttpResponse::BareArray(response.blocks)).into_response()
+        }
         Err(e) => AppError(e).into_response(),
     }
 }
@@ -507,7 +534,8 @@ use crate::rust::api::web_api::{
         (status = 200, description = "Estimated phlogiston (gas) cost for the given Rholang term", body = EstimateCostResponse),
         (status = 400, description = "Malformed request body, invalid Rholang term, invalid deployer key, or invalid block hash (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
-        (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
     ),
     tag = "Query"
@@ -616,12 +644,12 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::StatusCode;
+    use models::rust::deploy_request::DeployRequest;
     use tower::ServiceExt;
 
     use super::*;
     use crate::rust::api::web_api::{
-        ApiStatus, DataAtNameByBlockHashRequest, DeployRequest, DeployResponse, RhoDataResponse,
-        ViewMode, WebApi,
+        ApiStatus, DataAtNameByBlockHashRequest, DeployResponse, RhoDataResponse, ViewMode, WebApi,
     };
 
     /// Stub WebApi that returns sample DeployResponse for testing.
@@ -723,7 +751,9 @@ mod tests {
             _: i64,
             _: i64,
             _: ViewMode,
-        ) -> eyre::Result<Vec<crate::rust::api::serde_types::block_info::BlockInfoSerde>> {
+        ) -> eyre::Result<
+            crate::rust::api::serde_types::blocks_by_heights_response::BlocksByHeightsResponseSerde,
+        > {
             unimplemented!()
         }
         async fn is_finalized(&self, _: String) -> eyre::Result<bool> { unimplemented!() }
@@ -1034,16 +1064,18 @@ mod router_tests {
     use comm::rust::peer_node::{NodeIdentifier, PeerNode};
     use comm::rust::rp::connect::ConnectionsCell;
     use comm::rust::rp::rp_conf::{RPConf, RPConfCell};
+    use models::rust::deploy_request::DeployRequest;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
     use tower::ServiceExt;
 
     use super::*;
     use crate::rust::api::admin_web_api::AdminWebApi;
+    use crate::rust::api::serde_types::blocks_by_heights_response::BlocksByHeightsResponseSerde;
     use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
     use crate::rust::api::web_api::{
         ApiStatus, BalanceResponse, BondStatusResponse, DeployFinalizationStatusJson,
-        DeployRequest, DeployerIdentity, EpochResponse, EpochRewardsResponse, EstimateCostResponse,
+        DeployerIdentity, EpochResponse, EpochRewardsResponse, EstimateCostResponse,
         PendingDeploysJson, PrepareResponse, RegistryResponse, RhoExpr, ValidatorInfo,
         ValidatorStatusResponse, ValidatorsResponse, VersionInfo, ViewMode, WebApi,
     };
@@ -1126,6 +1158,11 @@ mod router_tests {
                 is_ready: self.is_ready,
                 current_epoch: 0,
                 epoch_length: 100,
+                latest_block_number: Some(7),
+                deploy_lifespan: Some(50),
+                max_user_deploys_per_block: Some(4),
+                max_parent_depth: Some(25),
+                max_phlo_limit: Some(20_000_000),
             })
         }
 
@@ -1184,8 +1221,13 @@ mod router_tests {
             _: i64,
             _: i64,
             _: ViewMode,
-        ) -> eyre::Result<Vec<BlockInfoSerde>> {
-            Ok(vec![block_info()])
+        ) -> eyre::Result<BlocksByHeightsResponseSerde> {
+            Ok(BlocksByHeightsResponseSerde {
+                blocks: vec![block_info()],
+                pruned: Vec::new(),
+                unavailable: Vec::new(),
+                prune_floor: 0,
+            })
         }
 
         async fn is_finalized(&self, _: String) -> eyre::Result<bool> { Ok(true) }
@@ -1362,6 +1404,98 @@ mod router_tests {
 
     fn router() -> Router { WebApiRoutes::create_router().with_state(app_state()) }
 
+    #[tokio::test]
+    async fn ingress_shared_permit_rejects_both_http_deploy_routes_before_reading_the_body() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use crate::rust::api::DeployRequestLimiter;
+        use crate::rust::web::routes::Routes;
+
+        let limiter = DeployRequestLimiter::new(Some(1)).unwrap();
+        let permit = limiter.try_acquire().unwrap();
+        let router = Routes::create_main_routes(false, 1024)
+            .with_state(app_state().with_deploy_limiter(limiter.clone()));
+        for uri in ["/api/deploy", "/api/v1/deploy"] {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let counter = reads.clone();
+            let body = Body::from_stream(futures::stream::once(async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, std::convert::Infallible>(tonic::codegen::Bytes::from_static(
+                    b"invalid json",
+                ))
+            }));
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(body)
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let bytes = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["error"],
+                "deploy_admission_busy"
+            );
+            assert_eq!(reads.load(Ordering::SeqCst), 0);
+        }
+        let ready = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ready.status(), StatusCode::OK);
+        drop(permit);
+        let invalid = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deploy")
+                    .header("content-type", "application/json")
+                    .body(Body::from("invalid json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        assert!(limiter.try_acquire().is_ok());
+    }
+
+    #[tokio::test]
+    async fn ingress_json_offload_preserves_body_limit_and_releases_its_slot() {
+        use crate::rust::api::DeployRequestLimiter;
+        use crate::rust::web::routes::Routes;
+
+        let limiter = DeployRequestLimiter::new(Some(1)).unwrap();
+        let router = Routes::create_main_routes(false, 16)
+            .with_state(app_state().with_deploy_limiter(limiter.clone()));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deploy")
+                    .header("content-type", "application/json")
+                    .body(Body::from(" ".repeat(17)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(limiter.try_acquire().is_ok());
+    }
+
     async fn get_response(uri: &str) -> (StatusCode, serde_json::Value) {
         let response = router()
             .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
@@ -1445,11 +1579,22 @@ mod router_tests {
 
         let (status, json) = post_response(
             "/prepare-deploy",
-            r#"{"deployer":"04aa","timestamp":1,"nameQty":1}"#,
+            r#"{"deployer":"04aa","timestamp":1,"validAfterBlockNumber":3,"nameQty":1}"#,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["names"][0], "04aa");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prepare_deploy_post_requires_the_valid_after_block_number() {
+        let (status, json) = post_response(
+            "/prepare-deploy",
+            r#"{"deployer":"04aa","timestamp":1,"nameQty":1}"#,
+        )
+        .await;
+        assert!(status.is_client_error());
+        assert_eq!(json["error"], "invalid_request_body");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1548,7 +1693,17 @@ mod router_tests {
 
         let (status, json) = get_response("/blocks/1/5").await;
         assert_eq!(status, StatusCode::OK);
+        // #1087: default response remains the pre-#1087 bare array so
+        // existing HTTP consumers keep working; the envelope is opt-in.
         assert_eq!(json.as_array().unwrap().len(), 1);
+
+        let (status, json) = get_response("/blocks/1/5?include_missing=true").await;
+        assert_eq!(status, StatusCode::OK);
+        // #1087: envelope shape when opted in.
+        assert_eq!(json["blocks"].as_array().unwrap().len(), 1);
+        assert!(json["pruned"].as_array().unwrap().is_empty());
+        assert!(json["unavailable"].as_array().unwrap().is_empty());
+        assert_eq!(json["pruneFloor"].as_i64().unwrap(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]

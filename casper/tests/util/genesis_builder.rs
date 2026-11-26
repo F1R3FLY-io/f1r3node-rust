@@ -138,6 +138,7 @@ impl GenesisBuilder {
             timestamp: 0, // Using 0 like in GenesisBuilder
             version: 1,
             extra_bytes: bytes::Bytes::new(),
+            chain_id: bytes::Bytes::new(),
         };
 
         BlockMessage {
@@ -232,6 +233,7 @@ impl GenesisBuilder {
                 max_parent_depth: 15,
                 deploy_lifespan: 50,
                 min_phlo_price: (0).into(),
+                max_phlo_limit: 20_000_000,
                 validators: bonds
                     .iter()
                     .map(|(pk, stake)| Validator {

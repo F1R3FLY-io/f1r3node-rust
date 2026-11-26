@@ -1,6 +1,7 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/NoOpsCasperEffect.scala
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -34,7 +35,13 @@ pub struct NoOpsCasperEffect {
     shared_approved_block_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
     block_dag_storage: KeyValueDagRepresentation,
     self_created_should_fail: bool,
-    shard_conf: CasperShardConf,
+    pub shard_conf: CasperShardConf,
+    pub genesis_hash: Option<BlockHash>,
+    /// Shared handle used by the pruned/unavailable split in
+    /// `BlockAPI::get_block` and `BlockAPI::get_blocks_by_heights`.
+    /// Tests that exercise retention-horizon behaviour set this to
+    /// position hashes above or below the floor.
+    anchor_handle: Arc<AtomicI64>,
 }
 
 unsafe impl Send for NoOpsCasperEffect {}
@@ -66,6 +73,8 @@ impl Clone for NoOpsCasperEffect {
             block_dag_storage: self.block_dag_storage.clone(),
             self_created_should_fail: self.self_created_should_fail,
             shard_conf: self.shard_conf.clone(),
+            genesis_hash: self.genesis_hash.clone(),
+            anchor_handle: self.anchor_handle.clone(),
         }
     }
 }
@@ -103,6 +112,8 @@ impl NoOpsCasperEffect {
             block_dag_storage,
             self_created_should_fail: false,
             shard_conf: CasperShardConf::new(),
+            genesis_hash: None,
+            anchor_handle: Arc::new(AtomicI64::new(0)),
         }
     }
 
@@ -131,8 +142,16 @@ impl NoOpsCasperEffect {
             block_dag_storage,
             self_created_should_fail: false,
             shard_conf: CasperShardConf::new(),
+            genesis_hash: None,
+            anchor_handle: Arc::new(AtomicI64::new(0)),
         }
     }
+
+    /// Shared handle exposed so a test can set the retention-sweep
+    /// floor used by the pruned/unavailable split (#1087). The handle
+    /// clone travels with [`Clone`] so any subsequent lookup sees the
+    /// override.
+    pub fn anchor_handle(&self) -> Arc<AtomicI64> { self.anchor_handle.clone() }
 
     pub fn new_with_self_created_validation_failure(
         _blocks: Option<HashMap<BlockHash, BlockMessage>>,
@@ -172,7 +191,9 @@ impl MultiParentCasper for NoOpsCasperEffect {
 
     fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
-    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> { Ok(None) }
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> {
+        Ok(self.genesis_hash.clone())
+    }
 
     fn casper_shard_conf(&self) -> &CasperShardConf { &self.shard_conf }
 
@@ -191,6 +212,13 @@ impl MultiParentCasper for NoOpsCasperEffect {
 
 #[async_trait]
 impl Casper for NoOpsCasperEffect {
+    fn effective_anchor_handle(&self) -> Arc<AtomicI64> { self.anchor_handle.clone() }
+
+    fn effective_anchor_number(&self) -> i64 {
+        self.anchor_handle
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         Err(CasperError::RuntimeError(
             "get_snapshot not implemented for NoOpsCasperEffect - use TestCasperWithSnapshot for heartbeat tests".to_string(),
@@ -291,7 +319,7 @@ impl NoOpsCasperEffect {
                 .insert(block_hash.clone());
 
             // Add block metadata to the metadata store
-            let block_metadata = BlockMetadata::from_block(&block, false, None, None);
+            let block_metadata = BlockMetadata::from_block(&block, None, None, None);
             let mut metadata_guard = self.block_dag_storage.block_metadata_index.write();
             match metadata_guard.add(block_metadata) {
                 Ok(_) => {

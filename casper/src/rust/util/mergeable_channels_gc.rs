@@ -1,7 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block_hash::BlockHash;
+use models::rust::validator::Validator;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::casper::CasperShardConf;
@@ -11,6 +12,32 @@ mod job;
 #[cfg(any(test, feature = "test-utils"))]
 pub use job::collect_garbage_with;
 pub use job::{collect_garbage, GcProgress, GcSweep};
+
+/// A block at or below the recorded restore floor is unreachable from the
+/// restored DAG by construction: either the node held it before an LFS whose
+/// lower bound now sits above it, or it was downloaded by a prior, interrupted
+/// LFS whose anchor a later restore superseded. Either way the finalized /
+/// moved-past gates cannot be checked for it — its parents live in a gap —
+/// and any body it still holds is a leak. Reported here so the gates can
+/// short-circuit to "safe to delete" without consulting either.
+///
+/// Also bypasses the `deploy_lifespan` safety window that `reaches_ancestor_check`
+/// normally honors: a post-restore block cannot cite a below-floor parent
+/// (the restore replaced the DAG below `min_height` with its own anchor), so
+/// no validation walk reads these bodies. If a future reader anchors body-GC
+/// on a different horizon, that reader must keep this exemption explicit —
+/// collapsing it back into the `deploy_lifespan` clause would re-leak this
+/// span.
+fn below_restore_floor(
+    dag: &KeyValueDagRepresentation,
+    block_hash: &BlockHash,
+    restore_floor: Option<i64>,
+) -> Result<bool, KvStoreError> {
+    let Some(floor) = restore_floor else {
+        return Ok(false);
+    };
+    Ok(dag.block_number_unsafe(block_hash)? <= floor)
+}
 
 /// Conditions 1 and 2 of `is_safe_to_delete`, plus the "has children" half of
 /// condition 3 — everything that can be decided about a candidate WITHOUT
@@ -23,11 +50,16 @@ fn reaches_ancestor_check(
     block_hash: &BlockHash,
     floor: &Floor,
     casper_shard_conf: &CasperShardConf,
+    restore_floor: Option<i64>,
 ) -> Result<bool, KvStoreError> {
+    if below_restore_floor(dag, block_hash, restore_floor)? {
+        return Ok(true);
+    }
     // 1. Check if block is finalized. An orphan on a losing fork never
-    //    satisfies this — permanently, not just for this pass — and that is
-    //    fine: it stays in `pending` and is retried, but never blocks any
-    //    other block's own check from succeeding.
+    //    satisfies this — permanently, not just for this pass — so the pass
+    //    drops it from the retry queue, and finalization queues it again if
+    //    it is ever finalized later. It never blocks any other block's own
+    //    check from succeeding.
     if !dag.is_finalized(block_hash)? {
         return Ok(false);
     }
@@ -42,10 +74,25 @@ fn reaches_ancestor_check(
     //    deletable set while merges still needed it. Anchoring on the floor is
     //    strictly more conservative: the floor never leads the tip, so this can
     //    only delete less than before, never more.
+    //
+    // When body-store GC is enabled the allowance widens by `deploy_lifespan`.
+    // Validation of a block proposed from a stale view (`compute_parents_post_state`)
+    // reads block bodies down to `block_floor - deploy_lifespan`
+    // (`settled_sigs_of_lineage` and the `scope_prior_rejection_counts` walk
+    // in `interpreter_util.rs`), where `block_floor` comes from the block's
+    // frozen justification snapshot. The caller folds the stale-view floor
+    // into `pass.floor` already; we just need the window to reach past the
+    // walk edge, otherwise `reaches_ancestor_check` lets through blocks a
+    // restarted-but-stale validator's return block still needs the bodies for.
     let block_meta = dag.lookup_unsafe(block_hash)?;
     let depth_from_floor = floor.block_number - block_meta.block_number;
     let max_allowed_depth = (casper_shard_conf.max_parent_depth as i64)
-        + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64);
+        + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64)
+        + if casper_shard_conf.enable_block_store_gc {
+            casper_shard_conf.deploy_lifespan
+        } else {
+            0
+        };
 
     if depth_from_floor <= max_allowed_depth {
         return Ok(false);
@@ -63,8 +110,12 @@ fn is_safe_to_delete(
     floor: &Floor,
     casper_shard_conf: &CasperShardConf,
     moved_past: Option<&HashSet<BlockHash>>,
+    restore_floor: Option<i64>,
 ) -> Result<bool, KvStoreError> {
-    if !reaches_ancestor_check(dag, block_hash, floor, casper_shard_conf)? {
+    if below_restore_floor(dag, block_hash, restore_floor)? {
+        return Ok(true);
+    }
+    if !reaches_ancestor_check(dag, block_hash, floor, casper_shard_conf, restore_floor)? {
         return Ok(false);
     }
 
@@ -101,8 +152,18 @@ fn is_safe_to_delete(
 /// ever consulted — does not drag the walk down either.
 fn moved_past_by_every_validator(
     dag: &KeyValueDagRepresentation,
+    active_latest: &HashMap<Validator, BlockHash>,
     min_height: i64,
 ) -> Result<Option<HashSet<BlockHash>>, KvStoreError> {
+    // `active_latest` is the input the caller has already filtered to
+    // validators the chain still recognises (bonded, not slashed, not
+    // unbonded; eventually also not leaky-bucket-ejected). A validator the
+    // chain has retired does NOT constrain deletion — their last message
+    // would otherwise pin `deepest_common_strict_ancestor` at the slot they
+    // left and freeze pruning for every other node on the network. With
+    // #1010 that freeze now wedges block-body deletion too, so the filter
+    // protects three retention paths at once.
+    //
     // Validators sharing the same latest message (common on a healthy,
     // synchronized chain) would otherwise seed the frontier with that same
     // lineage once per validator instead of once total.
@@ -110,10 +171,36 @@ fn moved_past_by_every_validator(
     // A slot holding a block its validator never signed is the genesis
     // placeholder, which has no main parent: counting it collapses the anchor
     // search and the pass keeps everything.
-    let mut latest_messages: HashSet<BlockHash> = HashSet::new();
-    for (validator, hash) in dag.latest_message_hashes() {
-        if dag.own_testimony(&validator, &hash)?.is_some() {
-            latest_messages.insert(hash);
+    //
+    // For each signed latest message, the frontier also carries the blocks
+    // that message already cited — its parents and the justifications it
+    // records for other validators. A stopped validator's next block, built
+    // from the view encoded in its latest message, cites those same blocks
+    // again; starting the walk at the latest message alone treats its main
+    // parent as moved past even though the next block names that parent
+    // directly (see issue #1057). Adding the cited set to the frontier walks
+    // the anchor one step below every block the validator can still name.
+    //
+    // Justification slots are filtered through `own_testimony` for the same
+    // reason `active_latest` entries are: a newly-bonded validator that has
+    // not proposed sits in every other validator's justifications as a
+    // genesis placeholder, and genesis has no main parent — admitting it
+    // would collapse the anchor search and freeze every pass until the slot
+    // fills.
+    let mut citations: HashSet<BlockHash> = HashSet::new();
+    for (validator, hash) in active_latest {
+        if dag.own_testimony(validator, hash)?.is_some() {
+            citations.insert(hash.clone());
+            let meta = dag.lookup_unsafe(hash)?;
+            citations.extend(meta.parents.iter().cloned());
+            for just in &meta.justifications {
+                if dag
+                    .own_testimony(&just.validator, &just.latest_block_hash)?
+                    .is_some()
+                {
+                    citations.insert(just.latest_block_hash.clone());
+                }
+            }
         }
     }
 
@@ -127,7 +214,7 @@ fn moved_past_by_every_validator(
     // `common_strict_ancestors` below is that intersection, kept as the
     // differential oracle for the anchor.
     let anchor = deepest_common_strict_ancestor(
-        latest_messages,
+        citations,
         |block_hash| recorded(&read_error, dag.main_parent(block_hash)),
         |block_hash| recorded(&read_error, dag.block_number(block_hash)),
     );
@@ -160,24 +247,24 @@ fn recorded<T>(
     })
 }
 
-/// The deepest block that is a strict main-chain ancestor of every latest
-/// message, or `None` when there is no such block.
+/// The deepest block that is a strict main-chain ancestor of every input
+/// block, or `None` when there is no such block.
 ///
-/// Each walk starts at a latest message's main parent rather than at the message
-/// itself, which is what makes the result strict: a validator sitting on a block
-/// has not moved past it, so that block must not qualify.
+/// Each walk starts at an input's main parent rather than at the input itself,
+/// which is what makes the result strict: a validator still citing a block has
+/// not moved past it, so that block must not qualify.
 ///
 /// Convergence advances only the highest frontier entries, so the work is
-/// proportional to how far the validators have diverged — a few blocks when
+/// proportional to how far the inputs have diverged — a few blocks when
 /// healthy, and bounded by the stall when not — rather than to the chain length.
 fn deepest_common_strict_ancestor(
-    latest_messages: impl IntoIterator<Item = BlockHash>,
+    citations: impl IntoIterator<Item = BlockHash>,
     main_parent: impl Fn(&BlockHash) -> Option<BlockHash>,
     height_of: impl Fn(&BlockHash) -> Option<i64>,
 ) -> Option<BlockHash> {
-    let mut frontier: Vec<BlockHash> = latest_messages
+    let mut frontier: Vec<BlockHash> = citations
         .into_iter()
-        .map(|latest_message| main_parent(&latest_message))
+        .map(|citation| main_parent(&citation))
         .collect::<Option<Vec<_>>>()?;
 
     if frontier.is_empty() {
@@ -581,6 +668,42 @@ mod tests {
                 }
             }
         }
+
+        /// `stale_view_floor` must return the lowest floor the pass could
+        /// anchor on. Every signed active validator pulls the anchor down to
+        /// its cached view floor, and the local LFB is the ceiling. A
+        /// placeholder slot (no own testimony) cannot pull the anchor
+        /// anywhere — it is filtered out by the same `own_testimony` rule
+        /// `active_latest` entries use.
+        #[test]
+        fn stale_view_floor_minimizes_across_every_signed_latest(
+            local in 0u8..=TOP,
+            a_floor in 0u8..=TOP,
+            b_floor in 0u8..=TOP,
+        ) {
+            let dag = forked_chain_dag();
+            let validator_a = Bytes::from(vec![0xEEu8; 65]);
+            let validator_b = Bytes::from(vec![0xDDu8; 65]);
+            let side6 = Bytes::from(b"side6".to_vec());
+            dag.put_cached_floor(hash(TOP), hash(a_floor)).unwrap();
+            dag.put_cached_floor(side6.clone(), hash(b_floor)).unwrap();
+            let local_floor = Floor {
+                hash: hash(local),
+                block_number: local as i64,
+            };
+            let active: HashMap<Validator, BlockHash> = [
+                (validator_a, hash(TOP)),
+                (validator_b, side6),
+            ]
+            .into_iter()
+            .collect();
+            let result = super::job::stale_view_floor(&dag, local_floor, &active)
+                .expect("stale_view_floor");
+            let expected = (local as i64)
+                .min(a_floor as i64)
+                .min(b_floor as i64);
+            prop_assert_eq!(result.block_number, expected);
+        }
     }
 
     // -- is_safe_to_delete ----------------------------------------------------
@@ -633,7 +756,7 @@ mod tests {
                 weight_map: BTreeMap::new(),
                 block_number: n as i64,
                 sequence_number: n as i32,
-                invalid: false,
+                equivocates: None,
                 directly_finalized: true,
                 finalized: true,
                 fault_tolerance_value: 1.0,
@@ -648,6 +771,7 @@ mod tests {
         block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map,
@@ -656,7 +780,6 @@ mod tests {
             block_number_map,
             main_parent_map,
             self_justification_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: hash(TOP),
             finalized_blocks_set,
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -688,6 +811,20 @@ mod tests {
         }
     }
 
+    /// An "all validators are active" latest-message map derived straight from
+    /// the DAG — the pre-filter view. Used only by lib tests that exercise the
+    /// frontier walk and safety predicate in isolation; `collect_garbage` in
+    /// production threads `active_latest_messages` through PoS so a retired
+    /// validator does not freeze the sweep.
+    pub(super) fn all_as_active_latest(
+        dag: &KeyValueDagRepresentation,
+    ) -> HashMap<Validator, BlockHash> {
+        dag.latest_message_hashes()
+            .iter()
+            .map(|(v, h)| (v.clone(), h.clone()))
+            .collect()
+    }
+
     fn is_safe_to_delete_at_floor(
         dag: &KeyValueDagRepresentation,
         block_hash: &BlockHash,
@@ -700,8 +837,9 @@ mod tests {
         // candidate's own height — the same rule `collect_garbage` applies
         // to a whole `pending` set collapses to "this one height" here.
         let candidate_height = dag.lookup_unsafe(block_hash)?.block_number;
-        let moved_past = moved_past_by_every_validator(dag, candidate_height)?;
-        is_safe_to_delete(dag, block_hash, floor, conf, moved_past.as_ref())
+        let active = all_as_active_latest(dag);
+        let moved_past = moved_past_by_every_validator(dag, &active, candidate_height)?;
+        is_safe_to_delete(dag, block_hash, floor, conf, moved_past.as_ref(), None)
     }
 
     /// THE regression. Mergeable data serves merges, and a merge reads it for
@@ -854,7 +992,7 @@ mod tests {
                 weight_map: BTreeMap::new(),
                 block_number: height,
                 sequence_number: height as i32,
-                invalid: false,
+                equivocates: None,
                 directly_finalized: true,
                 finalized: true,
                 fault_tolerance_value: 1.0,
@@ -908,6 +1046,7 @@ mod tests {
         block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map,
@@ -916,7 +1055,6 @@ mod tests {
             block_number_map,
             main_parent_map,
             self_justification_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: hash(TOP),
             finalized_blocks_set,
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -974,7 +1112,7 @@ mod tests {
                 weight_map: BTreeMap::new(),
                 block_number: 3,
                 sequence_number: 1,
-                invalid: false,
+                equivocates: None,
                 directly_finalized: false,
                 finalized: true,
                 fault_tolerance_value: 1.0,
@@ -999,8 +1137,9 @@ mod tests {
                 .push(Bytes::from_static(b"below-the-restored-band"));
             bms.add(eight).expect("re-add metadata");
         }
+        let active = all_as_active_latest(&dag);
         assert!(
-            moved_past_by_every_validator(&dag, 5).is_ok(),
+            moved_past_by_every_validator(&dag, &active, 5).is_ok(),
             "the walk stops at height 5; a secondary parent of block 8 that this \
              node does not hold cannot be a candidate and must not fail the pass"
         );
@@ -1048,6 +1187,95 @@ mod tests {
             !is_safe_to_delete_at_floor(&dag, &side5, &floor_at(TOP), &conf())
                 .expect("safety check"),
             "validator A never left the spine, so it has not moved past the branch"
+        );
+    }
+
+    // -- active-validator filter ---------------------------------------------
+
+    /// Run the safety predicate against a caller-chosen `active_latest`. Mirrors
+    /// `is_safe_to_delete_at_floor` but exposes the filter input the production
+    /// path threads through `active_latest_messages`.
+    fn is_safe_to_delete_with_active(
+        dag: &KeyValueDagRepresentation,
+        active_latest: &HashMap<Validator, BlockHash>,
+        block_hash: &BlockHash,
+        floor: &Floor,
+        conf: &CasperShardConf,
+    ) -> Result<bool, KvStoreError> {
+        let candidate_height = dag.lookup_unsafe(block_hash)?.block_number;
+        let moved_past = moved_past_by_every_validator(dag, active_latest, candidate_height)?;
+        is_safe_to_delete(dag, block_hash, floor, conf, moved_past.as_ref(), None)
+    }
+
+    /// An unbonded or equivocation-slashed validator ejects from
+    /// `active_latest` and the walk descends past the slot they left behind.
+    /// Covers the "unbonded" and "slashed" scenarios equally: at this layer
+    /// both collapse to "the validator is absent from `active_latest`." The
+    /// filter mechanics that produce that absence (`floor_committee` for
+    /// unbonded, `invalid_latest_messages_from_hashes` for slashed) are
+    /// upstream in `active_latest_messages` and covered end-to-end by the
+    /// production-path integration test
+    /// `gc_collects_mergeable_data_that_the_recompute_cannot_rebuild`.
+    ///
+    /// Target block: `hash(5)` — one height above `FORK_POINT`. In the
+    /// baseline the anchor pins at the fork point (`hash(4)`), so the
+    /// `moved_past` set only reaches up to the fork and `hash(5)` is NOT a
+    /// member. Drop the stuck validator and the anchor advances to A's spine
+    /// tip, so the parent walk descends through every spine block above the
+    /// fork and `hash(5)` becomes a member.
+    #[test]
+    fn the_active_filter_lets_the_walk_descend_past_an_omitted_validator() {
+        let dag = forked_chain_dag();
+        let target = hash(5);
+        let validator_b = Bytes::from(vec![0xDDu8; 65]);
+
+        // Baseline: with every validator in the active set, validator B's slot
+        // at side6 pins the anchor at the fork point, and `moved_past` does
+        // not cover spine blocks above it.
+        let all_active = all_as_active_latest(&dag);
+        assert!(
+            !is_safe_to_delete_with_active(&dag, &all_active, &target, &floor_at(TOP), &conf())
+                .expect("safety check — baseline"),
+            "baseline: hash(5) is kept while validator B still participates"
+        );
+
+        // Filtered: once B is dropped (unbonded, slashed, or — in the future
+        // — leaky-bucket-ejected), the walk descends and hash(5) collects.
+        let mut without_b = all_active.clone();
+        without_b.remove(&validator_b);
+        assert!(
+            is_safe_to_delete_with_active(&dag, &without_b, &target, &floor_at(TOP), &conf())
+                .expect("safety check — with the retired validator dropped"),
+            "once validator B is no longer in the active set, hash(5) is safe \
+             to delete: the sweep is no longer frozen by a slot the chain has \
+             retired"
+        );
+    }
+
+    /// A validator that is still bonded but has stopped proposing still freezes
+    /// the sweep. This is correct behaviour until the leaky-bucket spec's
+    /// quarantine window lands: a bonded validator retains the right to
+    /// propose a block whose parent reaches back to their old slot, and the
+    /// moved-past walk must honour that. Once leaky-bucket ejects such a
+    /// validator automatically, `active_latest_messages` drops them and
+    /// pruning resumes — no further edit needed here.
+    #[test]
+    fn a_bonded_silent_validator_still_constrains_the_walk() {
+        let dag = forked_chain_dag();
+        let target = hash(5);
+
+        // Same fixture as above; this is simply a regression guard pinning the
+        // expectation that a *bonded* validator sitting on an old slot blocks
+        // deletion. If the leaky-bucket work lands and automatically retires
+        // such validators, this test flips at the `active_latest_messages`
+        // layer — not here.
+        let active = all_as_active_latest(&dag);
+        assert!(
+            !is_safe_to_delete_with_active(&dag, &active, &target, &floor_at(TOP), &conf())
+                .expect("safety check"),
+            "a validator that is still bonded but silent retains the right to \
+             propose a block whose parent reaches back to their old slot, so \
+             the walk must still refuse to collect hash(5)"
         );
     }
 }

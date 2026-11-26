@@ -14,9 +14,10 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    self, ApprovedBlock, ApprovedBlockCandidate, BlockRequest, CasperMessage, FinalizedFloorSeed,
-    HasBlock, HasBlockRequest,
+    self, ApprovedBlock, ApprovedBlockCandidate, BlockPrunedResponse, BlockRequest, CasperMessage,
+    FinalizedFloorSeed, HasBlock, HasBlockRequest,
 };
+use models::rust::casper::protocol::packet_type_tag::encoded_block_message_packet;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
@@ -33,6 +34,9 @@ use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::snapshot_chunk_sync::SnapshotChunkSyncDriver;
 use crate::rust::engine::snapshot_chunk_wire::{
     handle_get_snapshot_chunk_request, handle_has_snapshot_request,
+};
+use crate::rust::engine::state_export_limiter::{
+    StateExportLimiter, MAX_PENDING_REQUESTS_PER_PEER, QUEUED_STREAM_BYTES_BUDGET,
 };
 use crate::rust::engine::wal_payload_wire::{
     handle_get_wal_payload_request, handle_has_wal_payload_request,
@@ -243,6 +247,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
             CasperMessage::BlockHashMessage(_) => true,
             CasperMessage::BlockMessage(b) => !view.is_solicited(&b.block_hash),
             CasperMessage::HasBlock(h) => !view.is_solicited(&h.hash),
+            // A `BlockPrunedResponse` is legitimate only for a hash this
+            // node is actually awaiting; an ignored peer's response for any
+            // other hash is not the solicited answer to a request and is
+            // treated the same way an unsolicited `BlockMessage` is (#1059).
+            CasperMessage::BlockPrunedResponse(r) => !view.is_awaited(&r.hash),
             _ => false,
         };
         if unrequested_block_traffic && view.is_ignored(&peer) {
@@ -340,6 +349,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     .await
             }
             CasperMessage::HasBlock(hb) => self.handle_announcement(peer, hb.hash, "HasBlock"),
+            CasperMessage::BlockPrunedResponse(resp) => {
+                self.handle_block_pruned_response(peer, resp);
+                Ok(())
+            }
             CasperMessage::ForkChoiceTipRequest(_) => {
                 self.handle_fork_choice_tip_request(peer).await
             }
@@ -590,6 +603,7 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     /// configured payload store (observers, test harnesses that
     /// skip the boot pipeline).
     wal_payload_ctx: std::sync::OnceLock<WalPayloadContext>,
+    state_export_limiter: StateExportLimiter,
 }
 
 impl<T: TransportLayer + Send + Sync> Running<T> {
@@ -688,6 +702,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             state_items_tx,
             snapshot_chunk_ctx: std::sync::OnceLock::new(),
             wal_payload_ctx: std::sync::OnceLock::new(),
+            state_export_limiter: StateExportLimiter::default(),
         }
     }
 
@@ -758,24 +773,106 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         peer: PeerNode,
         br: BlockRequest,
     ) -> Result<(), CasperError> {
-        let maybe_block = self.casper.block_store().get(&br.hash)?;
-        if let Some(block) = maybe_block {
+        let maybe_encoded = self.casper.block_store().get_encoded(&br.hash)?;
+        if let Some(encoded) = maybe_encoded {
             tracing::info!(
                 "Received request for block {} from {}. Response sent.",
                 PrettyPrinter::build_string_bytes(&br.hash),
                 peer
             );
             self.transport
-                .stream_message_to_peer(&self.conf, &peer, Arc::new(block.to_proto()))
+                .stream_packet_to_peer(
+                    &self.conf,
+                    &peer,
+                    encoded_block_message_packet(encoded.into()),
+                )
                 .await?;
-        } else {
-            tracing::info!(
-                "Received request for block {} from {}. No response given since block not found.",
-                PrettyPrinter::build_string_bytes(&br.hash),
-                peer
-            );
+            return Ok(());
         }
+
+        // Body is missing. Distinguish "the retention sweep deleted it"
+        // (BlockPrunedResponse) from "we have no record" (silent, as before).
+        // The DAG metadata index is not swept by #1010 / #1045, so its
+        // presence of the hash tells us we knew the block once. Mirrors the
+        // client-API split introduced in #1052 (BlockPrunedError) onto the
+        // peer-to-peer wire so a requester can switch to LFS instead of
+        // retrying forever (#1059).
+        let dag = self.casper.block_dag().await?;
+        if let Some(metadata) = dag.lookup(&br.hash)? {
+            let prune_floor = self
+                .casper
+                .effective_anchor_handle()
+                .load(std::sync::atomic::Ordering::Acquire);
+            // Only claim "pruned" when the block is actually at or below our
+            // body-prune floor. Metadata-present-but-body-missing above the
+            // anchor is an inconsistent-storage edge case, not a GC sweep:
+            // stay silent (as before #1059) rather than mislead the requester
+            // into a false below-horizon signal.
+            if metadata.block_number <= prune_floor {
+                tracing::info!(
+                    "Received request for block {} from {}. Block pruned at height {} (floor {}); sending BlockPrunedResponse.",
+                    PrettyPrinter::build_string_bytes(&br.hash),
+                    peer,
+                    metadata.block_number,
+                    prune_floor
+                );
+                let pruned = BlockPrunedResponse {
+                    hash: br.hash,
+                    block_height: metadata.block_number,
+                    prune_floor,
+                };
+                self.transport
+                    .send_message_to_peer(&self.conf, &peer, Arc::new(pruned.to_proto()))
+                    .await?;
+                return Ok(());
+            }
+            tracing::warn!(
+                "Block {} metadata is present but body is missing above the prune floor (height {}, floor {}); not responding",
+                PrettyPrinter::build_string_bytes(&br.hash),
+                metadata.block_number,
+                prune_floor
+            );
+            return Ok(());
+        }
+
+        tracing::info!(
+            "Received request for block {} from {}. No response given since block not found.",
+            PrettyPrinter::build_string_bytes(&br.hash),
+            peer
+        );
         Ok(())
+    }
+
+    /// A peer answered a `BlockRequest` we sent (directly or via an upstream
+    /// requester) with `BlockPrunedResponse`: the block has been swept past
+    /// the peer's horizon. Hand the signal to block ingest so the fetch
+    /// scheduler stops retrying and the below-horizon flag is set on the
+    /// shared view (#1059).
+    ///
+    /// Guards against unsolicited responses: an attacker peer cannot flip
+    /// the shared below-horizon flag or drop an arbitrary need by sending
+    /// pruned-responses for hashes the node never asked for. We only accept
+    /// the signal for hashes block ingest is currently awaiting.
+    pub fn handle_block_pruned_response(&self, peer: PeerNode, resp: BlockPrunedResponse) {
+        if !self.ingest.view().is_awaited(&resp.hash) {
+            tracing::debug!(
+                "Dropping unsolicited BlockPrunedResponse from {} for block {} (height {}, floor {})",
+                peer,
+                PrettyPrinter::build_string_bytes(&resp.hash),
+                resp.block_height,
+                resp.prune_floor
+            );
+            return;
+        }
+        tracing::debug!(
+            "Received BlockPrunedResponse from {} for block {} (height {}, floor {})",
+            peer,
+            PrettyPrinter::build_string_bytes(&resp.hash),
+            resp.block_height,
+            resp.prune_floor
+        );
+        self.ingest
+            .block_pruned(resp.hash, resp.block_height, resp.prune_floor, peer);
     }
 
     pub async fn handle_has_block_request(
@@ -914,14 +1011,46 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             return Ok(());
         }
 
-        let exporter = self.casper.get_history_exporter().await;
+        let Some(_slot) = self.state_export_limiter.reserve(&peer) else {
+            tracing::warn!(
+                %peer,
+                max = MAX_PENDING_REQUESTS_PER_PEER,
+                "Too many StoreItemsMessageRequests in progress for peer; ignoring"
+            );
+            return Ok(());
+        };
+        let Some(_permit) = self
+            .state_export_limiter
+            .acquire(|| self.transport.queued_stream_bytes())
+            .await
+        else {
+            tracing::warn!(
+                %peer,
+                budget = QUEUED_STREAM_BYTES_BUDGET,
+                "Outgoing stream queue stayed over its byte budget; ignoring StoreItemsMessageRequest"
+            );
+            return Ok(());
+        };
 
-        let (history, data) = match RSpaceExporterItems::get_history_and_data(
-            exporter,
-            start_path.clone(),
-            skip,
-            take,
-        ) {
+        let exporter = self.casper.get_history_exporter().await;
+        let export_path = start_path.clone();
+        let export = match tokio::task::spawn_blocking(move || {
+            RSpaceExporterItems::get_history_and_data(exporter, export_path, skip, take)
+        })
+        .await
+        {
+            Ok(export) => export,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    %peer,
+                    "State export task for StoreItemsMessageRequest failed; ignoring"
+                );
+                return Ok(());
+            }
+        };
+
+        let (history, data) = match export {
             Ok(items) => items,
             Err(error) => {
                 tracing::warn!(

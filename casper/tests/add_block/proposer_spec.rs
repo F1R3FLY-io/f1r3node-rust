@@ -15,6 +15,7 @@ use casper::rust::validator_identity::ValidatorIdentity;
 use casper::rust::ValidBlockProcessing;
 use crypto::rust::private_key::PrivateKey;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use shared::rust::shared::f1r3fly_event::DeployAdmission;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::util::genesis_builder::DEFAULT_VALIDATOR_SKS;
@@ -128,6 +129,7 @@ impl BlockCreator for SelectionRecordingBlockCreator {
             get_random_block_default(),
             prost::bytes::Bytes::new(),
             prost::bytes::Bytes::new(),
+            None,
         ))
     }
 }
@@ -146,6 +148,7 @@ impl BlockCreator for TestBlockCreator {
             get_random_block_default(),
             prost::bytes::Bytes::new(),
             prost::bytes::Bytes::new(),
+            None,
         ))
     }
 }
@@ -188,7 +191,13 @@ impl ProposeEffectHandler for TestProposeEffectHandler {
         Ok(())
     }
 
-    fn publish_block_created(&self, _: &BlockMessage) -> Result<(), CasperError> { Ok(()) }
+    fn publish_block_created(
+        &self,
+        _: &BlockMessage,
+        _: Option<DeployAdmission>,
+    ) -> Result<(), CasperError> {
+        Ok(())
+    }
 }
 
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -214,7 +223,13 @@ impl ProposeEffectHandler for TrackingProposeEffectHandler {
         Ok(())
     }
 
-    fn publish_block_created(&self, _: &BlockMessage) -> Result<(), CasperError> { Ok(()) }
+    fn publish_block_created(
+        &self,
+        _: &BlockMessage,
+        _: Option<DeployAdmission>,
+    ) -> Result<(), CasperError> {
+        Ok(())
+    }
 }
 
 fn get_propose_effect_var() -> i32 { PROPOSE_EFFECT_VAR.load(Ordering::SeqCst) }
@@ -439,7 +454,7 @@ async fn lag_past_the_height_threshold_still_mints_recovery() {
                 weight_map: std::collections::BTreeMap::new(),
                 block_number: number,
                 sequence_number: number as i32,
-                invalid: false,
+                equivocates: None,
                 directly_finalized: finalized,
                 finalized,
                 fault_tolerance_value: 1.0,

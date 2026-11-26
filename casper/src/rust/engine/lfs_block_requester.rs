@@ -10,7 +10,9 @@ use async_stream::stream;
 use async_trait::async_trait;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
+use models::rust::casper::protocol::casper_message::{
+    ApprovedBlock, BlockMessage, BlockPrunedResponse,
+};
 use models::rust::validator::Validator;
 use tokio::sync::{mpsc, Semaphore};
 
@@ -69,6 +71,12 @@ impl ReceiveInfo {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrunedReport {
+    Reported,
+    AskedAgain,
+}
+
 /// State to control processing of requests
 #[derive(Debug, Clone)]
 pub struct ST<Key: Hash + Eq + Clone> {
@@ -77,8 +85,8 @@ pub struct ST<Key: Hash + Eq + Clone> {
     pub lower_bound: i64,
     pub height_map: BTreeMap<i64, HashSet<Key>>,
     pub finished: HashSet<Key>,
-    pub slash_evidence: HashSet<Key>,
-    pub slash_targets: HashSet<Key>,
+    pub pruned_reports: HashMap<Key, PrunedReport>,
+    pub skipped: HashMap<Key, i64>,
 }
 
 impl<Key: Hash + Eq + Clone> ST<Key> {
@@ -103,24 +111,17 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
             lower_bound,
             height_map: BTreeMap::new(),
             finished: HashSet::new(),
-            slash_evidence: HashSet::new(),
-            slash_targets: HashSet::new(),
+            pruned_reports: HashMap::new(),
+            skipped: HashMap::new(),
         }
     }
 
     /// Adds new keys to Init state, ready for processing. Existing keys are skipped.
     /// Returns a new ST instance with the added keys.
     pub fn add(&self, keys: HashSet<Key>) -> Self {
-        let promoted: HashSet<Key> = keys.intersection(&self.slash_evidence).cloned().collect();
-        let mut finished = self.finished.clone();
-        for key in &promoted {
-            finished.remove(key);
-        }
-        let slash_evidence = self.slash_evidence.difference(&keys).cloned().collect();
-
         // Filter keys that are in Done status or in request Map.
         let new_keys: HashSet<Key> = keys
-            .difference(&finished)
+            .difference(&self.finished)
             .filter(|k| !self.d.contains_key(k))
             .cloned()
             .collect();
@@ -137,24 +138,10 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
             latest: self.latest.clone(),
             lower_bound: self.lower_bound,
             height_map: self.height_map.clone(),
-            finished,
-            slash_evidence,
-            slash_targets: self.slash_targets.clone(),
+            finished: self.finished.clone(),
+            pruned_reports: self.pruned_reports.clone(),
+            skipped: self.skipped.clone(),
         }
-    }
-
-    pub fn add_slash_evidence(&self, keys: HashSet<Key>) -> Self {
-        let mut next = self.clone();
-        next.slash_targets.extend(keys.iter().cloned());
-        for key in keys {
-            if !next.d.contains_key(&key) && !next.finished.contains(&key) {
-                next.d.insert(key.clone(), ReqStatus::Init);
-                if !next.latest.contains(&key) {
-                    next.slash_evidence.insert(key);
-                }
-            }
-        }
-        next
     }
 
     /// Get next keys not already requested or in case of resend together with Requested.
@@ -196,6 +183,15 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
             }
         }
 
+        let mut pruned_reports = self.pruned_reports.clone();
+        if resend {
+            for key in &request_keys {
+                if let Some(report) = pruned_reports.get_mut(key) {
+                    *report = PrunedReport::AskedAgain;
+                }
+            }
+        }
+
         // Create new d map with updated requests
         let mut new_d = self.d.clone();
         new_d.extend(new_requests);
@@ -206,8 +202,8 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
             lower_bound: self.lower_bound,
             height_map: self.height_map.clone(),
             finished: self.finished.clone(),
-            slash_evidence: self.slash_evidence.clone(),
-            slash_targets: self.slash_targets.clone(),
+            pruned_reports,
+            skipped: self.skipped.clone(),
         };
 
         (new_state, request_keys)
@@ -233,14 +229,9 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
             let mut adj_latest = self.latest.clone();
             let was_removed = adj_latest.remove(&k);
             let is_latest = was_removed;
-            let mut slash_evidence = self.slash_evidence.clone();
-            if is_latest {
-                slash_evidence.remove(&k);
-            }
 
             // Add replacement message if supplied
             let new_latest = if let Some(replacement) = latest_replacement {
-                slash_evidence.remove(&replacement);
                 adj_latest.insert(replacement);
                 adj_latest
             } else {
@@ -251,10 +242,8 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
 
             // Save in height map
             let mut new_height_map = self.height_map.clone();
-            if !slash_evidence.contains(&k) {
-                let height_keys = new_height_map.entry(height).or_default();
-                height_keys.insert(k.clone());
-            }
+            let height_keys = new_height_map.entry(height).or_default();
+            height_keys.insert(k.clone());
 
             // Calculate new minimum height if latest message
             // - we need parents of latest message so it's `-1`
@@ -275,8 +264,8 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
                 lower_bound: new_lower_bound,
                 height_map: new_height_map,
                 finished: self.finished.clone(),
-                slash_evidence,
-                slash_targets: self.slash_targets.clone(),
+                pruned_reports: self.pruned_reports.clone(),
+                skipped: self.skipped.clone(),
             };
 
             (
@@ -307,11 +296,47 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
                 lower_bound: self.lower_bound,
                 height_map: self.height_map.clone(),
                 finished: new_finished,
-                slash_evidence: self.slash_evidence.clone(),
-                slash_targets: self.slash_targets.clone(),
+                pruned_reports: self.pruned_reports.clone(),
+                skipped: self.skipped.clone(),
             }
         } else {
             self.clone()
+        }
+    }
+
+    fn may_skip(&self, k: &Key, height: i64) -> bool {
+        let outside_window = (0..self.lower_bound).contains(&height);
+        let window_is_final = self.latest.is_empty()
+            || (height == 0 && self.latest.len() == 1 && self.latest.contains(k));
+        self.d.get(k) == Some(&ReqStatus::Requested) && outside_window && window_is_final
+    }
+
+    pub fn pruned(&self, k: Key, height: i64) -> (Self, bool) {
+        let mut state = self.clone();
+        if !state.may_skip(&k, height) {
+            return (state, false);
+        }
+        if state.pruned_reports.get(&k) != Some(&PrunedReport::AskedAgain) {
+            state
+                .pruned_reports
+                .entry(k)
+                .or_insert(PrunedReport::Reported);
+            return (state, false);
+        }
+        state.pruned_reports.remove(&k);
+        state.d.remove(&k);
+        state.latest.remove(&k);
+        state.finished.insert(k.clone());
+        state.skipped.insert(k, height);
+        (state, true)
+    }
+
+    pub fn coverage_bound(&self) -> i64 {
+        let row_below = self.lower_bound - 1;
+        if self.skipped.values().any(|height| *height == row_below) {
+            self.lower_bound + 1
+        } else {
+            self.lower_bound
         }
     }
 
@@ -365,12 +390,35 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
         Ok(is_valid)
     }
 
+    async fn process_pruned(&mut self, resp: &BlockPrunedResponse) -> Result<bool, CasperError> {
+        let skipped = {
+            let mut state = self.st.lock().map_err(|_| {
+                CasperError::StreamError(
+                    "Failed to acquire state lock for pruned block".to_string(),
+                )
+            })?;
+            let (new_state, skipped) = state.pruned(resp.hash.clone(), resp.block_height);
+            *state = new_state;
+            skipped
+        };
+        if skipped {
+            tracing::info!(
+                block = %PrettyPrinter::build_string_bytes(&resp.hash),
+                height = resp.block_height,
+                prune_floor = resp.prune_floor,
+                "Block below the restore window is pruned on the network; skipping it"
+            );
+            self.request_next(false).await?;
+        }
+        Ok(skipped)
+    }
+
     /// Validate received block, check if it was requested and if block hash is correct.
     /// Following justifications from last finalized block gives us proof for all ancestor blocks.
     async fn validate_received_block(&self, block: &BlockMessage) -> Result<bool, CasperError> {
         let validation_start = std::time::Instant::now();
         let block_number = proto_util::block_number(block);
-        let block_hash_str = format!("{:?}", block.block_hash);
+        let block_hash_str = PrettyPrinter::build_string_bytes(&block.block_hash);
 
         tracing::debug!(
             "Validating received block {} at height {}",
@@ -411,8 +459,8 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
                 );
                 proto_util::creator_justification_block_message(block).map(|justification| {
                     tracing::debug!(
-                        "Found self-justification replacement: {:?}",
-                        justification.latest_block_hash
+                        "Found self-justification replacement: {}",
+                        PrettyPrinter::build_string_bytes(&justification.latest_block_hash)
                     );
                     justification.latest_block_hash
                 })
@@ -468,19 +516,13 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
             // - received one of latest messages
             // - requested and block number is greater than minimum
             let block_is_accepted = {
-                let mut state = self.st.lock().map_err(|_| {
+                let state = self.st.lock().map_err(|_| {
                     CasperError::StreamError(
                         "Failed to acquire state lock for acceptance check".to_string(),
                     )
                 })?;
-                let evidence_only = state.slash_evidence.contains(&block.block_hash);
-                let accepted = !evidence_only
-                    && (is_received_latest || (is_received && block_number >= state.lower_bound));
-                if !evidence_only {
-                    *state = state.add_slash_evidence(
-                        proto_util::block_slash_targets(block).into_iter().collect(),
-                    );
-                }
+                let accepted =
+                    is_received_latest || (is_received && block_number >= state.lower_bound);
                 tracing::debug!(
                     "Block {} acceptance check - latest: {}, height_ok: {} ({}>={}), accepted: {}",
                     block_hash_str,
@@ -543,7 +585,7 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
 
     async fn save_block(&mut self, block: &BlockMessage) -> Result<(), CasperError> {
         let save_start = std::time::Instant::now();
-        let block_hash_str = format!("{:?}", block.block_hash);
+        let block_hash_str = PrettyPrinter::build_string_bytes(&block.block_hash);
 
         tracing::debug!("Saving block {} to store", block_hash_str);
 
@@ -728,6 +770,7 @@ pub async fn stream<'a, T: BlockRequesterOps>(
     approved_block: &'a ApprovedBlock,
     initial_response_messages: &'a VecDeque<BlockMessage>,
     response_message_receiver: mpsc::Receiver<BlockMessage>,
+    pruned_receiver: mpsc::Receiver<BlockPrunedResponse>,
     response_queue_pending: Arc<AtomicUsize>,
     initial_minimum_height: i64,
     request_timeout: Duration,
@@ -792,6 +835,7 @@ pub async fn stream<'a, T: BlockRequesterOps>(
         response_hash_rx,
         initial_response_messages,
         response_message_receiver,
+        pruned_receiver,
         response_queue_pending,
         request_timeout,
         max_request_timeout,
@@ -818,6 +862,7 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
     mut response_hash_queue: mpsc::Receiver<BlockHash>,
     initial_response_messages: &'a VecDeque<BlockMessage>,
     mut response_message_receiver: mpsc::Receiver<BlockMessage>,
+    mut pruned_receiver: mpsc::Receiver<BlockPrunedResponse>,
     response_queue_pending: Arc<AtomicUsize>,
     request_timeout: Duration,
     max_request_timeout: Duration,
@@ -1093,6 +1138,49 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                     yield current_state;
                 }
 
+                Some(pruned) = pruned_receiver.recv() => {
+                    let skipped = match processor.process_pruned(&pruned).await {
+                        Ok(skipped) => {
+                            consecutive_errors = 0;
+                            skipped
+                        }
+                        Err(e) => {
+                            consecutive_errors += 1;
+                            tracing::warn!(attempt = consecutive_errors, error = ?e, "LFS pruned block processing failed");
+
+                            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                                tracing::error!(max = MAX_CONSECUTIVE_ERRORS, "LFS stream terminating: maximum consecutive errors processing pruned blocks");
+                                break;
+                            }
+                            continue;
+                        }
+                    };
+                    if !skipped {
+                        continue;
+                    }
+
+                    let current_state = {
+                        match processor.st.lock() {
+                            Ok(state) => state.clone(),
+                            Err(e) => {
+                                tracing::debug!(error = ?e, "failed to acquire state lock for pruned block processing");
+                                continue;
+                            }
+                        }
+                    };
+
+                    if current_state.is_finished() {
+                        tracing::info!("Pruned block processing completed - all blocks downloaded");
+                        yield current_state;
+                        break;
+                    }
+
+                    current_timeout = request_timeout;
+                    idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+
+                    yield current_state;
+                }
+
                 Some(block_hash) = response_hash_queue.recv() => {
                     let permit = match response_semaphore.clone().acquire_owned().await {
                         Ok(permit) => permit,
@@ -1350,6 +1438,7 @@ mod window_tests {
                 hash_rx,
                 &initial,
                 message_rx,
+                mpsc::channel(1).1,
                 Arc::new(AtomicUsize::new(1)),
                 Duration::from_secs(10),
                 Duration::from_secs(40),
@@ -1385,6 +1474,146 @@ mod window_tests {
     }
 
     fn hash(byte: u8) -> BlockHash { BlockHash::from(vec![byte; 32]) }
+
+    fn requested(keys: &[BlockHash], latest: &[BlockHash], bound: i64) -> ST<BlockHash> {
+        let set = |hashes: &[BlockHash]| hashes.iter().cloned().collect::<HashSet<_>>();
+        ST::new(set(keys), Some(set(latest)), Some(bound))
+            .get_next(false)
+            .0
+    }
+
+    fn answered_twice(state: &ST<BlockHash>, k: &BlockHash, height: i64) -> ST<BlockHash> {
+        let (state, _) = state.pruned(k.clone(), height);
+        let (state, _) = state.get_next(true);
+        state.pruned(k.clone(), height).0
+    }
+
+    #[test]
+    fn a_pruned_block_is_skipped_only_on_the_answer_to_a_repeated_request() {
+        let old = hash(0x01);
+        let state = requested(&[old.clone()], &[], 10);
+
+        let (state, skipped) = state.pruned(old.clone(), 5);
+        assert!(!skipped);
+        let (state, skipped) = state.pruned(old.clone(), 5);
+        assert!(!skipped, "the same round cannot confirm its own answer");
+        assert!(!state.is_finished());
+
+        let (state, _) = state.get_next(true);
+        let (state, skipped) = state.pruned(old.clone(), 5);
+        assert!(skipped);
+        assert!(state.is_finished());
+        assert!(state.height_map.is_empty());
+        assert!(state.add(HashSet::from([old])).is_finished());
+    }
+
+    #[test]
+    fn a_pruned_answer_for_a_needed_or_unrequested_block_changes_nothing() {
+        let key = hash(0x01);
+        let state = requested(&[key.clone()], &[], 10);
+        for height in [10, 11, -1] {
+            assert!(!answered_twice(&state, &key, height).is_finished());
+        }
+
+        let other = answered_twice(&state, &hash(0x02), 5);
+        assert!(other.skipped.is_empty());
+        assert_eq!(other.d, state.d);
+
+        let young = requested(&[key.clone()], &[], 0);
+        assert!(!answered_twice(&young, &key, 0).is_finished());
+    }
+
+    #[test]
+    fn a_latest_message_is_never_skipped_unless_it_is_the_last_one_and_genesis() {
+        let (genesis, tip) = (hash(0x01), hash(0x02));
+
+        let state = requested(&[], &[tip.clone()], 10);
+        assert!(!answered_twice(&state, &tip, 5).is_finished());
+
+        let state = requested(&[], &[genesis.clone(), tip.clone()], 10);
+        let state = answered_twice(&state, &genesis, 0);
+        assert!(state.latest.contains(&genesis));
+
+        let (state, _) = state.received(tip.clone(), 20, None, true);
+        let state = answered_twice(&state.done(tip), &genesis, 0);
+        assert!(state.is_finished());
+    }
+
+    #[test]
+    fn a_skipped_block_under_the_window_raises_the_coverage_bound() {
+        let key = hash(0x01);
+        let state = requested(&[key.clone()], &[], 10);
+        assert_eq!(state.coverage_bound(), 10);
+        assert_eq!(answered_twice(&state, &key, 9).coverage_bound(), 11);
+        assert_eq!(answered_twice(&state, &key, 0).coverage_bound(), 10);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_restore_completes_when_the_genesis_its_blocks_cite_is_pruned() {
+        use futures::StreamExt;
+
+        let genesis = hash(0xcc);
+        let parent = hash(0xaa);
+        let mut block = signed_block_below_window();
+        block.body.state.block_number = 400;
+        let (secret_key, _) = Secp256k1.new_key_pair();
+        let block = ValidatorIdentity::new(&secret_key).sign_block(&block);
+        let approved = ApprovedBlock {
+            candidate: models::rust::casper::protocol::casper_message::ApprovedBlockCandidate {
+                block: BlockMessage {
+                    justifications: vec![],
+                    ..block.clone()
+                },
+                required_sigs: 0,
+            },
+            floor_seed: None,
+            sigs: vec![],
+        };
+        let mut ops = ProgressBlockOps::default();
+        ops.blocks.insert(block.block_hash.clone(), block);
+        let (_message_tx, message_rx) = mpsc::channel(1);
+        let (pruned_tx, pruned_rx) = mpsc::channel(8);
+        let initial = VecDeque::new();
+        let stream = stream(
+            &approved,
+            &initial,
+            message_rx,
+            pruned_rx,
+            Arc::new(AtomicUsize::new(0)),
+            300,
+            Duration::from_secs(5),
+            &mut ops,
+        )
+        .await
+        .unwrap();
+        futures::pin_mut!(stream);
+
+        let mut last = None;
+        let finished = tokio::time::timeout(Duration::from_secs(120), async {
+            while let Some(state) = stream.next().await {
+                for (key, height) in [(&genesis, 0), (&parent, 250)] {
+                    if state.d.get(key) == Some(&ReqStatus::Requested) {
+                        pruned_tx
+                            .try_send(BlockPrunedResponse {
+                                hash: key.clone(),
+                                block_height: height,
+                                prune_floor: 271,
+                            })
+                            .ok();
+                    }
+                }
+                last = Some(state);
+            }
+        })
+        .await;
+        assert!(
+            finished.is_ok(),
+            "the restore must not wait for a pruned block"
+        );
+        let last = last.unwrap();
+        assert!(last.is_finished());
+        assert_eq!(last.skipped, HashMap::from([(genesis, 0), (parent, 250)]));
+    }
 
     /// A joiner seeds `latest` from the approved block's justifications, so a
     /// bonded validator that never proposed puts genesis there at height 0.

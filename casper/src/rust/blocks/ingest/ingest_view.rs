@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use comm::rust::peer_node::PeerNode;
@@ -14,6 +15,11 @@ struct Sets {
     needed: DashSet<BlockHash>,
     solicited_needs: DashSet<BlockHash>,
     ignored_until: DashMap<PeerNode, u64>,
+    /// Peer-observed prune floor from a `BlockPrunedResponse`. `i64::MIN`
+    /// means "no peer has reported our needed block is below the horizon
+    /// yet". The highest reported floor is retained because a later report
+    /// at a higher floor dominates an earlier one. See #1059.
+    below_horizon_floor: AtomicI64,
 }
 
 /// Read-only answers about block ingest for the tasks around its owner: the
@@ -38,6 +44,7 @@ impl IngestView {
             needed: DashSet::new(),
             solicited_needs: DashSet::new(),
             ignored_until: DashMap::new(),
+            below_horizon_floor: AtomicI64::new(i64::MIN),
         }))
     }
 
@@ -83,6 +90,31 @@ impl IngestView {
     pub(super) fn set_needed(&self, hash: &BlockHash, needed: bool, solicited: bool) {
         set(&self.0.needed, hash, needed);
         set(&self.0.solicited_needs, hash, needed && solicited);
+    }
+
+    /// The highest prune floor a peer has reported in a `BlockPrunedResponse`
+    /// for a block this node needed. `None` until any such response arrives.
+    /// A node whose latest message is at or below this height cannot catch
+    /// up by re-requesting blocks: peers have deleted the bodies. It should
+    /// re-join via the last-finalized-state path on next launch (#1059).
+    pub fn below_horizon_floor(&self) -> Option<i64> {
+        let v = self.0.below_horizon_floor.load(Ordering::Acquire);
+        if v == i64::MIN {
+            None
+        } else {
+            Some(v)
+        }
+    }
+
+    /// Record a peer-observed prune floor. The highest value wins because a
+    /// later report at a higher floor dominates an earlier one (floors only
+    /// move upward). Called when a peer answers `BlockRequest` with a
+    /// `BlockPrunedResponse` or when a peer's `ApprovedBlock` floorSeed
+    /// implies our stored state is already below the horizon.
+    pub fn record_below_horizon(&self, prune_floor: i64) {
+        self.0
+            .below_horizon_floor
+            .fetch_max(prune_floor, Ordering::Release);
     }
 
     pub(super) fn set_ignored_until(&self, peer: &PeerNode, until_ms: Option<u64>) {

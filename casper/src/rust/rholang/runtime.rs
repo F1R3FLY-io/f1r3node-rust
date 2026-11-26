@@ -93,6 +93,7 @@ pub struct ConsensusParameters {
     pub deploy_lifespan: i64,
     pub min_phlo_price: TokenAmount,
     pub epoch_length: i32,
+    pub max_phlo_limit: i64,
 }
 
 pub struct RuntimeOps {
@@ -890,20 +891,15 @@ impl RuntimeOps {
             Either::Right(system_deploy_result) => {
                 let mcl = self.get_number_channels_data(&mergeable_channels).await?;
                 if let Some(SlashDeploy {
-                    invalid_block_hash,
+                    evidence,
                     pk,
-                    target_activation_epoch,
                     initial_rand: _,
                 }) = system_deploy.as_any().downcast_ref::<SlashDeploy>()
                 {
                     Ok(SystemDeployResult::play_succeeded(
                         final_state_hash,
                         event_log,
-                        SystemDeployData::create_slash(
-                            invalid_block_hash.clone(),
-                            pk.clone(),
-                            *target_activation_epoch,
-                        ),
+                        SystemDeployData::create_slash(evidence.clone(), pk.clone()),
                         mcl,
                         system_deploy_result,
                     ))
@@ -1086,7 +1082,7 @@ impl RuntimeOps {
             )?;
 
             // Create return channel as first private name created in deploy term
-            let mut rand = Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp);
+            let mut rand = Tools::deploy_name_rng(&deploy);
             let return_name = Par::default().with_unforgeables(vec![GUnforgeable {
                 unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
                     id: rand.next().into_iter().map(|b| b as u8).collect(),
@@ -1250,7 +1246,7 @@ impl RuntimeOps {
         deploy: &Signed<DeployData>,
     ) -> Result<Vec<Par>, CasperError> {
         // Create return channel as first unforgeable name created in deploy term
-        let mut rand = Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp);
+        let mut rand = Tools::deploy_name_rng(deploy);
         let return_name = Par::default().with_unforgeables(vec![GUnforgeable {
             unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
                 id: rand.next().into_iter().map(|b| b as u8).collect(),
@@ -1307,7 +1303,7 @@ impl RuntimeOps {
                 Cost::create(deploy.data.phlo_limit, "Evaluate deploy".to_string()),
                 normalizer_env_from_deploy(deploy)
                     .map_err(|error| CasperError::RuntimeError(error.to_string()))?,
-                Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp),
+                Tools::deploy_name_rng(deploy),
             )
             .await;
 
@@ -1477,6 +1473,25 @@ impl RuntimeOps {
         Self::to_bond_vec(bonds_pars[0].to_owned())
     }
 
+    /// The stake each withdrawn validator still holds in quarantine at
+    /// `hash`, until it is paid out.
+    pub async fn compute_quarantined(
+        &mut self,
+        hash: &StateHash,
+    ) -> Result<Vec<Bond>, CasperError> {
+        let pars = self
+            .play_exploratory_par(Self::withdrawers_query_par().clone(), hash)
+            .await?;
+        match pars.as_slice() {
+            [withdrawers] => Self::to_quarantined_vec(withdrawers.clone()),
+            _ => Err(CasperError::RuntimeError(format!(
+                "Incorrect number of results from query of withdrawers in state {}: {}",
+                PrettyPrinter::build_string_bytes(hash),
+                pars.len()
+            ))),
+        }
+    }
+
     fn activate_validator_query_source() -> String {
         r#"
           new return, rl(`rho:registry:lookup`), poSCh in {
@@ -1621,7 +1636,7 @@ impl RuntimeOps {
         };
 
         match pars[0].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-            Some(ExprInstance::ETupleBody(tuple)) if tuple.ps.len() == 4 => {
+            Some(ExprInstance::ETupleBody(tuple)) if tuple.ps.len() == 5 => {
                 let mpd = int_at(tuple, 0).ok_or_else(|| bad("non-integer maxParentDepth"))?;
                 let lifespan = int_at(tuple, 1).ok_or_else(|| bad("non-integer deployLifespan"))?;
                 let min_phlo = match tuple.ps[2]
@@ -1635,6 +1650,8 @@ impl RuntimeOps {
                 };
                 let epoch_length =
                     int_at(tuple, 3).ok_or_else(|| bad("non-integer epochLength"))?;
+                let max_phlo_limit =
+                    int_at(tuple, 4).ok_or_else(|| bad("non-integer maxPhloLimit"))?;
                 // RANGE GATES at the single read choke point. The parent-spread
                 // rule takes mpd as i32 (i32::MAX = depth check disabled); a
                 // window of zero or less inverts the expiry and repeat rules;
@@ -1657,14 +1674,21 @@ impl RuntimeOps {
                         "epochLength out of range [1, i32::MAX]: {epoch_length}"
                     )));
                 }
+                // A cap of zero or less admits no deploy at all.
+                if max_phlo_limit < 1 {
+                    return Err(bad(&format!(
+                        "maxPhloLimit out of range [1, i64::MAX]: {max_phlo_limit}"
+                    )));
+                }
                 Ok(Some(ConsensusParameters {
                     max_parent_depth: mpd as i32,
                     deploy_lifespan: lifespan,
                     min_phlo_price: min_phlo,
                     epoch_length: epoch_length as i32,
+                    max_phlo_limit,
                 }))
             }
-            other => Err(bad(&format!("expected a 4-tuple, got {other:?}"))),
+            other => Err(bad(&format!("expected a 5-tuple, got {other:?}"))),
         }
     }
 
@@ -1714,6 +1738,68 @@ impl RuntimeOps {
             Compiler::source_to_adt(&Self::bonds_query_source())
                 .expect("Failed to compile bonds query source")
         })
+    }
+
+    fn withdrawers_query_par() -> &'static Par {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        QUERY.get_or_init(|| {
+            Compiler::source_to_adt(
+                r#"
+                new return, rl(`rho:registry:lookup`), poSCh in {
+                  rl!(`rho:system:pos`, *poSCh) |
+                  for(@(_, PoS) <- poSCh) {
+                    @PoS!("getWithdrawers", *return)
+                  }
+                }
+                "#,
+            )
+            .expect("Failed to compile withdrawers query source")
+        })
+    }
+
+    /// Reads PoS `withdrawers`, `Map[Validator, (stake, quarantine end)]`.
+    fn to_quarantined_vec(withdrawers: Par) -> Result<Vec<Bond>, CasperError> {
+        let malformed =
+            |what: &str| CasperError::RuntimeError(format!("malformed withdrawers map: {what}"));
+        let map = match withdrawers.exprs.as_slice() {
+            [] => return Ok(Vec::new()),
+            [expr] => match expr.expr_instance.as_ref() {
+                Some(ExprInstance::EMapBody(map)) => {
+                    ParMapTypeMapper::emap_to_par_map(map.clone()).ps
+                }
+                _ => return Err(malformed("not a map")),
+            },
+            _ => return Err(malformed("more than one expression")),
+        };
+        map.map_iter(|(validator, entry)| {
+            let validator = match validator.exprs.as_slice() {
+                [expr] => match expr.expr_instance.as_ref() {
+                    Some(ExprInstance::GByteArray(bytes)) => bytes.clone().into(),
+                    _ => return Err(malformed("a validator is not a byte array")),
+                },
+                _ => return Err(malformed("a validator is not a single expression")),
+            };
+            let stake = match entry.exprs.as_slice() {
+                [expr] => match expr.expr_instance.as_ref() {
+                    Some(ExprInstance::ETupleBody(tuple)) => {
+                        match tuple.ps.first().map(|p| p.exprs.as_slice()) {
+                            Some([stake]) => match stake.expr_instance.as_ref() {
+                                Some(ExprInstance::GBigInt(bytes)) => {
+                                    TokenAmount::new(bytes_to_bigint(bytes))
+                                        .map_err(|error| malformed(&error))?
+                                }
+                                _ => return Err(malformed("a stake is not a BigInt")),
+                            },
+                            _ => return Err(malformed("an entry has no stake")),
+                        }
+                    }
+                    _ => return Err(malformed("an entry is not a tuple")),
+                },
+                _ => return Err(malformed("an entry is not a single expression")),
+            };
+            Ok(Bond { validator, stake })
+        })
+        .collect()
     }
 
     fn to_validator_vec(validators_par: Par) -> Result<Vec<Validator>, CasperError> {

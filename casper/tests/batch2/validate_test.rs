@@ -45,7 +45,9 @@ use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
 
 const SHARD_ID: &str = "root-shard";
 
-fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot { CasperSnapshot::new(dag) }
+fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
+    CasperSnapshot::new(dag, prost::bytes::Bytes::new())
+}
 
 fn record_metrics<T>(f: impl FnOnce() -> T) -> (T, Snapshotter) {
     let recorder = DebuggingRecorder::new();
@@ -1012,6 +1014,160 @@ async fn repeat_deploy_validation_should_return_valid_for_empty_blocks() {
     .await
 }
 
+/// Two distinct deploys by one key whose name seeds are equal: same
+/// timestamp and valid-after block, different phlo limit.
+fn seed_sharing_pair() -> (
+    casper_message::ProcessedDeploy,
+    casper_message::ProcessedDeploy,
+) {
+    let deploy = |phlo_limit: i64| {
+        casper_message::ProcessedDeploy::empty(
+            construct_deploy::source_deploy(
+                "new x in { x!(1) }".to_string(),
+                7,
+                Some(phlo_limit),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("deploy"),
+        )
+    };
+    let (first, second) = (deploy(100_000), deploy(100_001));
+    assert_ne!(first.deploy.sig, second.deploy.sig);
+    (first, second)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploy_seed_reuse_rejects_a_deploy_reusing_an_ancestors_name_seed() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let (first, second) = seed_sharing_pair();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![first]),
+            None,
+            None,
+            None,
+            None,
+        );
+        let block = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![second]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let snapshot = mk_casper_snapshot(block_dag_storage.get_representation().expect("dag"));
+
+        assert_eq!(
+            Validate::deploy_seed_reuse(&block, &snapshot, &block_store, None, 50),
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
+        );
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploy_seed_reuse_rejects_two_deploys_sharing_a_name_seed_in_one_block() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let (first, second) = seed_sharing_pair();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let block = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![first, second]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let snapshot = mk_casper_snapshot(block_dag_storage.get_representation().expect("dag"));
+
+        assert_eq!(
+            Validate::deploy_seed_reuse(&block, &snapshot, &block_store, None, 50),
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
+        );
+    })
+    .await
+}
+
+/// The same signature again is the same deploy: seed reuse does not apply
+/// (repeat-deploy validation judges re-inclusion).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploy_seed_reuse_accepts_the_same_deploy_and_distinct_seeds() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let (first, _) = seed_sharing_pair();
+        let other = construct_deploy::basic_processed_deploy(1, None).expect("deploy");
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![first.clone()]),
+            None,
+            None,
+            None,
+            None,
+        );
+        let block = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![first, other]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let snapshot = mk_casper_snapshot(block_dag_storage.get_representation().expect("dag"));
+
+        assert_eq!(
+            Validate::deploy_seed_reuse(&block, &snapshot, &block_store, None, 50),
+            Either::Right(ValidBlock::Valid)
+        );
+    })
+    .await
+}
+
 //Test 18: "Repeat deploy validation" should "not accept blocks with a repeated deploy"
 // +
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1121,6 +1277,83 @@ async fn repeat_deploy_accepts_fresh_deploys_in_block_not_yet_inserted() {
         assert_eq!(result, Either::Right(ValidBlock::Valid));
     })
     .await
+}
+
+/// genesis → b1 … b`length`, indexed by height. `carriers` places one deploy
+/// at a height.
+fn linear_chain(
+    block_store: &mut KeyValueBlockStore,
+    block_dag_storage: &mut IndexedBlockDagStorage,
+    length: i64,
+    carriers: &[(i64, &ProcessedDeploy)],
+) -> Vec<BlockMessage> {
+    let genesis = create_genesis_block(
+        block_store,
+        block_dag_storage,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    let mut chain = vec![genesis.clone()];
+    for height in 1..=length {
+        let deploys = carriers
+            .iter()
+            .find(|(at, _)| *at == height)
+            .map(|(_, deploy)| vec![(*deploy).clone()]);
+        let parent = chain
+            .last()
+            .expect("chain starts at genesis")
+            .block_hash
+            .clone();
+        chain.push(create_block(
+            block_store,
+            block_dag_storage,
+            vec![parent],
+            &genesis,
+            None,
+            None,
+            None,
+            deploys,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ));
+    }
+    chain
+}
+
+/// An uninserted block on `tip` that carries `deploy`.
+fn candidate_on(tip: &BlockMessage, deploy: &ProcessedDeploy) -> BlockMessage {
+    build_block(
+        vec![tip.block_hash.clone()],
+        None,
+        1786500000000,
+        None,
+        None,
+        Some(vec![deploy.clone()]),
+        None,
+        None,
+        None,
+        Some(1),
+    )
+}
+
+fn deploy_valid_after(valid_after_block_number: i64) -> ProcessedDeploy {
+    let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+    let mut data = deploy.deploy.data.clone();
+    data.valid_after_block_number = valid_after_block_number;
+    ProcessedDeploy {
+        deploy: create_signed_deploy_with_data(data).expect("signed deploy"),
+        ..deploy
+    }
 }
 
 /// Fast-path equivalence, repeat case: with the carrier index certified
@@ -1789,6 +2022,151 @@ async fn repeat_deploy_rejects_premature_retry_of_a_live_rejection() {
             "re-inclusion against a live rejection is a premature retry on \
              every node; got {:?}",
             result,
+        );
+    })
+    .await
+}
+
+async fn floor_context_at_genesis(
+    snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+    parent: &BlockMessage,
+    genesis: &BlockMessage,
+) -> casper::rust::finality::floor_context::FloorContext {
+    let ctx = casper::rust::finality::floor_context::FloorContext::derive(
+        &snapshot.dag,
+        block_store,
+        std::slice::from_ref(&parent.block_hash),
+        &std::collections::BTreeMap::new(),
+        casper::rust::safety::clique_oracle::FtThreshold::from_f32_lossy(1.0),
+    )
+    .await
+    .expect("derive floor context");
+    assert_eq!(ctx.floor.hash, genesis.block_hash);
+    ctx
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_flags_a_floor_live_copy_below_the_tip_window() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = deploy_valid_after(0);
+        let chain = linear_chain(&mut block_store, &mut block_dag_storage, 4, &[(1, &deploy)]);
+        let candidate = candidate_on(&chain[4], &deploy);
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut snapshot = mk_casper_snapshot(dag);
+        let ctx = floor_context_at_genesis(&snapshot, &block_store, &chain[4], &chain[0]).await;
+
+        assert_eq!(
+            Validate::transaction_expiration(&candidate, 3, Some(ctx.floor.block_number)),
+            Either::Right(ValidBlock::Valid),
+            "staging: the deploy must still be live on the floor clock"
+        );
+        assert_eq!(
+            Validate::repeat_deploy(&candidate, &mut snapshot, &block_store, 3, Some(&ctx)),
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)),
+        );
+    })
+    .await
+}
+
+/// A chain to height 4 with the deploy's carrier at `carrier_height`, and a
+/// carrier index certified from 0 and pruned below `prune_cutoff`, above the
+/// carrier. Validating a block on height 4 that carries the deploy again
+/// (lifespan 3) must not take the index's absence as proof.
+async fn assert_a_pruned_carrier_index_is_not_trusted(
+    valid_after: i64,
+    carrier_height: i64,
+    prune_cutoff: i64,
+) {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = deploy_valid_after(valid_after);
+        let chain = linear_chain(&mut block_store, &mut block_dag_storage, 4, &[(
+            carrier_height,
+            &deploy,
+        )]);
+        let candidate = candidate_on(&chain[4], &deploy);
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        dag.carrier_index
+            .write()
+            .set_watermark_if_absent(0)
+            .expect("certify");
+        dag.prune_carriers_below(prune_cutoff).expect("prune");
+        assert!(dag
+            .carrier_index_proves_absence(&deploy.deploy.sig)
+            .expect("probe"));
+        let mut snapshot = mk_casper_snapshot(dag);
+        let ctx = floor_context_at_genesis(&snapshot, &block_store, &chain[4], &chain[0]).await;
+
+        let (result, snapshotter) = record_metrics(|| {
+            Validate::repeat_deploy(&candidate, &mut snapshot, &block_store, 3, Some(&ctx))
+        });
+        assert_eq!(
+            result,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)),
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC),
+            0
+        );
+    })
+    .await
+}
+
+/// The scan starts at 1, below the tip window (2), because the deploy is
+/// older than that window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_below_the_tip_window_does_not_trust_a_pruned_carrier_index() {
+    assert_a_pruned_carrier_index_is_not_trusted(0, 1, 2).await;
+}
+
+/// A late block: the scan starts at its tip window (2), but the node has
+/// already pruned below 3.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_in_the_tip_window_does_not_trust_a_carrier_index_pruned_above_its_start() {
+    assert_a_pruned_carrier_index_is_not_trusted(1, 2, 3).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_keeps_the_gate_for_a_rejection_below_the_tip_window() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = deploy_valid_after(0);
+        let chain = linear_chain(&mut block_store, &mut block_dag_storage, 5, &[(1, &deploy)]);
+        let mut record = chain[2].clone();
+        record.body.rejected_deploys = vec![RejectedDeploy {
+            sig: deploy.deploy.sig.clone(),
+            duplicate: false,
+            carrier: Bytes::new(),
+        }];
+        block_store.put(record.block_hash.clone(), &record).unwrap();
+        let candidate = candidate_on(&chain[5], &deploy);
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut snapshot = mk_casper_snapshot(dag);
+        let mut ctx = floor_context_at_genesis(&snapshot, &block_store, &chain[5], &chain[0]).await;
+
+        assert_eq!(
+            Validate::repeat_deploy(&candidate, &mut snapshot, &block_store, 3, Some(&ctx)),
+            Either::Left(BlockError::Invalid(InvalidBlock::PrematureDeployRetry)),
+            "a record above the floor keeps the gate closed"
+        );
+
+        ctx.floor = casper::rust::finality::floor::Floor {
+            hash: record.block_hash.clone(),
+            block_number: proto_util::block_number(&record),
+        };
+        assert_eq!(
+            Validate::repeat_deploy(&candidate, &mut snapshot, &block_store, 3, Some(&ctx)),
+            Either::Right(ValidBlock::Valid),
+            "a settled rejection keeps the retry legal when its carrier and its \
+             record both sit below the tip window"
         );
     })
     .await
@@ -2548,6 +2926,8 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
 
         // Use unlimited parents (-1) like in Scala tests: Estimator.UnlimitedParents
         let max_number_of_parents = -1;
+        let runtime_manager =
+            crate::util::rholang::resources::mk_runtime_manager("block-summary", None).await;
 
         let result = Validate::block_summary(
             &signed_block,
@@ -2573,6 +2953,7 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
             max_number_of_parents,
             i32::MAX, // max_parent_depth: disable depth check for this test
             &block_store,
+            &runtime_manager,
             false,
             &mut None,
         )
@@ -2930,8 +3311,11 @@ async fn justification_regression_validation_should_return_valid_for_proper_just
     .await
 }
 
+/// A block held as an equivocation is held so only because its twin arrived
+/// first, so citing it below the sender's previous citation is a regression
+/// like any other.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn justification_regression_validation_should_return_valid_for_regressive_invalid_blocks() {
+async fn a_justification_regressing_to_an_equivocation_is_still_a_regression() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let v0 = generate_validator(Some("Validator 1"));
         let v1 = generate_validator(Some("Validator 2"));
@@ -3062,7 +3446,10 @@ async fn justification_regression_validation_should_return_valid_for_regressive_
             &block_with_invalid_justification,
             &mut casper_snapshot,
         );
-        assert_eq!(result, Either::Right(ValidBlock::Valid));
+        assert_eq!(
+            result,
+            Either::Left(BlockError::Invalid(InvalidBlock::JustificationRegression))
+        );
     })
     .await
 }

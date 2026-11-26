@@ -16,7 +16,7 @@ use casper::rust::validator_identity::ValidatorIdentity;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::ByteString;
@@ -235,9 +235,11 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         rejected_in_scope: Arc::new(DashSet::new()),
+        seeds_in_scope: Arc::new(DashMap::new()),
         max_block_num,
         max_seq_nums,
         on_chain_state,
+        chain_id: Bytes::new(),
     }
 }
 
@@ -298,6 +300,66 @@ async fn recovery_empty_and_disabled_ordinary_admission_skip_full_pool_reads() {
     assert!(prepared.deploys.is_empty());
     assert_eq!(decoded_pool_deploys(&snapshotter), 0);
     assert!(deploy_storage.contains_sig(&deploy.sig).unwrap());
+}
+
+#[tokio::test]
+async fn a_deploy_already_in_scope_is_counted_in_the_summary_and_not_warned_per_deploy() {
+    use shared::rust::tracing_init::EventCapture;
+    use tracing::Level;
+
+    let capture = EventCapture::new();
+    let _guard = capture.install();
+
+    let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
+    let validator_id: Bytes = ValidatorIdentity::new(&validator_sk)
+        .public_key
+        .bytes
+        .clone();
+    let mut kvm = InMemoryStoreManager::new();
+    let deploy_storage = Arc::new(
+        KeyValueDeployStorage::new(&mut kvm)
+            .await
+            .expect("deploy storage"),
+    );
+    let rejected_deploy_buffer = Arc::new(Mutex::new(
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("rejected deploy buffer"),
+    ));
+    let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+        .await
+        .expect("block store");
+    let mut snapshot = create_snapshot(20, validator_id);
+    snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
+    let deploy = create_deploy(1, None, &validator_sk);
+    deploy_storage
+        .add(vec![deploy.clone()])
+        .expect("add deploy");
+    snapshot.deploys_in_scope.insert(deploy.sig.clone());
+
+    let prepared = block_creator::prepare_user_deploys(
+        &snapshot,
+        200,
+        i64::MAX,
+        deploy_storage,
+        rejected_deploy_buffer,
+        &block_store,
+        true,
+        true,
+    )
+    .await
+    .expect("prepare");
+
+    assert!(prepared.deploys.is_empty());
+    assert!(capture
+        .with_message("alreadyInScope=1")
+        .iter()
+        .any(|event| event.level == Level::INFO));
+    let filtered = capture.with_message("FILTERED (already in scope)");
+    assert!(!filtered.is_empty());
+    assert!(filtered.iter().all(|event| event.level == Level::DEBUG));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

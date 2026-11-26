@@ -165,14 +165,20 @@ cargo clippy --workspace --all-targets
 
 ### Test
 
+Run tests through `just test` or `scripts/ci/run-tests.sh`. Both acquire the host-wide test lock (`scripts/lib/test-lock.sh`, `$TMPDIR/f1r3node-pre-push.lock.d`) so a second checkout on the same host blocks instead of competing with you for LMDB SysV semaphores, test tempdirs, FDs, and sockets. `.githooks/pre-push`, `scripts/ci/run-tests.sh`, `just test`, and `scripts/run_rust_tests.sh` all source the same helper. See F1R3FLY-io/f1r3node-rust#1014 (SysV semaphore ENOSPC) and #1102 (direct `cargo test` bypassing the lock) for the incidents that motivated this.
+
 ```bash
-cargo nextest run
-cargo nextest run --release
-cargo test
-cargo test --release
-cargo test -p casper
-cargo test -p rholang
-./scripts/run_rust_tests.sh
+just test                              # cargo nextest run
+just test cargo nextest run --release
+just test cargo test -p casper
+just test cargo test -p rholang
+./scripts/ci/run-tests.sh              # equivalent, forwards "$@"
+./scripts/run_rust_tests.sh            # legacy per-crate runner (also locked)
+
+# Direct cargo/nextest invocations do NOT acquire the lock. Use these only
+# when you know you are the only test runner on the host:
+SKIP_TEST_LOCK=1 just test cargo nextest run -p casper
+cargo test -p casper                   # same effect — bypasses the lock
 
 # Unit-test line coverage (requires cargo-llvm-cov, nextest, llvm-tools-preview)
 # Src-shipped test scaffolding (test_utils dirs, block-storage/src/rust/test)
@@ -180,6 +186,8 @@ cargo test -p rholang
 just coverage            # enforce 80% for every crate and the workspace
 just coverage casper     # enforce 80% for one crate
 ```
+
+The lock uses `mkdir`-atomic directory locking with stale-pid detection; the acquirer blocks on a 5-second poll, logs the current holder on first contention, and reclaims the lock if its pid is dead. In CI (`CI`, `GITHUB_ACTIONS`, `GITLAB_CI`), `scripts/ci/run-tests.sh` auto-sets `SKIP_TEST_LOCK=1` because each CI job owns the host.
 
 ### Run A Standalone Node (without Docker)
 
@@ -311,3 +319,35 @@ Build or test a smaller target first:
 cargo build -p node
 cargo test -p casper
 ```
+
+## Running Two Checkouts In Parallel
+
+Two side-by-side checkouts can each run `.githooks/pre-push` fire-and-forget.
+The hook serializes them on a host-wide lock dir at
+`$TMPDIR/f1r3node-pre-push.lock.d` (override via `TEST_LOCK_DIR`): the second
+`git push` blocks on the lock with status messages (`[test-lock] attempting
+to acquire …`, `[test-lock] waiting for holder pid …`, `[test-lock] acquired
+after Ns`) until the first run finishes. Normal exit, SIGINT, and SIGTERM
+all release the lock through the EXIT trap; SIGKILL leaves a stale lock dir
+behind, and the next acquirer detects the dead PID with `kill -0`, prints
+`stale lock from dead pid …; clearing`, and takes over.
+
+The lock covers the full pre-push run — the destructive SysV semaphore reap,
+clippy, the dashboard checks, and the test suites — so neither the semaphore
+pool nor the timing sentinels in `.config/nextest.toml` race across trees.
+Opt out with `SKIP_TEST_LOCK=1` when you know you're the only run on the host.
+
+If you'd rather run both gates at the same wall-clock instant instead of
+serializing, partition the crates so no sentinel-heavy crate runs in both
+trees at once:
+
+```bash
+# checkout A — bypass the lock, take the LMDB-heavy half
+SKIP_TEST_LOCK=1 TEST_CRATES="crypto shared models graphz block-storage rspace_plus_plus" git push
+# checkout B — bypass the lock, take the other half
+SKIP_TEST_LOCK=1 TEST_CRATES="comm rholang casper node deploy-queue" git push
+```
+
+That path accepts the CPU-bound and fd-bound contention in exchange for
+wall-clock parallelism; it's the right choice only when you've measured that
+your host has the headroom for it.

@@ -11,11 +11,12 @@ use models::routing::transport_layer_server::{TransportLayer, TransportLayerServ
 use models::routing::{Chunk, TlRequest, TlResponse};
 use prost::Message;
 use shared::rust::shared::recent_hash_filter::RecentHashFilter;
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::{oneshot, Mutex, OnceCell};
 use tokio::task::JoinHandle;
 use tonic::{Request, Response, Status};
 
 use super::f1r3fly_server::F1r3flyConnectInfo;
+use super::grpc_transport_server::Cancelable;
 use super::limited_buffer::{FlumeLimitedBuffer, LimitedBufferObservable};
 use super::messages::{Send as CommSend, StreamMessage};
 use super::packet_ops::StreamCache;
@@ -410,8 +411,12 @@ impl TransportLayerService {
                 .map(|send_msg| {
                     let handler = tell_handler.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handler(send_msg).await {
-                            tracing::error!(error = %e, "Send message handler failed");
+                        match handler(send_msg).await {
+                            Err(e @ CommError::DnsResolutionFailed(_, _)) => {
+                                tracing::debug!(error = %e, "Send message handler failed");
+                            }
+                            Err(e) => tracing::error!(error = %e, "Send message handler failed"),
+                            Ok(()) => {}
                         }
                     })
                 })
@@ -735,6 +740,16 @@ impl TransportLayer for TransportLayerService {
     }
 }
 
+/// Where a transport receiver accepts connections
+#[derive(Debug, Clone)]
+pub enum TransportBind {
+    /// Bind `0.0.0.0:<port>` when the receiver starts
+    Port(u16),
+    /// Serve from a socket the caller already bound and set non-blocking;
+    /// each receiver serves from a duplicate, so the socket stays bound
+    Listener(Arc<std::net::TcpListener>),
+}
+
 /// GrpcTransportReceiver for handling incoming gRPC messages
 pub struct GrpcTransportReceiver;
 
@@ -743,7 +758,7 @@ impl GrpcTransportReceiver {
     pub async fn create(
         network_id: String,
         rp_config: RPConf,
-        port: u16,
+        bind: &TransportBind,
         cert_pem: String,
         key_pem: String,
         max_message_size: i32,
@@ -752,7 +767,7 @@ impl GrpcTransportReceiver {
         message_handlers: MessageHandlers,
         parallelism: usize,
         cache: StreamCache,
-    ) -> Result<JoinHandle<()>, CommError> {
+    ) -> Result<Cancelable, CommError> {
         use std::net::SocketAddr;
 
         use tonic::transport::Server;
@@ -760,9 +775,26 @@ impl GrpcTransportReceiver {
         // Import our custom F1r3fly server
         use super::f1r3fly_server::F1r3flyServer;
 
-        let addr: SocketAddr = format!("0.0.0.0:{}", port)
-            .parse()
-            .map_err(|e| CommError::ConfigError(format!("Invalid address: {}", e)))?;
+        let (addr, listener): (SocketAddr, Option<tokio::net::TcpListener>) = match bind {
+            TransportBind::Port(port) => (
+                format!("0.0.0.0:{}", port)
+                    .parse()
+                    .map_err(|e| CommError::ConfigError(format!("Invalid address: {}", e)))?,
+                None,
+            ),
+            TransportBind::Listener(listener) => {
+                let listener = listener.try_clone().map_err(|e| {
+                    CommError::ConfigError(format!("Failed to duplicate listener: {}", e))
+                })?;
+                let addr = listener.local_addr().map_err(|e| {
+                    CommError::ConfigError(format!("Failed to read listener address: {}", e))
+                })?;
+                let listener = tokio::net::TcpListener::from_std(listener).map_err(|e| {
+                    CommError::ConfigError(format!("Failed to register listener: {}", e))
+                })?;
+                (addr, Some(listener))
+            }
+        };
 
         // Create SSL session server interceptor
         let ssl_interceptor = SslSessionServerInterceptor::new(network_id.clone());
@@ -793,9 +825,14 @@ impl GrpcTransportReceiver {
             .http2_keepalive_timeout(Some(super::f1r3fly_server::HTTP2_KEEPALIVE_TIMEOUT));
 
         // Create incoming connection stream with F1r3fly TLS
-        let incoming = f1r3fly_server.incoming().await.map_err(|e| {
-            CommError::ConfigError(format!("Failed to create F1r3fly incoming stream: {}", e))
-        })?;
+        let incoming = match listener {
+            Some(listener) => f1r3fly_server.incoming_from_listener(listener),
+            None => f1r3fly_server.incoming().await.map_err(|e| {
+                CommError::ConfigError(format!("Failed to create F1r3fly incoming stream: {}", e))
+            })?,
+        };
+
+        let (shutdown, shutdown_signal) = oneshot::channel::<()>();
 
         // Create the gRPC server with F1r3fly TLS configuration
         let server_task = tokio::spawn(async move {
@@ -845,22 +882,17 @@ impl GrpcTransportReceiver {
                     ssl_interceptor,
                 ))
                 // Use F1r3fly incoming stream instead of standard TLS configuration
-                .serve_with_incoming(incoming)
+                .serve_with_incoming_shutdown(incoming, async {
+                    let _ = shutdown_signal.await;
+                })
                 .await;
 
             if let Err(e) = server_result {
                 tracing::error!(error = %e, "F1r3fly gRPC server failed");
             }
-
-            Ok::<(), CommError>(())
         });
 
-        // Handle the Result from the spawn task
-        Ok(tokio::spawn(async move {
-            if let Err(e) = server_task.await {
-                tracing::error!(error = %e, "F1r3fly gRPC server task panicked");
-            }
-        }))
+        Ok(Cancelable::new(server_task, shutdown))
     }
 }
 

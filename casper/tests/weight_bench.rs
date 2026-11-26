@@ -98,7 +98,7 @@ async fn consensus_weight_benchmark() {
         .expect("DAG storage");
     let genesis = block(0, &keys[0], Vec::new(), Vec::new(), &bonds);
     storage.insert(&genesis, InsertMode::Approved).unwrap();
-    let floor = BlockMetadata::from_block(&genesis, false, None, None);
+    let floor = BlockMetadata::from_block(&genesis, None, None, None);
     let mut latest = vec![genesis.block_hash.clone(); validators];
     let mut target = genesis.block_hash.clone();
     for height in 1..=8 {

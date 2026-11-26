@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{RSpace, RSpaceStore};
 use crate::rspace::errors::{HistoryRepositoryError, RSpaceError};
+use crate::rspace::gc_roots::GcRootRegistry;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
@@ -22,9 +23,9 @@ use crate::rspace::striped_locks;
 impl<C, P, A, K> RSpace<C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + PartialEq + Serialize + 'static + Sync + Send,
+    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + PartialEq + Serialize + 'static + Sync + Send,
+    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
     /**
      * Creates [[RSpace]] from [[HistoryRepository]] and [[HotStore]].
@@ -47,6 +48,7 @@ where
             ),
             phase_a_locks: striped_locks::new_striped_locks(),
             phase_b_locks: striped_locks::new_striped_locks(),
+            gc_roots: GcRootRegistry::new(),
         }
     }
 
@@ -65,25 +67,9 @@ where
             + Hash
             + for<'a> Deserialize<'a>
             + 'static,
-        P: Clone
-            + Debug
-            + Default
-            + PartialEq
-            + Send
-            + Sync
-            + Serialize
-            + for<'a> Deserialize<'a>
-            + 'static,
+        P: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
         A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-        K: Clone
-            + Debug
-            + Default
-            + PartialEq
-            + Send
-            + Sync
-            + Serialize
-            + for<'a> Deserialize<'a>
-            + 'static,
+        K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
     {
         let setup = Self::create_history_repo(store).unwrap();
         let (history_reader, store) = setup;
@@ -106,25 +92,9 @@ where
             + Hash
             + for<'a> Deserialize<'a>
             + 'static,
-        P: Clone
-            + Debug
-            + Default
-            + PartialEq
-            + Send
-            + Sync
-            + Serialize
-            + for<'a> Deserialize<'a>
-            + 'static,
+        P: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
         A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-        K: Clone
-            + Debug
-            + Default
-            + PartialEq
-            + Send
-            + Sync
-            + Serialize
-            + for<'a> Deserialize<'a>
-            + 'static,
+        K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
     {
         let setup = Self::create_history_repo(store).unwrap();
         let (history_repo, store) = setup;
@@ -168,25 +138,9 @@ where
             + Eq
             + Hash
             + 'static,
-        P: Clone
-            + Debug
-            + Default
-            + PartialEq
-            + Send
-            + Sync
-            + Serialize
-            + for<'a> Deserialize<'a>
-            + 'static,
+        P: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
         A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-        K: Clone
-            + Debug
-            + Default
-            + PartialEq
-            + Send
-            + Sync
-            + Serialize
-            + for<'a> Deserialize<'a>
-            + 'static,
+        K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
     {
         let history_repo =
             HistoryRepositoryInstances::lmdb_repository(store.history, store.roots, store.cold)?;

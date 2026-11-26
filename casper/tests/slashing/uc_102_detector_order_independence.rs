@@ -19,7 +19,7 @@ use super::detector_totality_helpers::{assert_neglected, block, justification, D
 #[tokio::test]
 async fn uc_102_detector_traversal_is_permutation_independent() {
     let fixture = DetectorFixture::new().await;
-    fixture.add_record(0, 0, &[]);
+    fixture.add_equivocation(0, 0);
 
     let missing_pointer = block(
         10,

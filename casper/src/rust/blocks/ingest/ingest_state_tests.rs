@@ -203,6 +203,68 @@ fn a_block_is_dispatched_once_its_parents_are_inserted() {
 }
 
 #[test]
+fn a_block_is_dispatched_once_its_parent_is_inserted_when_the_outcome_arrives_first() {
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
+    s.handle(received(meta(10, 2, &[7])), 0, &dag);
+    s.handle(received(meta(7, 1, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(7), Work::Validate)));
+    dag.blocks.insert(hash(7));
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(7),
+            outcome: WorkOutcome::Settled,
+        },
+        0,
+        &dag,
+    );
+    s.handle(IngestInput::Inserted { hash: hash(7) }, 0, &dag);
+    assert!(!s.is_held(&hash(7)));
+    assert_eq!(s.next_dispatch(), Some((hash(10), Work::Validate)));
+}
+
+#[test]
+fn a_settled_block_finishes_its_insert_when_dag_membership_cannot_be_read() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(received(meta(10, 2, &[7])), 0, &dag);
+    s.handle(received(meta(7, 1, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(7), Work::Validate)));
+    s.handle(IngestInput::Inserted { hash: hash(7) }, 0, &dag);
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(7),
+            outcome: WorkOutcome::Settled,
+        },
+        0,
+        &dag,
+    );
+    assert!(!s.is_held(&hash(7)));
+    assert_eq!(s.next_dispatch(), Some((hash(10), Work::Validate)));
+}
+
+#[test]
+fn a_block_inserted_before_its_attempt_failed_finishes_its_insert() {
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
+    s.handle(received(meta(10, 2, &[7])), 0, &dag);
+    s.handle(received(meta(7, 1, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(7), Work::Validate)));
+    dag.blocks.insert(hash(7));
+    s.handle(IngestInput::Inserted { hash: hash(7) }, 0, &dag);
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(7),
+            outcome: WorkOutcome::Failed,
+        },
+        0,
+        &dag,
+    );
+    assert!(!s.is_held(&hash(7)));
+    assert_eq!(s.next_dispatch(), Some((hash(10), Work::Validate)));
+}
+
+#[test]
 fn a_block_received_twice_is_held_and_dispatched_once() {
     let (mut s, _) = state();
     let dag = dag_with(&[0]);
@@ -241,6 +303,121 @@ fn a_cited_block_at_or_below_the_anchor_is_admitted_as_settled_history() {
 }
 
 #[test]
+fn a_block_below_the_anchor_that_the_node_requested_itself_is_offered_as_settled_history() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
+    s.handle(received(meta(9, 40, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));
+}
+
+#[test]
+fn a_held_block_below_the_anchor_that_the_node_then_requests_is_admitted_as_settled_history() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(received(meta(9, 40, &[3])), 0, &dag);
+    assert!(
+        s.is_needed(&hash(3)) && s.next_dispatch().is_none(),
+        "staging: received unvouched, the block waits on its parent to be validated"
+    );
+    s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));
+    assert!(
+        !s.is_needed(&hash(3)),
+        "settled history waits on nothing, so its parent is no longer fetched"
+    );
+}
+
+#[test]
+fn a_held_block_below_the_anchor_that_a_bonded_block_then_cites_is_admitted_as_settled_history() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(received(meta(9, 40, &[3])), 0, &dag);
+    s.handle(received(meta(10, 41, &[9])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));
+}
+
+#[test]
+fn a_held_block_above_the_anchor_stays_held_for_validation_when_the_node_requests_it() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(received(meta(9, 51, &[0])), 0, &dag);
+    s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::Validate)));
+}
+
+#[test]
+fn a_block_below_the_anchor_awaiting_a_state_root_is_admitted_as_settled_history_when_requested() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    let root = Blake2b256Hash::new(b"root");
+    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(received(meta(9, 40, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::Validate)));
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(9),
+            outcome: WorkOutcome::AwaitingState(root.clone()),
+        },
+        0,
+        &dag,
+    );
+    s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));
+    assert!(
+        !fetches(&tick(&mut s, 0, &[], &dag)).contains(&FetchAction::FetchStateRoot(root)),
+        "settled history awaits no state root, so the root is no longer fetched"
+    );
+}
+
+#[test]
+fn a_block_below_the_anchor_requested_during_its_validation_is_admitted_as_settled_history_when_the_attempt_has_no_verdict(
+) {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    let root = Blake2b256Hash::new(b"root");
+    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(received(meta(9, 40, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::Validate)));
+    s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(9),
+            outcome: WorkOutcome::AwaitingState(root.clone()),
+        },
+        0,
+        &dag,
+    );
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));
+    assert!(!fetches(&tick(&mut s, 0, &[], &dag)).contains(&FetchAction::FetchStateRoot(root)));
+}
+
+#[test]
+fn a_block_that_settled_history_admission_declined_stays_held_for_validation_when_requested_again()
+{
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
+    s.handle(received(meta(9, 40, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(9),
+            outcome: WorkOutcome::NotSettledHistory,
+        },
+        0,
+        &dag,
+    );
+    s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::Validate)));
+}
+
+#[test]
 fn no_block_is_admitted_as_settled_history_before_casper_is_attached() {
     let (mut s, _) = state();
     let dag = dag_with(&[0]);
@@ -272,6 +449,129 @@ fn an_announced_hash_is_awaited_but_not_solicited() {
         &dag,
     );
     assert!(!s.is_needed(&hash(0)), "a block in the DAG is not needed");
+}
+
+#[test]
+fn a_block_pruned_response_drops_its_need_and_records_the_floor_on_the_view() {
+    let (mut s, view) = state();
+    let dag = dag_with(&[0]);
+    s.handle(IngestInput::Need { hash: hash(5) }, 0, &dag);
+    assert!(s.is_needed(&hash(5)));
+    assert_eq!(view.below_horizon_floor(), None);
+
+    s.handle(
+        IngestInput::BlockPruned {
+            hash: hash(5),
+            block_height: 42,
+            prune_floor: 300,
+            peer: peer("peer1"),
+        },
+        0,
+        &dag,
+    );
+
+    assert!(!s.is_needed(&hash(5)), "need dropped after pruned response");
+    assert_eq!(view.below_horizon_floor(), Some(300));
+}
+
+#[test]
+fn block_pruned_response_keeps_the_highest_reported_floor() {
+    let (mut s, view) = state();
+    let dag = dag_with(&[0]);
+    s.handle(IngestInput::Need { hash: hash(5) }, 0, &dag);
+    s.handle(IngestInput::Need { hash: hash(7) }, 0, &dag);
+
+    s.handle(
+        IngestInput::BlockPruned {
+            hash: hash(5),
+            block_height: 42,
+            prune_floor: 300,
+            peer: peer("peer1"),
+        },
+        0,
+        &dag,
+    );
+    assert_eq!(view.below_horizon_floor(), Some(300));
+
+    s.handle(
+        IngestInput::BlockPruned {
+            hash: hash(7),
+            block_height: 50,
+            prune_floor: 350,
+            peer: peer("peer2"),
+        },
+        0,
+        &dag,
+    );
+    assert_eq!(view.below_horizon_floor(), Some(350));
+
+    // A later, lower report does not move the floor backward.
+    s.handle(IngestInput::Need { hash: hash(8) }, 0, &dag);
+    s.handle(
+        IngestInput::BlockPruned {
+            hash: hash(8),
+            block_height: 20,
+            prune_floor: 200,
+            peer: peer("peer3"),
+        },
+        0,
+        &dag,
+    );
+    assert_eq!(view.below_horizon_floor(), Some(350));
+}
+
+#[test]
+fn block_pruned_response_cascades_to_evict_held_dependents() {
+    let (mut s, view) = state();
+    let dag = dag_with(&[0]);
+    // Observer admits block hash(10), which waits on hash(1) (not in DAG).
+    // That makes hash(1) a need and hash(10) a held waiter.
+    s.handle(received(meta(10, 2, &[1])), 0, &dag);
+    assert!(s.is_held(&hash(10)), "block 10 held pending dep on 1");
+    assert!(s.is_needed(&hash(1)));
+
+    // Peer reports hash(1) is below its prune horizon.
+    s.handle(
+        IngestInput::BlockPruned {
+            hash: hash(1),
+            block_height: 1,
+            prune_floor: 300,
+            peer: peer("peer1"),
+        },
+        0,
+        &dag,
+    );
+
+    // The need goes; block 10 is dropped because its dependency is
+    // permanently unavailable; the below-horizon flag is recorded.
+    assert!(!s.is_needed(&hash(1)), "need dropped");
+    assert!(
+        !s.is_held(&hash(10)),
+        "cascade dropped block 10, which cited the pruned hash"
+    );
+    assert_eq!(view.below_horizon_floor(), Some(300));
+}
+
+#[test]
+fn block_pruned_response_for_an_unknown_need_records_the_floor_and_touches_no_need() {
+    let (mut s, view) = state();
+    let dag = dag_with(&[0]);
+    // The Running engine filters unsolicited BlockPrunedResponses before
+    // they reach this layer (see `handle_block_pruned_response`), so this
+    // input shape is not expected on the normal path. The handler still
+    // handles it gracefully: the floor is recorded, no need is created.
+    s.handle(
+        IngestInput::BlockPruned {
+            hash: hash(5),
+            block_height: 42,
+            prune_floor: 300,
+            peer: peer("peer1"),
+        },
+        0,
+        &dag,
+    );
+    assert_eq!(view.below_horizon_floor(), Some(300));
+    assert!(!s.is_needed(&hash(5)));
 }
 
 #[test]

@@ -76,6 +76,8 @@ The following flags override HOCON configuration at startup. CLI flags always ta
 | `--ceremony-master-mode` | `casper.genesis_ceremony.ceremony_master_mode = true` | Enable ceremony master mode (creates genesis block if none found) |
 | `--enable-mergeable-channel-gc` | `casper.enable_mergeable_channel_gc = true` | Enable mergeable channel garbage collection |
 | `--disable-mergeable-channel-gc` | `casper.enable_mergeable_channel_gc = false` | Disable mergeable channel GC (takes precedence over `--enable-mergeable-channel-gc`) |
+| `--enable-block-store-gc` | `casper.enable_block_store_gc = true` | Delete finalized block bodies that no honest validator can still cite (piggybacks on the mergeable-channel GC pass) |
+| `--disable-block-store-gc` | `casper.enable_block_store_gc = false` | Disable block-store GC (takes precedence over `--enable-block-store-gc`) |
 | `--heartbeat-enabled` | `casper.heartbeat_conf.enabled = true` | Enable heartbeat block proposing for liveness |
 | `--heartbeat-disabled` | `casper.heartbeat_conf.enabled = false` | Disable heartbeat proposing (takes precedence over `--heartbeat-enabled`) |
 | `--heartbeat-check-interval` | `casper.heartbeat_conf.check_interval` | How often the heartbeat loop wakes to evaluate its decision tree |
@@ -97,6 +99,7 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
 
 - `--ceremony-master-mode` unconditionally sets `casper.genesis_ceremony.ceremony_master_mode = true`.
 - `--disable-mergeable-channel-gc` / `--enable-mergeable-channel-gc` override `casper.enable_mergeable_channel_gc`. The disable flag is checked first; only if it is absent does the enable flag apply.
+- `--disable-block-store-gc` / `--enable-block-store-gc` follow the same pattern for `casper.enable_block_store_gc`. Has no effect when mergeable-channel GC is disabled, since the GC loop that drives it is not spawned.
 - `--heartbeat-disabled` / `--heartbeat-enabled` follow the same pattern for `casper.heartbeat_conf.enabled`.
 
 ## gRPC Services
@@ -137,7 +140,12 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
   "isReadOnly": false,
   "isReady": true,
   "currentEpoch": 12,
-  "epochLength": 100
+  "epochLength": 100,
+  "latestBlockNumber": 1237,
+  "deployLifespan": 300,
+  "maxUserDeploysPerBlock": 128,
+  "maxParentDepth": 25,
+  "maxPhloLimit": 20000000
 }
 ```
 
@@ -145,6 +153,7 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
 - `isValidator` — true if the node has a configured validator key; this does not confirm current bond status
 - `isReadOnly` — true if the node is running in read-only mode
 - `isReady` — true after the engine enters Running state; clients can poll this instead of parsing logs
+- `latestBlockNumber`, `deployLifespan`, `maxUserDeploysPerBlock`, `maxParentDepth`, `maxPhloLimit` — the chain values a deploy client needs, `null` until casper is up; see the [API reference](api-reference.md#get-apistatus)
 - `currentEpoch` — `lastFinalizedBlockNumber / epochLength`
 - `epochLength` — blocks per epoch, from genesis configuration
 
@@ -298,7 +307,11 @@ API responses from `explore-deploy`, `data-at-name-by-block-hash`, `registry`, a
 
 The `/ws/events` endpoint on the HTTP port (40403) streams real-time node events. See [websocket-events.md](websocket-events.md) for full documentation.
 
-9 event types are streamed: 3 block lifecycle (`block-created`, `block-added`, `block-finalised`), 4 genesis ceremony (`sent-unapproved-block`, `block-approval-received`, `sent-approved-block`, `approved-block-received`), and 2 node lifecycle (`entered-running-state`, `node-started`).
+11 event types are streamed: 3 block lifecycle (`block-created`, `block-added`, `block-finalised`), `transfers-available`, `deploy-verdicts`, 4 genesis ceremony (`sent-unapproved-block`, `block-approval-received`, `sent-approved-block`, `approved-block-received`), and 2 node lifecycle (`entered-running-state`, `node-started`). A client that reads too slowly gets `stream-lagged` in place of the events it lost.
+
+## Deploy Queue
+
+A deploy queue runs next to a validator and serves its client ports, so clients deploy through it as they would to the node. See [deploy-queue.md](deploy-queue.md) for the client API.
 
 Events published during startup are buffered and replayed to clients that connect after the node is running. The buffer is sealed when engine initialization completes.
 
@@ -317,7 +330,7 @@ The error chain propagates cleanly: `verify_token_metadata_matches_config → Er
 
 `bind_tcp_listener_with_retry()` in `servers_instances.rs` handles `AddrInUse` resilience for HTTP/Admin servers: 60 attempts with 500ms delay between retries.
 
-`APIServers::build()` in `api_servers.rs` constructs all gRPC services (Repl, Propose, Deploy, LSP) with shared dependencies (engine cell, block store, connections, epoch_length, is_ready). `WebApiImpl` in `web_api.rs` handles the HTTP REST layer and caches config-derived values (network-id, shard-id, native token metadata, epoch-length) for fast `/api/status` responses without per-request config reads; `min-phlo-price` is the exception, read from the running casper's chain-adopted shard conf per request so `/api/status` advertises the floor admission actually enforces. The `is_ready` flag is a shared `AtomicBool` set by the event listener in `setup.rs` when `EnteredRunningState` fires.
+`APIServers::build()` in `api_servers.rs` constructs all gRPC services (Repl, Propose, Deploy, LSP) with shared dependencies (engine cell, block store, connections, epoch_length, is_ready). `WebApiImpl` in `web_api.rs` handles the HTTP REST layer and caches config-derived values (network-id, shard-id, native token metadata) for fast `/api/status` responses without per-request config reads. `min-phlo-price`, `epoch-length` and the deploy values (`latestBlockNumber` through `maxPhloLimit`) are read per request from the running casper and its chain-adopted shard conf, so `/api/status` advertises what admission actually enforces; before casper is up, the first two fall back to configuration and the deploy values are `null`. The `is_ready` flag is a shared `AtomicBool` set by the event listener in `setup.rs` when `EnteredRunningState` fires.
 
 ## Transfer Extraction
 
@@ -382,8 +395,8 @@ These values are hardcoded (previously configurable via `F1R3_*` env vars, remov
 | HOCON key | Default | Purpose |
 |-----------|--------:|---------|
 | `heartbeat.enabled` | `true` | Enable the heartbeat proposer. It drives block and finalization cadence across validators, so multi-validator deployments leave it on; a single-node dev shard may set `false` and rely on `autopropose` or operator-triggered proposes |
-| `heartbeat.check-interval` | 5s | How often the loop evaluates its decision tree |
-| `heartbeat.max-lfb-age` | 5s | LFB age threshold above which stale-LFB recovery may fire |
+| `heartbeat.check-interval` | 3s | How often the loop evaluates its decision tree |
+| `heartbeat.max-lfb-age` | 3s | LFB age threshold above which stale-LFB recovery may fire |
 | `heartbeat.self-propose-cooldown` | 3s | Min interval between self-proposals; gates every routine lane (never the stale-recovery lane, which paces on the interval below) |
 | `heartbeat.stale-recovery-min-interval` | derived: 1.5 × `check-interval` | Pacing for stale-LFB recovery and the pending-deploy backstop: both the LFB's age and the validator's own silence must exceed it — at most one recovery proposal per validator per interval. The derived value opens on the second tick after a validator's own block; an explicit value must exceed `check-interval` (startup fails otherwise) |
 | `heartbeat.deploy-finalization-grace` | 25s | Grace window opened when pending deploys land; widens lag caps only — never bypasses the cooldown |

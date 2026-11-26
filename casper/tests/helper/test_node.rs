@@ -17,6 +17,7 @@ use casper::rust::errors::CasperError;
 use casper::rust::estimator::Estimator;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::safety_oracle::CliqueOracleImpl;
+use casper::rust::storage::rnode_key_value_store_manager::rnode_db_mapping;
 use casper::rust::util::comm::casper_packet_handler::CasperPacketHandler;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::validator_identity::ValidatorIdentity;
@@ -39,6 +40,7 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, DeployData,
 };
 use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
 use crate::helper::inline_ingest::InlineIngest;
@@ -68,6 +70,40 @@ pub struct ShardOverrides {
     pub with_read_only_size: Option<usize>,
     pub deploy_lifespan: Option<i64>,
     pub finalization_rate: Option<i32>,
+    pub deploy_admission:
+        Option<block_storage::rust::deploy::key_value_deploy_storage::DeployPoolLimits>,
+    /// Each node keeps its own RSpace, seeded with the genesis state, so it
+    /// holds only the state roots it computed itself. Otherwise the nodes
+    /// share one RSpace.
+    pub own_rspace: bool,
+}
+
+/// Copies every RSpace store of `from_scope` into `to_scope`.
+async fn seed_rspace(from_scope: &str, to_scope: &str) {
+    let mut from = resources::mk_test_rnode_store_manager_with_dual_scope(
+        resources::generate_scope_id(),
+        from_scope.to_string(),
+    );
+    let mut to = resources::mk_test_rnode_store_manager_with_dual_scope(
+        resources::generate_scope_id(),
+        to_scope.to_string(),
+    );
+    for (db, _) in rnode_db_mapping(None) {
+        if !db.id().starts_with("rspace-") {
+            continue;
+        }
+        let entries = from
+            .store(db.id().to_string())
+            .await
+            .expect("genesis RSpace store")
+            .to_map()
+            .expect("genesis RSpace entries");
+        to.store(db.id().to_string())
+            .await
+            .expect("node RSpace store")
+            .put(entries.into_iter().collect())
+            .expect("seed node RSpace");
+    }
 }
 
 pub struct TestNode {
@@ -912,6 +948,7 @@ impl TestNode {
         let max_parent_depth = overrides.max_parent_depth;
         let deploy_lifespan = overrides.deploy_lifespan;
         let finalization_rate = overrides.finalization_rate;
+        let deploy_admission = overrides.deploy_admission.unwrap_or_default();
 
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
@@ -920,12 +957,18 @@ impl TestNode {
         // With shared LMDB, we don't need to copy storage directories.
         // Use the shared LMDB path for data_dir (for logging/debugging purposes only).
         let _new_storage_dir = resources::get_shared_lmdb_path();
-        // Use mk_test_rnode_store_manager_with_shared_rspace to get a new scope with genesis data copied
-        // This ensures test isolation for blocks/DAG (each TestNode has its own scope)
-        // while sharing RSpace scope so all nodes in this test can see each other's state
+        // Each TestNode has its own block and DAG scope. The RSpace scope is
+        // the genesis one, shared by every node, unless the node keeps its own.
+        let rspace_scope = if overrides.own_rspace {
+            let scope = resources::generate_scope_id();
+            seed_rspace(&genesis_context.rspace_scope_id, &scope).await;
+            scope
+        } else {
+            genesis_context.rspace_scope_id.clone()
+        };
         let mut kvm = resources::mk_test_rnode_store_manager_with_shared_rspace(
             genesis_context,
-            &genesis_context.rspace_scope_id,
+            &rspace_scope,
         )
         .await
         .expect("Failed to create store manager with shared RSpace");
@@ -1030,12 +1073,12 @@ impl TestNode {
             floor_seed: None,
             sigs: vec![],
         };
-        let epoch_length = runtime_manager
+        let consensus_parameters = runtime_manager
             .get_consensus_parameters(&genesis.body.state.post_state_hash)
             .await
             .expect("consensus parameters read from the test genesis")
-            .expect("test genesis exposes getConsensusParameters")
-            .epoch_length;
+            .expect("test genesis exposes getConsensusParameters");
+        let epoch_length = consensus_parameters.epoch_length;
         let shard_conf = CasperShardConf {
             fault_tolerance_threshold: 0.1,
             fault_tolerance_threshold_ppm: 100_000,
@@ -1053,12 +1096,14 @@ impl TestNode {
             // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
+            deploy_admission,
             casper_version: genesis.header.version,
             bond_minimum: 0.into(),
             bond_maximum: (i64::MAX as u64).into(),
             epoch_length,
             quarantine_length: 20000,
             min_phlo_price: (1).into(),
+            max_phlo_limit: consensus_parameters.max_phlo_limit,
             deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled
@@ -1100,12 +1145,18 @@ impl TestNode {
             finalized_bond_cache,
             casper_shard_conf: finalization.shard_conf.clone(),
             approved_block: genesis.clone(),
+            effective_anchor: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
             finalizer: casper::rust::engine::multi_parent_casper::Finalizer::start(finalization),
             heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
             active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
+            judged_twins: std::sync::Arc::new(
+                casper::rust::util::bounded_cache::BoundedCache::new(
+                    MultiParentCasperImpl::MAX_JUDGED_TWINS,
+                ),
+            ),
         };
 
         let casper = Arc::new(casper_impl);

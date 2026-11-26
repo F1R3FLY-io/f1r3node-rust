@@ -25,13 +25,12 @@ use futures::stream::StreamExt;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, CasperMessage, FloorCacheResponse, StoreItemsMessage,
-    StoreItemsMessageRequest,
+    ApprovedBlock, BlockMessage, BlockPrunedResponse, CasperMessage, FloorCacheResponse,
+    StoreItemsMessage, StoreItemsMessageRequest,
 };
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use shared::rust::ByteString;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
@@ -60,6 +59,33 @@ use crate::rust::validator_identity::ValidatorIdentity;
 /// Shared by `Initializing::new` and `reinstall_sync_channels`, so a retry gets
 /// the same channel as the first attempt.
 const FLOOR_CACHE_CHANNEL_CAPACITY: usize = 4;
+
+const BLOCK_PRUNED_CHANNEL_CAPACITY: usize = 256;
+
+/// The minimum local height at which the startup horizon probe is still
+/// within peers' body-prune window. Matches the GC formula used in
+/// `mergeable_channels_gc::job::start_pass`: `floor - (max_parent_depth +
+/// depth_buffer + deploy_lifespan)` when block-body GC is on, `floor -
+/// (max_parent_depth + depth_buffer)` otherwise. Saturating math: when
+/// `max_parent_depth` is `i32::MAX` (unlimited), the result goes very
+/// negative and the probe becomes inert, as every real local height
+/// satisfies it. Verified in TLA+ (BelowHorizonRecovery) and in unit
+/// tests below (#1059).
+pub(crate) fn horizon_required_height(
+    peer_floor: i64,
+    max_parent_depth: i32,
+    depth_buffer: i32,
+    deploy_lifespan: i64,
+    enable_block_store_gc: bool,
+) -> i64 {
+    let citation_depth: i64 = i64::from(max_parent_depth).saturating_add(i64::from(depth_buffer));
+    let depth = if enable_block_store_gc {
+        citation_depth.saturating_add(deploy_lifespan)
+    } else {
+        citation_depth
+    };
+    peer_floor.saturating_sub(depth)
+}
 
 fn install_slot<V>(slot: &Arc<Mutex<Option<V>>>, value: V, name: &str) -> Result<(), CasperError> {
     let mut guard = slot
@@ -121,6 +147,17 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     /// internally; both halves live here like the other sync channels.
     floor_cache_tx: Arc<Mutex<Option<mpsc::Sender<FloorCacheResponse>>>>,
     floor_cache_rx: Arc<Mutex<Option<mpsc::Receiver<FloorCacheResponse>>>>,
+    block_pruned_tx: Arc<Mutex<Option<mpsc::Sender<BlockPrunedResponse>>>>,
+    block_pruned_rx: Arc<Mutex<Option<mpsc::Receiver<BlockPrunedResponse>>>>,
+    /// Observer / validator's own stored approved block at launch. Present on
+    /// resume with on-disk data; `None` on a fresh join. When present, the
+    /// first ApprovedBlock response from peers triggers the startup horizon
+    /// probe (`on_approved_block` short-circuit): if local DAG height is
+    /// within the peer-reported window, this node skips LFS and transitions
+    /// directly to Running using the stored block as its anchor; if below,
+    /// it falls through to the usual `request_approved_state` LFS flow
+    /// (#1059).
+    stored_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
 }
 
 /// Write shipped floor-cache entries into the DAG's floor and frontier
@@ -202,6 +239,28 @@ fn require_genesis_hash(block_dag_storage: &BlockDagKeyValueStorage) -> Result<(
                 .to_string(),
         )),
     }
+}
+
+fn require_cited_genesis_block(
+    block_dag_storage: &BlockDagKeyValueStorage,
+    genesis_skipped: bool,
+) -> Result<(), CasperError> {
+    if !genesis_skipped {
+        return Ok(());
+    }
+    let held = match block_dag_storage.genesis_hash()? {
+        Some(genesis) => block_dag_storage.get_representation()?.contains(&genesis)?,
+        None => false,
+    };
+    if held {
+        return Ok(());
+    }
+    Err(CasperError::RuntimeError(
+        "The chain cites the genesis block, but the bootstrap has pruned its body and did not \
+         ship it. This node cannot process blocks that cite genesis, so it cannot follow this \
+         chain. Use a bootstrap that still holds the genesis block."
+            .to_string(),
+    ))
 }
 
 /// Publish the genesis hash of a restore as this node's chain identity.
@@ -315,9 +374,12 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         estimator: Estimator,
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
         state_items_tx: Option<mpsc::Sender<StoreItemsMessage>>,
+        stored_approved_block: Option<ApprovedBlock>,
     ) -> Self {
         let (floor_cache_tx, floor_cache_rx) =
             mpsc::channel::<FloorCacheResponse>(FLOOR_CACHE_CHANNEL_CAPACITY);
+        let (block_pruned_tx, block_pruned_rx) =
+            mpsc::channel::<BlockPrunedResponse>(BLOCK_PRUNED_CHANNEL_CAPACITY);
         let state = Self {
             transport_layer,
             rp_conf_ask,
@@ -352,6 +414,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             state_items_tx,
             floor_cache_tx: Arc::new(Mutex::new(Some(floor_cache_tx))),
             floor_cache_rx: Arc::new(Mutex::new(Some(floor_cache_rx))),
+            block_pruned_tx: Arc::new(Mutex::new(Some(block_pruned_tx))),
+            block_pruned_rx: Arc::new(Mutex::new(Some(block_pruned_rx))),
+            stored_approved_block: Arc::new(Mutex::new(stored_approved_block)),
         };
         metrics::gauge!(
             INIT_BLOCK_MESSAGE_QUEUE_PENDING_METRIC,
@@ -509,10 +574,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                             );
                             self.update_init_queue_metrics();
                         }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to enqueue BlockMessage into block_message channel: {:?}",
-                                e
+                        Err(_) => {
+                            tracing::debug!(
+                                "Dropping BlockMessage from {}: the LFS block requester is no longer running",
+                                peer
                             );
                         }
                     }
@@ -540,6 +605,34 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                         tracing::warn!(
                             "floor-cache channel full or closed; dropping response (the \
                              request loop re-asks)"
+                        );
+                    }
+                }
+                Ok(())
+            }
+            CasperMessage::BlockPrunedResponse(resp) => {
+                if self.rp_conf_ask.bootstrap.as_ref() != Some(&peer) {
+                    tracing::debug!(
+                        "Ignoring BlockPrunedResponse from {}: only the bootstrap's answer counts.",
+                        peer
+                    );
+                    return Ok(());
+                }
+                if let Some(genesis) = self.rp_conf_ask.chain_id.get() {
+                    if (resp.block_height == 0) != (resp.hash == *genesis) {
+                        tracing::warn!(
+                            block = %PrettyPrinter::build_string_bytes(&resp.hash),
+                            height = resp.block_height,
+                            "BlockPrunedResponse disagrees with this node's genesis hash; ignoring it"
+                        );
+                        return Ok(());
+                    }
+                }
+                let sender = self.block_pruned_tx.lock().unwrap().as_ref().cloned();
+                if let Some(tx) = sender {
+                    if tx.try_send(resp).is_err() {
+                        tracing::debug!(
+                            "pruned-block channel full or closed; the next request round asks again"
                         );
                     }
                 }
@@ -678,6 +771,81 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     "Approved block accepted during initialization"
                 );
             }
+            // #1059 startup horizon probe. Before committing to LFS, check
+            // whether the on-disk approved block is within peers' current
+            // body-prune window. If so, resume from the stored block and
+            // skip the (expensive) state restore. Below the window, fall
+            // through to the LFS path. TLA+ contract:
+            // `formal/tlaplus/below_horizon_recovery`.
+            let maybe_stored = self
+                .stored_approved_block
+                .lock()
+                .map_err(|_| {
+                    CasperError::RuntimeError(
+                        "Failed to acquire stored_approved_block lock".to_string(),
+                    )
+                })?
+                .take();
+            if let Some(stored) = maybe_stored {
+                if let Some(seed) = approved_block.floor_seed.as_ref() {
+                    let peer_floor = seed.floor_number;
+                    if peer_floor > 0 {
+                        let dag = self.block_dag_storage.get_representation()?;
+                        let our_latest: i64 = dag
+                            .latest_message_hashes()
+                            .values()
+                            .filter_map(|h| dag.lookup(h).ok().flatten().map(|m| m.block_number))
+                            .max()
+                            .unwrap_or(0);
+                        let shard = &self.casper_shard_conf;
+                        let required = horizon_required_height(
+                            peer_floor,
+                            shard.max_parent_depth,
+                            shard.mergeable_channels_gc_depth_buffer,
+                            shard.deploy_lifespan,
+                            shard.enable_block_store_gc,
+                        );
+                        if our_latest >= required {
+                            tracing::info!(
+                                peer_floor,
+                                our_latest_height = our_latest,
+                                required_height = required,
+                                "Startup horizon probe: stored state is within window. \
+                                 Resuming from stored approved block; skipping LFS (#1059)."
+                            );
+                            let transport = self.transport_layer.clone();
+                            let connections = self.connections_cell.clone();
+                            let rp_conf = self.rp_conf_ask.clone();
+                            let the_init = Arc::new(move || {
+                                let transport = transport.clone();
+                                let connections = connections.clone();
+                                let rp_conf = rp_conf.clone();
+                                Box::pin(async move {
+                                    transport
+                                        .send_fork_choice_tip_request(&connections, &rp_conf)
+                                        .await?;
+                                    Ok(())
+                                })
+                                    as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+                            });
+                            if let Err(err) = self
+                                .create_casper_and_transition_to_running(&stored, the_init)
+                                .await
+                            {
+                                self.recover_from_restore_failure(err).await?;
+                            }
+                            return Ok(());
+                        }
+                        tracing::warn!(
+                            peer_floor,
+                            our_latest_height = our_latest,
+                            required_height = required,
+                            "Startup horizon probe: stored state is below peers' GC horizon. \
+                             Running last-finalized-state sync (#1059)."
+                        );
+                    }
+                }
+            }
             // The caller is a task the transport spawned for this message, and it
             // logs an error and drops it. Anything left unhandled here is
             // therefore lost, and the engine waits forever for a restore that
@@ -780,6 +948,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         install_slot(&self.floor_cache_tx, floor_cache_tx, "floor_cache_tx")?;
         install_slot(&self.floor_cache_rx, floor_cache_rx, "floor_cache_rx")?;
 
+        let (block_pruned_tx, block_pruned_rx) =
+            mpsc::channel::<BlockPrunedResponse>(BLOCK_PRUNED_CHANNEL_CAPACITY);
+        install_slot(&self.block_pruned_tx, block_pruned_tx, "block_pruned_tx")?;
+        install_slot(&self.block_pruned_rx, block_pruned_rx, "block_pruned_rx")?;
+
         self.block_message_queue_pending.store(0, Ordering::Relaxed);
         self.tuple_space_queue_pending.store(0, Ordering::Relaxed);
         Ok(())
@@ -866,6 +1039,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     CasperError::RuntimeError("Block message receiver not available".to_string())
                 })?;
 
+        let block_pruned_rx = self.block_pruned_rx.lock().unwrap().take().ok_or_else(|| {
+            CasperError::RuntimeError("Pruned block receiver not available".to_string())
+        })?;
+
         // Create block requester wrapper with needed components and stream
         let mut block_requester = BlockRequesterWrapper::new(
             &self.transport_layer,
@@ -895,6 +1072,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 approved_block,
                 &empty_queue,
                 response_message_rx,
+                block_pruned_rx,
                 self.block_message_queue_pending.clone(),
                 min_block_number_for_deploy_lifespan,
                 lfs_request_timeout,
@@ -961,14 +1139,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 .next_back()
                 .copied()
                 .unwrap_or(anchor_height);
-            self.populate_dag(
-                approved_block.candidate.block.clone(),
-                st.lower_bound,
-                st.height_map,
-                st.slash_evidence,
-                st.slash_targets,
-            )
-            .await?;
+            let genesis_skipped = st.skipped.values().any(|height| *height == 0);
+            self.populate_dag(st.coverage_bound(), st.height_map)
+                .await?;
             // After the blocks are in, never before: the caches are keyed by
             // hash, and a floor entry pointing at a block the DAG does not hold
             // reads back as a missing block rather than as a floor.
@@ -976,6 +1149,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             self.request_floor_cache(approved_block, restored_min, restored_max)
                 .await?;
             establish_chain_identity(&self.block_dag_storage, &self.rp_conf_ask.chain_id)?;
+            require_cited_genesis_block(&self.block_dag_storage, genesis_skipped)?;
         } else {
             tracing::warn!(
                 "request_approved_state: block_request_stream returned no final state (None)"
@@ -1104,7 +1278,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // Transition to Running state
         tracing::info!("request_approved_state: transitioning to Running");
-        self.create_casper_and_transition_to_running(approved_block)
+        // LFS path: state is synced from peers, no startup propose or
+        // fork-choice-tip re-ask needed. The empty init is the Scala
+        // `().pure[F]` equivalent.
+        let empty_init = Arc::new(|| {
+            Box::pin(async { Ok(()) })
+                as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+        });
+        self.create_casper_and_transition_to_running(approved_block, empty_init)
             .await?;
         tracing::info!("request_approved_state: transition_to_running completed");
 
@@ -1271,11 +1452,21 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// because it looks like success.
     fn seed_floor_caches(&self, approved_block: &ApprovedBlock) -> Result<(), CasperError> {
         let Some(seed) = &approved_block.floor_seed else {
-            tracing::warn!(
-                "LFS restore has no floor seed: this node cannot derive finality above \
-                 its anchor and will defer on blocks it cannot judge. The serving peer \
-                 predates the seed, or could not derive one."
-            );
+            if approved_block
+                .candidate
+                .block
+                .header
+                .parents_hash_list
+                .is_empty()
+            {
+                tracing::info!("LFS restore is anchored at genesis; no floor seed is needed");
+            } else {
+                tracing::warn!(
+                    "LFS restore has no floor seed: this node cannot derive finality above \
+                     its anchor and will defer on blocks it cannot judge. The serving peer \
+                     predates the seed, or could not derive one."
+                );
+            }
             return Ok(());
         };
 
@@ -1311,67 +1502,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
     async fn populate_dag(
         &self,
-        start_block: BlockMessage,
         min_height: i64,
         height_map: BTreeMap<i64, HashSet<BlockHash>>,
-        slash_evidence: HashSet<BlockHash>,
-        slash_targets: HashSet<BlockHash>,
     ) -> Result<(), CasperError> {
-        async fn add_block_to_dag<T: TransportLayer + Send + Sync + Clone>(
-            initializing: &Initializing<T>,
-            block: &BlockMessage,
-            is_invalid: bool,
-        ) -> Result<(), CasperError> {
-            tracing::info!(
-                "Adding {}, invalid = {}.",
-                PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true),
-                is_invalid
-            );
-
-            // Scala equivalent: `BlockDagStorage[F].insert(block, invalid = isInvalid)`
-            initializing.block_dag_storage.insert(
-                block,
-                if is_invalid {
-                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid
-                } else {
-                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal
-                },
-            )?;
-
-            Ok(())
-        }
-
         tracing::info!("Adding blocks for approved state to DAG.");
-
-        let slashed_validators: Vec<ByteString> = start_block
-            .body
-            .state
-            .bonds
-            .iter()
-            .filter(|bond| bond.stake.is_zero())
-            .map(|bond| bond.validator.to_vec())
-            .collect();
-
-        let mut invalid_blocks: HashSet<ByteString> = start_block
-            .justifications
-            .iter()
-            .filter(|justification| slashed_validators.contains(&justification.validator.to_vec()))
-            .map(|justification| justification.latest_block_hash.to_vec())
-            .collect();
-        invalid_blocks.extend(slash_targets.into_iter().map(|hash| hash.to_vec()));
-
-        for hash in slash_evidence {
-            let block = self.block_store.get(&hash)?.ok_or_else(|| {
-                CasperError::RuntimeError(format!(
-                    "Slash evidence {} missing from block store during DAG population",
-                    PrettyPrinter::build_string_bytes(&hash)
-                ))
-            })?;
-            self.block_dag_storage.insert(
-                &block,
-                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::SlashEvidence,
-            )?;
-        }
 
         let mut inserted = 0usize;
 
@@ -1380,9 +1514,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // NOTE: This is not in original Scala code. Added because we changed block_store
             // to Option<KeyValueBlockStore> to support moving it in create_casper_and_transition_to_running
             let block = self.block_store.get_unsafe(&hash);
-            // If sender has stake 0 in approved block, this means that sender has been slashed and block is invalid
-            let is_invalid = invalid_blocks.contains(&block.block_hash.to_vec());
-            add_block_to_dag(self, &block, is_invalid).await?;
+            tracing::info!(
+                "Adding {}.",
+                PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true)
+            );
+            self.block_dag_storage.insert(
+                &block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )?;
             inserted += 1;
         }
 
@@ -1395,6 +1534,20 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         if let Some(lowest_held) = coverage_from {
             self.block_dag_storage
                 .record_carrier_coverage_from(lowest_held)?;
+        }
+
+        // Issue #1134. Any block the node held below `min_height` is now
+        // unreachable from the restored DAG: pre-restore cruft from before this
+        // join, or data left by a prior LFS whose anchor this restore has
+        // superseded. Without a floor, GC's ancestor walk cannot cross the gap
+        // to prove those blocks are moved past, so bodies leak indefinitely.
+        // The floor is strict: `min_height` itself is part of the restore
+        // coverage; only strictly-below blocks are admitted to collection.
+        // `advance_restore_floor` is monotonic, so a fresh LFS at or below
+        // genesis is a no-op. `try_gc_store` is None on in-memory fixtures
+        // that have no transactional storage — GC is unreachable there anyway.
+        if let Some(gc) = self.block_dag_storage.try_gc_store() {
+            gc.advance_restore_floor(min_height.saturating_sub(1))?;
         }
 
         tracing::info!(
@@ -1588,8 +1741,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let block_data = rholang::rust::interpreter::system_processes::BlockData::from_block(block);
         let is_genesis = parents.is_empty();
 
-        let dag = self.block_dag_storage.get_representation()?;
-        let invalid_blocks_map = proto_util::block_slash_invalid_blocks(&dag, block)?;
+        let invalid_blocks_map =
+            proto_util::slash_evidence_senders(proto_util::slash_evidence(block));
 
         tracing::debug!(
             "Replaying block #{} ({}) with {} deploys, {} parents",
@@ -1638,9 +1791,18 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     }
 
     /// **Scala equivalent**: `private def createCasperAndTransitionToRunning(approvedBlock: ApprovedBlock): F[Unit]`
+    ///
+    /// `the_init` is the init callback the transitioned Running engine
+    /// will invoke. The LFS path passes an empty init (state is already
+    /// synced from peers). The #1059 within-window short-circuit path
+    /// passes an init that does `send_fork_choice_tip_request` so the
+    /// peers' latest tips can be fetched on resume.
     async fn create_casper_and_transition_to_running(
         &self,
         approved_block: &ApprovedBlock,
+        the_init: Arc<
+            dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> + Send + Sync,
+        >,
     ) -> Result<(), CasperError> {
         let ab = approved_block.candidate.block.clone();
         let genesis_post_state_hash = ab.body.state.post_state_hash.clone();
@@ -1687,12 +1849,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // **Scala equivalent**: `transitionToRunning[F](...)`
         tracing::info!("create_casper_and_transition_to_running: calling transition_to_running");
-
-        // Create empty async init (matches Scala ().pure[F])
-        let the_init = Arc::new(|| {
-            Box::pin(async { Ok(()) })
-                as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
-        });
 
         // The spawn_periodic_tick calls below need `Arc<T>`; the
         // `Initializing` struct stores `T` directly (same shape as
@@ -1991,7 +2147,7 @@ fn blocks_for_mergeable_replay(
     let mut blocks = Vec::new();
     for hash in dag.topo_sort(min_block_number, None)?.into_iter().flatten() {
         let metadata = dag.lookup_unsafe(&hash)?;
-        if !metadata.invalid {
+        if !metadata.is_invalid() {
             blocks.push(hash);
         }
     }
@@ -2011,6 +2167,52 @@ fn blocks_for_dag(height_map: &BTreeMap<i64, HashSet<BlockHash>>) -> Vec<BlockHa
         .rev()
         .flat_map(|(_, hashes)| hashes.iter().cloned())
         .collect()
+}
+
+#[cfg(test)]
+mod horizon_required_height_tests {
+    use super::horizon_required_height;
+
+    #[test]
+    fn with_body_gc_subtracts_full_citation_plus_lifespan() {
+        // floor=1000, max_parent_depth=10, buffer=25, lifespan=300 → 1000 - 335 = 665
+        assert_eq!(horizon_required_height(1000, 10, 25, 300, true), 665);
+    }
+
+    #[test]
+    fn without_body_gc_uses_only_citation_depth() {
+        // Same peer_floor, body GC off: lifespan drops out.
+        assert_eq!(horizon_required_height(1000, 10, 25, 300, false), 965);
+    }
+
+    #[test]
+    fn small_floor_is_handled_without_underflow() {
+        // Peer at a very early floor: the probe is permissive (required
+        // height may be negative, which any real latest-message satisfies).
+        assert_eq!(horizon_required_height(50, 10, 25, 300, true), -285);
+    }
+
+    #[test]
+    fn unlimited_max_parent_depth_makes_the_probe_inert() {
+        // When max_parent_depth is the "unlimited" sentinel, required_height
+        // becomes a very large negative number (peer_floor - i32::MAX - …),
+        // which any real latest-message satisfies. The probe does not fire.
+        let required = horizon_required_height(1000, i32::MAX, 25, 300, true);
+        assert!(
+            required < -i64::from(i32::MAX / 2),
+            "unlimited parent depth should push required_height very negative, got {}",
+            required
+        );
+        // And any real height satisfies it:
+        assert!(0i64 >= required);
+    }
+
+    #[test]
+    fn negative_peer_floor_is_handled_gracefully() {
+        // Caller filters peer_floor <= 0 before reaching here, but the
+        // function must not panic for a nonsensical input.
+        assert_eq!(horizon_required_height(-1, 10, 25, 300, true), -336);
+    }
 }
 
 #[cfg(test)]
@@ -2041,6 +2243,7 @@ mod tests {
         let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
@@ -2049,7 +2252,6 @@ mod tests {
             block_number_map: imbl::HashMap::new(),
             main_parent_map: imbl::HashMap::new(),
             self_justification_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: prost::bytes::Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(BlockMetadataStore::new(
@@ -2120,6 +2322,7 @@ mod tests {
         let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
@@ -2128,7 +2331,6 @@ mod tests {
             block_number_map: imbl::HashMap::new(),
             main_parent_map: imbl::HashMap::new(),
             self_justification_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: prost::bytes::Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(BlockMetadataStore::new(
@@ -2338,6 +2540,54 @@ mod tests {
                 block_store2.get(&genesis.block_hash).unwrap().is_none(),
                 "a refused copy leaves no trace in the block store"
             );
+        });
+    }
+
+    #[test]
+    fn a_restore_that_skipped_genesis_needs_the_shipped_block() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut kvm = InMemoryStoreManager::new();
+            let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            let block = |number: i64, parents: Vec<BlockHash>| {
+                get_random_block(
+                    Some(number),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(parents),
+                    Some(vec![]),
+                    None,
+                    None,
+                    Some(vec![]),
+                    None,
+                    None,
+                )
+            };
+            let genesis = block(0, vec![]);
+            let anchor = block(5, vec![BlockHash::from(vec![0xaa; 32])]);
+            dag_storage.insert(&anchor, InsertMode::Approved).unwrap();
+
+            assert!(require_cited_genesis_block(&dag_storage, false).is_ok());
+            assert!(require_cited_genesis_block(&dag_storage, true).is_err());
+
+            dag_storage
+                .record_genesis_hash(genesis.block_hash.clone())
+                .unwrap();
+            let error = require_cited_genesis_block(&dag_storage, true).unwrap_err();
+            assert!(!is_permanent_restore_failure(&error));
+
+            dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+            assert!(require_cited_genesis_block(&dag_storage, true).is_ok());
         });
     }
 

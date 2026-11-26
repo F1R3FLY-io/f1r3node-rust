@@ -6,13 +6,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use dashmap::DashMap;
 use models::routing::Packet;
-use prost::Message;
 use rand::RngCore;
 
 use crate::rust::errors::{self, CommError};
 
 /// Type alias for the concurrent cache used in streaming
 pub type StreamCache = Arc<DashMap<String, Vec<u8>>>;
+
+/// Packets queued for sending; each entry shares its packet's content.
+pub type OutgoingPacketCache = Arc<DashMap<String, Packet>>;
 
 /// PacketOps provides functionality for storing and restoring packets in cache
 pub struct PacketOps;
@@ -21,7 +23,7 @@ const PACKET_CACHE_STALE_TTL_SECS: i64 = 120;
 const PACKET_CACHE_HARD_MAX_ENTRIES: usize = 4096;
 
 impl PacketOps {
-    fn maybe_cleanup_stale_cache_entries(cache: &StreamCache) {
+    fn maybe_cleanup_stale_cache_entries<V>(cache: &DashMap<String, V>) {
         let now_ts = Utc::now().timestamp();
         let mut removed = 0usize;
 
@@ -86,26 +88,20 @@ impl PacketOps {
     }
 
     /// Restore a packet from cache using the given key
-    pub fn restore(key: &str, cache: &StreamCache) -> Result<Packet, CommError> {
+    pub fn restore(key: &str, cache: &OutgoingPacketCache) -> Result<Packet, CommError> {
         // Cache entries are one-shot transport buffers and should be reclaimed
         // once restored to avoid unbounded map growth under sustained traffic.
-        let data = cache.remove(key).map(|(_, value)| value).ok_or_else(|| {
+        cache.remove(key).map(|(_, packet)| packet).ok_or_else(|| {
             errors::unable_to_restore_packet(key.to_string(), "Key not found in cache".to_string())
-        })?;
-
-        Packet::decode(data.as_slice()).map_err(|e| {
-            errors::unable_to_restore_packet(
-                key.to_string(),
-                format!("Failed to parse packet: {}", e),
-            )
         })
     }
 
     /// Store a packet in cache and return the generated key
-    pub fn store(packet: &Packet, cache: &StreamCache) -> Result<String, CommError> {
-        let key = Self::create_cache_entry("packet_receive", cache)?;
-        let packet_data = packet.encode_to_vec();
-        cache.insert(key.clone(), packet_data);
+    pub fn store(packet: &Packet, cache: &OutgoingPacketCache) -> Result<String, CommError> {
+        Self::maybe_cleanup_stale_cache_entries(cache);
+        let key = format!("packet_receive/{}", Self::timestamp());
+        cache.insert(key.clone(), packet.clone());
+        Self::maybe_cleanup_stale_cache_entries(cache);
         Ok(key)
     }
 
@@ -143,11 +139,11 @@ impl PacketOps {
 
 /// Extension trait to add store method to Packet
 pub trait PacketExt {
-    fn store(&self, cache: &StreamCache) -> Result<String, CommError>;
+    fn store(&self, cache: &OutgoingPacketCache) -> Result<String, CommError>;
 }
 
 impl PacketExt for Packet {
-    fn store(&self, cache: &StreamCache) -> Result<String, CommError> {
+    fn store(&self, cache: &OutgoingPacketCache) -> Result<String, CommError> {
         PacketOps::store(self, cache)
     }
 }
@@ -163,9 +159,27 @@ mod tests {
     /// Create a test cache
     fn create_test_cache() -> StreamCache { Arc::new(DashMap::new()) }
 
+    fn create_outgoing_cache() -> OutgoingPacketCache { Arc::new(DashMap::new()) }
+
+    #[test]
+    fn a_stored_packet_shares_its_content_with_the_cache() {
+        let cache = create_outgoing_cache();
+        let packet = Packet {
+            type_id: "Test".to_string(),
+            content: Bytes::from(vec![9u8; 1024]),
+        };
+
+        let key = packet.store(&cache).expect("Failed to store packet");
+
+        assert_eq!(
+            cache.get(&key).expect("stored").content.as_ptr(),
+            packet.content.as_ptr()
+        );
+    }
+
     #[test]
     fn test_packet_store_and_restore() {
-        let cache = create_test_cache();
+        let cache = create_outgoing_cache();
         let content = vec![1, 2, 3, 4, 5];
         let packet = Packet {
             type_id: "Test".to_string(),
@@ -186,7 +200,7 @@ mod tests {
 
     #[test]
     fn test_restore_nonexistent_key() {
-        let cache = create_test_cache();
+        let cache = create_outgoing_cache();
         let result = PacketOps::restore("nonexistent", &cache);
 
         assert!(result.is_err());
@@ -242,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_packet_cache_hard_max_is_enforced() {
-        let cache = create_test_cache();
+        let cache = create_outgoing_cache();
 
         for idx in 0..(PACKET_CACHE_HARD_MAX_ENTRIES + 1) {
             let packet = Packet {
@@ -261,7 +275,7 @@ mod tests {
     // Tests multiple content sizes
     #[test]
     fn test_packet_store_restore_property_equivalent() {
-        let cache = create_test_cache();
+        let cache = create_outgoing_cache();
 
         // Test multiple random content sizes (simulating property testing)
         let test_cases = vec![
