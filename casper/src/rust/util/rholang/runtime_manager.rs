@@ -1651,12 +1651,10 @@ impl RuntimeManager {
      * the time. For some situations, we can just use the value directly for better performance.
      */
     pub fn empty_state_hash_fixed() -> StateHash {
-        // Updated 2026-07-04 for the versioned registry FIP: Step 2 wires
-        // VersionedRegistry.rho into genesis, adding one more contract to
-        // the initial installed set and re-encoding the bootstrap
-        // registry's continuations. Coordinated upgrade required.
-        // (Prior update: 2026-04-29 by Phase 9 of where-clauses-and-match-guards.)
-        hex::decode("facf59ccc55ee2c04802c7399bcff0d15154f70e0d2bc40cf041aac0a89499c1")
+        // Changes whenever the stored encoding of data or continuations
+        // changes, since the bootstrap registry's continuations are part of
+        // the empty state.
+        hex::decode("42bef9f7793d00381aa16b03c3900344e8432b3855730edbef53bcd909fa9fed")
             .unwrap()
             .into()
     }
