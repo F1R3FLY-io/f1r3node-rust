@@ -269,10 +269,12 @@ impl KeyValueBlockStore {
     ) -> Result<Option<BlockDeployScope>, KvStoreError> {
         let bytes = match self.store.get_one(&block_hash.to_vec())? {
             Some(bytes) => bytes,
-            None => return Ok(entry.identities.get().map(|identities| BlockDeployScope {
-                identities: identities.clone(),
-                rejected: None,
-            })),
+            None => {
+                return Ok(entry.identities.get().map(|identities| BlockDeployScope {
+                    identities: identities.clone(),
+                    rejected: None,
+                }))
+            }
         };
         let body = Self::decode_block_deploy_sigs(&bytes)?;
         let identities = Arc::new(Self::decode_deploy_identities(block_hash, body.deploys)?);
