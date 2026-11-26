@@ -486,12 +486,53 @@ answers `Rejected`.
 | `state` | string | Deploy finalization state |
 | `rejection_count` | int | Number of times the deploy was rejected during finalization |
 | `latest_block_hash` | string/null | Hex block hash where the deploy was last seen; `null` if never included |
+| `basisBlockHash` | string/null | Verdict basis (see `POST` below); `null` on this endpoint |
+| `basisBlockHeight` | int/null | Verdict basis (see `POST` below); `null` on this endpoint |
 
 | Status | Condition |
 |--------|-----------|
 | `200` | Status determined |
 | `400` | Signature is not valid hex (`invalid_hash`) |
 | `500` | Node-side failure |
+
+#### `POST /api/deploy-finalization-status`
+
+Send the saved signed JSON used for [deploy submission](#post-apideploy).
+The node verifies the signature and shard. If the lifecycle register has a record for the signature,
+the node returns that status. Otherwise, it checks the window against the floor of its adopted last finalized block.
+
+An unknown deploy can return `Expired` when the floor height exceeds
+`validAfterBlockNumber + deployLifespan + maxParentDepth` and the node can account for the entire inclusion window.
+The status stays `Pending` at the bound, while the observer is behind it, or when contestability is unlimited.
+An unresolved floor, a restore gap, or a window that predates index coverage also keeps the status `Pending`.
+The wall-clock field `expirationTimestamp` affects admission only.
+
+```bash
+curl -X POST http://localhost:40403/api/deploy-finalization-status \
+  -H 'Content-Type: application/json' \
+  --data-binary @signed-deploy.json
+```
+
+```json
+{"state": "Expired", "rejection_count": 0, "latest_block_hash": null, "basisBlockHash": "3bfdf56f...", "basisBlockHeight": 1234}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `basisBlockHash` | string/null | Hex hash of the floor of the adopted last finalized block the verdict was judged against; `null` on register lookups and when this node cannot resolve a floor |
+| `basisBlockHeight` | int/null | Height of that basis block |
+
+For `Pending`, keep the reservation. A register verdict of `Finalized` means the deploy already took effect.
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Status determined |
+| `400` | Malformed JSON (`invalid_request_body`); invalid amounts, keys, signature, or a deploy of a foreign shard (`illegal_argument`) |
+| `413` | Request body exceeds the size limit |
+| `415` | Unsupported content type |
+| `422` | Invalid JSON field type or missing required field |
+| `500` | Node-side failure |
+| `503` | All signed deploy request slots are in use (`deploy_admission_busy`) |
 
 #### `GET /api/pending-deploys`
 
@@ -1024,6 +1065,7 @@ curl -X POST http://localhost:40405/api/propose
 | `lastFinalizedBlock` | `LastFinalizedBlockQuery` | `LastFinalizedBlockResponse` | Get the last finalized block. Returns full `BlockInfo` with deploys |
 | `isFinalized` | `IsFinalizedQuery` | `IsFinalizedResponse` | Check if a block is finalized. Returns bool |
 | `findDeploy` | `FindDeployQuery` | `FindDeployResponse` | Find block containing a deploy. Retries up to 80x with 100ms intervals while deploy propagates through DAG |
+| `deployFinalizationStatus` | `DeployFinalizationStatusQuery` | `DeployFinalizationStatusResponse` | Query the canonical-state finalization status of a deploy by its signature. Prefer this over `isFinalized` — a block can finalize while some of its deploys' effects are dropped during merge. The query optionally carries the saved signed `deploy` ([#1103](https://github.com/F1R3FLY-io/f1r3node-rust/issues/1103)): a sig the node has never observed is then reconciled against the floor of the adopted last finalized block, and the response names that basis (`basisBlockHash` / `basisBlockHeight`). `Expired` answers only when the deploy is proven unable to execute. HTTP: `GET /api/deploy-finalization-status/{sig}`, `POST /api/deploy-finalization-status` |
 | `getDataAtName` | `DataAtNameByBlockQuery` | `RhoDataResponse` | Query data at a Rholang name in a specific block's post-state. Takes `Par` + block hash + `usePreStateHash` |
 | `listenForContinuationAtName` | `ContinuationAtNameQuery` | `ContinuationAtNameResponse` | Find processes waiting to receive on given channel names. Returns matching patterns and continuation bodies |
 | `exploratoryDeploy` | `ExploratoryDeployQuery` | `ExploratoryDeployResponse` | Execute Rholang read-only. No block created, no phlo consumed. Returns result `Par`s, block context, and cost. Readonly only |

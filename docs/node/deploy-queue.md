@@ -98,7 +98,10 @@ that does not compile ends the deploy `Rejected` with `rholang_bad_term` in its 
 | `Rejected` | `rejected` | The node refused the deploy when the queue released it. `detail` holds the node's error kind and message. |
 
 A node never answers `Rejected`. The gRPC status gives it as `DEPLOY_STATE_REJECTED`. Terminal states do not
-change. For a deploy the queue does not hold, the queue sends the request on to the node.
+change. Send the saved signed deploy to `POST /api/deploy-finalization-status` or in the gRPC query's
+optional `deploy` field. The queue checks the signature before returning a local status.
+For an unknown deploy, the queue forwards the request to the node and returns its verdict, including
+`basisBlockHash` and `basisBlockHeight`. See the [reconciliation API](api-reference.md#post-apideploy-finalization-status).
 
 ## Watching deploys
 
