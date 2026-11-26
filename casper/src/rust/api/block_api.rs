@@ -679,15 +679,17 @@ impl BlockAPI {
     /// pre-check and the mid-walk catch (issue #1164) so the two paths
     /// agree on the value they publish.
     ///
-    /// Returns `None` before the node has an LFB — no retention sweep
-    /// can have run yet, so no block's state is below the floor.
-    async fn current_state_retention_floor(casper: &dyn MultiParentCasper) -> Option<i64> {
+    /// Archive readers have no history floor. A pruning node needs a local
+    /// finalized block to anchor its floor.
+    pub(super) async fn current_state_retention_floor(
+        casper: &dyn MultiParentCasper,
+    ) -> Option<i64> {
+        let conf = casper.casper_shard_conf();
+        if !conf.enable_history_pruning {
+            return None;
+        }
         let lfb = casper.last_finalized_block().await.ok()?;
-        Some(
-            casper
-                .casper_shard_conf()
-                .state_retention_floor(lfb.body.state.block_number),
-        )
+        Some(conf.state_retention_floor(lfb.body.state.block_number))
     }
 
     /// Issue #1157: deterministic retention-floor check for state-reading
@@ -706,7 +708,7 @@ impl BlockAPI {
     ///
     /// Boundary: the GC retains blocks whose `height ≥ state_retention_floor`
     /// (see `compute_gc_retention_roots`), so only `target_height < floor`
-    /// means the state has been swept. Genesis at `height = 0` with
+    /// falls outside the guaranteed retention window. Genesis at `height = 0` with
     /// `floor = 0` is retained.
     async fn pre_check_state_retention(
         casper: &dyn MultiParentCasper,
@@ -753,9 +755,9 @@ impl BlockAPI {
         if !eyre_chain_has_missing_node(&report) {
             return report;
         }
-        let floor = Self::current_state_retention_floor(casper)
-            .await
-            .unwrap_or(0);
+        let Some(floor) = Self::current_state_retention_floor(casper).await else {
+            return report;
+        };
         eyre::Report::new(PrunedStateError {
             target_block_hash: target_block.block_hash.clone(),
             target_block_height: target_block.body.state.block_number,

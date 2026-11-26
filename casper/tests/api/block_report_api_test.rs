@@ -3,6 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use casper::rust::api::block_api::BlockAPI;
 use casper::rust::api::block_report_api::{BlockReportAPI, BlockReportError};
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::engine::Engine;
@@ -164,15 +166,10 @@ impl Engine for CasperEngine {
     }
 }
 
-/// A report API with a cache window of `retention` heights over a finalized
-/// chain of one block per height up to `top`, the last finalized block at
-/// `top`. Returns the API, the chain indexed by height, and the replay count.
-async fn api_over_a_finalized_chain(
+async fn finalized_chain(
     top: i64,
-    retention: u32,
     enable_history_pruning: bool,
-    store: CompressedBlockEventInfoStore,
-) -> (BlockReportAPI, Vec<BlockMessage>, Arc<AtomicUsize>) {
+) -> (EngineCell, KeyValueBlockStore, Vec<BlockMessage>) {
     let fixture = TestFixture::new().await;
     let mut dag = fixture.block_dag_storage.get_representation().unwrap();
     let state = fixture.genesis.body.state.post_state_hash.clone();
@@ -227,6 +224,7 @@ async fn api_over_a_finalized_chain(
     casper.shard_conf.enable_history_pruning = enable_history_pruning;
     casper.shard_conf.max_parent_depth = 2;
     casper.shard_conf.mergeable_channels_gc_depth_buffer = 1;
+    assert_eq!(casper.shard_conf.state_retention_floor(5), 2);
     for block in &chain {
         casper.add_block_to_store(block.clone());
     }
@@ -237,6 +235,16 @@ async fn api_over_a_finalized_chain(
         }))
         .await;
 
+    (engine_cell, fixture.block_store, chain)
+}
+
+async fn api_over_a_finalized_chain(
+    top: i64,
+    retention: u32,
+    enable_history_pruning: bool,
+    store: CompressedBlockEventInfoStore,
+) -> (BlockReportAPI, Vec<BlockMessage>, Arc<AtomicUsize>) {
+    let (engine_cell, block_store, chain) = finalized_chain(top, enable_history_pruning).await;
     let replays = Arc::new(AtomicUsize::new(0));
     let api = BlockReportAPI::new(
         Arc::new(CountingReportingCasper {
@@ -245,7 +253,7 @@ async fn api_over_a_finalized_chain(
         }),
         store,
         engine_cell,
-        fixture.block_store,
+        block_store,
         CliqueOracleImpl,
         false,
     )
@@ -529,6 +537,33 @@ async fn after_a_restart_a_prune_step_crosses_already_pruned_heights() {
         .await
         .unwrap();
     assert_eq!(cached(&store, far), vec![false]);
+}
+
+#[tokio::test]
+async fn archive_state_queries_serve_a_block_below_the_calculated_floor() {
+    let (engine, _, chain) = finalized_chain(5, false).await;
+    let hash = hex::encode(&chain[1].block_hash);
+    let (_, block, _) = BlockAPI::exploratory_deploy(
+        &engine,
+        "Nil".to_owned(),
+        Some(hash.clone()),
+        false,
+        false,
+        None,
+        vec![],
+    )
+    .await
+    .unwrap();
+    assert_eq!(block.block_hash, hash);
+    let (_, block) = BlockAPI::get_data_at_par(
+        &engine,
+        &models::rhoapi::Par::default(),
+        hash.clone(),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(block.block_hash, hash);
 }
 
 #[tokio::test]
