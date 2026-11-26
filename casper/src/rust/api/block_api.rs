@@ -2130,27 +2130,80 @@ impl BlockAPI {
         // verdicts were determined at their threshold crossings by
         // `finality::deploy_lifecycle` and persisted write-once — no
         // per-query parameters.
-        match crate::rust::api::deploy_finalization_status::resolve(
+        crate::rust::api::deploy_finalization_status::resolve(
             &dag,
             casper.block_store(),
             sig,
             known_block_hash,
-        ) {
-            Ok(status) => Ok(status),
-            Err(err) => {
-                // Convert the known-block inconsistency (a caller-claimed
-                // block whose body does not list the sig) to
-                // `pending_unknown` so HTTP/gRPC callers see a tractable
-                // response. Genuine I/O failures keep propagating.
-                if err
-                    .downcast_ref::<crate::rust::api::deploy_finalization_status::DeployFinalizationCorruption>()
-                    .is_some()
-                {
-                    Ok(crate::rust::api::deploy_finalization_status::DeployFinalizationStatus::pending_unknown())
-                } else {
-                    Err(err)
-                }
-            }
+        )
+        .or_else(Self::corruption_to_pending)
+    }
+
+    /// Resolve a deploy's finalization status, reconciling a
+    /// never-observed sig from the caller's saved signed deploy (#1103).
+    ///
+    /// Lookup-first: any register record answers as before, and a sig-only
+    /// query (`deploy` = `None`) keeps the exact
+    /// [`Self::deploy_finalization_status`] behavior. For a sig neither
+    /// register table names, a supplied deploy — signature-verified by the
+    /// decode path, shard-checked and sig-matched here — is judged against
+    /// the floor of the adopted last finalized block:
+    /// [`super::deploy_reconciliation`] states the rules and their fail-closed
+    /// `Pending` cases. The response names that basis so a fail-closed
+    /// caller can use it as evidence.
+    pub async fn deploy_finalization_status_reconciled(
+        engine_cell: &EngineCell,
+        sig: &[u8],
+        deploy: Option<&Signed<DeployData>>,
+        shard_id: &str,
+    ) -> ApiErr<crate::rust::api::deploy_reconciliation::ReconciledStatus> {
+        let Some(deploy) = deploy else {
+            return Self::deploy_finalization_status(engine_cell, sig)
+                .await
+                .map(crate::rust::api::deploy_reconciliation::ReconciledStatus::from_lookup);
+        };
+        if deploy.sig != sig {
+            return Err(eyre::Report::new(DeployValidationError {
+                message: "deploy.sig does not match the queried deploySig".to_string(),
+            }));
+        }
+        if deploy.data.shard_id != shard_id {
+            return Err(eyre::Report::new(DeployValidationError {
+                message: "deploy shardId does not match the network shard".to_string(),
+            }));
+        }
+        let error_message =
+            "Could not compute deploy finalization status, casper instance was not available yet.";
+        let eng = engine_cell.get().await;
+        let Some(casper) = eng.with_casper() else {
+            tracing::warn!("{}", error_message);
+            return Err(eyre::eyre!("Error: {}", error_message));
+        };
+
+        let dag = casper.block_dag().await?;
+        crate::rust::api::deploy_reconciliation::reconcile(
+            &dag,
+            casper.block_store(),
+            casper.casper_shard_conf(),
+            casper.effective_anchor_number(),
+            deploy,
+        )
+        .await
+    }
+
+    /// The known-block inconsistency (a caller-claimed block whose body does
+    /// not list the sig) converts to `pending_unknown` so HTTP/gRPC callers
+    /// see a tractable response; genuine I/O failures keep propagating.
+    fn corruption_to_pending(
+        err: eyre::Report,
+    ) -> ApiErr<crate::rust::api::deploy_finalization_status::DeployFinalizationStatus> {
+        if err
+            .downcast_ref::<crate::rust::api::deploy_finalization_status::DeployFinalizationCorruption>()
+            .is_some()
+        {
+            Ok(crate::rust::api::deploy_finalization_status::DeployFinalizationStatus::pending_unknown())
+        } else {
+            Err(err)
         }
     }
 

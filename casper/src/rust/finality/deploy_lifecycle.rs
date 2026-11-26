@@ -57,6 +57,17 @@ pub(crate) fn citability_horizon(max_parent_depth: i32) -> Option<i64> {
     (max_parent_depth != i32::MAX).then_some(i64::from(max_parent_depth))
 }
 
+pub(crate) fn contestability_bound(
+    valid_after: i64,
+    deploy_lifespan: i64,
+    inclusions: impl Iterator<Item = i64>,
+    horizon: Option<i64>,
+) -> Option<i64> {
+    let horizon = horizon?;
+    let last_carrier = inclusions.fold(valid_after.saturating_add(deploy_lifespan), i64::max);
+    Some(last_carrier.saturating_add(horizon))
+}
+
 /// True iff `block_hash`'s committed state contains `sig`'s effect: some
 /// block on its base lineage either executed it fresh (a non-failed
 /// `deploys` entry) or re-applied its chain from scope
@@ -318,8 +329,19 @@ pub(crate) async fn verdict_basis(
     block_store: &KeyValueBlockStore,
     ftt: FtThreshold,
 ) -> Result<BlockHash, CasperError> {
+    Ok(verdict_basis_floor(dag, block_store, ftt).await?.hash)
+}
+
+/// [`verdict_basis`] with the height kept, for rules that report the basis
+/// they judged against (the on-demand reconciliation of #1103). The floor
+/// walks are cached per block, so a resolved basis is one cache read.
+pub(crate) async fn verdict_basis_floor(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    ftt: FtThreshold,
+) -> Result<super::floor::Floor, CasperError> {
     let lfb = dag.last_finalized_block();
-    Ok(floor_of_block(dag, block_store, &lfb, ftt).await?.hash)
+    floor_of_block(dag, block_store, &lfb, ftt).await
 }
 
 /// Writes every verdict `basis` now decides. `memo` only spares re-reading
@@ -509,16 +531,19 @@ impl SettlePass {
         row: &LifecycleEvents,
         valid_after: i64,
     ) -> Result<Option<TerminalState>, CasperError> {
-        let Some(bound) = self.citability_horizon else {
-            return Ok(None);
-        };
-        let decide_at = row
+        let inclusions = row
             .events
             .iter()
             .filter(|e| matches!(e.kind, LifecycleEventKind::Included { .. }))
-            .map(|e| e.height)
-            .fold(valid_after + self.deploy_lifespan, i64::max)
-            + bound;
+            .map(|e| e.height);
+        let Some(decide_at) = contestability_bound(
+            valid_after,
+            self.deploy_lifespan,
+            inclusions,
+            self.citability_horizon,
+        ) else {
+            return Ok(None);
+        };
         if self.basis_height <= decide_at {
             return Ok(None);
         }
