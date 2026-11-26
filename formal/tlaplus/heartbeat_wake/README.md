@@ -1,0 +1,104 @@
+# F1 and F2 heartbeat wake evidence
+
+The [heartbeat claim](../../../docs/claims/heartbeat-proposal-amplification-bound.md) covers the deploy wake and the cooldown recheck. This run checks the wake and recheck decisions for one admitted deploy or one heartbeat check.
+
+## Refutation and construction
+
+TLC checked 82,945 distinct states with `HeartbeatWake.cfg`. One initial state leads to 82,944 evaluations. The instance includes accepted, duplicate, and failed admissions. It enumerates both values of each Boolean input and all combinations of six time values, including zero. The instance uses milliseconds and a 10 ms recheck floor.
+
+| Configuration | Expected and observed result |
+| --- | --- |
+| `HeartbeatWake.cfg` | Exit 0, all invariants hold |
+| `WakeOnRejected.cfg` | Exit 12, `WakeOnlyOnAdmission` fails |
+| `BypassCooldown.cfg` | Exit 12, `CooldownProtectsPending` fails |
+| `RecheckDespiteLag.cfg` | Exit 12, `RecheckRequiresPendingCooldown` fails |
+
+The [TLA+ gate](../../../scripts/ci/check-tla-invariants.sh) runs all four configurations in both tiers. Each expected violation has a trace from the initial state to the evaluated check. The [gate fixture](../../../scripts/ci/test-check-tla-invariants.sh) checks that both tiers include all four configurations.
+
+Run TLC from this directory. Replace `HeartbeatWake.cfg` with each control configuration to reproduce its verdict.
+
+```bash
+java -Xmx1024m -jar "$TLA_TOOLS_JAR" -workers 1 -config HeartbeatWake.cfg HeartbeatWake.tla
+```
+
+Rocq 9.1.1 compiled [MainTheorem](../../rocq/heartbeat_wake/theories/MainTheorem.v). `rocq check` passed, and all seven theorems reported a closed global context. The time theorems quantify over natural numbers. The expiration theorem assumes that the remaining time fits in the millisecond duration conversion.
+
+The [Rocq gate](../../../scripts/ci/check-formal-invariants.sh) builds the project, checks its kernel proof, and checks the assumptions for all seven theorems. The [formal gate receipt](../../../scripts/ci/check-formal-gate.sh) includes the proof sources and project file.
+
+Run these commands from `formal/rocq/heartbeat_wake`.
+
+```bash
+rocq compile -q -Q theories HeartbeatWake theories/MainTheorem.v
+rocq check -silent -Q theories HeartbeatWake HeartbeatWake.MainTheorem
+```
+
+## Rust binding
+
+| Model input or result | Rust source and observable effect |
+| --- | --- |
+| `ApiProposes` | [Node setup](../../../node/src/rust/runtime/setup.rs) provides an API proposer when autopropose is enabled and the node has a proposal trigger. |
+| `wake` | [Deploy admission](../../../casper/src/rust/engine/multi_parent_casper/block_admission.rs) signals the heartbeat after a new reservation, when the wake is enabled and a signal exists. |
+| `Cooling` | [Heartbeat check](../../../node/src/rust/instances/heartbeat_proposer.rs) compares the known age of the latest own block with the configured cooldown. |
+| `Ready` and `otherLaneDue` | The heartbeat evaluates pending-deploy lag eligibility and the other lanes from the current snapshot before it returns a recheck. |
+| `sleep` | The heartbeat clamps the timer delay to the smaller of the check interval and the floored recheck delay. The next check evaluates the current snapshot. |
+
+At `2267799f938e0e5ef8664d1eaa18c26becaadc72`, the 48 heartbeat tests and three launch integration tests passed. The three launch integration tests also passed on the patch applied to `ca-canary` base `7a684d9fd6d88aaaf56203715e2328d8342be6ac`.
+
+The B1 unit test `a_node_wakes_the_heartbeat_on_deploys_only_without_autopropose` passed after the node startup call used the enablement helper. The helper returns the negation of the `ApiProposes` rule. The startup call supplies the configured autopropose flag and the node's proposal trigger.
+
+The B1 RED control enabled the wake for every startup configuration. The test failed for autopropose with a proposal trigger. The pre-cycle source already produced the expected wake decision through its filtered API proposer. The implementing agent reported 66 focused tests passed on the final B1 source. Strict Clippy and formatting checks passed.
+
+All eight proposer integration tests passed. The [proposer source](../../../casper/src/rust/blocks/proposer/proposer.rs) has the same bytes as `dev` at `71d435ea6f6a7d766b7e1bda29b96cc0017563ca`. The tests cover proposal constraints, publication effects, and empty recovery under the height constraint.
+
+The [lane binding check](check-lane-binding.sh) compiled the baseline and candidate `decide_lanes` functions and checked 221,184 cases. It covered all 13 Boolean inputs and three relations to each lag cap. The existing lane decisions matched in every case. The new flag was true exactly when an active cooldown was the sole reason the pending-deploy lane was ineligible.
+
+```bash
+bash formal/tlaplus/heartbeat_wake/check-lane-binding.sh 71d435ea6f6a7d766b7e1bda29b96cc0017563ca
+cargo test --release -p node --lib heartbeat_proposer::
+cargo test --release -p casper --lib a_node_wakes_the_heartbeat_on_deploys_only_without_autopropose
+cargo test --release -p casper --test mod engine::casper_launch_spec
+cargo test --release -p casper --test mod add_block::proposer_spec
+```
+
+The checks assume that deploy admission supplies the reservation verdict and that the heartbeat supplies a consistent age and lane decision for each check. The formal models cover the local rules. They leave scheduler progress, multiple live tasks, accounting execution, and the legacy recovery claims open. The full amplification claim remains pending maintainer review and Rust binding across the complete claim.
+
+The F1 and F2 patch adds a counter to `add_deploy` in `block_admission.rs`. The block dependency verdict code matches `dev`. The [buffer release claim](../../../docs/claims/casper-buffer-release.md) still has no discharge for this artifact.
+
+## Local timing comparison
+
+Both runs used `test_heartbeat_timing` with the native subprocess provider, `HEARTBEAT_TIMING=1`, and `HEARTBEAT_TIMING_REPS=5`. Each run used one warm-up followed by five high-load phases. The base was `dev` at `71d435ea6f6a7d766b7e1bda29b96cc0017563ca`. The candidate included F1 and F2 at `2267799f938e0e5ef8664d1eaa18c26becaadc72`.
+
+| Metric | `dev` | F1 and F2 |
+| --- | ---: | ---: |
+| Mean inclusion p95 | 6.36 s | 4.16 s |
+| Mean finalization p95 | 42.28 s | 38.94 s |
+| Mean blocks created per validator and phase | 9.8 | 12.0 |
+| Phases above 9 s inclusion p95 | 0 of 5 | 0 of 5 |
+| Unfinalized deploys | 0 | 0 |
+
+Both tests passed and the last finalized block advanced in every phase. This comparison covers the local five-phase profile. The shared merge plan also requires accounting-shard qualification. [Qualification plan](../../../docs/designs/deploy-heartbeat-wake.md#7-shared-merge-plan)
+
+## Evidence hashes
+
+Run `shasum -a 256 -c` from the repository root with this manifest.
+
+```text
+e3fe9b556664cebe3552971e65f92cc0feb101ff947642705dd6fec31558b519  formal/tlaplus/heartbeat_wake/HeartbeatWake.tla
+4fce31bcd33762bd91fbbfb1e5e80adb487634827b6536c5296798fca50d329b  formal/tlaplus/heartbeat_wake/HeartbeatWake.cfg
+814fbb3c699fc1f2b6cfe1e1b50e5545cd0a830a713842e2504fa3e47be1c2f7  formal/tlaplus/heartbeat_wake/WakeOnRejected.cfg
+94846d945a56f3c520921a4f84224b37f69da98a7a99df328d338dadcc6a470e  formal/tlaplus/heartbeat_wake/BypassCooldown.cfg
+aea3b843d992f1ebc31f9b6a0852b1d5c61a432ad89c67c04d949ab37b1120cc  formal/tlaplus/heartbeat_wake/RecheckDespiteLag.cfg
+ad2abdcc0735bca8c2d5ac14579677eddab3d6be49c6542049c4177120cdfd7e  formal/tlaplus/heartbeat_wake/check-lane-binding.sh
+a738ece1229e36459e6a80b8c88a65b9a629b80d427b7f42255f38f4f5d990a9  formal/rocq/heartbeat_wake/_CoqProject
+b51339ed1416a0dc79e5c75dc065259e08e812da6988676dc48cefc0f176417a  formal/rocq/heartbeat_wake/theories/MainTheorem.v
+acb8bcab18784bb02b8e5d3e3207d3131eac874de02aec1756d68061dba688e6  scripts/ci/check-formal-gate.sh
+e0ccf0d7ae287f5fe94b8833d6cd86d6062a581617a4336393b6048e50674dba  scripts/ci/check-formal-invariants.sh
+54b10f2ba7e4667ab5ebb6f59b017802bd532cfeba2d6239f85c99469a1a3292  scripts/ci/check-tla-invariants.sh
+98830ea9f2b08b237b718d39a438db3fd182646dacf0371609c726a7ae926f26  scripts/ci/test-check-tla-invariants.sh
+edd5aa018a48170b79bd665a6fb1c2fe37049385c2fe3de137538f871925a3a0  node/src/rust/instances/heartbeat_proposer.rs
+7456a8df25a36b68c13698181189912154322e87073c3701ee02d14e23b2ed3d  node/src/rust/runtime/setup.rs
+cdac4c88a4d782a500fb68813bf0cc7dd0b936c7c3ee1721d7ae9302a86e0505  casper/src/rust/engine/casper_launch.rs
+ebfdb11d68d0e49de763caca5a3dbf2f85581d2eda8fb29099621421dcf4aa2e  casper/src/rust/blocks/proposer/proposer.rs
+cbed7c15e71e8cfc3989fc0f9bdaf6daf88f6af199767c11c053fc35d9805512  casper/src/rust/engine/multi_parent_casper/block_admission.rs
+d86302c7a1f1977f383f59f83767181ad1766fbfcf45d930d7a24cc55c331570  casper/tests/engine/casper_launch_spec.rs
+```

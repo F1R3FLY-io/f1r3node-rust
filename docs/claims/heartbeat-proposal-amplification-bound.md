@@ -4,34 +4,39 @@
 
 This claim is mandatory for heartbeat recovery changes.
 
-Revised: the original formulation bounded amplification by silencing
-non-leaders at high lag. Artifact replay of the CI finality stalls refuted
-that mechanism: leader-only recovery is what held the stalls open.
-Non-leaders logged "waiting for selected recovery leader" 81 and 114 times
-in run 32284324989, 288 and 289 times in run 32397055615 (the 851-second
-stall), while a single proposer — who cannot rebuild the mutual
-justification a certification clique requires — proposed alone. The bound
-is real; it is enforced by cadence and width, never by proposer exclusion.
+The original claim limited recovery to one leader at high lag. Replay of
+two finality stalls showed that recovery needed proposals from other bonded
+validators. In run 32284324989, two validators logged 81 and 114 waits for
+the recovery leader. In run 32397055615, two validators logged 288 and 289
+waits during an 851-second stall.
+
+The recovery interval and the empty-frontier width cap bound proposals.
 
 ## Claim
 
 A recent self-proposal must stop all routine heartbeat proposals until the
 configured cooldown ends.
 
-A newly admitted deploy can wake the heartbeat when the API has no propose
-function. A failed or duplicate admission does not send a deploy wake.
-When only the cooldown blocks the pending-deploy lane, the heartbeat can
-schedule an earlier check. The check evaluates the same proposal conditions.
+Deploy admission sends one wake after a new reservation if the wake flag
+is on and the heartbeat signal exists. The wake flag is on when autopropose
+is off or the node has no proposal trigger. A failed or duplicate admission
+sends no wake. The receiver can combine wake signals.
 
-Deploy grace must not bypass the self-proposal cooldown; grace widens lag
-caps only.
+The heartbeat can schedule an earlier check when only the cooldown blocks
+the pending-deploy lane. This requires a known age for the validator's last
+block and no proposal due from another lane. The timer delay stays within
+the normal check interval. The new check evaluates the proposal conditions
+again.
 
-Stale-LFB recovery is open to every bonded validator and paced solely by
-the stale-recovery interval on both the LFB's age and the validator's own
-silence: at most one recovery proposal per validator per interval.
+Deploy grace increases lag caps. The self-proposal cooldown still applies.
 
-The pending-deploy backstop is open to every bonded validator on the same
-interval pacing: user work is never gated behind a single proposer.
+Every bonded validator can propose through stale-LFB recovery. The recovery
+interval applies to the age of the LFB and the time since the validator's
+last proposal. Each validator can make at most one recovery proposal in the
+interval.
+
+Every bonded validator can use the pending-deploy backstop under the same
+interval rule.
 
 Empty heartbeat proposals stop at the empty-frontier width cap, except
 that a temporally idle validator retains one proposal per stale-recovery
@@ -49,6 +54,8 @@ idle(v) and stale_lfb and recovery_interval_elapsed(v) => recovery_escape(v)
 
 ## Evidence
 
+- F1 and F2 model checks and Rust bindings in `formal/tlaplus/heartbeat_wake/README.md`.
+- `casper/src/rust/engine/casper_launch.rs::a_node_wakes_the_heartbeat_on_deploys_only_without_autopropose`
 - `casper/tests/engine/casper_launch_spec.rs::only_a_new_admitted_deploy_wakes_an_enabled_heartbeat`
 - `node/src/rust/instances/heartbeat_proposer.rs::cooldown_recheck_tests`
 - `node/src/rust/instances/heartbeat_proposer.rs::deploy_grace_does_not_bypass_self_propose_cooldown`
@@ -61,19 +68,19 @@ idle(v) and stale_lfb and recovery_interval_elapsed(v) => recovery_escape(v)
 
 ## Counter-evidence to the leader-only formulation
 
-- CI stall instances i1 (run 32284324989, 239 s) and i5 (run 32397055615,
-  851 s): the stand-down counts above, measured from the shards' own logs.
-- `casper/tests/finalized_floor/oracle_stall_replay_spec.rs`: exact oracle
-  replays of both instances from committed fixtures — certification failed
-  for want of mutual witnessing while one leader proposed.
+- The shard logs give the wait counts for stalls i1 (run 32284324989, 239 s)
+  and i5 (run 32397055615, 851 s).
+- `casper/tests/finalized_floor/oracle_stall_replay_spec.rs` replays both
+  stalls from committed test inputs. The validators could not form the
+  mutual justifications needed for certification while one leader proposed.
 
 ## Gate rule
 
 A routine-lane cooldown bypass refutes this claim.
 
-A validator silenced during a stall — any bonded validator whose
-stale-recovery interval has elapsed under a stale LFB and that still may
-not propose — refutes this claim.
+During a stall, a bonded validator can propose after its stale-recovery
+interval elapses while the LFB is stale. Preventing that proposal refutes
+this claim.
 
 More than one empty proposal per validator per stale-recovery interval
 during a stall refutes this claim.

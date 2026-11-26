@@ -133,11 +133,11 @@ H1 does not hold an empty block for batching. The cooldown from the last routine
 
 | Change | Test |
 |---|---|
-| F1 | Verify the wake configuration with and without an API propose function. Confirm that an admitted deploy signals once when deploy wake is enabled and a duplicate signals zero times. |
+| F1 | Check wake enablement for autopropose and proposal trigger combinations. Check that a new deploy signals once when the wake is enabled. Check that a duplicate sends no signal. |
 | F2 | A lane decision that is blocked only by the cooldown returns the time until the cooldown ends. A decision blocked by a lag cap returns none. |
-| H1 state | `heartbeat_responsive_tests.rs` covers observed-pending hysteresis, expiry, re-entry, consumed credit, rolling windows, queue delay, and recovery priority. |
-| H1 execution | `h1_proposer_spec.rs` checks actual nonempty publication, failed-user and system-only classification, stale predecessors, and the height constraint. |
-| No regression | The existing `lane_decision_rows` tests pass without change outside the mode. |
+| No regression | The `lane_decision_rows` tests cover the existing proposal decisions. |
+
+The [F1 and F2 evidence report](../../formal/tlaplus/heartbeat_wake/README.md) records the model checks, source binding, and timing comparison.
 
 ---
 

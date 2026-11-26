@@ -38,10 +38,11 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::vault_parser::VaultParser;
 use crate::rust::validator_identity::ValidatorIdentity;
 
-pub fn deploy_heartbeat_wake_enabled(
-    propose_f_opt: &Option<Arc<crate::rust::ProposeFunction>>,
+pub fn deploy_heartbeat_wake_for_node(
+    autopropose: bool,
+    trigger_propose: &Option<Arc<crate::rust::ProposeFunction>>,
 ) -> bool {
-    propose_f_opt.is_none()
+    !autopropose || trigger_propose.is_none()
 }
 
 #[async_trait]
@@ -808,11 +809,15 @@ mod tests {
     }
 
     #[test]
-    fn a_deploy_wakes_the_heartbeat_only_without_a_propose_function() {
-        assert!(super::deploy_heartbeat_wake_enabled(&None));
+    fn a_node_wakes_the_heartbeat_on_deploys_only_without_autopropose() {
         let propose: std::sync::Arc<crate::rust::ProposeFunction> = std::sync::Arc::new(|_, _| {
             Box::pin(async { Ok(crate::rust::blocks::proposer::proposer::ProposerResult::Empty) })
         });
-        assert!(!super::deploy_heartbeat_wake_enabled(&Some(propose)));
+        assert!(!super::deploy_heartbeat_wake_for_node(
+            true,
+            &Some(propose.clone())
+        ));
+        assert!(super::deploy_heartbeat_wake_for_node(false, &Some(propose)));
+        assert!(super::deploy_heartbeat_wake_for_node(true, &None));
     }
 }

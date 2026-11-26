@@ -775,7 +775,10 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             conf.protocol_server.disable_state_exporter,
             heartbeat_signal_ref.clone(),
             conf.standalone,
-            casper::rust::engine::casper_launch::deploy_heartbeat_wake_enabled(&propose_f_for_api),
+            casper::rust::engine::casper_launch::deploy_heartbeat_wake_for_node(
+                conf.autopropose,
+                &trigger_propose_f_opt,
+            ),
             {
                 // Project the merged FileIoProvisioning into the
                 // bundle format `fs_generator` consumes.  Combines

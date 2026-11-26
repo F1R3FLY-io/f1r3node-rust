@@ -141,6 +141,18 @@ run_rocq_checks() {
         "$REPO_ROOT/formal/rocq/node_observation/theories/"
     ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
         "$REPO_ROOT/formal/rocq/node_authority/theories/"
+    ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
+        "$REPO_ROOT/formal/rocq/heartbeat_wake/theories/"
+
+    build_rocq_project heartbeat_wake HeartbeatWake
+    check_assumptions heartbeat_wake HeartbeatWake 7 \
+        deploy_wake_requires_admission \
+        pending_decision_preserved \
+        pending_decision_respects_cooldown \
+        recheck_requires_pending_cooldown \
+        sleep_never_exceeds_interval \
+        shortened_sleep_keeps_recheck_floor \
+        unsaturated_shortened_sleep_reaches_cooldown
 
     build_rocq_project node_observation NodeObservation
     check_assumptions node_observation NodeObservation 25 \
