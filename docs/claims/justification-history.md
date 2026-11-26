@@ -12,7 +12,7 @@ For every permitted arrival order, justification regression means a decrease fro
 ## Requirements
 
 1. Select the comparison block through the candidate's creator justification. Use no receiver-local latest-message entry for that selection.
-2. Compare every validator present in both justification maps, including the candidate sender. Reject a lower sequence number when the new witness is valid. Retain the existing exemption for an invalid new witness.
+2. Compare every validator present in both justification maps, including the candidate sender. Reject a lower sequence number, also when the node holds the new witness as invalid. A node holds a witness as invalid when its twin arrived first. An exemption for it would make the verdict depend on the arrival order (PR #968).
 3. Return `Undecidable` with the missing hash if the predecessor or either required witness is absent. A storage error must remain an error. Missing history must not become an invalid-block verdict or acceptance.
 4. Keep the earlier sequence-number validation. A stale self-reference with a sequence gap must still be rejected.
 
@@ -21,7 +21,7 @@ For every permitted arrival order, justification regression means a decrease fro
 The [investigation](../casper/justification-history-investigation.md) records the failing build, artifact, history, and validation commands.
 The [model area](../../formal/tlaplus/justification_history/README.md) records the finite bounds, proof scope, assumptions, and review requirement.
 
-The construction evidence consists of `history_latest_independence`, `history_signed_predecessor`, `history_regression_exact`, and `history_invalid_witness_exemption` in [BugFixSelfRegression.v](../../formal/rocq/slashing/theories/BugFixSelfRegression.v).
+The construction evidence consists of `history_latest_independence`, `history_signed_predecessor`, `history_regression_exact`, and `history_invalid_witness_irrelevant` in [BugFixSelfRegression.v](../../formal/rocq/slashing/theories/BugFixSelfRegression.v).
 These theorems cover predecessor selection and the comparison predicate over unbounded natural numbers and lists. They do not prove the complete Rust DAG, storage implementation, deferral path, or validator lifecycle.
 Production Rust regressions bind the selector, comparison, missing-evidence path, and sequence check to representative DAG histories. TLC covers finite arrival orders and incomplete evidence. Neither provides a proof of the complete Rust implementation.
 

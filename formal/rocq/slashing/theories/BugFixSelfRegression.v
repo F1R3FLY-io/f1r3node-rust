@@ -165,8 +165,8 @@ Proof.
 Qed.
 
 Definition history_pair_regresses (pair : nat * (bool * nat)) : bool :=
-  let '(new_seq, (invalid, previous_seq)) := pair in
-  negb invalid && Nat.ltb new_seq previous_seq.
+  let '(new_seq, (_, previous_seq)) := pair in
+  Nat.ltb new_seq previous_seq.
 
 Definition history_regresses (pairs : list (nat * (bool * nat))) : bool :=
   existsb history_pair_regresses pairs.
@@ -174,28 +174,27 @@ Definition history_regresses (pairs : list (nat * (bool * nat))) : bool :=
 Theorem history_regression_exact :
   forall pairs,
     history_regresses pairs = true <->
-    exists new_seq previous_seq,
-      In (new_seq, (false, previous_seq)) pairs /\ new_seq < previous_seq.
+    exists new_seq invalid previous_seq,
+      In (new_seq, (invalid, previous_seq)) pairs /\ new_seq < previous_seq.
 Proof.
   intros pairs. unfold history_regresses. rewrite existsb_exists.
   split.
   - intros [[new_seq [invalid previous_seq]] [Hin Hcheck]].
     unfold history_pair_regresses in Hcheck.
-    apply andb_true_iff in Hcheck as [Hvalid Hlt].
-    apply negb_true_iff in Hvalid. subst invalid.
-    exists new_seq, previous_seq. split; [exact Hin |].
-    apply Nat.ltb_lt. exact Hlt.
-  - intros [new_seq [previous_seq [Hin Hlt]]].
-    exists (new_seq, (false, previous_seq)). split; [exact Hin |].
-    unfold history_pair_regresses. simpl. apply Nat.ltb_lt. exact Hlt.
+    exists new_seq, invalid, previous_seq. split; [exact Hin |].
+    apply Nat.ltb_lt. exact Hcheck.
+  - intros [new_seq [invalid [previous_seq [Hin Hlt]]]].
+    exists (new_seq, (invalid, previous_seq)). split; [exact Hin |].
+    unfold history_pair_regresses. apply Nat.ltb_lt. exact Hlt.
 Qed.
 
-Theorem history_invalid_witness_exemption :
-  forall new_seq previous_seq,
-    history_regresses [(new_seq, (true, previous_seq))] = false.
+Theorem history_invalid_witness_irrelevant :
+  forall new_seq invalid1 invalid2 previous_seq,
+    history_pair_regresses (new_seq, (invalid1, previous_seq)) =
+    history_pair_regresses (new_seq, (invalid2, previous_seq)).
 Proof. reflexivity. Qed.
 
 Print Assumptions history_latest_independence.
 Print Assumptions history_signed_predecessor.
 Print Assumptions history_regression_exact.
-Print Assumptions history_invalid_witness_exemption.
+Print Assumptions history_invalid_witness_irrelevant.
