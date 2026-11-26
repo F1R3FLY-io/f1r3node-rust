@@ -62,6 +62,7 @@ where
                     a: mat,
                     persist: datum.persist,
                     source: datum.source.clone(),
+                    size: datum.size,
                 },
                 removed_datum: datum.a.clone(),
                 datum_index: *data_index,
@@ -243,6 +244,7 @@ mod tests {
         let body = body.to_string();
         Arc::new(WaitingContinuation {
             source: Consume::create(&channels.to_vec(), &patterns, &body, false),
+            pattern_sizes: vec![1; patterns.len()],
             patterns,
             continuation: body,
             persist: false,
@@ -251,7 +253,7 @@ mod tests {
     }
 
     fn datum(channel: &str, value: &str) -> Arc<Datum<String>> {
-        Arc::new(Datum::create(&channel.to_string(), value.to_string(), false))
+        Arc::new(Datum::create(&channel.to_string(), value.to_string(), false, value.len()))
     }
 
     #[tokio::test]

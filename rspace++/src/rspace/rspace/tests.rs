@@ -78,6 +78,91 @@ async fn a_search_outside_the_charging_scope_its_space_requires_fails() {
     assert_eq!(paid.lock().unwrap().len(), 1, "the receive is charged once");
 }
 
+#[tokio::test]
+async fn a_search_is_priced_without_measuring_what_waits_again() {
+    use std::collections::BTreeSet;
+    use std::sync::atomic::AtomicUsize;
+
+    use crate::rspace::search_charge::{self, SearchWork};
+
+    #[derive(Default)]
+    struct Measured {
+        data: AtomicUsize,
+        patterns: AtomicUsize,
+    }
+
+    struct NeverMatch(Arc<Measured>);
+
+    impl Match<Wildcard, String, Cont> for NeverMatch {
+        fn pattern_size(&self, _: &Wildcard) -> usize {
+            self.0.patterns.fetch_add(1, Ordering::SeqCst);
+            1
+        }
+
+        fn data_size(&self, a: &String) -> usize {
+            self.0.data.fetch_add(1, Ordering::SeqCst);
+            a.len()
+        }
+
+        fn get(&self, _: &Wildcard, _: &String) -> Option<String> { None }
+    }
+
+    const DATA: usize = 50;
+    const RECEIVES: usize = 20;
+    let measured = Arc::new(Measured::default());
+    let mut kvm = InMemoryStoreManager::new();
+    let space: RSpace<String, Wildcard, String, Cont> = RSpace::create(
+        kvm.r_space_stores().await.unwrap(),
+        Arc::new(Box::new(NeverMatch(measured.clone()))),
+    )
+    .unwrap();
+    let paid = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let charger = {
+        let paid = paid.clone();
+        Arc::new(move |work: SearchWork| {
+            paid.lock().unwrap().push(work);
+            true
+        })
+    };
+
+    search_charge::charged(charger, async {
+        for i in 0..DATA {
+            space
+                .produce("ch".to_string(), format!("datum-{i:02}"), false)
+                .await
+                .unwrap();
+        }
+        for _ in 0..RECEIVES {
+            space
+                .consume(vec!["ch".to_string()], vec![Wildcard], Cont, false, BTreeSet::new())
+                .await
+                .unwrap();
+        }
+        assert_eq!(measured.data.load(Ordering::SeqCst), DATA, "each datum is measured once");
+        assert_eq!(measured.patterns.load(Ordering::SeqCst), RECEIVES);
+
+        space
+            .produce("ch".to_string(), "datum-50".to_string(), false)
+            .await
+            .unwrap();
+        assert_eq!(measured.data.load(Ordering::SeqCst), DATA + 1);
+        assert_eq!(measured.patterns.load(Ordering::SeqCst), RECEIVES);
+    })
+    .await;
+
+    let paid = paid.lock().unwrap();
+    let size = "datum-00".len();
+    assert_eq!(paid.len(), RECEIVES + 1, "only the receives and the last send search");
+    assert_eq!(paid[0], SearchWork {
+        candidates: DATA as u64,
+        bytes: (DATA * (size + 1)) as u64,
+    });
+    assert_eq!(*paid.last().unwrap(), SearchWork {
+        candidates: (RECEIVES * (DATA + 1)) as u64,
+        bytes: (RECEIVES * (DATA + 1) * (size + 1)) as u64,
+    });
+}
+
 // Measures contention on the event_log mutex while N concurrent tasks call
 // produce() on separate channels. The log is pre-filled to PRE_FILL entries
 // before the concurrent phase so every insert starts with a large existing

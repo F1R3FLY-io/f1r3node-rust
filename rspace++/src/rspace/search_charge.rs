@@ -13,7 +13,6 @@ use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::hashing::stable_hash_provider::hash;
 use super::hot_store::HotStore;
-use super::r#match::Match;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
 
 /// What one search could examine: the datum and pattern pairs it could try,
@@ -104,7 +103,6 @@ pub struct TermOperations<C> {
 /// The waiting data and receives a deploy's term saw, rebuilt in log order.
 struct Walk<'a, C, P, A, K> {
     store: &'a dyn HotStore<C, P, A, K>,
-    matcher: &'a dyn Match<P, A, K>,
     channels: HashMap<Blake2b256Hash, C>,
     groups: HashMap<Blake2b256Hash, Group>,
     pattern_sizes: HashMap<Blake2b256Hash, Vec<usize>>,
@@ -122,7 +120,6 @@ struct Walk<'a, C, P, A, K> {
 /// replay saw the term make.
 pub fn walk_work<C, P, A, K>(
     store: &dyn HotStore<C, P, A, K>,
-    matcher: &dyn Match<P, A, K>,
     term: &TermOperations<C>,
     log: &[Event],
 ) -> Result<Vec<SearchWork>, RSpaceError>
@@ -134,7 +131,6 @@ where
 {
     let mut walk = Walk {
         store,
-        matcher,
         channels: term.channels.clone(),
         groups: term
             .receives
@@ -199,7 +195,7 @@ where
                 let size = *self
                     .data_sizes
                     .entry(datum.source.hash.clone())
-                    .or_insert_with(|| self.matcher.data_size(&datum.a));
+                    .or_insert(datum.size);
                 *waiting.data.entry(datum.source.hash.clone()).or_default() += 1;
                 waiting.count += 1;
                 waiting.size += size;
@@ -233,13 +229,7 @@ where
                     .or_insert_with(|| group.clone());
                 self.pattern_sizes
                     .entry(receive.source.hash.clone())
-                    .or_insert_with(|| {
-                        receive
-                            .patterns
-                            .iter()
-                            .map(|pattern| self.matcher.pattern_size(pattern))
-                            .collect()
-                    });
+                    .or_insert_with(|| receive.pattern_sizes.clone());
                 *waiting.entry(receive.source.hash.clone()).or_default() += 1;
             }
             self.receives.insert(group.clone(), waiting);

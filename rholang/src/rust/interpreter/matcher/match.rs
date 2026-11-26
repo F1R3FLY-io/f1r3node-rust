@@ -11,6 +11,12 @@ use super::exports::*;
 use super::fold_match::FoldMatch;
 use super::spatial_matcher::SpatialMatcherContext;
 
+/// The size of a datum as a search is priced: its terms only, since matching
+/// never walks its random state.
+pub fn data_size(data: &ListParWithRandom) -> usize {
+    data.pars.iter().map(|par| par.encoded_len()).sum()
+}
+
 #[derive(Clone, Default)]
 pub struct Matcher;
 
@@ -68,10 +74,7 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
 
     fn pattern_size(&self, pattern: &BindPattern) -> usize { pattern.encoded_len() }
 
-    // Matching walks the data's terms, never its random state.
-    fn data_size(&self, data: &ListParWithRandom) -> usize {
-        data.pars.iter().map(|par| par.encoded_len()).sum()
-    }
+    fn data_size(&self, data: &ListParWithRandom) -> usize { data_size(data) }
 
     /// Cross-channel `where`-clause guard. Called by the matcher
     /// coordinator after every spatial bind has produced a

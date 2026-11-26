@@ -63,6 +63,10 @@ where
 
                 let store = self.get_store();
                 store.install_continuation(&channels, WaitingContinuation {
+                    pattern_sizes: patterns
+                        .iter()
+                        .map(|pattern| self.matcher.pattern_size(pattern))
+                        .collect(),
                     patterns,
                     continuation,
                     persist: true,

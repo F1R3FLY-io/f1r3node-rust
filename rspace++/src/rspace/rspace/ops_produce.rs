@@ -50,6 +50,7 @@ where
 
         let t1 = Instant::now();
         let datum = Arc::new(Datum {
+            size: self.matcher.data_size(&data),
             a: data,
             persist,
             source: produce_ref.clone(),
@@ -138,17 +139,13 @@ where
     /// receive tried against the data on every channel of the group, whose
     /// counts and summed sizes are `totals` in the group's order.
     fn join_work<'p>(
-        &self,
-        receives: impl Iterator<Item = &'p Vec<P>>,
+        receives: impl Iterator<Item = &'p Vec<usize>>,
         totals: &[(usize, usize)],
-    ) -> SearchWork
-    where
-        P: 'p,
-    {
+    ) -> SearchWork {
         let mut work = SearchWork::default();
-        for patterns in receives {
-            for (pattern, (count, size)) in patterns.iter().zip(totals) {
-                work += SearchWork::of(*count, *size, self.matcher.pattern_size(pattern), 1);
+        for pattern_sizes in receives {
+            for (pattern_size, (count, size)) in pattern_sizes.iter().zip(totals) {
+                work += SearchWork::of(*count, *size, *pattern_size, 1);
             }
         }
         work
@@ -166,11 +163,10 @@ where
         } = pc;
 
         let WaitingContinuation {
-            patterns: _patterns,
-            continuation: _cont,
             persist,
             peeks,
             source: consume_ref,
+            ..
         } = &continuation;
 
         let produce_counters_closure = |produces: &[Produce]| self.produce_counters(produces);
@@ -258,18 +254,14 @@ where
                     .iter()
                     .map(|channel| {
                         let data = &channel_to_indexed_data[channel];
-                        let size = data
-                            .iter()
-                            .map(|(datum, _)| self.matcher.data_size(&datum.a))
-                            .sum();
-                        (data.len(), size)
+                        (data.len(), data.iter().map(|(datum, _)| datum.size).sum())
                     })
                     .collect();
                 search_charge::charge(
-                    self.join_work(
+                    Self::join_work(
                         match_candidates
                             .iter()
-                            .map(|(continuation, _)| &continuation.patterns),
+                            .map(|(continuation, _)| &continuation.pattern_sizes),
                         &totals,
                     ),
                     self.search_charging_required(),
@@ -297,12 +289,9 @@ where
                         .iter()
                         .map(|channel| {
                             let data = store.get_data_arc(channel);
-                            let size: usize = data
-                                .iter()
-                                .map(|datum| self.matcher.data_size(&datum.a))
-                                .sum();
+                            let size: usize = data.iter().map(|datum| datum.size).sum();
                             if channel == bat_channel {
-                                (data.len() + 1, size + self.matcher.data_size(&sent.a))
+                                (data.len() + 1, size + sent.size)
                             } else {
                                 (data.len(), size)
                             }
@@ -310,8 +299,8 @@ where
                         .collect();
                     let waiting = store.get_continuations_arc(rest);
                     search_charge::charge(
-                        self.join_work(
-                            waiting.iter().map(|continuation| &continuation.patterns),
+                        Self::join_work(
+                            waiting.iter().map(|continuation| &continuation.pattern_sizes),
                             &totals,
                         ),
                         self.search_charging_required(),

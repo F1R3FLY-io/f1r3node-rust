@@ -544,7 +544,7 @@ proptest! {
   fn put_datum_should_put_datum_in_a_new_channel(channel in  any::<String>(), datum_value in any::<String>()) {
       let (_, hot_store) = fixture();
       let key = channel.clone();
-      let datum = Datum::create(&channel, datum_value, false);
+      let datum = Datum::create(&channel, datum_value.clone(), false, datum_value.len());
 
       hot_store.put_datum(&key.clone(), datum.clone());
       let res = hot_store.get_data(&key);
@@ -555,8 +555,8 @@ proptest! {
   fn put_datum_should_append_datum_if_channel_already_exists(channel in  any::<String>(), datum_value in any::<String>()) {
       let (_, hot_store) = fixture();
       let key = channel.clone();
-      let datum1 = Datum::create(&channel, datum_value.clone(), false);
-      let datum2 = Datum::create(&channel, datum_value + "2", false);
+      let datum1 = Datum::create(&channel, datum_value.clone(), false, datum_value.len());
+      let datum2 = Datum::create(&channel, datum_value.clone() + "2", false, datum_value.len() + 1);
 
       hot_store.put_datum(&key.clone(), datum1.clone());
       hot_store.put_datum(&key.clone(), datum2.clone());
@@ -571,7 +571,10 @@ proptest! {
       let (_, hot_store) = fixture();
       let key = channel.clone();
       let data: Vec<Datum<String>> = (0..11)
-        .map(|i| Datum::create(&channel, datum_value.clone() + &i.to_string(), false))
+        .map(|i| {
+          let value = datum_value.clone() + &i.to_string();
+          Datum::create(&channel, value.clone(), false, value.len())
+        })
         .collect();
 
       for d in data.clone() {
@@ -592,7 +595,7 @@ proptest! {
       let key = vec![channel.clone()];
       let patterns = vec![Pattern::StringMatch(pattern)];
       let continuation = StringsCaptor::new();
-      let wc = WaitingContinuation::create(&key, &patterns, &continuation, false, BTreeSet::default());
+      let wc = WaitingContinuation::create(&key, &patterns, &continuation, false, BTreeSet::default(), vec![1]);
 
       hot_store.put_continuation(&key.clone(), wc.clone());
       let res = hot_store.get_continuations(&key);
@@ -605,8 +608,8 @@ proptest! {
       let key = vec![channel.clone()];
       let patterns = vec![Pattern::StringMatch(pattern.clone())];
       let continuation = StringsCaptor::new();
-      let wc1 = WaitingContinuation::create(&key, &patterns, &continuation, false, BTreeSet::default());
-      let wc2 = WaitingContinuation::create(&key, &vec![Pattern::StringMatch(pattern + "2")], &continuation, false, BTreeSet::default());
+      let wc1 = WaitingContinuation::create(&key, &patterns, &continuation, false, BTreeSet::default(), vec![1]);
+      let wc2 = WaitingContinuation::create(&key, &vec![Pattern::StringMatch(pattern + "2")], &continuation, false, BTreeSet::default(), vec![1]);
 
       hot_store.put_continuation(&key.clone(), wc1.clone());
       hot_store.put_continuation(&key.clone(), wc2.clone());
@@ -620,8 +623,8 @@ proptest! {
       let key = vec![channel.clone()];
       let patterns = vec![Pattern::StringMatch(pattern.clone())];
       let continuation = StringsCaptor::new();
-      let wc1 = WaitingContinuation::create(&key, &patterns, &continuation, false, BTreeSet::default());
-      let wc2 = WaitingContinuation::create(&key, &vec![Pattern::StringMatch(pattern + "2")], &continuation, false, BTreeSet::default());
+      let wc1 = WaitingContinuation::create(&key, &patterns, &continuation, false, BTreeSet::default(), vec![1]);
+      let wc2 = WaitingContinuation::create(&key, &vec![Pattern::StringMatch(pattern + "2")], &continuation, false, BTreeSet::default(), vec![1]);
 
       hot_store.put_continuation(&key.clone(), wc1.clone());
       hot_store.put_continuation(&key.clone(), wc2.clone());

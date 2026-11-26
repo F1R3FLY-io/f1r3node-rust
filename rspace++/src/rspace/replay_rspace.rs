@@ -304,15 +304,11 @@ where
             for channel in &channels {
                 self.note_channel(&hash(channel), channel);
             }
+            let pattern_sizes: Vec<usize> =
+                patterns.iter().map(|p| self.matcher.pattern_size(p)).collect();
             self.receives
                 .entry(consume_ref.hash.clone())
-                .or_insert_with(|| {
-                    let sizes = patterns
-                        .iter()
-                        .map(|p| self.matcher.pattern_size(p))
-                        .collect();
-                    (channels.clone(), sizes)
-                });
+                .or_insert_with(|| (channels.clone(), pattern_sizes.clone()));
             let channel_hashes: Vec<u64> = channels
                 .iter()
                 .map(|ch| striped_locks::channel_hash(ch))
@@ -322,7 +318,15 @@ where
             metrics::counter!("replay_rspace.consume.calls", "source" => "rspace").increment(1);
             let start = Instant::now();
             let result =
-                self.locked_consume(channels, patterns, continuation, persist, peeks, consume_ref);
+                self.locked_consume(
+                    channels,
+                    patterns,
+                    pattern_sizes,
+                    continuation,
+                    persist,
+                    peeks,
+                    consume_ref,
+                );
             metrics::histogram!("replay_consume_time_seconds", "source" => "rspace")
                 .record(start.elapsed().as_secs_f64());
             result
@@ -337,13 +341,12 @@ where
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
         let produce_ref = Produce::create(&channel, &data, persist);
         self.note_channel(&produce_ref.channel_hash, &channel);
-        self.data_sizes
-            .entry(produce_ref.hash.clone())
-            .or_insert_with(|| self.matcher.data_size(&data));
+        let size = self.matcher.data_size(&data);
+        self.data_sizes.entry(produce_ref.hash.clone()).or_insert(size);
         let _lock_guard = self.produce_lock(&channel).await;
         metrics::counter!("replay_rspace.produce.calls", "source" => "rspace").increment(1);
         let start = Instant::now();
-        let result = self.locked_produce(channel, data, persist, produce_ref);
+        let result = self.locked_produce(channel, data, size, persist, produce_ref);
         metrics::histogram!("replay_produce_time_seconds", "source" => "rspace")
             .record(start.elapsed().as_secs_f64());
         result
@@ -460,7 +463,7 @@ where
                 .map(|entry| (entry.key().clone(), *entry.value()))
                 .collect(),
         };
-        search_charge::walk_work(&*store, self.matcher.as_ref().as_ref(), &operations, term)
+        search_charge::walk_work(&*store, &operations, term)
     }
 
     async fn check_replay_data(&self) -> Result<(), RSpaceError> {
@@ -701,6 +704,7 @@ where
         &self,
         channels: Vec<C>,
         patterns: Vec<P>,
+        pattern_sizes: Vec<usize>,
         continuation: K,
         persist: bool,
         peeks: BTreeSet<i32>,
@@ -719,6 +723,7 @@ where
             persist,
             peeks,
             source: consume_ref.clone(),
+            pattern_sizes,
         };
 
         // Fast path: a persistent contract's consume key can hold one
@@ -902,6 +907,7 @@ where
         &self,
         channel: C,
         data: A,
+        size: usize,
         persist: bool,
         produce_ref: Produce,
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
@@ -913,6 +919,12 @@ where
 
         self.log_produce(produce_ref.clone(), &channel, &data, persist);
         tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, persist, "replay.produce ENTER");
+        let datum = Datum {
+            a: data,
+            persist,
+            source: produce_ref.clone(),
+            size,
+        };
 
         // O(1) hash lookup. `IOEvent` derives `Hash`/`Eq`, and `Produce`'s
         // manual impls hash/compare on `self.hash` only — the metadata
@@ -934,15 +946,13 @@ where
         match comms_option {
             None => {
                 tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce: stored (no recorded COMM for this produce)");
-                Ok(self.store_data(channel, data, persist, produce_ref))
+                Ok(self.store_data(channel, datum))
             }
             Some(comms) => {
                 match self.get_comm_or_produce_candidate(
                     &channel,
-                    &data,
-                    persist,
+                    &datum,
                     &comms,
-                    &produce_ref,
                     &grouped_channels,
                 ) {
                     Some((comm, pc)) => {
@@ -959,7 +969,7 @@ where
                     }
                     None => {
                         tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce: stored (recorded COMM exists but no matching consume waiting yet)");
-                        Ok(self.store_data(channel, data, persist, produce_ref))
+                        Ok(self.store_data(channel, datum))
                     }
                 }
             }
@@ -969,24 +979,20 @@ where
     fn get_comm_or_produce_candidate<'c>(
         &self,
         channel: &C,
-        data: &A,
-        persist: bool,
+        datum: &Datum<A>,
         comms: &'c [Arc<COMM>],
-        produce_ref: &Produce,
         grouped_channels: &[Vec<C>],
     ) -> Option<(&'c COMM, ProduceCandidate<C, P, A, K>)> {
         self.get_comm_or_candidate(comms, |comm| {
-            self.run_matcher_produce(channel, data, persist, comm, produce_ref, grouped_channels)
+            self.run_matcher_produce(channel, datum, comm, grouped_channels)
         })
     }
 
     fn run_matcher_produce(
         &self,
         channel: &C,
-        data: &A,
-        persist: bool,
+        datum: &Datum<A>,
         comm: &COMM,
-        produce_ref: &Produce,
         grouped_channels: &[Vec<C>],
     ) -> Option<ProduceCandidate<C, P, A, K>> {
         self.run_matcher_for_channels(
@@ -1002,15 +1008,8 @@ where
             },
             |c| {
                 let mut candidates = Vec::new();
-                if &c == channel && self.matches(comm, produce_ref, persist) {
-                    candidates.push((
-                        Arc::new(Datum {
-                            a: data.clone(),
-                            persist,
-                            source: produce_ref.clone(),
-                        }),
-                        -1,
-                    ));
+                if &c == channel && self.matches(comm, &datum.source, datum.persist) {
+                    candidates.push((Arc::new(datum.clone()), -1));
                 }
                 candidates.extend(
                     self.get_store()
@@ -1048,11 +1047,10 @@ where
         } = pc;
 
         let WaitingContinuation {
-            patterns: _patterns,
-            continuation: _cont,
             persist,
             peeks,
             source: consume_ref,
+            ..
         } = &continuation;
 
         let produce_counters_closure = |produces: &[Produce]| self.produce_counters(produces);
@@ -1219,19 +1217,8 @@ where
         None
     }
 
-    fn store_data(
-        &self,
-        channel: C,
-        data: A,
-        persist: bool,
-        produce_ref: Produce,
-    ) -> MaybeProduceResult<C, P, A, K> {
-        self.get_store().put_datum(&channel, Datum {
-            a: data,
-            persist,
-            source: produce_ref,
-        });
-
+    fn store_data(&self, channel: C, datum: Datum<A>) -> MaybeProduceResult<C, P, A, K> {
+        self.get_store().put_datum(&channel, datum);
         None
     }
 
@@ -1292,6 +1279,10 @@ where
 
                     let store = self.get_store();
                     store.install_continuation(&channels, WaitingContinuation {
+                        pattern_sizes: patterns
+                            .iter()
+                            .map(|pattern| self.matcher.pattern_size(pattern))
+                            .collect(),
                         patterns,
                         continuation,
                         persist: true,

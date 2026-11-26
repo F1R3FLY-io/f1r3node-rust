@@ -810,6 +810,7 @@ pub fn continuation(s: i32) -> WaitingContinuation<String, String> {
             hash: random_blake(),
             persistent: true,
         },
+        pattern_sizes: vec![1],
     }
 }
 
@@ -825,6 +826,7 @@ pub fn datum(s: i32) -> Datum<String> {
             output_value: vec![],
             failed: false,
         },
+        size: format!("data-{}", s).len(),
     }
 }
 

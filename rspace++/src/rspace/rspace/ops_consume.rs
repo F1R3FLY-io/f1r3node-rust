@@ -48,14 +48,15 @@ where
         let mut channel_to_indexed_data = self.fetch_channel_to_index_data(channels);
         metrics::counter!("rspace.consume.fetch_data_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t1.elapsed().as_nanos() as u64);
+        let pattern_sizes: Vec<usize> = patterns
+            .iter()
+            .map(|pattern| self.matcher.pattern_size(pattern))
+            .collect();
         let mut work = SearchWork::default();
-        for (channel, pattern) in channels.iter().zip(patterns) {
+        for (channel, pattern_size) in channels.iter().zip(&pattern_sizes) {
             let data = &channel_to_indexed_data[channel];
-            let size = data
-                .iter()
-                .map(|(datum, _)| self.matcher.data_size(&datum.a))
-                .sum();
-            work += SearchWork::of(data.len(), size, self.matcher.pattern_size(pattern), 1);
+            let size = data.iter().map(|(datum, _)| datum.size).sum();
+            work += SearchWork::of(data.len(), size, *pattern_size, 1);
         }
         search_charge::charge(work, self.search_charging_required())?;
 
@@ -78,6 +79,7 @@ where
             persist,
             peeks: peeks.clone(),
             source: consume_ref.clone(),
+            pattern_sizes,
         };
 
         let commit_ok = match &options {
