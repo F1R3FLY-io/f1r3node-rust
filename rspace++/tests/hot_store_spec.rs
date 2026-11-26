@@ -595,7 +595,7 @@ proptest! {
       let key = vec![channel.clone()];
       let patterns = vec![Pattern::StringMatch(pattern)];
       let continuation = StringsCaptor::new();
-      let wc = WaitingContinuation::create(&key, &patterns, &continuation, false, BTreeSet::default(), vec![1]);
+      let wc = WaitingContinuation::create(&key, &patterns, &continuation, false, BTreeSet::default(), vec![1], None);
 
       hot_store.put_continuation(&key.clone(), wc.clone());
       let res = hot_store.get_continuations(&key);
@@ -608,8 +608,8 @@ proptest! {
       let key = vec![channel.clone()];
       let patterns = vec![Pattern::StringMatch(pattern.clone())];
       let continuation = StringsCaptor::new();
-      let wc1 = WaitingContinuation::create(&key, &patterns, &continuation, false, BTreeSet::default(), vec![1]);
-      let wc2 = WaitingContinuation::create(&key, &vec![Pattern::StringMatch(pattern + "2")], &continuation, false, BTreeSet::default(), vec![1]);
+      let wc1 = WaitingContinuation::create(&key, &patterns, &continuation, false, BTreeSet::default(), vec![1], None);
+      let wc2 = WaitingContinuation::create(&key, &vec![Pattern::StringMatch(pattern + "2")], &continuation, false, BTreeSet::default(), vec![1], None);
 
       hot_store.put_continuation(&key.clone(), wc1.clone());
       hot_store.put_continuation(&key.clone(), wc2.clone());
@@ -623,8 +623,8 @@ proptest! {
       let key = vec![channel.clone()];
       let patterns = vec![Pattern::StringMatch(pattern.clone())];
       let continuation = StringsCaptor::new();
-      let wc1 = WaitingContinuation::create(&key, &patterns, &continuation, false, BTreeSet::default(), vec![1]);
-      let wc2 = WaitingContinuation::create(&key, &vec![Pattern::StringMatch(pattern + "2")], &continuation, false, BTreeSet::default(), vec![1]);
+      let wc1 = WaitingContinuation::create(&key, &patterns, &continuation, false, BTreeSet::default(), vec![1], None);
+      let wc2 = WaitingContinuation::create(&key, &vec![Pattern::StringMatch(pattern + "2")], &continuation, false, BTreeSet::default(), vec![1], None);
 
       hot_store.put_continuation(&key.clone(), wc1.clone());
       hot_store.put_continuation(&key.clone(), wc2.clone());

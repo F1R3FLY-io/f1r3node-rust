@@ -9,6 +9,9 @@ use std::future::Future;
 use std::ops::AddAssign;
 use std::sync::Arc;
 
+use proptest_derive::Arbitrary;
+use serde::{Deserialize, Serialize};
+
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::hashing::stable_hash_provider::hash;
@@ -23,16 +26,35 @@ pub struct SearchWork {
     pub bytes: u64,
 }
 
+/// A receive's guard, in the matcher's size unit: evaluating it against a
+/// candidate walks the guard once, binds the candidate, and walks the bound
+/// data again for each variable reference.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, Arbitrary)]
+pub struct GuardSize {
+    pub size: usize,
+    pub references: usize,
+}
+
 impl SearchWork {
     /// `count` data, `size` in all, each tried against a pattern of
-    /// `pattern_size`, by `receives` receives.
-    pub(crate) fn of(count: usize, size: usize, pattern_size: usize, receives: usize) -> Self {
-        let receives = receives as u64;
+    /// `pattern_size` and the receive's `guard`, by `receives` receives.
+    pub(crate) fn of(
+        count: usize,
+        size: usize,
+        pattern_size: usize,
+        guard: Option<GuardSize>,
+        receives: usize,
+    ) -> Self {
+        let (count, size, receives) = (count as u64, size as u64, receives as u64);
+        let mut per_receive = size.saturating_add(count.saturating_mul(pattern_size as u64));
+        if let Some(guard) = guard {
+            per_receive = per_receive
+                .saturating_add(count.saturating_mul(guard.size as u64))
+                .saturating_add(size.saturating_mul(guard.references as u64 + 1));
+        }
         SearchWork {
-            candidates: receives.saturating_mul(count as u64),
-            bytes: receives.saturating_mul(
-                (size as u64).saturating_add((count as u64).saturating_mul(pattern_size as u64)),
-            ),
+            candidates: receives.saturating_mul(count),
+            bytes: receives.saturating_mul(per_receive),
         }
     }
 }
@@ -91,12 +113,27 @@ struct Waiting {
     size: usize,
 }
 
-/// What replay saw a deploy's term make: each channel by hash, each receive's
-/// channels in the order it named them with its patterns' sizes, and each
-/// datum's size, by the receive's and the datum's hashes.
+/// A receive replay made: its channels in the order it named them, with its
+/// patterns' and guard's sizes.
+#[derive(Clone)]
+pub struct ReceiveNote<C> {
+    pub channels: Vec<C>,
+    pub pattern_sizes: Vec<usize>,
+    pub guard_size: Option<GuardSize>,
+}
+
+/// The sizes a search charges a receive for.
+#[derive(Clone)]
+struct ReceiveSizes {
+    patterns: Vec<usize>,
+    guard: Option<GuardSize>,
+}
+
+/// What replay saw a deploy's term make: each channel by hash, and each
+/// receive and datum it made, by the receive's and the datum's hashes.
 pub struct TermOperations<C> {
     pub channels: HashMap<Blake2b256Hash, C>,
-    pub receives: HashMap<Blake2b256Hash, (Vec<C>, Vec<usize>)>,
+    pub receives: HashMap<Blake2b256Hash, ReceiveNote<C>>,
     pub data_sizes: HashMap<Blake2b256Hash, usize>,
 }
 
@@ -105,7 +142,7 @@ struct Walk<'a, C, P, A, K> {
     store: &'a dyn HotStore<C, P, A, K>,
     channels: HashMap<Blake2b256Hash, C>,
     groups: HashMap<Blake2b256Hash, Group>,
-    pattern_sizes: HashMap<Blake2b256Hash, Vec<usize>>,
+    receive_sizes: HashMap<Blake2b256Hash, ReceiveSizes>,
     data_sizes: HashMap<Blake2b256Hash, usize>,
     data: HashMap<Blake2b256Hash, Waiting>,
     receives: HashMap<Group, HashMap<Blake2b256Hash, usize>>,
@@ -135,12 +172,17 @@ where
         groups: term
             .receives
             .iter()
-            .map(|(receive, (channels, _))| (receive.clone(), channels.iter().map(hash).collect()))
+            .map(|(receive, note)| (receive.clone(), note.channels.iter().map(hash).collect()))
             .collect(),
-        pattern_sizes: term
+        receive_sizes: term
             .receives
             .iter()
-            .map(|(receive, (_, sizes))| (receive.clone(), sizes.clone()))
+            .map(|(receive, note)| {
+                (receive.clone(), ReceiveSizes {
+                    patterns: note.pattern_sizes.clone(),
+                    guard: note.guard_size,
+                })
+            })
             .collect(),
         data_sizes: term.data_sizes.clone(),
         data: HashMap::new(),
@@ -212,7 +254,7 @@ where
     }
 
     /// The receives waiting in `group`. Loading them from the store records
-    /// the group and pattern sizes of each.
+    /// the group and sizes of each.
     fn receives_on(
         &mut self,
         group: &Group,
@@ -227,9 +269,12 @@ where
                 self.groups
                     .entry(receive.source.hash.clone())
                     .or_insert_with(|| group.clone());
-                self.pattern_sizes
+                self.receive_sizes
                     .entry(receive.source.hash.clone())
-                    .or_insert_with(|| receive.pattern_sizes.clone());
+                    .or_insert_with(|| ReceiveSizes {
+                        patterns: receive.pattern_sizes.clone(),
+                        guard: receive.guard_size,
+                    });
                 *waiting.entry(receive.source.hash.clone()).or_default() += 1;
             }
             self.receives.insert(group.clone(), waiting);
@@ -248,11 +293,11 @@ where
         })
     }
 
-    fn pattern_sizes_of(&self, receive: &Blake2b256Hash) -> Vec<usize> {
-        self.pattern_sizes
+    fn sizes_of(&self, receive: &Blake2b256Hash) -> ReceiveSizes {
+        self.receive_sizes
             .get(receive)
             .cloned()
-            .expect("a receive's pattern sizes are recorded with its group")
+            .expect("a receive's sizes are recorded with its group")
     }
 
     /// The join groups on a channel, each with its waiting receives loaded.
@@ -302,10 +347,9 @@ where
                 .map(|(receive, count)| (receive.clone(), *count))
                 .collect();
             for (receive, count) in receives {
-                for ((data, size), pattern_size) in
-                    totals.iter().zip(self.pattern_sizes_of(&receive))
-                {
-                    work += SearchWork::of(*data, *size, pattern_size, count);
+                let sizes = self.sizes_of(&receive);
+                for ((data, size), pattern_size) in totals.iter().zip(sizes.patterns) {
+                    work += SearchWork::of(*data, *size, pattern_size, sizes.guard, count);
                 }
             }
             charges.push(work);
@@ -320,9 +364,10 @@ where
     fn consume(&mut self, consume: &Consume) -> Result<SearchWork, RSpaceError> {
         let group = self.group_of(&consume.hash)?;
         let mut work = SearchWork::default();
-        for (channel_hash, pattern_size) in group.iter().zip(self.pattern_sizes_of(&consume.hash)) {
+        let sizes = self.sizes_of(&consume.hash);
+        for (channel_hash, pattern_size) in group.iter().zip(sizes.patterns) {
             let (count, size) = self.totals(channel_hash)?;
-            work += SearchWork::of(count, size, pattern_size, 1);
+            work += SearchWork::of(count, size, pattern_size, sizes.guard, 1);
         }
         *self
             .receives_on(&group)?

@@ -245,6 +245,7 @@ mod tests {
         Arc::new(WaitingContinuation {
             source: Consume::create(&channels.to_vec(), &patterns, &body, false),
             pattern_sizes: vec![1; patterns.len()],
+            guard_size: None,
             patterns,
             continuation: body,
             persist: false,

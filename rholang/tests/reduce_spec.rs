@@ -96,6 +96,7 @@ fn check_continuation(
                 .iter()
                 .map(|pattern| Matcher.pattern_size(pattern))
                 .collect(),
+            None,
         )],
     });
 

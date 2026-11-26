@@ -10,6 +10,8 @@
  * @tparam A A type representing data and match result
  * @tparam K A type representing continuations (used by check_commit)
  */
+use super::search_charge::GuardSize;
+
 pub trait Match<P, A, K>: Send + Sync {
     // Takes pattern and data by reference so the matcher hot path can probe a
     // datum without cloning the whole pattern/data on every failed attempt.
@@ -23,6 +25,10 @@ pub trait Match<P, A, K>: Send + Sync {
 
     /// The size of a datum, in the same unit as `pattern_size`.
     fn data_size(&self, a: &A) -> usize;
+
+    /// The size of the guard `check_commit` evaluates for `k`, in the same
+    /// unit, or `None` when `k` has no guard.
+    fn guard_size(&self, _k: &K) -> Option<GuardSize> { None }
 
     /// Called once per candidate consume after every spatial bind has
     /// matched and the continuation is about to commit. Default is

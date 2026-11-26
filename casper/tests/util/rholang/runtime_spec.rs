@@ -82,7 +82,7 @@ async fn state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_with
     // Changes with any change to the stored encoding of data or
     // continuations; any other drift is unintended.
     let expected_hash = Blake2b256Hash::from_hex(
-        "35839c3ed1a52029dd1be02b09155582a23a69e213523cd36f96f846d1c478be",
+        "1a9ac152ce78f96c08f9d05199cc901cf1bc090e7ebc76d71af0023ccc1c9574",
     );
 
     assert_eq!(expected_hash, checkpoint.root);

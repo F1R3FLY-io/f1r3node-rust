@@ -811,6 +811,7 @@ pub fn continuation(s: i32) -> WaitingContinuation<String, String> {
             persistent: true,
         },
         pattern_sizes: vec![1],
+        guard_size: None,
     }
 }
 

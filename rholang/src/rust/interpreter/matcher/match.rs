@@ -6,6 +6,7 @@ use models::rust::utils::{new_elist_expr, to_vec};
 use prost::Message;
 use rho_pure_eval::Env as PureEnv;
 use rspace_plus_plus::rspace::r#match::Match;
+use rspace_plus_plus::rspace::search_charge::GuardSize;
 
 use super::exports::*;
 use super::fold_match::FoldMatch;
@@ -75,6 +76,14 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
     fn pattern_size(&self, pattern: &BindPattern) -> usize { pattern.encoded_len() }
 
     fn data_size(&self, data: &ListParWithRandom) -> usize { data_size(data) }
+
+    fn guard_size(&self, k: &TaggedContinuation) -> Option<GuardSize> {
+        let guard = k.guard.as_ref().filter(|guard| !is_empty_par(guard))?;
+        Some(GuardSize {
+            size: guard.encoded_len(),
+            references: rho_pure_eval::variable_references(guard),
+        })
+    }
 
     /// Cross-channel `where`-clause guard. Called by the matcher
     /// coordinator after every spatial bind has produced a

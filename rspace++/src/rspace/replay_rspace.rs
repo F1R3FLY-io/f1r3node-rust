@@ -33,7 +33,7 @@ use super::metrics_constants::{
 use super::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceResult,
 };
-use super::search_charge::{self, SearchWork, TermOperations};
+use super::search_charge::{self, GuardSize, ReceiveNote, SearchWork, TermOperations};
 use super::striped_locks::{self, ChannelLockGuard};
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
@@ -75,7 +75,7 @@ pub struct ReplayRSpace<C, P, A, K> {
     // recomputing a deploy's search charge reads.
     rigged_log: Arc<Mutex<Log>>,
     channels: Arc<dashmap::DashMap<Blake2b256Hash, C>>,
-    receives: Arc<dashmap::DashMap<Blake2b256Hash, (Vec<C>, Vec<usize>)>>,
+    receives: Arc<dashmap::DashMap<Blake2b256Hash, ReceiveNote<C>>>,
     data_sizes: Arc<dashmap::DashMap<Blake2b256Hash, usize>>,
     logger: Arc<Mutex<Box<dyn RSpaceLogger<C, P, A, K>>>>,
     replay_waiting_continuations_estimate: Arc<AtomicI64>,
@@ -304,11 +304,18 @@ where
             for channel in &channels {
                 self.note_channel(&hash(channel), channel);
             }
-            let pattern_sizes: Vec<usize> =
-                patterns.iter().map(|p| self.matcher.pattern_size(p)).collect();
+            let pattern_sizes: Vec<usize> = patterns
+                .iter()
+                .map(|p| self.matcher.pattern_size(p))
+                .collect();
+            let guard_size = self.matcher.guard_size(&continuation);
             self.receives
                 .entry(consume_ref.hash.clone())
-                .or_insert_with(|| (channels.clone(), pattern_sizes.clone()));
+                .or_insert_with(|| ReceiveNote {
+                    channels: channels.clone(),
+                    pattern_sizes: pattern_sizes.clone(),
+                    guard_size,
+                });
             let channel_hashes: Vec<u64> = channels
                 .iter()
                 .map(|ch| striped_locks::channel_hash(ch))
@@ -317,16 +324,16 @@ where
 
             metrics::counter!("replay_rspace.consume.calls", "source" => "rspace").increment(1);
             let start = Instant::now();
-            let result =
-                self.locked_consume(
-                    channels,
-                    patterns,
-                    pattern_sizes,
-                    continuation,
-                    persist,
-                    peeks,
-                    consume_ref,
-                );
+            let result = self.locked_consume(
+                channels,
+                patterns,
+                pattern_sizes,
+                guard_size,
+                continuation,
+                persist,
+                peeks,
+                consume_ref,
+            );
             metrics::histogram!("replay_consume_time_seconds", "source" => "rspace")
                 .record(start.elapsed().as_secs_f64());
             result
@@ -342,7 +349,9 @@ where
         let produce_ref = Produce::create(&channel, &data, persist);
         self.note_channel(&produce_ref.channel_hash, &channel);
         let size = self.matcher.data_size(&data);
-        self.data_sizes.entry(produce_ref.hash.clone()).or_insert(size);
+        self.data_sizes
+            .entry(produce_ref.hash.clone())
+            .or_insert(size);
         let _lock_guard = self.produce_lock(&channel).await;
         metrics::counter!("replay_rspace.produce.calls", "source" => "rspace").increment(1);
         let start = Instant::now();
@@ -705,6 +714,7 @@ where
         channels: Vec<C>,
         patterns: Vec<P>,
         pattern_sizes: Vec<usize>,
+        guard_size: Option<GuardSize>,
         continuation: K,
         persist: bool,
         peeks: BTreeSet<i32>,
@@ -724,6 +734,7 @@ where
             peeks,
             source: consume_ref.clone(),
             pattern_sizes,
+            guard_size,
         };
 
         // Fast path: a persistent contract's consume key can hold one
@@ -1283,6 +1294,7 @@ where
                             .iter()
                             .map(|pattern| self.matcher.pattern_size(pattern))
                             .collect(),
+                        guard_size: self.matcher.guard_size(&continuation),
                         patterns,
                         continuation,
                         persist: true,

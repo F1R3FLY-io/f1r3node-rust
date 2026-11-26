@@ -67,6 +67,7 @@ where
                         .iter()
                         .map(|pattern| self.matcher.pattern_size(pattern))
                         .collect(),
+                    guard_size: self.matcher.guard_size(&continuation),
                     patterns,
                     continuation,
                     persist: true,

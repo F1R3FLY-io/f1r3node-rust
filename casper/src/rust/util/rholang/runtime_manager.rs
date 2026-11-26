@@ -1654,7 +1654,7 @@ impl RuntimeManager {
         // Changes whenever the stored encoding of data or continuations
         // changes, since the bootstrap registry's continuations are part of
         // the empty state.
-        hex::decode("42bef9f7793d00381aa16b03c3900344e8432b3855730edbef53bcd909fa9fed")
+        hex::decode("c4942db60b51dcbb4d9b0bff7542ce4bbfc9631594f93d1113d2d7bf05208979")
             .unwrap()
             .into()
     }

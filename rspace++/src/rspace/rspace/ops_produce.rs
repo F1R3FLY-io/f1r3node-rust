@@ -138,14 +138,18 @@ where
     /// The work a send's search of one join group could do: each waiting
     /// receive tried against the data on every channel of the group, whose
     /// counts and summed sizes are `totals` in the group's order.
-    fn join_work<'p>(
-        receives: impl Iterator<Item = &'p Vec<usize>>,
+    fn join_work<'k>(
+        receives: impl Iterator<Item = &'k WaitingContinuation<P, K>>,
         totals: &[(usize, usize)],
-    ) -> SearchWork {
+    ) -> SearchWork
+    where
+        P: 'k,
+        K: 'k,
+    {
         let mut work = SearchWork::default();
-        for pattern_sizes in receives {
-            for (pattern_size, (count, size)) in pattern_sizes.iter().zip(totals) {
-                work += SearchWork::of(*count, *size, *pattern_size, 1);
+        for receive in receives {
+            for (pattern_size, (count, size)) in receive.pattern_sizes.iter().zip(totals) {
+                work += SearchWork::of(*count, *size, *pattern_size, receive.guard_size, 1);
             }
         }
         work
@@ -261,7 +265,7 @@ where
                     Self::join_work(
                         match_candidates
                             .iter()
-                            .map(|(continuation, _)| &continuation.pattern_sizes),
+                            .map(|(continuation, _)| &**continuation),
                         &totals,
                     ),
                     self.search_charging_required(),
@@ -300,7 +304,7 @@ where
                     let waiting = store.get_continuations_arc(rest);
                     search_charge::charge(
                         Self::join_work(
-                            waiting.iter().map(|continuation| &continuation.pattern_sizes),
+                            waiting.iter().map(|continuation| &**continuation),
                             &totals,
                         ),
                         self.search_charging_required(),

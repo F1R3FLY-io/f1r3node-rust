@@ -1859,6 +1859,7 @@ async fn create_soft_checkpoint_should_capture_the_current_state_of_the_store() 
         peeks: BTreeSet::default(),
         source: Consume::create(&channels, &patterns, &continuation, false),
         pattern_sizes: vec![1],
+        guard_size: None,
     }];
 
     // do an operation
@@ -1915,6 +1916,7 @@ async fn create_soft_checkpoint_should_create_checkpoints_which_have_separate_st
         peeks: BTreeSet::default(),
         source: Consume::create(&channels, &patterns, &continuation, false),
         pattern_sizes: vec![1],
+        guard_size: None,
     }];
 
     // do an operation

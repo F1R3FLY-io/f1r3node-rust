@@ -52,11 +52,12 @@ where
             .iter()
             .map(|pattern| self.matcher.pattern_size(pattern))
             .collect();
+        let guard_size = self.matcher.guard_size(continuation);
         let mut work = SearchWork::default();
         for (channel, pattern_size) in channels.iter().zip(&pattern_sizes) {
             let data = &channel_to_indexed_data[channel];
             let size = data.iter().map(|(datum, _)| datum.size).sum();
-            work += SearchWork::of(data.len(), size, *pattern_size, 1);
+            work += SearchWork::of(data.len(), size, *pattern_size, guard_size, 1);
         }
         search_charge::charge(work, self.search_charging_required())?;
 
@@ -80,6 +81,7 @@ where
             peeks: peeks.clone(),
             source: consume_ref.clone(),
             pattern_sizes,
+            guard_size,
         };
 
         let commit_ok = match &options {
