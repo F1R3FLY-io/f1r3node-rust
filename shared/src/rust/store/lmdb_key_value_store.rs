@@ -49,6 +49,14 @@ impl KeyValueStore for LmdbKeyValueStore {
         })
     }
 
+    fn contains(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<bool>, KvStoreError> {
+        let reader = self.env.read_txn()?;
+        let db = self.db.remap_data_type::<heed::types::Bytes>();
+        keys.iter()
+            .map(|key| Ok(db.get(&reader, key)?.is_some()))
+            .collect()
+    }
+
     fn put_one_if_absent(&self, key: ByteBuffer, value: ByteBuffer) -> Result<bool, KvStoreError> {
         in_blocking(|| {
             let mut writer = self.env.write_txn()?;

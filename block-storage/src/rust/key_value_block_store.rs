@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use models::casper::{ApprovedBlockProto, BlockMessageProto};
 use models::rust::block_hash::BlockHash;
@@ -205,19 +205,17 @@ impl KeyValueBlockStore {
         &self,
         block_hash: &BlockHash,
     ) -> Result<Option<Vec<Vec<u8>>>, KvStoreError> {
-        let key = block_hash.to_vec();
-        let bytes = match self.store.get_one(&key)? {
+        let entry = self.deploy_sig_entry(block_hash);
+        if let Some(sigs) = entry.rejected.get() {
+            return Ok(self.disk_contains(block_hash)?.then(|| (**sigs).clone()));
+        }
+        let bytes = match self.store.get_one(&block_hash.to_vec())? {
             Some(bytes) => bytes,
             None => return Ok(None),
         };
         let body = Self::decode_block_deploy_sigs(&bytes)?;
-        let sigs = body
-            .rejected_deploys
-            .into_iter()
-            .filter(|r| !r.duplicate)
-            .map(|r| r.sig)
-            .collect();
-        Ok(Some(sigs))
+        let sigs = entry.kept_rejections(body.rejected_deploys);
+        Ok(Some(Arc::unwrap_or_clone(sigs)))
     }
 
     /// Fetch deploy signatures for a block without decoding a full BlockMessage.
@@ -241,25 +239,56 @@ impl KeyValueBlockStore {
         &self,
         block_hash: &BlockHash,
     ) -> Result<Option<Arc<Vec<DeployIdentity>>>, KvStoreError> {
-        let key = block_hash.to_vec();
-        if let Some(cached) = Self::cached_deploy_identities(&key) {
-            return Ok(Some(cached));
+        let entry = self.deploy_sig_entry(block_hash);
+        if let Some(identities) = entry.identities.get() {
+            return Ok(Some(identities.clone()));
         }
-        let bytes = match self.store.get_one(&key)? {
+        Ok(self
+            .read_deploy_scope(block_hash, &entry)?
+            .map(|scope| scope.identities))
+    }
+
+    pub fn deploys_for_scope(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<Option<BlockDeployScope>, KvStoreError> {
+        let entry = self.deploy_sig_entry(block_hash);
+        if let (Some(identities), Some(rejected)) = (entry.identities.get(), entry.rejected.get()) {
+            return Ok(Some(BlockDeployScope {
+                identities: identities.clone(),
+                rejected: self.disk_contains(block_hash)?.then(|| rejected.clone()),
+            }));
+        }
+        self.read_deploy_scope(block_hash, &entry)
+    }
+
+    fn read_deploy_scope(
+        &self,
+        block_hash: &BlockHash,
+        entry: &DeploySigEntry,
+    ) -> Result<Option<BlockDeployScope>, KvStoreError> {
+        let bytes = match self.store.get_one(&block_hash.to_vec())? {
             Some(bytes) => bytes,
-            None => return Ok(None),
+            None => return Ok(entry.identities.get().map(|identities| BlockDeployScope {
+                identities: identities.clone(),
+                rejected: None,
+            })),
         };
-        let identities = Arc::new(Self::decode_deploy_identities(block_hash, &bytes)?);
-        Self::cache_deploy_identities(key, identities.clone());
-        Ok(Some(identities))
+        let body = Self::decode_block_deploy_sigs(&bytes)?;
+        let identities = Arc::new(Self::decode_deploy_identities(block_hash, body.deploys)?);
+        let rejected = entry.kept_rejections(body.rejected_deploys);
+        let _ = entry.identities.set(identities.clone());
+        Ok(Some(BlockDeployScope {
+            identities,
+            rejected: Some(rejected),
+        }))
     }
 
     fn decode_deploy_identities(
         block_hash: &BlockHash,
-        bytes: &[u8],
+        deploys: Vec<BlockDeploySigsProcessedDeploy>,
     ) -> Result<Vec<DeployIdentity>, KvStoreError> {
-        let body = Self::decode_block_deploy_sigs(bytes)?;
-        body.deploys
+        deploys
             .into_iter()
             .map(|processed_deploy| {
                 let deploy = processed_deploy.deploy.ok_or_else(|| {
@@ -292,6 +321,7 @@ impl KeyValueBlockStore {
         let block_proto = block.to_proto();
         let bytes = Self::block_proto_to_bytes(&block_proto);
         self.store.put_one(block_hash.to_vec(), bytes)?;
+        Self::forget_deploy_sigs(&block_hash);
         self.pending.remove(&block_hash);
         Ok(())
     }
@@ -310,10 +340,7 @@ impl KeyValueBlockStore {
         if actual != *expected || !self.store.delete_if_value(&key, &bytes)? {
             return Ok(false);
         }
-        if let Ok(mut cache) = Self::deploy_sig_cache().lock() {
-            cache.entries.remove(&key);
-            cache.order.retain(|hash| hash != &key);
-        }
+        Self::forget_deploy_sigs(&expected.block_hash);
         Ok(true)
     }
 
@@ -598,26 +625,19 @@ impl KeyValueBlockStore {
         Self::compress_bytes(&block_proto.encode_to_vec())
     }
 
-    fn cached_deploy_identities(block_hash: &[u8]) -> Option<Arc<Vec<DeployIdentity>>> {
-        let cache = Self::deploy_sig_cache().lock().ok()?;
-        cache.entries.get(block_hash).cloned()
+    fn deploy_sig_entry(&self, hash: &BlockHash) -> Arc<DeploySigEntry> {
+        Self::deploy_sig_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(&self.store, hash)
     }
 
-    fn cache_deploy_identities(block_hash: Vec<u8>, identities: Arc<Vec<DeployIdentity>>) {
-        let max_entries = Self::max_deploy_sig_cache_entries();
-        if max_entries == 0 {
-            return;
-        }
-        if let Ok(mut cache) = Self::deploy_sig_cache().lock() {
-            if !cache.entries.contains_key(&block_hash) {
-                cache.order.push_back(block_hash.clone());
-                while cache.order.len() > max_entries {
-                    if let Some(oldest) = cache.order.pop_front() {
-                        cache.entries.remove(&oldest);
-                    }
-                }
-            }
-            cache.entries.insert(block_hash, identities);
+    fn forget_deploy_sigs(hash: &BlockHash) {
+        let mut cache = Self::deploy_sig_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if cache.entries.remove(hash).is_some() {
+            cache.order.retain(|key| key != hash);
         }
     }
 
@@ -627,8 +647,6 @@ impl KeyValueBlockStore {
     }
 
     fn decode_buffer_retain_bytes() -> usize { Self::DECOMPRESS_BUFFER_RETAIN_BYTES }
-
-    fn max_deploy_sig_cache_entries() -> usize { Self::DEPLOY_SIG_CACHE_MAX_ENTRIES }
 
     #[cfg(test)]
     fn block_proto_decode_buffer_capacity_for_test() -> usize {
@@ -660,8 +678,63 @@ pub struct DeployIdentity {
 
 #[derive(Default)]
 struct DeploySigCache {
-    entries: HashMap<Vec<u8>, Arc<Vec<DeployIdentity>>>,
-    order: VecDeque<Vec<u8>>,
+    entries: HashMap<BlockHash, Arc<DeploySigEntry>>,
+    order: VecDeque<BlockHash>,
+}
+
+pub struct BlockDeployScope {
+    pub identities: Arc<Vec<DeployIdentity>>,
+    pub rejected: Option<Arc<Vec<Vec<u8>>>>,
+}
+
+impl DeploySigCache {
+    fn entry(&mut self, store: &Arc<dyn KeyValueStore>, hash: &BlockHash) -> Arc<DeploySigEntry> {
+        let owner = Arc::downgrade(store);
+        if let Some(entry) = self.entries.get(hash) {
+            if entry.store.ptr_eq(&owner) {
+                return entry.clone();
+            }
+        } else {
+            self.order.push_back(hash.clone());
+            if self.order.len() > KeyValueBlockStore::DEPLOY_SIG_CACHE_MAX_ENTRIES {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.entries.remove(&oldest);
+                }
+            }
+        }
+        let entry = Arc::new(DeploySigEntry {
+            store: owner,
+            identities: OnceLock::new(),
+            rejected: OnceLock::new(),
+        });
+        self.entries.insert(hash.clone(), entry.clone());
+        entry
+    }
+}
+
+struct DeploySigEntry {
+    store: Weak<dyn KeyValueStore>,
+    identities: OnceLock<Arc<Vec<DeployIdentity>>>,
+    rejected: OnceLock<Arc<Vec<Vec<u8>>>>,
+}
+
+impl DeploySigEntry {
+    fn kept_rejections(&self, records: Vec<BlockDeploySigsRejectedDeploy>) -> Arc<Vec<Vec<u8>>> {
+        let sigs: Vec<_> = records
+            .into_iter()
+            .filter(|r| !r.duplicate)
+            .map(|r| r.sig)
+            .collect();
+        let size = sigs
+            .iter()
+            .map(|sig| size_of::<Vec<u8>>() + sig.len())
+            .sum::<usize>();
+        let sigs = Arc::new(sigs);
+        if size <= 16 * 1024 {
+            let _ = self.rejected.set(sigs.clone());
+        }
+        sigs
+    }
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -725,6 +798,8 @@ mod tests {
         get_result: Option<ByteString>,
         input_keys: Arc<Mutex<Vec<ByteString>>>,
         input_puts: Arc<Mutex<Vec<ByteString>>>,
+        presence_probes: std::sync::atomic::AtomicUsize,
+        fail_reads: std::sync::atomic::AtomicBool,
     }
 
     impl MockKeyValueStore {
@@ -733,6 +808,8 @@ mod tests {
                 get_result,
                 input_keys: Arc::new(Mutex::new(Vec::new())),
                 input_puts: Arc::new(Mutex::new(Vec::new())),
+                presence_probes: Default::default(),
+                fail_reads: Default::default(),
             }
         }
 
@@ -744,7 +821,23 @@ mod tests {
     impl KeyValueStore for MockKeyValueStore {
         fn as_any(&self) -> &dyn std::any::Any { self }
 
+        fn contains(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<bool>, KvStoreError> {
+            if self.fail_reads.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(KvStoreError::InvalidArgument(
+                    "test store unavailable".into(),
+                ));
+            }
+            self.presence_probes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(vec![self.get_result.is_some(); keys.len()])
+        }
+
         fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
+            if self.fail_reads.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(KvStoreError::InvalidArgument(
+                    "test store unavailable".into(),
+                ));
+            }
             self.update_input_keys(keys.to_vec());
             Ok(vec![self.get_result.clone()])
         }
@@ -1355,6 +1448,169 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn scope_readers_share_one_body_read_and_cache_empty_rejections() {
+        let mut block = random_block();
+        block.body.rejected_deploys.clear();
+        let bytes = KeyValueBlockStore::block_proto_to_bytes(&block.to_proto());
+        let disk = Arc::new(MockKeyValueStore::new(Some(bytes)));
+        let store = KeyValueBlockStore::new(disk.clone(), Arc::new(NotImplementedKV));
+
+        let first = store.deploys_for_scope(&block.block_hash).unwrap().unwrap();
+        assert!(first.rejected.unwrap().is_empty());
+        for _ in 0..2 {
+            let warm = store.deploys_for_scope(&block.block_hash).unwrap().unwrap();
+            assert_eq!(warm.identities, first.identities);
+            assert!(warm.rejected.unwrap().is_empty());
+        }
+        assert_eq!(disk.input_keys.lock().unwrap().len(), 1);
+        assert_eq!(
+            disk.presence_probes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+        assert_eq!(
+            store.rejected_deploy_sigs(&block.block_hash).unwrap(),
+            Some(Vec::new())
+        );
+        assert_eq!(disk.input_keys.lock().unwrap().len(), 1);
+        disk.fail_reads
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(matches!(
+            store.deploys_for_scope(&block.block_hash),
+            Err(KvStoreError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            store.rejected_deploy_sigs(&block.block_hash),
+            Err(KvStoreError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            store.deploys_for_scope(&BlockHash::from(vec![2; 32])),
+            Err(KvStoreError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn cached_rejections_follow_the_disk_copy_across_removal_and_replacement() {
+        use models::rust::casper::protocol::casper_message::RejectedDeploy;
+
+        let (store, disk) = in_mem_store();
+        let other_handle = KeyValueBlockStore::new(disk.clone(), Arc::new(NotImplementedKV));
+        let mut block = random_block();
+        let hash = block.block_hash.clone();
+        block.body.rejected_deploys.clear();
+        assert_eq!(store.rejected_deploy_sigs(&hash).unwrap(), None);
+        store.put_block_message(&block).unwrap();
+        let old_entry = store.deploy_sig_entry(&hash);
+        let sig = vec![0xA2; 64];
+        let mut replacement = block.clone();
+        replacement.body.rejected_deploys.push(RejectedDeploy {
+            sig: sig.clone().into(),
+            duplicate: false,
+            carrier: hash.clone(),
+        });
+        other_handle.put_block_message(&replacement).unwrap();
+        old_entry.kept_rejections(Vec::new());
+        assert_eq!(
+            store.rejected_deploy_sigs(&hash).unwrap(),
+            Some(vec![sig.clone()])
+        );
+        assert!(!store.discard_copy(&block).unwrap());
+        assert_eq!(
+            store.rejected_deploy_sigs(&hash).unwrap(),
+            Some(vec![sig.clone()])
+        );
+        assert!(store.discard_stored(&hash).unwrap());
+        assert_eq!(store.rejected_deploy_sigs(&hash).unwrap(), None);
+        assert!(store.deploys_for_scope(&hash).unwrap().is_none());
+        store.put_block_message(&block).unwrap();
+        assert_eq!(store.rejected_deploy_sigs(&hash).unwrap(), Some(Vec::new()));
+        assert!(other_handle.remove_if_matches(&block).unwrap());
+        assert_eq!(store.rejected_deploy_sigs(&hash).unwrap(), None);
+        store.put_block_message(&replacement).unwrap();
+        assert_eq!(store.rejected_deploy_sigs(&hash).unwrap(), Some(vec![sig]));
+        assert!(other_handle.discard_copy(&replacement).unwrap());
+        assert_eq!(store.rejected_deploy_sigs(&hash).unwrap(), None);
+    }
+
+    #[test]
+    fn rejections_are_scoped_to_the_store_and_visibility_of_the_persisted_body() {
+        let (first, disk) = in_mem_store();
+        let (second, _) = in_mem_store();
+        let mut block = random_block();
+        block.body.rejected_deploys.clear();
+        let hash = &block.block_hash;
+        first.put_block_message(&block).unwrap();
+        assert!(first
+            .deploys_for_scope(hash)
+            .unwrap()
+            .unwrap()
+            .rejected
+            .unwrap()
+            .is_empty());
+        assert_eq!(first.rejected_deploy_sigs(hash).unwrap(), Some(Vec::new()));
+        assert_eq!(second.rejected_deploy_sigs(hash).unwrap(), None);
+        assert_eq!(first.rejected_deploy_sigs(hash).unwrap(), Some(Vec::new()));
+        assert_eq!(disk.delete(vec![hash.to_vec()]).unwrap(), 1);
+        assert_eq!(first.rejected_deploy_sigs(hash).unwrap(), None);
+        assert!(first.deploys_for_scope(hash).unwrap().is_none());
+        first
+            .put_pending(&block, encoded(&block), PendingClass::Solicited)
+            .unwrap();
+        assert!(first.is_pending(hash));
+        assert_eq!(first.rejected_deploy_sigs(hash).unwrap(), None);
+    }
+
+    #[test]
+    fn scope_preserves_known_identities_when_gc_or_discard_removes_the_body() {
+        let (store, _) = in_mem_store();
+        let block = random_block();
+        let hash = &block.block_hash;
+        for discard_copy in [false, true] {
+            store.put_block_message(&block).unwrap();
+            let kept = store.deploys_for_scope(hash).unwrap().unwrap();
+            assert!(kept.rejected.is_some());
+            if discard_copy {
+                assert!(store.discard_copy(&block).unwrap());
+            } else {
+                assert!(store.discard_stored(hash).unwrap());
+            }
+            let pruned = store.deploys_for_scope(hash).unwrap().unwrap();
+            assert_eq!(pruned.identities, kept.identities);
+            assert_eq!(pruned.rejected, None);
+            assert_eq!(store.rejected_deploy_sigs(hash).unwrap(), None);
+        }
+        store.put_block_message(&block).unwrap();
+        store.deploys_for_scope(hash).unwrap().unwrap();
+        assert!(store.remove_if_matches(&block).unwrap());
+        assert!(store.deploys_for_scope(hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn deploy_sig_cache_bounds_entries_and_skips_large_rejection_lists() {
+        let (_, disk) = in_mem_store();
+        let mut cache = DeploySigCache::default();
+        let first_hash = BlockHash::from(vec![0xff; 32]);
+        let entry = cache.entry(&disk, &first_hash);
+        let oversized = vec![42; 16 * 1024];
+        assert_eq!(
+            entry.kept_rejections(vec![BlockDeploySigsRejectedDeploy {
+                sig: oversized.clone(),
+                duplicate: false,
+            }]),
+            Arc::new(vec![oversized])
+        );
+        assert!(entry.rejected.get().is_none());
+        for n in 0..KeyValueBlockStore::DEPLOY_SIG_CACHE_MAX_ENTRIES {
+            cache.entry(&disk, &BlockHash::from(n.to_le_bytes().to_vec()));
+        }
+        assert_eq!(
+            cache.entries.len(),
+            KeyValueBlockStore::DEPLOY_SIG_CACHE_MAX_ENTRIES
+        );
+        assert!(!cache.entries.contains_key(&first_hash));
     }
 
     #[test]
