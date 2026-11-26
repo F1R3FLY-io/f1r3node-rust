@@ -299,6 +299,35 @@ impl std::fmt::Display for PrunedStateError {
 
 impl std::error::Error for PrunedStateError {}
 
+/// Issue #1164: true when an eyre error chain carries a mid-walk
+/// `RadixTreeError::MissingNode` surfaced by the rspace history layer.
+///
+/// Both nesting shapes classify identically — the race is the same
+/// regardless of whether the walk descended through `HistoryError`
+/// (reset-and-replay path) or straight through `RSpaceError` (direct
+/// radix read). Mirrors the shapes [`BlockError::from_validation_error`]
+/// already recognises for the validator classifier.
+fn eyre_chain_has_missing_node(err: &eyre::Report) -> bool {
+    use rholang::rust::interpreter::errors::InterpreterError;
+    use rspace_plus_plus::rspace::errors::{HistoryError, RSpaceError, RadixTreeError};
+
+    err.chain().any(|cause| {
+        let Some(casper_err) = cause.downcast_ref::<CasperError>() else {
+            return false;
+        };
+        matches!(
+            casper_err,
+            CasperError::InterpreterError(InterpreterError::RSpaceError(
+                RSpaceError::HistoryError(HistoryError::RadixTreeError(
+                    RadixTreeError::MissingNode { .. }
+                ))
+            )) | CasperError::InterpreterError(InterpreterError::RSpaceError(
+                RSpaceError::RadixTreeError(RadixTreeError::MissingNode { .. })
+            ))
+        )
+    })
+}
+
 /// Envelope for [`BlockAPI::get_blocks_by_heights`] /
 /// [`BlockAPI::get_blocks_by_heights_full`]. `served` is the flat list
 /// of blocks whose bodies the node still holds, in the same order as
@@ -645,6 +674,22 @@ fn propose_failure_error(status: &ProposeStatus, seq_number: i32) -> eyre::Repor
 impl BlockAPI {
     fn find_deploy_scan_depth() -> usize { 128 }
 
+    /// Issue #1157: the current rspace-history retention floor derived
+    /// from this node's local LFB and shard conf. Shared between the
+    /// pre-check and the mid-walk catch (issue #1164) so the two paths
+    /// agree on the value they publish.
+    ///
+    /// Returns `None` before the node has an LFB — no retention sweep
+    /// can have run yet, so no block's state is below the floor.
+    async fn current_state_retention_floor(casper: &dyn MultiParentCasper) -> Option<i64> {
+        let lfb = casper.last_finalized_block().await.ok()?;
+        Some(
+            casper
+                .casper_shard_conf()
+                .state_retention_floor(lfb.body.state.block_number),
+        )
+    }
+
     /// Issue #1157: deterministic retention-floor check for state-reading
     /// APIs. Called BEFORE a reader walks the trie for a specific block, so
     /// the API returns a structured [`PrunedStateError`] rather than a
@@ -656,7 +701,8 @@ impl BlockAPI {
     ///
     /// The post-check race with the GC is covered by also classifying
     /// `MissingNode` in validation ([`BlockError::from_validation_error`])
-    /// and by reader-side catch sites.
+    /// and in reader-side catch sites (issue #1164 — see
+    /// [`translate_pruned_race`]).
     ///
     /// Boundary: the GC retains blocks whose `height ≥ state_retention_floor`
     /// (see `compute_gc_retention_roots`), so only `target_height < floor`
@@ -666,16 +712,9 @@ impl BlockAPI {
         casper: &dyn MultiParentCasper,
         target_block: &BlockMessage,
     ) -> Result<(), PrunedStateError> {
-        let lfb = match casper.last_finalized_block().await {
-            Ok(lfb) => lfb,
-            // No LFB yet — the retention sweep cannot have run, so no
-            // block's state can be below the floor. Any genuine
-            // availability issue will surface downstream.
-            Err(_) => return Ok(()),
+        let Some(floor) = Self::current_state_retention_floor(casper).await else {
+            return Ok(());
         };
-        let floor = casper
-            .casper_shard_conf()
-            .state_retention_floor(lfb.body.state.block_number);
         let target_height = target_block.body.state.block_number;
         if target_height < floor {
             Err(PrunedStateError {
@@ -686,6 +725,42 @@ impl BlockAPI {
         } else {
             Ok(())
         }
+    }
+
+    /// Issue #1164: reader-side catch for the race the pre-check cannot
+    /// close. `pre_check_state_retention` only sees the floor as it was
+    /// when the API call entered; if the history-pruning sweep runs
+    /// between the pre-check and the state read, the walk descends into
+    /// a subtree the sweep has since deleted and surfaces
+    /// `RadixTreeError::MissingNode`. Translating that into the same
+    /// typed [`PrunedStateError`] the pre-check would have produced
+    /// keeps the typed `pruned` answer on `ExploratoryDeployResponse` /
+    /// `RhoDataResponse` instead of leaking a prose `eyre::Report`.
+    ///
+    /// Both nesting shapes of the inner error appear in the wild — the
+    /// reset-and-replay path wraps the `RadixTreeError` through
+    /// `HistoryError`, while a direct radix-trie read surfaces it
+    /// straight from `RSpaceError`. Both must classify identically; the
+    /// sweep race is the same condition regardless of which call site
+    /// walked into it. Mirrors
+    /// [`BlockError::from_validation_error`]'s handling of the same two
+    /// shapes.
+    async fn translate_pruned_race(
+        casper: &dyn MultiParentCasper,
+        target_block: &BlockMessage,
+        report: eyre::Report,
+    ) -> eyre::Report {
+        if !eyre_chain_has_missing_node(&report) {
+            return report;
+        }
+        let floor = Self::current_state_retention_floor(casper)
+            .await
+            .unwrap_or(0);
+        eyre::Report::new(PrunedStateError {
+            target_block_hash: target_block.block_hash.clone(),
+            target_block_height: target_block.body.state.block_number,
+            retention_floor: floor,
+        })
     }
 
     async fn find_deploy_by_recent_blocks(
@@ -2411,7 +2486,20 @@ impl BlockAPI {
 
                         let (res, cost) =
                             match await_exploratory_deploy_task(task, timeout, outcome).await {
-                                Ok(result) => result?,
+                                Ok(Ok(outcome)) => outcome,
+                                // Issue #1164: translate a mid-walk
+                                // `RadixTreeError::MissingNode` that raced the
+                                // pre-check into a structured
+                                // `PrunedStateError`, so the typed `pruned`
+                                // answer survives a late sweep.
+                                Ok(Err(error)) => {
+                                    return Err(Self::translate_pruned_race(
+                                        casper.as_ref(),
+                                        &b,
+                                        eyre::Report::new(error),
+                                    )
+                                    .await);
+                                }
                                 Err(ExploratoryDeployTaskError::Join(error)) => {
                                     return Err(eyre::eyre!(
                                         "Exploratory query task failed: {}",
@@ -2498,14 +2586,24 @@ impl BlockAPI {
                 .map_err(eyre::Report::new)?;
             let sorted_par = ParSortMatcher::sort_match(par).term;
             let runtime_manager = casper.runtime_manager();
-            let data = BlockAPI::get_data_with_block_info(
+            // Issue #1164: wrap the state read so a mid-walk
+            // `RadixTreeError::MissingNode` that raced the pre-check
+            // translates into the same `PrunedStateError` the pre-check
+            // would have produced.
+            let data = match BlockAPI::get_data_with_block_info(
                 casper,
                 runtime_manager,
                 &sorted_par,
                 &block,
                 use_pre_state_hash,
             )
-            .await?;
+            .await
+            {
+                Ok(data) => data,
+                Err(report) => {
+                    return Err(BlockAPI::translate_pruned_race(casper, &block, report).await);
+                }
+            };
             if let Some(data_with_block_info) = data {
                 Ok((
                     data_with_block_info.post_block_data,
@@ -2650,5 +2748,87 @@ mod tests {
             assert!(err.downcast_ref::<ProposeRefusedError>().is_none());
             assert!(err.downcast_ref::<NoNewDeploysError>().is_none());
         }
+    }
+
+    /// Issue #1164: the reader-side classifier must recognise a mid-walk
+    /// `RadixTreeError::MissingNode` in either nesting shape. The deeper
+    /// `RSpaceError → HistoryError → RadixTreeError` form surfaces from
+    /// the reset-and-replay path (`exploratory_deploy`'s `play_...`);
+    /// the shallower `RSpaceError → RadixTreeError` form surfaces from a
+    /// direct radix read (`get_data_at_par`'s `get_data_par`). Both are
+    /// the same sweep race. Mirrors `block_status.rs`'s
+    /// `a_missing_trie_node_is_awaiting_state_not_a_verdict` for the
+    /// reader classifier.
+    #[test]
+    fn missing_node_recognised_in_both_nesting_shapes() {
+        use rholang::rust::interpreter::errors::InterpreterError;
+        use rspace_plus_plus::rspace::errors::{HistoryError, RSpaceError, RadixTreeError};
+        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+        use super::{eyre_chain_has_missing_node, CasperError};
+
+        let ptr = Blake2b256Hash::from_bytes(vec![0xCD; 32]);
+
+        let via_history = eyre::Report::new(CasperError::InterpreterError(
+            InterpreterError::RSpaceError(RSpaceError::HistoryError(HistoryError::RadixTreeError(
+                RadixTreeError::MissingNode { ptr: ptr.clone() },
+            ))),
+        ));
+        assert!(
+            eyre_chain_has_missing_node(&via_history),
+            "reset-and-replay nesting (RSpaceError → HistoryError → RadixTreeError) must \
+             classify as a sweep race"
+        );
+
+        let direct = eyre::Report::new(CasperError::InterpreterError(
+            InterpreterError::RSpaceError(RSpaceError::RadixTreeError(
+                RadixTreeError::MissingNode { ptr },
+            )),
+        ));
+        assert!(
+            eyre_chain_has_missing_node(&direct),
+            "direct nesting (RSpaceError → RadixTreeError) must classify identically; the \
+             sweep race is the same condition regardless of call site"
+        );
+    }
+
+    /// Issue #1164: the classifier still fires once the typed error is
+    /// one `eyre::Report::wrap_err` deep — the gRPC handler's own
+    /// `classify_pruned_state` walks the chain, so the reader-side
+    /// translator must survive any wrapping callers introduce before it
+    /// reaches the handler. Guards the `err.chain()` traversal.
+    #[test]
+    fn missing_node_recognised_through_eyre_wrap() {
+        use rholang::rust::interpreter::errors::InterpreterError;
+        use rspace_plus_plus::rspace::errors::{HistoryError, RSpaceError, RadixTreeError};
+        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+        use super::{eyre_chain_has_missing_node, CasperError};
+
+        let ptr = Blake2b256Hash::from_bytes(vec![0xAB; 32]);
+        let raw = eyre::Report::new(CasperError::InterpreterError(
+            InterpreterError::RSpaceError(RSpaceError::HistoryError(HistoryError::RadixTreeError(
+                RadixTreeError::MissingNode { ptr },
+            ))),
+        ));
+        let wrapped = raw.wrap_err("exploratory deploy failed on mid-walk node");
+        assert!(eyre_chain_has_missing_node(&wrapped));
+    }
+
+    /// Issue #1164: everything that is not the sweep race must pass
+    /// through unchanged. A false positive here would translate an
+    /// unrelated failure (runtime error, replay failure, store error)
+    /// into a `PrunedStateError` and mislead the client into thinking
+    /// an archive node could serve the read.
+    #[test]
+    fn unrelated_errors_do_not_classify_as_pruned_race() {
+        use super::{eyre_chain_has_missing_node, CasperError};
+
+        let runtime_err =
+            eyre::Report::new(CasperError::RuntimeError("some unrelated failure".into()));
+        assert!(!eyre_chain_has_missing_node(&runtime_err));
+
+        let bare = eyre::eyre!("bare prose error without a typed root cause");
+        assert!(!eyre_chain_has_missing_node(&bare));
     }
 }
