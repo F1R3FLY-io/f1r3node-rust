@@ -225,6 +225,7 @@ jobs:
       - name: Run Integration Tests
         shell: bash -ex {0}
         env:
+          F1R3FLY_TEST_VALIDATOR_FIRST_USE: "1"
           F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
           F1R3FLY_NODE_BINARY: /tmp/rnode
           F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node/src/main/resources/defaults.conf

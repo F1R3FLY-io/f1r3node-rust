@@ -467,7 +467,10 @@ env:
   #   every change of system-integration main 074bd62; differs from 9243d3b only in
   #   rust.conf, standalone-dev.conf, consensus-configuration.md, node.py,
   #   subprocess.py, 3 tests and 1 unit test.
-  SYSTEM_INTEGRATION_REF: 54f89b684fb64aa0357e23d266d734782f17cb62
+  # 2026-11-26: 54f89b6 -> 64fe358 (system-integration PR #209).
+  #   Adds one-time confirmations for validator keys on fresh test shards.
+  #   The asymmetric-bonds test finalized on both Docker and subprocess.
+  SYSTEM_INTEGRATION_REF: 64fe35894b907608ea2dcb40abf49f81cf181d3d
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -2530,6 +2533,7 @@ jobs:
         id: integration_preflight
         if: needs.schedule_gate.outputs.canary != 'true' && needs.schedule_gate.outputs.skip_integration_preflight != 'true'
         env:
+          F1R3FLY_TEST_VALIDATOR_FIRST_USE: "1"
           F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
           F1R3FLY_NODE_BINARY: /tmp/rnode
           F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node-under-test/node/src/main/resources/defaults.conf
@@ -2640,6 +2644,7 @@ jobs:
         id: capacity
         if: always() && needs.schedule_gate.outputs.preflight_only != 'true' && needs.schedule_gate.outputs.canary != 'true' && (needs.schedule_gate.outputs.skip_integration_preflight == 'true' || (steps.integration_preflight.outputs.result == 'passed' && steps.reset_telemetry.outcome == 'success'))
         env:
+          F1R3FLY_TEST_VALIDATOR_FIRST_USE: "1"
           F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
           F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node-under-test/node/src/main/resources/defaults.conf
           CAPACITY_WORKLOAD: mix

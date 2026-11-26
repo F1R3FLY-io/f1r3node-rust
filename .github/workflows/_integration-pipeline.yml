@@ -55,7 +55,7 @@ env:
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit,
   # via `just repin-system-integration <sha>`.
-  SYSTEM_INTEGRATION_REF: 54f89b684fb64aa0357e23d266d734782f17cb62
+  SYSTEM_INTEGRATION_REF: 64fe35894b907608ea2dcb40abf49f81cf181d3d
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -673,6 +673,7 @@ jobs:
       - name: Run Integration Tests (${{ matrix.provider }} provider)
         shell: bash -ex {0}
         env:
+          F1R3FLY_TEST_VALIDATOR_FIRST_USE: "1"
           # Both env vars are set unconditionally — the framework's resolver
           # honors whichever matches `--provider`. Setting the other is harmless.
           F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
@@ -813,6 +814,7 @@ jobs:
       - name: Run UCC Suite and Load Test (${{ matrix.provider }} provider)
         shell: bash -ex {0}
         env:
+          F1R3FLY_TEST_VALIDATOR_FIRST_USE: "1"
           F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
           F1R3FLY_NODE_BINARY: /tmp/rnode
           F1R3FLY_DEPLOY_QUEUE_BINARY: /tmp/deploy-queue
@@ -1188,7 +1190,7 @@ jobs:
         # it, so the job copies the development template first.
         run: |
           cp docker/.env.example docker/.env
-          docker compose -f docker/shard.yml -f docker/ci-ports.shard.yml up -d
+          bash .github/scripts/start-fresh-smoke-shard.sh
 
       - name: Wait for bootstrap Running state
         shell: bash -ex {0}

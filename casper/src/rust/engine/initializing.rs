@@ -682,9 +682,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true)
             );
 
+            let recovery_id = uuid::Uuid::new_v4();
             initializing
                 .block_store
-                .begin_validator_recovery(uuid::Uuid::new_v4().as_bytes())?;
+                .begin_validator_recovery(recovery_id.as_bytes())?;
+            tracing::info!("Starting peer restore with recovery ID {recovery_id}");
             initializing.block_dag_storage.insert(
                 block,
                 block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
