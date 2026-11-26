@@ -365,6 +365,12 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
     estimator: &Estimator,
     heartbeat_signal_ref: &crate::rust::heartbeat_signal::HeartbeatSignalRef,
     state_items_tx: Option<mpsc::Sender<StoreItemsMessage>>,
+    // Observer / validator's stored approved block, present on resume
+    // with on-disk data. Routed into `Initializing::on_approved_block`
+    // where the startup horizon probe decides whether to short-circuit
+    // to Running (within window) or proceed with LFS (below horizon).
+    // See the TLA+ contract `BelowHorizonRecovery` (#1059).
+    stored_approved_block: Option<ApprovedBlock>,
 ) -> Result<(), CasperError> {
     // Create bounded channels and return senders so caller can feed LFS responses (Scala: expose queues).
     // Scala uses size-50 bounded queues.
@@ -400,6 +406,7 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
         estimator.clone(),
         heartbeat_signal_ref.clone(),
         state_items_tx,
+        stored_approved_block,
     ));
 
     // Initialize immediately on transition.

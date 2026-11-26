@@ -11,7 +11,7 @@
 //!   can call it without exposing it crate-wide.
 
 use models::rust::casper::protocol::casper_message::BlockMessage;
-use shared::rust::shared::f1r3fly_event::{DeployEvent, F1r3flyEvent};
+use shared::rust::shared::f1r3fly_event::{DeployAdmission, DeployEvent, F1r3flyEvent};
 
 /// Returns `true` when a pending deploy's `valid_after_block_number`
 /// strictly exceeds the latest block in the DAG — i.e. the deploy cannot
@@ -96,7 +96,10 @@ fn block_event(
 }
 
 /// Create BlockCreated event for a block.
-pub fn created_event(block: &BlockMessage) -> F1r3flyEvent {
+pub fn created_event(
+    block: &BlockMessage,
+    deploy_admission: Option<DeployAdmission>,
+) -> F1r3flyEvent {
     let (
         block_hash,
         block_number,
@@ -116,6 +119,7 @@ pub fn created_event(block: &BlockMessage) -> F1r3flyEvent {
         deploys,
         creator,
         seq_num,
+        deploy_admission,
     )
 }
 

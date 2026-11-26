@@ -54,7 +54,9 @@ impl BlockError {
     /// proposer and must stay distinguishable.
     pub fn from_validation_error(error: CasperError) -> Self {
         use rholang::rust::interpreter::errors::InterpreterError;
-        use rspace_plus_plus::rspace::errors::{HistoryError, RSpaceError, RootError};
+        use rspace_plus_plus::rspace::errors::{
+            HistoryError, RSpaceError, RadixTreeError, RootError,
+        };
 
         match error {
             CasperError::BlockNotHeld(hash, _) => BlockError::Undecidable(hash),
@@ -64,6 +66,24 @@ impl BlockError {
             CasperError::InterpreterError(InterpreterError::RSpaceError(
                 RSpaceError::HistoryError(HistoryError::RootError(RootError::RootNotFound(root))),
             )) => BlockError::AwaitingState(root),
+            // Issue #1157: a mid-walk missing trie node — the root was held
+            // long enough for the walk to start, then a reference into a
+            // subtree the retention sweep had already deleted. Classifies
+            // like `RootNotFound`: a statement about this node's history,
+            // not about the block. Pre-#1157 this propagated as
+            // `BlockException` → `InvalidTransaction` (slashable), minting
+            // evidence against the proposer of a block whose state this
+            // node had GC'd. Both nesting depths appear in the wild — the
+            // walk can descend through either `HistoryError` or straight
+            // into `RadixTreeError` depending on the call site.
+            CasperError::InterpreterError(InterpreterError::RSpaceError(
+                RSpaceError::HistoryError(HistoryError::RadixTreeError(
+                    RadixTreeError::MissingNode { ptr },
+                )),
+            ))
+            | CasperError::InterpreterError(InterpreterError::RSpaceError(
+                RSpaceError::RadixTreeError(RadixTreeError::MissingNode { ptr }),
+            )) => BlockError::AwaitingState(ptr),
             other => BlockError::BlockException(other),
         }
     }
@@ -118,6 +138,9 @@ pub enum InvalidBlock {
     ContainsFutureDeploy,
     NotOfInterest,
     LowDeployCost,
+    // ExcessivePhloLimit: a user deploy declares a phlo limit above the
+    // chain's max-phlo-limit.
+    ExcessivePhloLimit,
 }
 
 impl BlockStatus {
@@ -284,8 +307,8 @@ impl InvalidBlock {
             //   • InvalidChainId: a block of another chain; it says nothing
             //     about conduct on this one.
             //   • NotOfInterest: local node filtering decision.
-            //   • LowDeployCost: per-deploy cost threshold; rejected at
-            //     admission, not on-chain accountable.
+            //   • LowDeployCost / ExcessivePhloLimit: per-deploy cost
+            //     bounds; rejected at admission, not on-chain accountable.
             InvalidBlock::InvalidFormat
             | InvalidBlock::InvalidSignature
             | InvalidBlock::InvalidSender
@@ -312,7 +335,8 @@ impl InvalidBlock {
             | InvalidBlock::InvalidRejectedDeploy
             | InvalidBlock::PrematureDeployRetry
             | InvalidBlock::NotOfInterest
-            | InvalidBlock::LowDeployCost => false,
+            | InvalidBlock::LowDeployCost
+            | InvalidBlock::ExcessivePhloLimit => false,
         }
     }
 }
@@ -405,6 +429,48 @@ mod tests {
             ),
             "the prose variant reports storewide conditions, not a fetchable root, and \
              stays in the exception class"
+        );
+    }
+
+    /// Issue #1157: a mid-walk `MissingNode` is the second availability
+    /// shape and must classify identically to `RootNotFound`. The root was
+    /// held when the walk began, but the retention sweep raced ahead and
+    /// deleted a subtree the walk later followed into — a statement about
+    /// this node's history, not about the block. The pre-#1157 fall-through
+    /// to `BlockException` produced `InvalidTransaction`, slashable, on a
+    /// pure data-locality event.
+    #[test]
+    fn a_missing_trie_node_is_awaiting_state_not_a_verdict() {
+        use rholang::rust::interpreter::errors::InterpreterError;
+        use rspace_plus_plus::rspace::errors::{HistoryError, RSpaceError, RadixTreeError};
+        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+        let ptr = Blake2b256Hash::from_bytes(vec![0xCD; 32]);
+
+        // The deeper nesting — RSpaceError → HistoryError → RadixTreeError —
+        // which is what a reset-and-replay path surfaces.
+        let via_history = CasperError::InterpreterError(InterpreterError::RSpaceError(
+            RSpaceError::HistoryError(HistoryError::RadixTreeError(RadixTreeError::MissingNode {
+                ptr: ptr.clone(),
+            })),
+        ));
+        assert_eq!(
+            BlockError::from_validation_error(via_history),
+            BlockError::AwaitingState(ptr.clone()),
+            "a missing trie node encountered via the history path must carry its ptr \
+             through as AwaitingState, so the state requester fetches and retries"
+        );
+
+        // The shallower nesting — RSpaceError → RadixTreeError — which is
+        // what a direct radix-trie read (e.g. exporter / reporting) raises.
+        let direct = CasperError::InterpreterError(InterpreterError::RSpaceError(
+            RSpaceError::RadixTreeError(RadixTreeError::MissingNode { ptr: ptr.clone() }),
+        ));
+        assert_eq!(
+            BlockError::from_validation_error(direct),
+            BlockError::AwaitingState(ptr),
+            "the direct nesting must classify identically; the sweep race is the same \
+             condition regardless of which call site walked into it"
         );
     }
 }

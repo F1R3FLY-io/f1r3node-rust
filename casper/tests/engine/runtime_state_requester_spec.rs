@@ -52,41 +52,46 @@ fn stranger() -> PeerNode {
     }
 }
 
-pub(crate) fn export_chunks(
+pub(crate) fn export_page(
     store: &RSpaceStore,
-    root: &Blake2b256Hash,
+    start_path: &StatePartPath,
     page_size: i32,
-) -> Result<Vec<StoreItemsMessage>, String> {
+) -> Result<StoreItemsMessage, String> {
     let exporter = Arc::new(RSpaceExporterStore::create(
         store.history.clone(),
         store.cold.clone(),
         store.roots.clone(),
     ));
+    let (history, data) =
+        RSpaceExporterItems::get_history_and_data(exporter, start_path.clone(), 0, page_size)
+            .map_err(|e| e.to_string())?;
+    Ok(StoreItemsMessage {
+        start_path: start_path.clone(),
+        last_path: history.last_path,
+        history_items: history
+            .items
+            .into_iter()
+            .map(|(k, v)| (k, Bytes::from(v)))
+            .collect(),
+        data_items: data
+            .items
+            .into_iter()
+            .map(|(k, v)| (k, Bytes::from(v)))
+            .collect(),
+    })
+}
+
+pub(crate) fn export_chunks(
+    store: &RSpaceStore,
+    root: &Blake2b256Hash,
+    page_size: i32,
+) -> Result<Vec<StoreItemsMessage>, String> {
     let mut start_path: StatePartPath = vec![(root.clone(), None)];
     let mut chunks = Vec::new();
     loop {
-        let (history, data) = RSpaceExporterItems::get_history_and_data(
-            exporter.clone(),
-            start_path.clone(),
-            0,
-            page_size,
-        )
-        .map_err(|e| e.to_string())?;
-        let last_path = history.last_path.clone();
-        chunks.push(StoreItemsMessage {
-            start_path: start_path.clone(),
-            last_path: last_path.clone(),
-            history_items: history
-                .items
-                .into_iter()
-                .map(|(k, v)| (k, Bytes::from(v)))
-                .collect(),
-            data_items: data
-                .items
-                .into_iter()
-                .map(|(k, v)| (k, Bytes::from(v)))
-                .collect(),
-        });
+        let chunk = export_page(store, &start_path, page_size)?;
+        let last_path = chunk.last_path.clone();
+        chunks.push(chunk);
         if last_path.len() <= 1 || last_path == start_path {
             return Ok(chunks);
         }

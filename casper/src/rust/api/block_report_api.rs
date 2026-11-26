@@ -12,6 +12,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, SystemDeployData};
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::reporting_transformer::ReportingTransformer;
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
@@ -25,6 +26,7 @@ use crate::rust::reporting_casper::ReportingCasper;
 use crate::rust::reporting_proto_transformer::{to_proto_phase, ReportingProtoTransformer};
 use crate::rust::safety_oracle::CliqueOracleImpl;
 use crate::rust::util::proto_util;
+use crate::rust::validate::Validate;
 
 struct ReportQueueMetricGuard;
 
@@ -42,6 +44,18 @@ impl Drop for ReportQueueMetricGuard {
 }
 
 fn report_cache_key(block_hash: &BlockHash) -> ByteString { block_hash.to_vec() }
+
+/// Whether `block` is the shard's genesis, by its hash. A node that has not
+/// learned the genesis hash treats no block as genesis.
+fn is_genesis(
+    casper: &Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
+    block: &BlockMessage,
+) -> ApiErr<bool> {
+    let genesis = casper
+        .genesis_block_hash()
+        .map_err(|e| BlockReportError::StoreError(e.to_string()))?;
+    Ok(genesis.as_ref() == Some(&block.block_hash))
+}
 
 /// Upper bound on the heights holding reports that one prune step deletes,
 /// so a step holds only a few reports in memory.
@@ -85,6 +99,22 @@ pub enum BlockReportError {
     BlockNotFound(BlockHash),
     #[error("Block report pre-state is unavailable for block {0:?}")]
     StateUnavailable(BlockHash),
+    /// Issue #1157: the target block's state has been swept past the
+    /// rspace-history retention floor, so the replay needed to produce an
+    /// event log can never run on this node. Distinct from
+    /// `StateUnavailable` (which may clear when sync catches up); this is
+    /// permanent on this node.
+    #[error(
+        "Block report cannot replay block {target_block_hash:?} (height {target_block_height}): \
+         state has been swept past retention floor (height {retention_floor})"
+    )]
+    PrunedState {
+        target_block_hash: BlockHash,
+        target_block_height: i64,
+        retention_floor: i64,
+    },
+    #[error("Block {block:?} carries a deploy whose phlo limit exceeds the shard cap of {cap}")]
+    ExcessivePhloLimit { block: BlockHash, cap: i64 },
     #[error("Block reporter is busy; retry later")]
     Busy,
     #[error("Failed to trace block: {0}")]
@@ -170,7 +200,7 @@ impl BlockReportAPI {
     ) -> ApiErr<BlockEventInfo> {
         let report_result = self
             .reporting_casper
-            .trace(block)
+            .trace(block, is_genesis(casper, block)?)
             .await
             .map_err(|e| BlockReportError::ReplayFailed(e))?;
 
@@ -258,6 +288,35 @@ impl BlockReportAPI {
         if !force_replay {
             if let Some(cached_report) = self.cached_report(&block.block_hash)? {
                 return Ok(cached_report);
+            }
+        }
+
+        // Issue #1157: a block whose state is below the rspace-history
+        // retention floor cannot be replayed on this node — the trie
+        // nodes are gone. Classify here so the caller gets a typed
+        // `PrunedState` instead of a vaguer `StateUnavailable` (which
+        // promises a retry may succeed).
+        //
+        // Boundary: the GC retains blocks at exactly `state_retention_floor`
+        // (`compute_gc_retention_roots` walks `height ≥ floor`), so only a
+        // target STRICTLY below the floor has been swept. This keeps
+        // genesis-at-height-0 reportable on a fresh chain whose floor is
+        // also 0.
+        let lfb_number = casper
+            .last_finalized_block()
+            .await
+            .ok()
+            .map(|lfb| lfb.body.state.block_number);
+        if let Some(lfb_number) = lfb_number {
+            let retention_floor = casper.casper_shard_conf().state_retention_floor(lfb_number);
+            let target_height = block.body.state.block_number;
+            if target_height < retention_floor {
+                metrics::counter!("block_report.pruned_state", "source" => "casper").increment(1);
+                return Err(BlockReportError::PrunedState {
+                    target_block_hash: block.block_hash.clone(),
+                    target_block_height: target_height,
+                    retention_floor,
+                });
             }
         }
 
@@ -413,6 +472,19 @@ impl BlockReportAPI {
             .map_err(|e| BlockReportError::StoreError(e.to_string()))?;
 
         let block = block_opt.ok_or_else(|| BlockReportError::BlockNotFound(hash))?;
+
+        // A block can be stored before validation judges it, so the cap is
+        // checked here before anything replays it. Genesis is exempt: its
+        // blessed deploys run without cost accounting.
+        if !is_genesis(&casper, &block)? {
+            let cap = casper.casper_shard_conf().max_phlo_limit;
+            if let Either::Left(_) = Validate::phlo_limit(&block, cap) {
+                return Err(BlockReportError::ExcessivePhloLimit {
+                    block: block.block_hash.clone(),
+                    cap,
+                });
+            }
+        }
 
         // Answered before the permit is involved: serving a report that already
         // exists costs a store read, so a cached block stays readable while a

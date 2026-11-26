@@ -14,6 +14,7 @@ use rspace_plus_plus::rspace::history::history_reader::HistoryReader;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::history::history_repository_impl::HistoryRepositoryImpl;
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
+use rspace_plus_plus::rspace::history::prune_guard::PruneGuard;
 use rspace_plus_plus::rspace::history::root_repository::RootRepository;
 use rspace_plus_plus::rspace::history::roots_store::{RootsStore, RootsStoreInstances};
 use rspace_plus_plus::rspace::hot_store_action::{
@@ -856,8 +857,10 @@ fn empty_repository_over(
         roots_repository: Arc::new(Mutex::new(past_roots)),
         checkpoint_writer,
         leaf_store: create_inmem_cold_store(),
+        history_kv_store: history_store,
         rspace_exporter: Arc::new(EmptyExporter),
         rspace_importer: Arc::new(EmptyImporter),
+        prune_guard: Arc::new(PruneGuard::new()),
         _marker: std::marker::PhantomData,
     }
 }
@@ -896,6 +899,8 @@ struct EmptyImporter;
 
 impl RSpaceImporter for EmptyImporter {
     fn get_history_item(&self, _hash: KeyHash) -> Option<ByteVector> { todo!() }
+
+    fn has_data_items(&self, _hashes: &[KeyHash]) -> Vec<bool> { todo!() }
 }
 
 impl TrieImporter for EmptyImporter {
@@ -904,4 +909,485 @@ impl TrieImporter for EmptyImporter {
     fn set_data_items(&self, _data: Vec<(KeyHash, Value)>) { todo!() }
 
     fn set_root(&self, _key: &KeyHash) { todo!() }
+}
+
+// --- prune_history_atomic -------------------------------------------------
+
+/// The atomic prune covers mark + sweep in one pass against the
+/// backing store. These tests pin the per-node correctness of
+/// `HistoryRepositoryImpl::prune_history_atomic` — the pre-#1045-fix
+/// code did mark and sweep in two separate steps, which admitted the
+/// race that could delete a new block's just-written trie nodes.
+mod prune_history_atomic {
+    use rspace_plus_plus::rspace::history::radix_tree::{Item, empty_node, encode, hash_node};
+
+    use super::*;
+
+    fn put_node(
+        store: &Arc<dyn KeyValueStore>,
+        node: &rspace_plus_plus::rspace::history::radix_tree::Node,
+    ) -> Blake2b256Hash {
+        let (hash_bytes, _) = hash_node(node);
+        store.put(vec![(hash_bytes.clone(), encode(node))]).unwrap();
+        Blake2b256Hash::from_bytes(hash_bytes)
+    }
+
+    fn leaf_node(
+        slot: usize,
+        prefix: Vec<u8>,
+        value: Vec<u8>,
+    ) -> rspace_plus_plus::rspace::history::radix_tree::Node {
+        let mut n = empty_node();
+        n[slot] = Item::Leaf { prefix, value };
+        n
+    }
+
+    fn pointer_node(
+        slot: usize,
+        ptr: Vec<u8>,
+    ) -> rspace_plus_plus::rspace::history::radix_tree::Node {
+        let mut n = empty_node();
+        n[slot] = Item::NodePtr {
+            prefix: vec![],
+            ptr,
+        };
+        n
+    }
+
+    #[test]
+    fn retains_reachable_nodes_and_sweeps_the_rest() {
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        // Two chains: root_a -> child_a -> leaf_a, and root_b -> leaf_b.
+        // Retaining only root_a should keep {root_a, child_a, leaf_a}
+        // and sweep {root_b, leaf_b}.
+        let leaf_a = put_node(&history_store, &leaf_node(0, vec![0x01], vec![0xaa; 32]));
+        let child_a = put_node(&history_store, &pointer_node(1, leaf_a.bytes()));
+        let root_a = put_node(&history_store, &pointer_node(2, child_a.bytes()));
+
+        let leaf_b = put_node(&history_store, &leaf_node(3, vec![0x02], vec![0xbb; 32]));
+        let root_b = put_node(&history_store, &pointer_node(4, leaf_b.bytes()));
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+        let result = repo
+            .prune_history_atomic(std::slice::from_ref(&root_a))
+            .expect("atomic prune");
+
+        assert_eq!(result.marked, 3, "root_a + child_a + leaf_a");
+        assert_eq!(result.swept, 2, "root_b and leaf_b are unreachable");
+        assert!(history_store.get_one(&root_a.bytes()).unwrap().is_some());
+        assert!(history_store.get_one(&child_a.bytes()).unwrap().is_some());
+        assert!(history_store.get_one(&leaf_a.bytes()).unwrap().is_some());
+        assert!(history_store.get_one(&root_b.bytes()).unwrap().is_none());
+        assert!(history_store.get_one(&leaf_b.bytes()).unwrap().is_none());
+    }
+
+    #[test]
+    fn shared_subtrees_are_marked_once_and_retained() {
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        // Two roots sharing one child. Retaining both keeps the shared
+        // subtree once; the swept set is empty.
+        let shared = put_node(&history_store, &empty_node());
+        let root_a = put_node(&history_store, &pointer_node(0, shared.bytes()));
+        let root_b = put_node(&history_store, &pointer_node(1, shared.bytes()));
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+        let result = repo
+            .prune_history_atomic(&[root_a.clone(), root_b.clone()])
+            .expect("atomic prune");
+
+        assert_eq!(result.marked, 3, "root_a, root_b, and shared counted once each");
+        assert_eq!(result.swept, 0);
+        assert!(history_store.get_one(&shared.bytes()).unwrap().is_some());
+    }
+
+    #[test]
+    fn missing_root_subtree_is_tolerated() {
+        // A joiner that has a root tag but has not yet imported the
+        // subtree. The prune must not fail; it marks the root hash and
+        // stops the walk at the first missing descendant. Downstream
+        // readers of such a subtree then get the typed
+        // `RadixTreeError::MissingNode` (not a panic) and can decide to
+        // fetch from peers.
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        // root references a child that is not in the store.
+        let phantom_child = vec![0xCD; 32];
+        let root = put_node(&history_store, &pointer_node(0, phantom_child));
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+        let result = repo
+            .prune_history_atomic(std::slice::from_ref(&root))
+            .expect("prune must tolerate a missing subtree, not panic");
+
+        // The walk marks the root AND the phantom child hash (so a later
+        // root referencing the same phantom short-circuits), but only the
+        // root is actually in the store. Nothing is swept.
+        assert_eq!(result.marked, 2);
+        assert_eq!(result.swept, 0);
+        assert!(history_store.get_one(&root.bytes()).unwrap().is_some());
+    }
+
+    #[test]
+    fn empty_roots_list_is_a_total_sweep() {
+        // Edge case: caller passes no retained roots. Everything is
+        // unreachable, so everything in the store is swept. This is the
+        // honest answer to "nothing is retained" — callers who do not
+        // want this must not pass an empty list.
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        let n1 = put_node(&history_store, &empty_node());
+        let n2 = put_node(&history_store, &pointer_node(1, n1.bytes()));
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+        let result = repo.prune_history_atomic(&[]).expect("atomic prune");
+
+        assert_eq!(result.marked, 0);
+        assert_eq!(result.swept, 2);
+        assert!(history_store.get_one(&n1.bytes()).unwrap().is_none());
+        assert!(history_store.get_one(&n2.bytes()).unwrap().is_none());
+    }
+
+    /// A root pinned during the pass (via the `PruneGuard`'s FIFO) MUST
+    /// survive even when the caller's retained-root set does not name it.
+    /// This is the issue-#1061 race cause (2a): a block's new state root
+    /// has been written to the trie store but the DAG has not yet caught
+    /// up, so the casper-side `compute_gc_retention_roots` walk misses it.
+    /// `do_checkpoint` pins the new root; `prune_history_atomic` reads the
+    /// pinned snapshot and marks it before sweeping.
+    #[test]
+    fn pinned_root_from_checkpoint_survives_sweep_with_unrelated_caller_set() {
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        // A root the DAG walk sees.
+        let dag_leaf = put_node(&history_store, &leaf_node(0, vec![0x01], vec![0xaa; 32]));
+        let dag_root = put_node(&history_store, &pointer_node(2, dag_leaf.bytes()));
+
+        // A root that `do_checkpoint` has just committed but the DAG has
+        // not yet picked up: pre-#1061 the sweep would delete its leaf.
+        let pinned_leaf = put_node(&history_store, &leaf_node(1, vec![0x02], vec![0xbb; 32]));
+        let pinned_root = put_node(&history_store, &pointer_node(3, pinned_leaf.bytes()));
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+        repo.prune_guard.pin(pinned_root.clone());
+
+        let result = repo
+            .prune_history_atomic(std::slice::from_ref(&dag_root))
+            .expect("atomic prune");
+
+        // Both subtrees survive: the caller supplied dag_root and the
+        // pinned FIFO supplied pinned_root. The mark set covers all 4
+        // nodes; nothing is swept.
+        assert_eq!(result.marked, 4);
+        assert_eq!(result.swept, 0);
+        assert!(
+            history_store
+                .get_one(&pinned_root.bytes())
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            history_store
+                .get_one(&pinned_leaf.bytes())
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// End-to-end: `do_checkpoint` must pin its new root automatically so
+    /// that a subsequent sweep (with no caller-supplied retained roots)
+    /// does not wipe the just-written state. This exercises the real
+    /// writer path, not a manual `prune_guard.pin`.
+    #[test]
+    fn do_checkpoint_pins_new_root_automatically() {
+        let repo = create_empty_repository();
+        let test_datum = datum(1);
+        let insert = InsertData {
+            channel: test_channel_data_prefix(),
+            data: vec![test_datum.clone()],
+        };
+        let next_repo =
+            repo.checkpoint(vec![HotStoreAction::Insert(InsertAction::InsertData(insert))]);
+
+        let new_root = next_repo.root();
+
+        // Direct check: the pin landed in the shared FIFO. `repo` and
+        // `next_repo` share the same `Arc<PruneGuard>`.
+        assert!(
+            repo.prune_guard
+                .pinned_snapshot()
+                .iter()
+                .any(|h| h == &new_root),
+            "do_checkpoint must pin its new root"
+        );
+
+        // Caller supplies no retention roots; only the pinned FIFO can
+        // save the new state. Pre-#1061 the write would be swept and
+        // the subsequent read would fail.
+        let result = next_repo.prune_history_atomic(&[]).expect("atomic prune");
+        assert!(
+            result.marked >= 1,
+            "pinned new root must mark at least itself (got {} marked)",
+            result.marked
+        );
+
+        // The new root is still in the store, and reading the datum works.
+        let reader = next_repo
+            .get_history_reader(&new_root)
+            .expect("reader after sweep");
+        let read_back = reader.base().get_data(&test_channel_data_prefix());
+        assert_eq!(read_back.first().cloned(), Some(test_datum));
+    }
+
+    /// `reset` must pin its target root. The test isolates `reset`'s pin
+    /// from `checkpoint`'s by using a root that `checkpoint` never saw:
+    /// the empty-root node is written directly to the trie store and
+    /// recorded in the roots store, so neither constructor nor checkpoint
+    /// pinned it. We assert the pin lands only after `reset` is called.
+    #[test]
+    fn reset_pins_target_root_automatically() {
+        use rspace_plus_plus::rspace::history::radix_tree::empty_node;
+
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        // Put the empty-root node directly in the trie store — bypasses the
+        // checkpoint path so this hash is NOT in the pinned FIFO.
+        let empty = put_node(&history_store, &empty_node());
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+        // record_root makes it a valid reset target.
+        repo.record_root(&empty).expect("record root");
+
+        // Precondition: neither constructor nor any prior call pinned this
+        // hash. `create_empty_repository`/`empty_repository_over` record
+        // the empty root via `past_roots.commit`, but that writes only to
+        // the roots store — not to the `PruneGuard`'s FIFO.
+        assert!(
+            !repo
+                .prune_guard
+                .pinned_snapshot()
+                .iter()
+                .any(|h| h == &empty),
+            "precondition: target root must not already be pinned"
+        );
+
+        // Reset. `HistoryRepositoryImpl::reset` must pin before loading.
+        let reset_repo = repo.reset(&empty).expect("reset to recorded root");
+
+        // `reset_repo` is a trait object, but `repo` and `reset_repo` share
+        // the same `Arc<PruneGuard>`, so observe through `repo`.
+        assert!(
+            repo.prune_guard
+                .pinned_snapshot()
+                .iter()
+                .any(|h| h == &empty),
+            "reset must pin its target root"
+        );
+
+        // End-to-end: a sweep with an empty caller set sees the pin and
+        // keeps the root.
+        let result = reset_repo.prune_history_atomic(&[]).expect("atomic prune");
+        assert_eq!(result.marked, 1);
+        assert_eq!(result.swept, 0);
+        assert!(history_store.get_one(&empty.bytes()).unwrap().is_some());
+    }
+
+    /// Issue #1061 cause (2b): a new state can reference a node whose hash
+    /// matches an older dead node. The writer's content-addressed write
+    /// path (`pending_writes`) skips keys already in the store, so if the
+    /// sweep deletes the already-present copy, the new state has nothing
+    /// to point at. The `PruneGuard`'s write lock serialises the sweep
+    /// out of that window, but a checkpoint that commits BEFORE the pass
+    /// still has to have pinned its root so the sweep retains the shared
+    /// node via the mark walk.
+    #[test]
+    fn pinned_root_retains_content_addressed_shared_node() {
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        // A leaf shared between an older-but-dead root and a new root.
+        // Content addressing means both roots point at the same bytes;
+        // the "new" write skipped the leaf's put because it was already
+        // present. Only the new root is pinned.
+        let shared = put_node(&history_store, &leaf_node(5, vec![0x03], vec![0xcc; 32]));
+        let dead_root = put_node(&history_store, &pointer_node(0, shared.bytes()));
+        let new_root = put_node(&history_store, &pointer_node(1, shared.bytes()));
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+        repo.prune_guard.pin(new_root.clone());
+
+        // Caller supplies no roots — only the pinned FIFO retains.
+        let result = repo.prune_history_atomic(&[]).expect("atomic prune");
+
+        // The pinned new_root marks itself and the shared leaf; dead_root
+        // is swept.
+        assert_eq!(result.marked, 2);
+        assert_eq!(result.swept, 1);
+        assert!(history_store.get_one(&new_root.bytes()).unwrap().is_some());
+        assert!(history_store.get_one(&shared.bytes()).unwrap().is_some());
+        assert!(history_store.get_one(&dead_root.bytes()).unwrap().is_none());
+    }
+
+    /// Issue #1098: a root pinned before any pass has run, with no
+    /// caller-supplied retained root referring to it, is eventually
+    /// evicted by `PIN_RETENTION_PASSES`-bounded age eviction and its
+    /// subtree is swept. This is the lever that keeps the mark set from
+    /// growing without bound under long-running load.
+    ///
+    /// `PIN_RETENTION_PASSES` is a module-private constant in
+    /// `history_repository_impl`; the test runs a conservative number of
+    /// passes (6, well above the current retention + 1) so it does not
+    /// fail if the constant is later tuned slightly.
+    #[test]
+    fn pin_is_evicted_after_retention_window_and_its_subtree_is_swept() {
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        // One pinned root with a child, reachable ONLY via the pin — no
+        // caller retention root will reference it.
+        let doomed_leaf = put_node(&history_store, &leaf_node(0, vec![0x01], vec![0xaa; 32]));
+        let doomed_root = put_node(&history_store, &pointer_node(2, doomed_leaf.bytes()));
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+        repo.prune_guard.pin(doomed_root.clone());
+
+        // Precondition: the pin exists and nothing has been swept.
+        assert!(
+            repo.prune_guard
+                .pinned_snapshot()
+                .iter()
+                .any(|h| h == &doomed_root)
+        );
+
+        // Run passes until the pin is evicted and the subtree is swept.
+        // Bail out as soon as both doomed nodes are gone — keeps the test
+        // tolerant to small changes in the retention constant.
+        let mut evicted_pass: Option<usize> = None;
+        for pass in 1..=6 {
+            let result = repo.prune_history_atomic(&[]).expect("atomic prune");
+            if history_store
+                .get_one(&doomed_root.bytes())
+                .unwrap()
+                .is_none() &&
+                history_store
+                    .get_one(&doomed_leaf.bytes())
+                    .unwrap()
+                    .is_none()
+            {
+                evicted_pass = Some(pass);
+                // The pass that swept the subtree must also report the
+                // eviction via `pins_evicted` — the hook operators use to
+                // see the mark set contracting.
+                assert!(
+                    result.pins_evicted >= 1,
+                    "the pass that swept the pin must report pins_evicted >= 1 (got {})",
+                    result.pins_evicted
+                );
+                break;
+            }
+        }
+        assert!(
+            evicted_pass.is_some(),
+            "pin must be evicted within 6 passes under any reasonable retention setting"
+        );
+    }
+
+    /// Issue #1098: a pin that is refreshed every pass must survive
+    /// indefinitely. This models a root that `reset` keeps hitting during
+    /// a long replay — age eviction must NOT drop it while it is actively
+    /// in use.
+    #[test]
+    fn repinned_root_survives_age_eviction_indefinitely() {
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        let leaf = put_node(&history_store, &leaf_node(0, vec![0x01], vec![0xaa; 32]));
+        let root = put_node(&history_store, &pointer_node(2, leaf.bytes()));
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+
+        for _ in 0..8 {
+            // Simulate a writer / replay pinning this same root every pass.
+            repo.prune_guard.pin(root.clone());
+            let result = repo.prune_history_atomic(&[]).expect("atomic prune");
+            assert_eq!(result.swept, 0, "refreshed pin must retain its subtree");
+            assert!(history_store.get_one(&root.bytes()).unwrap().is_some());
+            assert!(history_store.get_one(&leaf.bytes()).unwrap().is_some());
+        }
+    }
+
+    /// Issue #1098: `prune_history_atomic` returns the new observability
+    /// counters so the casper-side driver can log them. This test does
+    /// not assert exact values beyond basic shape — the unit tests on
+    /// `PruneGuard::begin_pass` and the batched sweep cover the exact
+    /// arithmetic.
+    #[test]
+    fn prune_history_atomic_reports_pin_and_batch_counters() {
+        let history_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let roots_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let writer = Arc::new(KvCheckpointWriter {
+            history: history_store.clone(),
+            roots: roots_store.clone(),
+        });
+
+        let leaf = put_node(&history_store, &leaf_node(0, vec![0x01], vec![0xaa; 32]));
+        let root = put_node(&history_store, &pointer_node(2, leaf.bytes()));
+
+        let repo = empty_repository_over(history_store.clone(), roots_store, writer);
+        repo.prune_guard.pin(root.clone());
+
+        let result = repo.prune_history_atomic(&[]).expect("atomic prune");
+        assert_eq!(result.marked, 2);
+        assert_eq!(result.swept, 0);
+        assert_eq!(result.pins_initial, 1);
+        assert_eq!(
+            result.marked_from_pins, 2,
+            "the root and leaf are both reachable from the single pin"
+        );
+        assert!(result.batches >= 1, "a non-empty store must run at least one delete batch");
+        assert_eq!(result.pins_mid_pass_added, 0, "no concurrent writers here");
+    }
 }

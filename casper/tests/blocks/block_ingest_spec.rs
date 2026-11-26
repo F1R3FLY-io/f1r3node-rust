@@ -59,6 +59,8 @@ struct StuckTransport {
 
 #[async_trait]
 impl TransportLayer for StuckTransport {
+    fn queued_stream_bytes(&self) -> usize { 0 }
+
     async fn send(&self, _peer: &PeerNode, _msg: &Protocol) -> Result<(), CommError> {
         self.started.fetch_add(1, Ordering::SeqCst);
         futures::future::pending::<()>().await;
@@ -105,6 +107,8 @@ fn is_block_request(msg: &Protocol) -> bool {
 
 #[async_trait]
 impl TransportLayer for SlowTransport {
+    fn queued_stream_bytes(&self) -> usize { 0 }
+
     async fn send(&self, _peer: &PeerNode, msg: &Protocol) -> Result<(), CommError> {
         if is_block_request(msg) {
             self.requests_sent.fetch_add(1, Ordering::SeqCst);

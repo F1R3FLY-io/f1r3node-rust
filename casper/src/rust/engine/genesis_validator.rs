@@ -232,6 +232,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
             &self.estimator,
             &self.heartbeat_signal_ref,
             self.state_items_tx.clone(),
+            None,
         )
         .await
     }
@@ -290,6 +291,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
             &self.estimator,
             &self.heartbeat_signal_ref,
             self.state_items_tx.clone(),
+            None,
         )
         .await
     }

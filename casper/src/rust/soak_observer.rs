@@ -25,6 +25,7 @@ pub struct AuthorityInputs {
     pub max_parent_depth: i32,
     pub deploy_lifespan: i64,
     pub min_phlo_price: shared::rust::token_amount::TokenAmount,
+    pub max_phlo_limit: i64,
     pub approved_block_hash: String,
     pub approved_post_state_hash: String,
 }
@@ -58,6 +59,7 @@ impl CaptureEndpoint {
                 max_parent_depth: conf.max_parent_depth,
                 deploy_lifespan: conf.deploy_lifespan,
                 min_phlo_price: conf.min_phlo_price.clone(),
+                max_phlo_limit: conf.max_phlo_limit,
                 approved_block_hash: hex::encode(&approved.block_hash),
                 approved_post_state_hash: hex::encode(&approved.body.state.post_state_hash),
             },

@@ -107,6 +107,13 @@ pub async fn trace_handler(
                 // Pruned pre-state does not come back, so this is terminal for
                 // the block rather than something to retry.
                 BlockReportError::StateUnavailable(_) => StatusCode::GONE,
+                // Issue #1157: a pruned-state refusal is terminal for this
+                // node — the state has been swept past the retention floor
+                // and will not return. Same 410 Gone as StateUnavailable;
+                // the typed field in the response body distinguishes the
+                // two for clients that parse it.
+                BlockReportError::PrunedState { .. } => StatusCode::GONE,
+                BlockReportError::ExcessivePhloLimit { .. } => StatusCode::UNPROCESSABLE_ENTITY,
                 BlockReportError::Busy => StatusCode::SERVICE_UNAVAILABLE,
                 BlockReportError::CasperNotInitialized => StatusCode::INTERNAL_SERVER_ERROR,
                 BlockReportError::ReplayFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,

@@ -27,6 +27,7 @@ pub enum CasperMessage {
     ApprovedBlockRequest(ApprovedBlockRequest),
     BlockApproval(BlockApproval),
     BlockRequest(BlockRequest),
+    BlockPrunedResponse(BlockPrunedResponse),
     ForkChoiceTipRequest(ForkChoiceTipRequest),
     HasBlock(HasBlock),
     HasBlockRequest(HasBlockRequest),
@@ -35,6 +36,7 @@ pub enum CasperMessage {
     // Last finalized state messages
     StoreItemsMessageRequest(StoreItemsMessageRequest),
     StoreItemsMessage(StoreItemsMessage),
+    StoreItemsPrunedResponse(StoreItemsPrunedResponse),
     FloorCacheRequest(FloorCacheRequest),
     FloorCacheResponse(FloorCacheResponse),
     // Snapshot chunk-fetch (Wave 3, Phase 7b-1).
@@ -90,6 +92,10 @@ impl CasperMessage {
         CasperMessage::BlockRequest(BlockRequest::from_proto(proto))
     }
 
+    pub fn from_block_pruned_response(proto: BlockPrunedResponseProto) -> Self {
+        CasperMessage::BlockPrunedResponse(BlockPrunedResponse::from_proto(proto))
+    }
+
     pub fn from_fork_choice_tip_request(_proto: ForkChoiceTipRequestProto) -> Self {
         CasperMessage::ForkChoiceTipRequest(ForkChoiceTipRequest)
     }
@@ -123,6 +129,14 @@ impl CasperMessage {
     pub fn from_store_items_message(proto: StoreItemsMessageProto) -> Result<Self, String> {
         Ok(CasperMessage::StoreItemsMessage(
             StoreItemsMessage::from_proto(proto)?,
+        ))
+    }
+
+    pub fn from_store_items_pruned_response(
+        proto: StoreItemsPrunedResponseProto,
+    ) -> Result<Self, String> {
+        Ok(CasperMessage::StoreItemsPrunedResponse(
+            StoreItemsPrunedResponse::from_proto(proto)?,
         ))
     }
 
@@ -199,6 +213,35 @@ impl BlockRequest {
     pub fn from_proto(proto: BlockRequestProto) -> Self { Self { hash: proto.hash } }
 
     pub fn to_proto(self) -> BlockRequestProto { BlockRequestProto { hash: self.hash } }
+}
+
+/// Peer's "this block has been retention-swept past my horizon" answer to a
+/// `BlockRequest`. Mirrors the client-API [`BlockPrunedError`] onto the
+/// peer-to-peer wire so a requester can tell deleted history from a late
+/// delivery. See `BlockPrunedResponseProto` for the field semantics.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlockPrunedResponse {
+    pub hash: ByteString,
+    pub block_height: i64,
+    pub prune_floor: i64,
+}
+
+impl BlockPrunedResponse {
+    pub fn from_proto(proto: BlockPrunedResponseProto) -> Self {
+        Self {
+            hash: proto.hash,
+            block_height: proto.block_height,
+            prune_floor: proto.prune_floor,
+        }
+    }
+
+    pub fn to_proto(self) -> BlockPrunedResponseProto {
+        BlockPrunedResponseProto {
+            hash: self.hash,
+            block_height: self.block_height,
+            prune_floor: self.prune_floor,
+        }
+    }
 }
 
 // --- Snapshot chunk-fetch (Wave 3, Phase 7b-1) ---------------
@@ -1885,6 +1928,38 @@ impl StoreItemsMessage {
     }
 }
 
+/// Peer's "this subtree has been retention-swept past my horizon" answer to a
+/// [`StoreItemsMessageRequest`]. Issue #1157: mirrors
+/// [`BlockPrunedResponse`] for block bodies onto the rspace-history wire so
+/// a joiner gets an explicit "pruned below height N" answer instead of a
+/// silent dropped request. See `StoreItemsPrunedResponseProto` for the field
+/// semantics.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoreItemsPrunedResponse {
+    pub start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
+    pub retention_floor: i64,
+}
+
+impl StoreItemsPrunedResponse {
+    pub fn from_proto(proto: StoreItemsPrunedResponseProto) -> Result<Self, String> {
+        Ok(Self {
+            start_path: proto
+                .start_path
+                .into_iter()
+                .map(StoreNodeKey::from_proto)
+                .collect::<Result<_, _>>()?,
+            retention_floor: proto.retention_floor,
+        })
+    }
+
+    pub fn to_proto(self) -> StoreItemsPrunedResponseProto {
+        StoreItemsPrunedResponseProto {
+            start_path: self.start_path.iter().map(StoreNodeKey::to_proto).collect(),
+            retention_floor: self.retention_floor,
+        }
+    }
+}
+
 #[cfg(test)]
 mod approved_block_tests {
     use prost::bytes::Bytes;
@@ -2122,6 +2197,36 @@ mod tests {
             BlockRequest::from_proto(block_request.clone().to_proto()),
             block_request
         );
+    }
+
+    #[test]
+    fn block_pruned_response_round_trip() {
+        let resp = BlockPrunedResponse {
+            hash: Bytes::from_static(b"pruned-hash"),
+            block_height: 12_345,
+            prune_floor: 12_000,
+        };
+        assert_eq!(
+            BlockPrunedResponse::from_proto(resp.clone().to_proto()),
+            resp
+        );
+    }
+
+    #[test]
+    fn block_pruned_response_from_casper_message_dispatch() {
+        let proto = BlockPrunedResponseProto {
+            hash: Bytes::from_static(b"abc"),
+            block_height: 7,
+            prune_floor: 3,
+        };
+        match CasperMessage::from_block_pruned_response(proto.clone()) {
+            CasperMessage::BlockPrunedResponse(resp) => {
+                assert_eq!(resp.hash, proto.hash);
+                assert_eq!(resp.block_height, proto.block_height);
+                assert_eq!(resp.prune_floor, proto.prune_floor);
+            }
+            other => panic!("expected BlockPrunedResponse variant, got {:?}", other),
+        }
     }
 
     #[test]
@@ -2603,6 +2708,25 @@ mod tests {
 
         let pretty = message.pretty();
         assert!(pretty.starts_with("StoreItemsMessage(history: 1, data: 1"));
+    }
+
+    /// Issue #1157: the peer-wire `StoreItemsPrunedResponse` must preserve
+    /// `start_path` and `retention_floor` across the proto boundary. A
+    /// joiner routes responses back to the originating need by comparing
+    /// `start_path` to the request's start_path, and it reads
+    /// `retention_floor` to decide whether to select another peer or
+    /// deepen its own window. Dropping either value on the wire would
+    /// reintroduce the pre-#1157 silent-timeout behaviour.
+    #[test]
+    fn store_items_pruned_response_round_trip() {
+        let response = StoreItemsPrunedResponse {
+            start_path: vec![(hash32(1), Some(0)), (hash32(2), None)],
+            retention_floor: 42,
+        };
+        assert_eq!(
+            StoreItemsPrunedResponse::from_proto(response.clone().to_proto()).unwrap(),
+            response
+        );
     }
 
     #[test]

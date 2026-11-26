@@ -572,8 +572,8 @@ mod tests {
         // so `error_record` is a faithful proxy.
         let emap_hash = par_stable_hash(&ok_par(error_record("target", "example error")));
         const EXPECTED_ERR_EMAP: [u8; 32] = [
-            119, 174, 145, 222, 110, 25, 178, 74, 223, 169, 238, 192, 168, 47, 121, 34, 243, 119,
-            170, 166, 155, 148, 121, 95, 85, 166, 50, 225, 247, 60, 29, 139,
+            131, 176, 188, 188, 118, 79, 133, 251, 153, 53, 75, 122, 2, 67, 114, 15, 90, 214, 21,
+            18, 152, 123, 160, 80, 189, 140, 31, 243, 78, 203, 221, 129,
         ];
         assert_eq!(
             emap_hash, EXPECTED_ERR_EMAP,

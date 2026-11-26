@@ -15,6 +15,7 @@ prost = { workspace = true }
 serde = { workspace = true }
 serde_bytes = "0.11.17"
 serde_json = { workspace = true }
+stacker = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
@@ -34,10 +35,12 @@ rand = { workspace = true }
 thiserror = { workspace = true }
 indexmap = { workspace = true }
 metrics = { workspace = true }
+tempfile = { workspace = true }
+libc = "0.2"
+signal-hook-registry = "1.4"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [dev-dependencies]
-tempfile = { workspace = true }
 proptest = { workspace = true }

@@ -1,7 +1,7 @@
 // Source of truth for the genesis-defined mergeable-channel tag identities.
 //
 // A mergeable tag is an unforgeable name (`Par`) derived deterministically
-// from a (deployer-pubkey, timestamp) seed. The same seed values are also
+// from a genesis deploy's name seed. The same seed values are also
 // used to sign the corresponding genesis Rholang contract for those tags
 // that are tied to a contract (e.g. NonNegativeNumber.rho), so casper's
 // genesis-deploy code re-exports the constants from this module.
@@ -20,10 +20,9 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use models::casper::DeployDataProto;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GPrivate, GUnforgeable, Par};
-use prost::Message;
+use models::rust::deploy_seed::name_seed;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 
 use crate::rust::interpreter::errors::InterpreterError;
@@ -40,24 +39,29 @@ pub const BITMASK_OR_TAG_SEED: &str =
     "4d76b8e3f29a51c8d05e7b4f9a23c6e1d8b5f0a7c4e91b6d3a8f5c2e9b6d4a1c";
 pub const BITMASK_OR_TAG_TIMESTAMP: i64 = 1762000000000;
 
+pub const GENESIS_VALID_AFTER_BLOCK_NUMBER: i64 = 0;
+
 pub fn pub_key_from_hex(priv_key_hex: &str) -> PublicKey {
     let private_key =
         PrivateKey::from_bytes(&hex::decode(priv_key_hex).expect("invalid private key hex"));
     Secp256k1.to_public(&private_key)
 }
 
-pub fn unforgeable_name_rng(deployer: &PublicKey, timestamp: i64) -> Blake2b512Random {
-    let seed = DeployDataProto {
-        deployer: deployer.bytes.clone(),
+pub fn unforgeable_name_rng(
+    deployer: &PublicKey,
+    timestamp: i64,
+    valid_after_block_number: i64,
+) -> Blake2b512Random {
+    Blake2b512Random::create_from_bytes(&name_seed(
+        &deployer.bytes,
         timestamp,
-        ..Default::default()
-    };
-    Blake2b512Random::create_from_bytes(&seed.encode_to_vec())
+        valid_after_block_number,
+    ))
 }
 
 fn tag_name(deployer_pk_hex: &str, timestamp: i64) -> Par {
     let pubkey = pub_key_from_hex(deployer_pk_hex);
-    let mut rng = unforgeable_name_rng(&pubkey, timestamp);
+    let mut rng = unforgeable_name_rng(&pubkey, timestamp, GENESIS_VALID_AFTER_BLOCK_NUMBER);
     // The tag must equal `MergeableTag` from NonNegativeNumber.rho, the second
     // name its `new` draws from this seed (the first is `NonNegativeNumber`).
     // The BitmaskOr tag uses the same derivation; changing it changes the tag
@@ -130,6 +134,15 @@ mod tests {
             private_id_hex(&bitmask_or_mergeable_tag_name()),
             "9902f19c7886266265b763d2d9c648e62aa6c31fc25c685be3c8416c8b86e52a"
         );
+    }
+
+    #[test]
+    fn deploys_sharing_deployer_and_timestamp_get_distinct_names_across_valid_after_blocks() {
+        let deployer = pub_key_from_hex(NON_NEGATIVE_NUMBER_PK);
+        let at = |valid_after| unforgeable_name_rng(&deployer, 7, valid_after).next();
+        assert_eq!(at(315), at(315));
+        assert_ne!(at(315), at(316));
+        assert_ne!(at(GENESIS_VALID_AFTER_BLOCK_NUMBER), at(1));
     }
 
     #[test]

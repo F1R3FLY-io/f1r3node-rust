@@ -21,7 +21,9 @@ new
   _newVault,
   _create,
   _systemVault,
-  _transferTemplate
+  _transferTemplate,
+  _createVaultIfMissing,
+  _createAuthKeyIfMissing
 in {
   rl!(`rho:system:makeMint`, *MakeMintCh) |
   rl!(`rho:system:authKey`, *AuthKeyCh) |
@@ -32,10 +34,16 @@ in {
        @(_, Either)   <- EitherCh &
        TreeHashMap    <- TreeHashMapCh) {
     // Each invocation of the SystemVault contract uses a different mint.
-    new mintCh, vaultMapStore, initVault in {
-      // Initializes the vaultMapStore.
+    new mintCh, vaultMapStore, authKeyMapStore, initVault in {
+      // Initializes the vaultMapStore and the authKeyMapStore. The
+      // authKeyMap caches one AuthKey per vault address, so that
+      // repeated `deployerAuthKey` / `unforgeableAuthKey` calls for
+      // the same address reuse the cached bundle instead of installing
+      // a new persistent `authKey("challenge", ...)` continuation each
+      // time (see issue #1156).
       TreeHashMap!("init", 2, *vaultMapStore) |
-      for (@vaultMap <- vaultMapStore) {
+      TreeHashMap!("init", 2, *authKeyMapStore) |
+      for (@vaultMap <- vaultMapStore & @authKeyMap <- authKeyMapStore) {
         // Called from VaultsGenerator:
         //   SystemVault!("init", *ret)
         new initContinue in {
@@ -51,11 +59,18 @@ in {
         } |
         @MakeMint!(*mintCh) |
         for (mint <- mintCh) {
-          // Initializes a vault with given name, address, and purse containing the amount.
+          // Initializes a vault with given name, address, and purse
+          // containing the amount, and pre-populates the authKeyMap
+          // for this vault address. The pre-population keeps the
+          // exploratory-deploy cost in sync with the real-deploy cost:
+          // real deploys warm the cache during pre-charge, exploratory
+          // deploys skip pre-charge; a cache entry seeded at genesis
+          // means the user term sees a hit either way.
           contract initVault(name, @address, @initialAmount) = {
-            new purseCh in {
+            new purseCh, authKeyPrewarmCh in {
               mint!("makePurse", initialAmount, *purseCh) |
-              for (purse <- purseCh) {
+              _createAuthKeyIfMissing!(address, *authKeyPrewarmCh) |
+              for (purse <- purseCh; _ <- authKeyPrewarmCh) {
                 _newVault!(*name, address, *purse)
               }
             }
@@ -69,7 +84,7 @@ in {
               for (@deployerPubKeyBytes <- deployerPubKeyBytesCh) {
                 VaultAddress!("fromPublicKey", deployerPubKeyBytes, *vaultAddrCh) |
                 for (@deployerVaultAddress <- vaultAddrCh) {
-                  @AuthKey!("make", (*_systemVault, deployerVaultAddress), *ret)
+                  _createAuthKeyIfMissing!(deployerVaultAddress, *ret)
                 }
               }
             }
@@ -79,11 +94,55 @@ in {
             new VaultAddress(`rho:vault:address`), vaultAddrCh in {
               VaultAddress!("fromUnforgeable", *unf, *vaultAddrCh) |
               for (@unfVaultAddress <- vaultAddrCh) {
-                @AuthKey!("make", (*_systemVault, unfVaultAddress), *ret)
+                _createAuthKeyIfMissing!(unfVaultAddress, *ret)
               }
             }
           } |
-          // Either retrieves or creates corresponding System vault either.
+          // Returns the cached AuthKey bundle for `vaultAddress`, creating
+          // one on the first call. The AuthKey's shape is constant for a
+          // given vault address, so a single bundle serves every call —
+          // the per-deploy `AuthKey!("make", ...)` is only run on a miss
+          // instead of on every call.
+          //
+          // The one-shot `factory` receive is consumed either by
+          // `TreeHashMap.getOrCreate` (on a miss) or by the fallback
+          // `factory!(Nil)` send (on a hit), so no persistent factory
+          // continuation stays in the tuple space. The pattern mirrors
+          // `_createVaultIfMissing` for vault factories.
+          contract _createAuthKeyIfMissing(@vaultAddress, retCh) = {
+            new factory, factoryUsed, factoryClosed, authKeyCh in {
+              factoryUsed!(false) |
+              for (reply <- factory) {
+                match *reply {
+                  Nil => factoryClosed!(Nil)
+                  _ => {
+                    for (_ <- factoryUsed) {
+                      new authKeyMakeCh in {
+                        @AuthKey!("make", (*_systemVault, vaultAddress), *authKeyMakeCh) |
+                        for (@authKey <- authKeyMakeCh) {
+                          factoryUsed!(true) |
+                          reply!(authKey)
+                        }
+                      }
+                    }
+                  }
+                }
+              } |
+              TreeHashMap!("getOrCreate", authKeyMap, vaultAddress, *factory, *authKeyCh) |
+              for (@authKey <- authKeyCh) {
+                for (@used <- factoryUsed) {
+                  if (used) {
+                    factoryClosed!(Nil)
+                  } else {
+                    factory!(Nil)
+                  }
+                } |
+                for (_ <- factoryClosed) {
+                  retCh!(authKey)
+                }
+              }
+            }
+          } |
           contract SystemVault(@"findOrCreate", @vaultAddress, retCh) = {
             new vaultAddressValidCh, vaultAddressValidEitherCh in {
               // Validate Vault address first.
@@ -91,32 +150,61 @@ in {
               @Either!("fromNillableError <-", *vaultAddressValidCh, *vaultAddressValidEitherCh) |
               for (@vaultAddressEither <- vaultAddressValidEitherCh) {
                 match vaultAddressEither {
-                  // Invalid Vault address returns Left.
                   (false, _) => {
                     retCh!(vaultAddressEither)
                   }
-                  // Valid Vault address returns Right and we proceed with creation/search.
                   _ => {
-                    new createVault, vaultCh, getVaultCh in {
-                      TreeHashMap!("get", vaultMap, vaultAddress, *getVaultCh) |
-                      for (@vault <- getVaultCh) {
-                        if (vault != Nil) {
-                          // If vault is in the store, return (true, vault).
-                          retCh!((true, vault))
+                    new vaultCh in {
+                      TreeHashMap!("get", vaultMap, vaultAddress, *vaultCh) |
+                      for (@vault <- vaultCh) {
+                        if (vault == Nil) {
+                          _createVaultIfMissing!(vaultAddress, *retCh)
                         } else {
-                          // If vault was not found in store, create it and put it in the store.
-                          _create!(vaultAddress, *createVault, *vaultCh) |
-                          for (vaultRetCh <- createVault) {
-                            // Creates System vault and returns on vaultRetCh, consumed within _create contract.
-                            _makeVault!(vaultAddress, 0, *vaultRetCh) |
-                            // Blocks until both the vault is created and set in the store.
-                            for (@eitherVault <- vaultCh) {
-                              retCh!(eitherVault)
-                            }
+                          retCh!((true, vault))
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          contract _createVaultIfMissing(@vaultAddress, retCh) = {
+            new factory, factoryUsed, factoryClosed, vaultCh in {
+              factoryUsed!(false) |
+              for (reply <- factory) {
+                match *reply {
+                  Nil => factoryClosed!(Nil)
+                  _ => {
+                    for (_ <- factoryUsed) {
+                      new vaultResCh in {
+                        _makeVault!(vaultAddress, 0, *vaultResCh) |
+                        for (@eitherVault <- vaultResCh) {
+                          factoryUsed!(true) |
+                          match eitherVault {
+                            (true, vault) => reply!(vault)
+                            _ => reply!(Nil)
                           }
                         }
                       }
                     }
+                  }
+                }
+              } |
+              TreeHashMap!("getOrCreate", vaultMap, vaultAddress, *factory, *vaultCh) |
+              for (@vault <- vaultCh) {
+                for (@used <- factoryUsed) {
+                  if (used) {
+                    factoryClosed!(Nil)
+                  } else {
+                    factory!(Nil)
+                  }
+                } |
+                for (_ <- factoryClosed) {
+                  if (vault == Nil) {
+                    retCh!((false, "Couldn't create vault"))
+                  } else {
+                    retCh!((true, vault))
                   }
                 }
               }
@@ -238,13 +326,12 @@ in {
           // amount is transferred from purse (ownVaultAddress) to vault at targetAddress.
           // The source purse and the amount are handed to the target's `_deposit`
           // listener directly, so the transfer never creates a temporary sprout
-          // purse. If the target vault has not been created yet, the `_deposit`
-          // message waits on its unforgeable channel until a `findOrCreate` for
-          // that address installs the listener; the source balance is not moved
-          // until that listener fires, so no funds sit in an escrow purse.
-          // The source balance is checked upfront so a transfer with
-          // insufficient funds fails immediately, even if the target vault
-          // does not exist yet.
+          // purse. `findOrCreate` is called on the target before `_deposit`, so
+          // the `_deposit` listener is installed and the source balance moves
+          // inside this deploy — a transfer never waits on an unregistered
+          // vault, and never has its funds debited inside a later deploy that
+          // some other key signed. The source balance is also checked upfront
+          // so a transfer with insufficient funds fails immediately.
           contract _transferTemplate(@ownVaultAddress, purse, @targetAddress, @amount, authKey, ret) = {
             new vaultAddressValid, vaultAddressValidEither, amountNonNegative,
                 authKeyValidCh, authKeyValidEitherCh,
@@ -266,7 +353,12 @@ in {
               @Either!("productR <-", *parametersAndAuthOkCh, *sufficientFundsCh, *allChecksOkCh) |
               @Either!("flatMap <-", *allChecksOkCh, *doDeposit, *ret) |
               for (_, retCh <- doDeposit) {
-                @{targetAddress | bundle0{*_systemVault}}!("_deposit", amount, *purse, *retCh)
+                new targetReadyCh in {
+                  SystemVault!("findOrCreate", targetAddress, *targetReadyCh) |
+                  for (@(true, _) <- targetReadyCh) {
+                    @{targetAddress | bundle0{*_systemVault}}!("_deposit", amount, *purse, *retCh)
+                  }
+                }
               }
             }
           } |

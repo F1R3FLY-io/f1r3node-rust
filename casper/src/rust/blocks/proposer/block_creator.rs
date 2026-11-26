@@ -21,12 +21,14 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
     ProcessedSystemDeploy, RejectedDeploy,
 };
+use models::rust::deploy_seed::deploy_name_seed;
 use models::rust::validator::Validator;
 use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use prost::Message;
 use rholang::rust::interpreter::system_processes::BlockData;
 use shared::rust::blocking::in_blocking;
+use shared::rust::shared::f1r3fly_event::DeployAdmission;
 use tracing;
 
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -253,12 +255,12 @@ fn retry_walk_start(
     valid_afters: impl Iterator<Item = i64>,
 ) -> Result<i64, CasperError> {
     match valid_afters.min() {
-        Some(oldest) => crate::rust::util::deploy_window::repeat_scan_start(
+        Some(oldest) => Ok(models::rust::deploy_window::repeat_scan_start(
             tip_start,
             ctx.floor.block_number,
             deploy_lifespan,
             oldest,
-        ),
+        )?),
         None => Ok(tip_start),
     }
 }
@@ -704,7 +706,7 @@ async fn prepare_user_deploys_with_policy(
         } else {
             HashSet::new()
         };
-    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+    let earliest_block_number = models::rust::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
@@ -716,7 +718,7 @@ async fn prepare_user_deploys_with_policy(
     // irreversible removal of retry work — delay, never loss.
     let floor_expiry_bound = floor_ctx
         .map(|ctx| {
-            crate::rust::util::deploy_window::earliest_valid_after(
+            models::rust::deploy_window::earliest_valid_after(
                 ctx.floor.block_number,
                 casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
             )
@@ -1086,10 +1088,55 @@ async fn prepare_user_deploys_with_policy(
         .filter(|deploy| canonical_won.contains(&deploy.sig) || blocked_by_scope(deploy))
         .map(|deploy| (*deploy).clone())
         .collect();
-    let valid_unique: HashSet<Signed<DeployData>> = valid
+    // A carrier rejected by a merge in the parents' scope holds no seed; the
+    // same block-determined set validation reads.
+    let released_by_rejection = match floor_ctx {
+        Some(ctx) => ctx.rejected_sigs(block_store, canonical_scan_floor)?,
+        None => HashSet::new(),
+    };
+    let mut seed_reused_in_scope: Vec<Signed<DeployData>> = Vec::new();
+    let mut by_seed: HashMap<Vec<u8>, Signed<DeployData>> = HashMap::new();
+    for deploy in valid
         .into_iter()
         .filter(|deploy| !canonical_won.contains(&deploy.sig) && !blocked_by_scope(deploy))
-        .collect();
+    {
+        let seed = deploy_name_seed(&deploy);
+        let seed_used_by_another =
+            casper_snapshot
+                .seeds_in_scope
+                .get(&seed)
+                .is_some_and(|holders| {
+                    holders
+                        .iter()
+                        .any(|sig| *sig != deploy.sig && !released_by_rejection.contains(sig))
+                });
+        if seed_used_by_another {
+            seed_reused_in_scope.push(deploy);
+            continue;
+        }
+        match by_seed.entry(seed) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(deploy);
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if deploy.sig < entry.get().sig {
+                    entry.insert(deploy);
+                }
+            }
+        }
+    }
+    let valid_unique: HashSet<Signed<DeployData>> = by_seed.into_values().collect();
+    for deploy in &seed_reused_in_scope {
+        quarantine_deploy(&deploy_storage, &rejected_deploy_buffer, &deploy.sig)?;
+        tracing::info!(
+            target: "f1r3fly.casper.deploy_lifecycle",
+            event = "storage_removed",
+            deploy_sig = %hex::encode(&deploy.sig),
+            reason = "name_seed_in_scope",
+            next_block = block_number,
+            "deploy lifecycle"
+        );
+    }
 
     let already_in_scope_count = already_in_scope.len();
     for deploy in &recovered_canonical_wins {
@@ -1529,7 +1576,7 @@ async fn prepare_user_deploys_with_policy(
         .iter()
         .filter(|d| !selected_in_scope_recovery_sigs.contains(&d.sig))
     {
-        tracing::warn!(
+        tracing::debug!(
             "Deploy {}... FILTERED (already in scope): deploy already exists in DAG within lifespan window",
             deploy_sig_prefix(&d.sig)
         );
@@ -1917,13 +1964,20 @@ fn quarantine_refund_failure_deploy(
     let Some(sig) = extract_deploy_sig_from_refund_failure(failure_msg) else {
         return Ok((false, false));
     };
+    quarantine_deploy(&deploy_storage, &rejected_deploy_buffer, &sig)
+}
 
+fn quarantine_deploy(
+    deploy_storage: &KeyValueDeployStorage,
+    rejected_deploy_buffer: &Mutex<KeyValueRejectedDeployBuffer>,
+    sig: &[u8],
+) -> Result<(bool, bool), CasperError> {
     let removed_from_deploy_storage = deploy_storage
-        .remove_by_sig(&sig)
+        .remove_by_sig(sig)
         .map_err(CasperError::from)?;
     let removed_from_rejected_buffer = rejected_deploy_buffer
         .lock()?
-        .remove_by_sig(&sig)
+        .remove_by_sig(sig)
         .map_err(CasperError::from)?;
 
     Ok((removed_from_deploy_storage, removed_from_rejected_buffer))
@@ -2150,7 +2204,7 @@ fn fresh_local_deploy_stats(
         .into_iter()
         .map(|deploy| deploy.sig)
         .collect();
-    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+    let earliest_block_number = models::rust::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
@@ -2218,7 +2272,7 @@ fn in_scope_local_deploy_stats(
         .into_iter()
         .map(|deploy| deploy.sig)
         .collect();
-    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+    let earliest_block_number = models::rust::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
@@ -2299,7 +2353,7 @@ fn rejected_buffer_has_recoverable_deploys(
     if buffered_deploys.is_empty() {
         return Ok(false);
     }
-    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+    let earliest_block_number = models::rust::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
@@ -2308,7 +2362,7 @@ fn rejected_buffer_has_recoverable_deploys(
     // cannot hold admission in recovery mode.
     let window_bound = floor_ctx
         .map(|ctx| {
-            crate::rust::util::deploy_window::earliest_valid_after(
+            models::rust::deploy_window::earliest_valid_after(
                 ctx.floor.block_number,
                 casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
             )
@@ -2933,8 +2987,10 @@ pub async fn create_with_progress(
     let shard_id = casper_snapshot.on_chain_state.shard_conf.shard_name.clone();
 
     // Prepare deploys
-    let (user_deploys, _, _) = if selection == super::proposer::DeploySelection::RecoveryEmpty {
-        (HashSet::new(), 0usize, false)
+    let (user_deploys, deploy_admission) = if selection
+        == super::proposer::DeploySelection::RecoveryEmpty
+    {
+        (HashSet::new(), None)
     } else {
         let t = std::time::Instant::now();
         let user_deploys_in_scope =
@@ -3116,7 +3172,15 @@ pub async fn create_with_progress(
         );
         metrics::histogram!(BLOCK_CREATOR_PREPARE_USER_DEPLOYS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(t.elapsed().as_secs_f64());
-        (v, prepared.effective_cap, prepared.cap_hit)
+        let admission = DeployAdmission {
+            cap: prepared.effective_cap,
+            cap_hit: prepared.cap_hit,
+            byte_cap_hit: prepared.byte_cap_hit,
+            cap_source: admission_policy.ordinary_cap_source.as_str().to_string(),
+            backpressure: admission_policy.backpressure,
+            finality_lag: finality_lag_stats.lag,
+        };
+        (v, Some(admission))
     };
     let dummy_deploys = {
         let t = std::time::Instant::now();
@@ -3309,7 +3373,7 @@ pub async fn create_with_progress(
 
     // Compute checkpoint data
     let checkpoint_started = std::time::Instant::now();
-    let ordered_user_deploys = ordered_user_deploys(&user_deploys);
+    let mut ordered_user_deploys = ordered_user_deploys(&user_deploys);
     let original_user_deploys = ordered_user_deploys.len();
     let mut user_deploy_limit = original_user_deploys;
     let mut retry_count = 0usize;
@@ -3387,19 +3451,45 @@ pub async fn create_with_progress(
                 return Ok(BlockCreatorResult::NoNewDeploys);
             }
             Err(err) if is_retryable_single_value_batch_error(&err) => {
-                let Some(next_limit) = next_checkpoint_retry_limit(&err, user_deploy_limit) else {
-                    return Err(err);
-                };
                 retry_count += 1;
-                tracing::warn!(
-                    "Checkpoint merge rejected selected deploy batch for block #{}; retrying with fewer user deploys: attempted_user_deploys={}, attempted_total_deploys={}, next_user_deploys={}, error={}",
-                    next_block_num,
-                    attempted_user_deploys,
-                    attempted_total_deploys,
-                    next_limit,
-                    err
+                if let Some(next_limit) = next_checkpoint_retry_limit(&err, user_deploy_limit) {
+                    tracing::warn!(
+                        "Checkpoint merge rejected selected deploy batch for block #{}; retrying with fewer user deploys: attempted_user_deploys={}, attempted_total_deploys={}, next_user_deploys={}, error={}",
+                        next_block_num,
+                        attempted_user_deploys,
+                        attempted_total_deploys,
+                        next_limit,
+                        err
+                    );
+                    user_deploy_limit = next_limit;
+                    continue;
+                }
+                if user_deploy_limit != 1 {
+                    return Err(err);
+                }
+                // The oldest selected deploy fails on this pre-state by itself,
+                // so no block built on it can include that deploy.
+                let unexecutable = ordered_user_deploys.remove(0);
+                let (removed_from_deploy_storage, removed_from_rejected_buffer) =
+                    quarantine_deploy(&deploy_storage, &rejected_deploy_buffer, &unexecutable.sig)?;
+                tracing::error!(
+                    target: "f1r3fly.casper.recovery",
+                    deploy_sig = %hex::encode(&unexecutable.sig),
+                    block_number = next_block_num,
+                    removed_from_deploy_storage,
+                    removed_from_rejected_buffer,
+                    error = %err,
+                    "Quarantined a deploy that fails the checkpoint on its own; building the block without it"
                 );
-                user_deploy_limit = next_limit;
+                user_deploy_limit = ordered_user_deploys.len();
+                if user_deploy_limit == 0
+                    && dummy_deploys.is_empty()
+                    && !has_slashing_deploys
+                    && !allow_empty_blocks
+                {
+                    record_empty_block_skip();
+                    return Ok(BlockCreatorResult::NoNewDeploys);
+                }
             }
             Err(err) => return Err(err),
         }
@@ -3572,6 +3662,7 @@ pub async fn create_with_progress(
         signed_block,
         pre_state_hash_for_result,
         post_state_hash_for_result,
+        deploy_admission,
     ))
 }
 

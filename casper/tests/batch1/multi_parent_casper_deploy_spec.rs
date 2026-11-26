@@ -16,6 +16,26 @@ use rspace_plus_plus::rspace::history::Either;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
+/// A distinct deploy signed by the same key with `deploy`'s name seed.
+fn seed_twin(
+    deploy: &crypto::rust::signatures::signed::Signed<
+        models::rust::casper::protocol::casper_message::DeployData,
+    >,
+) -> crypto::rust::signatures::signed::Signed<
+    models::rust::casper::protocol::casper_message::DeployData,
+> {
+    construct_deploy::source_deploy(
+        deploy.data.term.clone(),
+        deploy.data.time_stamp,
+        Some(deploy.data.phlo_limit + 1),
+        Some(deploy.data.phlo_price.clone()),
+        None,
+        Some(deploy.data.valid_after_block_number),
+        Some(deploy.data.shard_id.clone()),
+    )
+    .unwrap()
+}
+
 #[tokio::test]
 async fn direct_deploy_refuses_invalid_signatures_without_persisting_them() {
     let genesis = GenesisBuilder::new()
@@ -367,7 +387,7 @@ async fn multi_parent_casper_should_accept_a_deploy_and_return_its_id() {
 }
 
 #[tokio::test]
-async fn multi_parent_casper_should_reject_concurrent_identical_deploys() {
+async fn multi_parent_casper_should_accept_one_of_concurrent_deploys_sharing_a_seed() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)
         .await
@@ -376,13 +396,18 @@ async fn multi_parent_casper_should_reject_concurrent_identical_deploys() {
     let deploy =
         construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
             .unwrap();
-    let expected_id = deploy.sig.to_vec();
+    let twin = seed_twin(&deploy);
+    assert_ne!(deploy.sig, twin.sig);
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(32));
 
     let handles = (0..32)
-        .map(|_| {
+        .map(|i| {
             let casper = node.casper.clone();
-            let deploy = deploy.clone();
+            let deploy = if i % 2 == 0 {
+                deploy.clone()
+            } else {
+                twin.clone()
+            };
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 barrier.wait();
@@ -397,18 +422,35 @@ async fn multi_parent_casper_should_reject_concurrent_identical_deploys() {
         .collect::<Vec<_>>();
     let accepted = results
         .iter()
-        .filter(|result| matches!(result, Either::Right(id) if id == &expected_id))
-        .count();
+        .filter_map(|result| match result {
+            Either::Right(id) => Some(id.clone()),
+            Either::Left(_) => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(accepted.len(), 1);
+    let winner = &accepted[0];
+    let loser = if winner == &deploy.sig.to_vec() {
+        twin.sig.to_vec()
+    } else {
+        deploy.sig.to_vec()
+    };
     let duplicates = results
         .iter()
         .filter(|result| {
-            matches!(result, Either::Left(DeployError::DuplicateDeploy(id)) if id == &expected_id)
+            matches!(result, Either::Left(DeployError::DuplicateDeploy(id)) if id == winner)
+        })
+        .count();
+    let seed_reuses = results
+        .iter()
+        .filter(|result| {
+            matches!(result, Either::Left(DeployError::SeedReuse(holder)) if holder == winner)
         })
         .count();
 
-    assert_eq!(accepted, 1);
-    assert_eq!(duplicates, 31);
-    assert!(node.deploy_storage.contains_sig(&expected_id).unwrap());
+    assert_eq!(duplicates, 15);
+    assert_eq!(seed_reuses, 16);
+    assert!(node.deploy_storage.contains_sig(winner).unwrap());
+    assert!(!node.deploy_storage.contains_sig(&loser).unwrap());
 }
 
 #[tokio::test]
@@ -474,9 +516,14 @@ async fn multi_parent_casper_should_reject_a_deploy_already_in_the_dag() {
         .deploy_canonical_appearance(&expected_id)
         .unwrap()
         .is_some());
+    let twin = seed_twin(&deploy);
     assert!(matches!(
         node.casper.deploy(deploy).unwrap(),
         Either::Left(DeployError::DuplicateDeploy(id)) if id == expected_id
+    ));
+    assert!(matches!(
+        node.casper.deploy(twin).unwrap(),
+        Either::Left(DeployError::SeedReuse(holder)) if holder == expected_id
     ));
 }
 
@@ -498,9 +545,14 @@ async fn multi_parent_casper_should_reject_a_deploy_in_the_rejected_buffer() {
         .add(vec![deploy.clone()])
         .unwrap();
 
+    let twin = seed_twin(&deploy);
     assert!(matches!(
         node.casper.deploy(deploy).unwrap(),
         Either::Left(DeployError::DuplicateDeploy(id)) if id == expected_id
+    ));
+    assert!(matches!(
+        node.casper.deploy(twin).unwrap(),
+        Either::Left(DeployError::SeedReuse(holder)) if holder == expected_id
     ));
 }
 
@@ -675,6 +727,64 @@ async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min
         expected_message,
         error_message
     );
+}
+
+#[tokio::test]
+async fn multi_parent_casper_should_refuse_deploy_with_phlo_limit_above_the_cap() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let cap = node.casper.casper_shard_conf().max_phlo_limit;
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    let deploy_with_limit = |phlo_limit: i64| {
+        construct_deploy::source_deploy_now_full(
+            "Nil".to_string(),
+            Some(phlo_limit),
+            None,
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap()
+    };
+
+    let refused = BlockAPI::deploy(
+        &node.engine_cell,
+        deploy_with_limit(cap + 1),
+        &None,
+        false,
+        &shard_id,
+    )
+    .await;
+    let error_message = format!(
+        "{:?}",
+        refused.expect_err("a deploy above the cap is refused")
+    );
+    let expected_message = format!(
+        "Phlo limit {} is greater than maximum limit {}",
+        cap + 1,
+        cap
+    );
+    assert!(
+        error_message.contains(&expected_message),
+        "Error message should contain: '{}'\nGot: {}",
+        expected_message,
+        error_message
+    );
+
+    BlockAPI::deploy(
+        &node.engine_cell,
+        deploy_with_limit(cap),
+        &None,
+        false,
+        &shard_id,
+    )
+    .await
+    .expect("a deploy at the cap is admitted");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -863,5 +973,329 @@ async fn uint256_fees_transfers_and_rewards_survive_peer_replay() {
                 .sum();
             assert_eq!(total, paid);
         }
+    }
+}
+
+mod deploy_pool_limits {
+    use block_storage::rust::dag::deploy_lifecycle_types::TerminalState;
+    use block_storage::rust::deploy::key_value_deploy_storage::DeployPoolLimits;
+    use casper::rust::api::block_api::DeployExpiredError;
+    use crypto::rust::signatures::signed::Signed;
+    use models::rust::casper::protocol::casper_message::DeployData;
+
+    use super::*;
+    use crate::helper::test_node::ShardOverrides;
+
+    fn deploy(timestamp: i64, valid_after: Option<i64>, shard: &str) -> Signed<DeployData> {
+        construct_deploy::source_deploy(
+            format!("@{}!({})", timestamp, timestamp),
+            timestamp,
+            None,
+            None,
+            None,
+            valid_after,
+            Some(shard.to_string()),
+        )
+        .unwrap()
+    }
+
+    async fn node(overrides: ShardOverrides) -> TestNode {
+        let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+        let genesis = GenesisBuilder::new()
+            .build_genesis_with_parameters(Some(parameters))
+            .await
+            .unwrap();
+        TestNode::create_network_with_overrides(genesis, 1, overrides)
+            .await
+            .unwrap()
+            .remove(0)
+    }
+
+    async fn node_with_limits(max_records: usize, max_bytes: u64) -> TestNode {
+        node(ShardOverrides {
+            finalization_rate: Some(0),
+            deploy_admission: Some(DeployPoolLimits {
+                max_records,
+                max_bytes,
+            }),
+            ..Default::default()
+        })
+        .await
+    }
+
+    fn has_lifecycle_row(node: &TestNode, deploy: &Signed<DeployData>) -> bool {
+        node.block_dag_storage
+            .get_representation()
+            .unwrap()
+            .deploy_lifecycle_events(&deploy.sig)
+            .unwrap()
+            .is_some()
+    }
+
+    #[tokio::test]
+    async fn the_record_limit_refuses_without_persistence_and_a_removal_frees_one_slot() {
+        let node = node_with_limits(3, 1024 * 1024).await;
+        let shard = node.genesis.shard_id.clone();
+        let admitted: Vec<_> = (10..13).map(|ts| deploy(ts, None, &shard)).collect();
+        for deploy in &admitted {
+            assert!(matches!(
+                node.casper.deploy(deploy.clone()).unwrap(),
+                Either::Right(_)
+            ));
+            assert!(has_lifecycle_row(&node, deploy));
+        }
+        let overflow = deploy(13, None, &shard);
+        assert!(matches!(
+            node.casper.deploy(overflow.clone()).unwrap(),
+            Either::Left(DeployError::PoolBusy {
+                resource: "records",
+                required: 4,
+                limit: 3,
+            })
+        ));
+        assert!(!node.deploy_storage.contains_sig(&overflow.sig).unwrap());
+        assert!(!has_lifecycle_row(&node, &overflow));
+        assert!(matches!(
+            node.casper.deploy(admitted[0].clone()).unwrap(),
+            Either::Left(DeployError::DuplicateDeploy(_))
+        ));
+        assert!(node.deploy_storage.remove_by_sig(&admitted[0].sig).unwrap());
+        assert!(matches!(
+            node.casper.deploy(overflow.clone()).unwrap(),
+            Either::Right(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn included_pool_records_keep_their_charge_until_the_store_removes_them() {
+        let mut node = node_with_limits(2, 1024 * 1024).await;
+        let shard = node.genesis.shard_id.clone();
+        let admitted = [deploy(20, None, &shard), deploy(21, None, &shard)];
+        for deploy in &admitted {
+            assert!(matches!(
+                node.casper.deploy(deploy.clone()).unwrap(),
+                Either::Right(_)
+            ));
+        }
+        let BlockCreatorResult::Created(block, ..) = node.create_block(&[]).await.unwrap() else {
+            panic!("expected a block while the pool is full");
+        };
+        assert_eq!(block.body.deploys.len(), admitted.len());
+        assert!(matches!(
+            node.process_block(block).await.unwrap(),
+            Either::Right(_)
+        ));
+        let candidate = deploy(22, None, &shard);
+        let signals = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = signals.clone();
+        let trigger: std::sync::Arc<ProposeFunction> = std::sync::Arc::new(move |_, _| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(ProposerResult::Empty) })
+        });
+        let error = BlockAPI::deploy(
+            &node.engine_cell,
+            candidate.clone(),
+            &Some(trigger),
+            false,
+            &shard,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<DeployError>(),
+            Some(DeployError::PoolBusy {
+                resource: "records",
+                ..
+            })
+        ));
+        assert_eq!(signals.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(node.deploy_storage.remove_by_sig(&admitted[0].sig).unwrap());
+        assert!(matches!(
+            node.casper.deploy(candidate).unwrap(),
+            Either::Right(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_byte_limit_and_an_oversized_record_have_different_refusals() {
+        let node = node_with_limits(128, 1024).await;
+        let shard = node.genesis.shard_id.clone();
+        let sized = |timestamp, payload_bytes| {
+            construct_deploy::source_deploy(
+                format!("@0!(\"{}\")", "x".repeat(payload_bytes)),
+                timestamp,
+                None,
+                None,
+                None,
+                None,
+                Some(shard.clone()),
+            )
+            .unwrap()
+        };
+        let first = sized(30, 600);
+        let second = sized(31, 600);
+        let oversized = sized(32, 2048);
+        assert!(matches!(
+            node.casper.deploy(first.clone()).unwrap(),
+            Either::Right(_)
+        ));
+        assert!(matches!(
+            node.casper.deploy(second.clone()).unwrap(),
+            Either::Left(DeployError::PoolBusy {
+                resource: "bytes",
+                limit: 1024,
+                ..
+            })
+        ));
+        assert!(matches!(
+            node.casper.deploy(oversized.clone()).unwrap(),
+            Either::Left(DeployError::RecordTooLarge { limit: 1024, .. })
+        ));
+        assert!(!node.deploy_storage.contains_sig(&second.sig).unwrap());
+        assert!(!node.deploy_storage.contains_sig(&oversized.sig).unwrap());
+        assert!(node.deploy_storage.remove_by_sig(&first.sig).unwrap());
+        assert!(matches!(
+            node.casper.deploy(second).unwrap(),
+            Either::Right(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_never_included_deploy_settles_expired_and_frees_its_slot() {
+        use casper::rust::blocks::proposer::block_creator;
+        use casper::rust::blocks::proposer::proposer::DeploySelection;
+
+        let mut node = node(ShardOverrides {
+            max_parent_depth: Some(2),
+            deploy_lifespan: Some(2),
+            finalization_rate: Some(0),
+            deploy_admission: Some(DeployPoolLimits {
+                max_records: 1,
+                max_bytes: 1024 * 1024,
+            }),
+            ..Default::default()
+        })
+        .await;
+        let shard = node.genesis.shard_id.clone();
+        let expiring = deploy(40, None, &shard);
+        assert!(matches!(
+            node.casper.deploy(expiring.clone()).unwrap(),
+            Either::Right(_)
+        ));
+        for block_index in 0..12 {
+            let mut snapshot = node.casper.get_snapshot().await.unwrap();
+            if block_index == 0 {
+                snapshot
+                    .on_chain_state
+                    .shard_conf
+                    .max_user_deploys_per_block = 0;
+            }
+            let validator = node.casper.get_validator().unwrap();
+            let mut store = node.block_store.clone();
+            let BlockCreatorResult::Created(block, ..) = block_creator::create(
+                &snapshot,
+                &validator,
+                None,
+                node.deploy_storage.clone(),
+                node.rejected_deploy_buffer.clone(),
+                &node.runtime_manager,
+                &mut store,
+                DeploySelection::StandardAllowEmpty,
+            )
+            .await
+            .unwrap() else {
+                panic!("expected an empty block");
+            };
+            assert!(block.body.deploys.is_empty());
+            assert!(matches!(
+                node.process_block(block).await.unwrap(),
+                Either::Right(_)
+            ));
+            node.casper.finalize().await.unwrap();
+        }
+        let dag = node.block_dag_storage.get_representation().unwrap();
+        assert!(dag
+            .deploy_canonical_appearance(&expiring.sig)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            dag.deploy_terminal(&expiring.sig)
+                .unwrap()
+                .map(|record| record.state),
+            Some(TerminalState::Expired)
+        );
+        assert!(!node.deploy_storage.contains_sig(&expiring.sig).unwrap());
+        let replacement = deploy(41, Some(dag.latest_block_number()), &shard);
+        assert!(matches!(
+            node.casper.deploy(replacement).unwrap(),
+            Either::Right(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_api_refuses_a_validity_height_beyond_the_parent_depth_horizon() {
+        let node = node(ShardOverrides {
+            max_parent_depth: Some(4),
+            ..Default::default()
+        })
+        .await;
+        let shard = node.genesis.shard_id.clone();
+        let next = node
+            .block_dag_storage
+            .get_representation()
+            .unwrap()
+            .latest_block_number();
+        let boundary = deploy(50, Some(next + 4), &shard);
+        let beyond = deploy(51, Some(next + 5), &shard);
+        assert!(
+            BlockAPI::deploy(&node.engine_cell, boundary.clone(), &None, false, &shard)
+                .await
+                .is_ok()
+        );
+        let error = BlockAPI::deploy(&node.engine_cell, beyond.clone(), &None, false, &shard)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<DeployError>(),
+            Some(DeployError::InvalidFreshness)
+        ));
+        assert!(node.deploy_storage.contains_sig(&boundary.sig).unwrap());
+        assert!(!node.deploy_storage.contains_sig(&beyond.sig).unwrap());
+    }
+
+    #[tokio::test]
+    async fn the_api_expiry_check_uses_the_next_block_number_that_the_proposer_builds() {
+        let mut node = node(ShardOverrides {
+            deploy_lifespan: Some(2),
+            ..Default::default()
+        })
+        .await;
+        let shard = node.genesis.shard_id.clone();
+        let next = node
+            .block_dag_storage
+            .get_representation()
+            .unwrap()
+            .latest_block_number();
+        let boundary = deploy(60, Some(next - 1), &shard);
+        let expired = deploy(61, Some(next - 2), &shard);
+        assert!(
+            BlockAPI::deploy(&node.engine_cell, boundary.clone(), &None, false, &shard)
+                .await
+                .is_ok()
+        );
+        let error = BlockAPI::deploy(&node.engine_cell, expired.clone(), &None, false, &shard)
+            .await
+            .unwrap_err();
+        assert!(error.downcast_ref::<DeployExpiredError>().is_some());
+        assert!(!node.deploy_storage.contains_sig(&expired.sig).unwrap());
+        let BlockCreatorResult::Created(block, ..) = node.create_block(&[]).await.unwrap() else {
+            panic!("expected a block for the boundary deploy");
+        };
+        assert_eq!(block.body.state.block_number, next);
+        assert!(block
+            .body
+            .deploys
+            .iter()
+            .any(|processed| processed.deploy.sig == boundary.sig));
     }
 }

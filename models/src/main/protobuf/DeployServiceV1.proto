@@ -78,10 +78,37 @@ service DeployService {
   rpc getPendingDeploys(PendingDeploysQuery) returns (PendingDeploysResponse){}
 }
 
+// Issue #1157: an rspace-state reader's structured "pruned below height N"
+// answer, mirroring `BlockPrunedInfo` for block bodies. The TARGET is a
+// block whose POST-STATE (or pre-state, for exploratory reads that use the
+// pre-state view) the reader was asked to walk; the walk could not proceed
+// because the retention sweep has deleted the trie subtree.
+//
+// Clients that see `pruned` on a response know retry on this node will not
+// succeed — the state is gone, not transiently unavailable. Consult an
+// archive node with a deeper retention window.
+message PrunedStateInfo {
+  // Hash of the block whose state the reader was asked for. Known from the
+  // DAG metadata index, which is not swept.
+  bytes target_block_hash   = 1;
+  // Height of that block when it was retained.
+  int64 target_block_height = 2;
+  // The responder's current rspace-history retention floor. The target's
+  // height is STRICTLY LESS than this value (the GC retains blocks at the
+  // floor itself: `compute_gc_retention_roots` walks `height ≥ floor`).
+  // Derived from `CasperShardConf::state_retention_floor(LFB_height)` —
+  // the same formula the sweeper uses.
+  int64 retention_floor     = 3;
+}
+
 message EventInfoResponse{
   oneof message{
     servicemodelapi.ServiceError error = 1;
     BlockEventInfo result = 2;
+    // Issue #1157: the block whose events were requested is within the DAG
+    // but its state is below the retention window, so replay cannot
+    // produce an event log.
+    PrunedStateInfo pruned = 3;
   }
 }
 
@@ -89,6 +116,9 @@ message ExploratoryDeployResponse{
   oneof message{
     servicemodelapi.ServiceError error = 1;
     DataWithBlockInfo result = 2;
+    // Issue #1157: the target block's state has been swept past the
+    // retention floor, so the deploy cannot be executed against it.
+    PrunedStateInfo pruned = 4;
   }
   uint64 cost = 3;
 }
@@ -125,12 +155,49 @@ message MachineVerifyResponse {
   }
 }
 
-// showMainChain & getBlocks
+// showMainChain, getBlocks, getBlocksByHeights
 message BlockInfoResponse {
   oneof message {
     servicemodelapi.ServiceError error        = 1;
     LightBlockInfo blockInfo  = 2;
+    // Carries one hash per interleaved missing sibling from
+    // getBlocksByHeights (#1087). Mirrors the single-hash
+    // BlockPrunedError / BlockUnavailableError split from PR #1052 /
+    // #1087 and BlockPrunedResponseProto on the peer-to-peer wire.
+    // Unused by showMainChain and getBlocks; wire-additive for
+    // existing clients.
+    //
+    // `pruned`: block_height <= prune_floor. Retention sweep has
+    // advanced past this height — gap is permanent on this node.
+    //
+    // `unavailable`: block_height > prune_floor. DAG names the hash
+    // but the body is not currently in the store and the sweep has
+    // not reached this height — retry may succeed.
+    BlockPrunedInfo pruned          = 3;
+    BlockUnavailableInfo unavailable = 4;
   }
+}
+
+message BlockPrunedInfo {
+  // Raw block hash whose body was missing when the response was walked.
+  bytes hash         = 1;
+  // Height recorded in the DAG metadata index, which the retention
+  // pass does not sweep.
+  int64 block_height = 2;
+  // Responder's effective-anchor floor at the moment this response was
+  // assembled. For `BlockPrunedInfo`, block_height <= prune_floor.
+  int64 prune_floor  = 3;
+}
+
+message BlockUnavailableInfo {
+  // Raw block hash whose body was missing when the response was walked.
+  bytes hash         = 1;
+  // Height recorded in the DAG metadata index.
+  int64 block_height = 2;
+  // Responder's effective-anchor floor. For `BlockUnavailableInfo`,
+  // block_height > prune_floor — the sweep has not reached this height
+  // yet, so retry may succeed.
+  int64 prune_floor  = 3;
 }
 
 // listenForDataAtPar
@@ -138,6 +205,9 @@ message RhoDataResponse {
   oneof message {
     servicemodelapi.ServiceError error     = 1;
     RhoDataPayload payload = 2;
+    // Issue #1157: the block whose state the data read targeted has been
+    // swept past the retention floor.
+    PrunedStateInfo pruned = 3;
   }
 }
 

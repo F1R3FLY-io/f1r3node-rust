@@ -529,6 +529,11 @@ pub struct RunOptions {
     #[arg(value_parser = TokenAmount::parse)]
     pub min_phlo_price: Option<TokenAmount>,
 
+    /// Maximum phlo limit a deploy may declare; written into genesis
+    #[arg(long = "max-phlo-limit")]
+    #[arg(value_parser = clap::value_parser!(i64).range(1..))]
+    pub max_phlo_limit: Option<i64>,
+
     /// Enable ceremony master mode (creates genesis block if none found)
     #[arg(long = "ceremony-master-mode", action = ArgAction::SetTrue)]
     pub ceremony_master_mode: bool,

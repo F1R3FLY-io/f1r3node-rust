@@ -140,7 +140,12 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
   "isReadOnly": false,
   "isReady": true,
   "currentEpoch": 12,
-  "epochLength": 100
+  "epochLength": 100,
+  "latestBlockNumber": 1237,
+  "deployLifespan": 300,
+  "maxUserDeploysPerBlock": 128,
+  "maxParentDepth": 25,
+  "maxPhloLimit": 20000000
 }
 ```
 
@@ -148,6 +153,7 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
 - `isValidator` — true if the node has a configured validator key; this does not confirm current bond status
 - `isReadOnly` — true if the node is running in read-only mode
 - `isReady` — true after the engine enters Running state; clients can poll this instead of parsing logs
+- `latestBlockNumber`, `deployLifespan`, `maxUserDeploysPerBlock`, `maxParentDepth`, `maxPhloLimit` — the chain values a deploy client needs, `null` until casper is up; see the [API reference](api-reference.md#get-apistatus)
 - `currentEpoch` — `lastFinalizedBlockNumber / epochLength`
 - `epochLength` — blocks per epoch, from genesis configuration
 
@@ -301,7 +307,11 @@ API responses from `explore-deploy`, `data-at-name-by-block-hash`, `registry`, a
 
 The `/ws/events` endpoint on the HTTP port (40403) streams real-time node events. See [websocket-events.md](websocket-events.md) for full documentation.
 
-9 event types are streamed: 3 block lifecycle (`block-created`, `block-added`, `block-finalised`), 4 genesis ceremony (`sent-unapproved-block`, `block-approval-received`, `sent-approved-block`, `approved-block-received`), and 2 node lifecycle (`entered-running-state`, `node-started`).
+11 event types are streamed: 3 block lifecycle (`block-created`, `block-added`, `block-finalised`), `transfers-available`, `deploy-verdicts`, 4 genesis ceremony (`sent-unapproved-block`, `block-approval-received`, `sent-approved-block`, `approved-block-received`), and 2 node lifecycle (`entered-running-state`, `node-started`). A client that reads too slowly gets `stream-lagged` in place of the events it lost.
+
+## Deploy Queue
+
+A deploy queue runs next to a validator and serves its client ports, so clients deploy through it as they would to the node. See [deploy-queue.md](deploy-queue.md) for the client API.
 
 Events published during startup are buffered and replayed to clients that connect after the node is running. The buffer is sealed when engine initialization completes.
 
@@ -320,7 +330,7 @@ The error chain propagates cleanly: `verify_token_metadata_matches_config → Er
 
 `bind_tcp_listener_with_retry()` in `servers_instances.rs` handles `AddrInUse` resilience for HTTP/Admin servers: 60 attempts with 500ms delay between retries.
 
-`APIServers::build()` in `api_servers.rs` constructs all gRPC services (Repl, Propose, Deploy, LSP) with shared dependencies (engine cell, block store, connections, epoch_length, is_ready). `WebApiImpl` in `web_api.rs` handles the HTTP REST layer and caches config-derived values (network-id, shard-id, native token metadata, epoch-length) for fast `/api/status` responses without per-request config reads; `min-phlo-price` is the exception, read from the running casper's chain-adopted shard conf per request so `/api/status` advertises the floor admission actually enforces. The `is_ready` flag is a shared `AtomicBool` set by the event listener in `setup.rs` when `EnteredRunningState` fires.
+`APIServers::build()` in `api_servers.rs` constructs all gRPC services (Repl, Propose, Deploy, LSP) with shared dependencies (engine cell, block store, connections, epoch_length, is_ready). `WebApiImpl` in `web_api.rs` handles the HTTP REST layer and caches config-derived values (network-id, shard-id, native token metadata) for fast `/api/status` responses without per-request config reads. `min-phlo-price`, `epoch-length` and the deploy values (`latestBlockNumber` through `maxPhloLimit`) are read per request from the running casper and its chain-adopted shard conf, so `/api/status` advertises what admission actually enforces; before casper is up, the first two fall back to configuration and the deploy values are `null`. The `is_ready` flag is a shared `AtomicBool` set by the event listener in `setup.rs` when `EnteredRunningState` fires.
 
 ## Transfer Extraction
 

@@ -297,6 +297,8 @@ mod tests {
 
     #[async_trait]
     impl comm::rust::transport::transport_layer::TransportLayer for CapturingTransport {
+        fn queued_stream_bytes(&self) -> usize { 0 }
+
         async fn send(&self, peer: &PeerNode, msg: &Protocol) -> Result<(), CommError> {
             self.sends.lock().unwrap().push((peer.clone(), msg.clone()));
             Ok(())

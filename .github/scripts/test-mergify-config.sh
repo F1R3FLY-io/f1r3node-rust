@@ -20,8 +20,8 @@ if awk '
   exit 1
 fi
 
-DEV_REQUIRED='Static Checks|Script Tests|Soak Harness Tests|cargo-deny|Test (block-storage)|Test (comm)|Test (crypto)|Test (graphz)|Test (models)|Test (rholang)|Test (node)|Test (shared)|Integration Gate (amd64)|Integration Gate (arm64)|Test (casper 1/2)|Test (casper 2/2)|Test (rspace_plus_plus)|Commit Policy'
-MASTER_REQUIRED='Static Checks|Script Tests|Soak Harness Tests|Test Gate (casper)|Test (rspace_plus_plus)|Test (rholang)|Test (shared)|Test (node)|Test (models)|Test (crypto)|Test (block-storage)|Test (comm)|Test (graphz)|cargo-deny|Commit Policy|Promotion Source'
+DEV_REQUIRED='Static Checks|Script Tests|Soak Harness Tests|cargo-deny|Test (block-storage)|Test (comm)|Test (crypto)|Test (graphz)|Test (deploy-queue)|Test (models)|Test (rholang)|Test (node)|Test (shared)|Integration Gate (amd64)|Integration Gate (arm64)|Test (casper 1/2)|Test (casper 2/2)|Test (rspace_plus_plus)|Commit Policy'
+MASTER_REQUIRED='Static Checks|Script Tests|Soak Harness Tests|Test Gate (casper)|Test (rspace_plus_plus)|Test (rholang)|Test (shared)|Test (node)|Test (models)|Test (crypto)|Test (block-storage)|Test (comm)|Test (graphz)|Test (deploy-queue)|cargo-deny|Commit Policy|Promotion Source'
 
 CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIRED="$MASTER_REQUIRED" ruby -ryaml -e '
   doc = YAML.load_file(ARGV[0])
@@ -42,6 +42,11 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
 
   expected = %w[dev master ca-item ca-daily ca-release]
   errors << "the queues are #{queues.keys.sort.join(", ")}, not #{expected.sort.join(", ")}" unless queues.keys.sort == expected.sort
+  queues.each do |name, q|
+    parity = checks.(q).include?("CI Parity")
+    errors << "queue ca-release does not require CI Parity" if name == "ca-release" && !parity
+    errors << "queue #{name} requires CI Parity, which runs only for a ca-release promotion" if name != "ca-release" && parity
+  end
 
   mq = doc["merge_queue"] || {}
   errors << "the merge queue is not serial" unless mq["mode"] == "serial"

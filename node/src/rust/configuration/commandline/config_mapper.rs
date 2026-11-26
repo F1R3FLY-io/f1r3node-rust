@@ -334,6 +334,7 @@ impl ConfigMapper<Options> for NodeConf {
                 self.casper.genesis_ceremony.ceremony_master_mode = true;
             }
             Self::try_override_value(&mut self.casper.min_phlo_price, run.min_phlo_price);
+            Self::try_override_value(&mut self.casper.max_phlo_limit, run.max_phlo_limit);
 
             // Mergeable channel GC overrides
             if run.disable_mergeable_channel_gc {
@@ -509,6 +510,7 @@ mod tests {
         "--synchrony-constraint-threshold=111111",
         "--height-constraint-threshold=111111",
         "--max-user-deploys-per-block=777777",
+        "--max-phlo-limit=888888",
         "--frrd-max-peer-queue-size=111111",
         "--frrd-give-up-after-skipped=111111",
         "--frrd-drop-peer-after-retries=111111",
@@ -608,6 +610,18 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_parse_args_non_positive_max_phlo_limit_rejected() {
+        for value in ["0", "-1"] {
+            let arg = format!("--max-phlo-limit={value}");
+            let err = Options::try_parse_from(["rnode", "run", &arg])
+                .err()
+                .expect("a non-positive --max-phlo-limit must fail clap parse")
+                .to_string();
+            assert!(err.contains(&format!("{value} is not in 1..")), "{err}");
         }
     }
 
@@ -712,6 +726,7 @@ mod tests {
                 dev_mode: true,
                 deployer_private_key: Some("test-key".to_string()),
                 min_phlo_price: Some((1).into()),
+                max_phlo_limit: Some(888888),
                 ceremony_master_mode: false,
                 enable_mergeable_channel_gc: false,
                 disable_mergeable_channel_gc: false,
@@ -781,6 +796,7 @@ mod tests {
                 port_http: 40403,
                 port_admin_http: 40405,
                 http_max_body_bytes: 16777216,
+                deploy_max_inflight: None,
                 max_blocks_limit: 100,
                 enable_reporting: false,
                 report_cache_retention_blocks: 0,
@@ -821,6 +837,7 @@ mod tests {
                 max_parent_depth: 1,
                 dag_hot_window_depth: 1024,
                 deploy_lifespan: 50,
+                deploy_admission: Default::default(),
                 deploy_play_budget: Duration::ZERO,
                 fork_choice_stale_threshold: Duration::from_secs(30),
                 fork_choice_check_if_stale_interval: Duration::from_secs(30),
@@ -857,6 +874,7 @@ mod tests {
                     ceremony_master_mode: false,
                 },
                 min_phlo_price: (1).into(),
+                max_phlo_limit: 20_000_000,
                 heartbeat_conf: casper::rust::casper_conf::HeartbeatConf {
                     enabled: false,
                     check_interval: Duration::from_secs(30),
@@ -868,6 +886,7 @@ mod tests {
                 mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
                 mergeable_channels_gc_depth_buffer: 10,
                 enable_block_store_gc: false,
+                enable_history_pruning: false,
                 synchrony_recovery_stall_window: Duration::from_secs(60),
                 synchrony_recovery_cooldown: Duration::from_secs(20),
                 synchrony_recovery_max_bypasses: 2,
@@ -1081,6 +1100,7 @@ mod tests {
         assert_eq!(default_config.casper.height_constraint_threshold, 111111);
         assert_eq!(default_config.casper.max_user_deploys_per_block, 777777);
         assert_eq!(default_config.casper.min_phlo_price, 1.into());
+        assert_eq!(default_config.casper.max_phlo_limit, 888888);
 
         // Heartbeat configuration
         // --heartbeat-disabled takes precedence over --heartbeat-enabled (both set in test options)

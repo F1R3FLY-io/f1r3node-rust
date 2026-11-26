@@ -97,6 +97,7 @@ Then confirm that the reported integration pin matches each selected candidate.
 | --- | --- | --- | --- |
 | `build_base` | Resolve Target | Setup | none |
 | `promotion_source` | Promotion Source | Static check | none |
+| `ci_parity` | CI Parity | Static check | `build_base` |
 | `commit_policy` | Commit Policy | Static check | `build_base` |
 | `static_checks` | Static Checks | Static check | `build_base` |
 | `script_tests` | Script Tests | Script test | `build_base` |
@@ -504,7 +505,7 @@ The **CI Heavy Label** workflow reruns the newest CI run of the head when the `c
 | `master` | Head `promote/<UTC timestamp>` or `hotfix/*` into `master` | An approving review, no requested changes, the `masterProtect` checks, Promotion Source, the casper shards, and `ci-heavy` with the Integration Gates, or a maintainer waiver |
 | `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync | As for `dev`. No pre-merge soak requirement. |
 | `ca-daily` | Head `backmerge/ca-release-<SHA>` into `ca-canary`, opened by the promotion app | The light `ci.yml` checks and `CA Daily Provenance`. No review and no heavy run. The trusted validator accepts the release source and clean base merges only. |
-| `ca-release` | Head `promote/ca-release-<UTC timestamp>` into `ca-release` | An approving review, no requested changes, the `ci-heavy` label with the Integration Gates and no waiver, and the `dev` checks |
+| `ca-release` | Head `promote/ca-release-<UTC timestamp>` into `ca-release` | An approving review, no requested changes, the `ci-heavy` label with the Integration Gates and no waiver, `CI Parity`, and the `dev` checks |
 
 To merge a pull request into `master` or `ca-release`, get an approving review.
 
@@ -605,6 +606,25 @@ A missing or pending status also blocks the daily queue.
 The workflow and validator must reach `ca-canary` before the queue can pass this gate.
 The [design](plans/ca-daily-provenance.md) gives the verification scope.
 
+### CI parity
+
+The CI control files are every file under `.github/` and `.mergify.yml`.
+The release train must not change these files on its own branches.
+A CI change goes into `dev`, then into `master` through promotion, and then into `ca-canary` through `ca-sync`.
+
+The `CI Parity` job of `ci.yml` runs only for a `promote/ca-release-*` pull request into `ca-release`.
+It runs `.github/scripts/check-ci-parity.sh` from `master`, not from the pull request.
+For each CI control file in the proposed merge revision, the content and the mode must equal the file in `master` or in `dev`.
+A file that is absent from the revision must also be absent from `master` or from `dev`.
+A `dev` change that waits for promotion therefore passes.
+A file that was added, changed, or deleted only on `ca-canary` or `ca-release` fails, and the job names each such file.
+
+The `ca-release` queue requires `CI Parity`.
+To correct a failure, make the change on `dev`, promote it, run `just ca-sync`, and open the release promotion again.
+After this check reaches `master`, run `just ca-sync` before the next `just ca-promote`.
+Mergify reads its configuration from `master`, so the `ca-release` queue requires the check immediately.
+A promotion from a `ca-canary` without the job never gets the check.
+
 ### Soak gates
 
 `ca-soak-dispatch.yml` (Release Train Soak Dispatch) starts the gate soaks. `.github/scripts/ca-soak-dispatch.sh` does the work, and `test-ca-soak-dispatch.sh` checks it.
@@ -620,7 +640,7 @@ The dispatcher runs `merge-recovery-soak.yml` from `master` with the inputs `gat
 
 - It has its own concurrency group: one for each `ca/*` pull request, and one for `ca-release`. Item soaks run in parallel, and a gate run never cancels a `daily` or `weekend` run.
 - Its soak runner registers under a label of its own run, `f1r3fly-rust-soak-run-<run ID>`, so a parallel soak cannot take its VM.
-- It publishes no checkpoint and no dashboard series.
+- It publishes no dashboard series. Its segments end on the same 07:30 and 13:00 Pacific checkpoints as a `daily` or `weekend` run. At each checkpoint, `soak-checkpoint-publish.yml` updates the pending `Soak Gate` status. The description gives the hours soaked, the iterations, and the failures.
 - Its one restart after an infrastructure failure soaks a full new window, not the rest of the old one.
 
 At the start, the run posts `Soak Gate (22h)` or `Soak Gate (60h)` as pending on the soaked commit. At the end, `.github/scripts/report-soak-gate.sh` posts the result:

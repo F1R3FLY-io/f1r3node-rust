@@ -11,11 +11,11 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
 };
 use block_storage::rust::deploy::key_value_deploy_storage::{
-    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+    DeployPoolLimits, KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
 use models::rust::validator::Validator;
@@ -56,6 +56,23 @@ pub enum DeployError {
     UnknownSignatureAlgorithm(String),
     SignatureVerificationFailed,
     DuplicateDeploy(DeployId),
+    /// Another deploy, named by its sig, already has this deploy's name seed.
+    SeedReuse(DeployId),
+    InvalidFreshness,
+    PhloLimitAboveCap {
+        phlo_limit: i64,
+        max_phlo_limit: i64,
+    },
+    RecordTooLarge {
+        record_bytes: u64,
+        limit: u64,
+    },
+    PoolBusy {
+        resource: &'static str,
+        required: u64,
+        limit: u64,
+    },
+    AdmissionBusy,
 }
 
 impl DeployError {
@@ -69,6 +86,7 @@ impl DeployError {
 
     pub fn signature_verification_failed() -> Self { DeployError::SignatureVerificationFailed }
     pub fn duplicate_deploy(deploy_id: DeployId) -> Self { DeployError::DuplicateDeploy(deploy_id) }
+    pub fn seed_reuse(holder: DeployId) -> Self { DeployError::SeedReuse(holder) }
 }
 
 impl Display for DeployError {
@@ -76,6 +94,17 @@ impl Display for DeployError {
         match self {
             DeployError::ParsingError(details) => write!(f, "Parsing error: {}", details),
             DeployError::MissingUser => write!(f, "Missing user"),
+            DeployError::InvalidFreshness => write!(f, "invalid_deploy_window: deploy validity height is beyond the admission horizon. Retry the same deploy after the chain advances."),
+            DeployError::PhloLimitAboveCap { phlo_limit, max_phlo_limit } => write!(
+                f,
+                "Phlo limit {} is greater than maximum limit {}.",
+                phlo_limit, max_phlo_limit
+            ),
+            DeployError::RecordTooLarge { record_bytes, limit } => write!(
+                f,
+                "deploy_too_large: deploy record size {} exceeds the configured pool byte limit {}",
+                record_bytes, limit
+            ),
             DeployError::UnknownSignatureAlgorithm(alg) => {
                 write!(f, "Unknown signature algorithm '{}'", alg)
             }
@@ -83,6 +112,21 @@ impl Display for DeployError {
             DeployError::DuplicateDeploy(deploy_id) => {
                 write!(f, "Deploy already known: {}", hex::encode(deploy_id))
             }
+            DeployError::SeedReuse(holder) => write!(
+                f,
+                "seed_reuse: deploy {} has the same deployer, timestamp and valid-after block, \
+                 so it would create the same names. Sign this deploy with a different timestamp.",
+                hex::encode(holder)
+            ),
+            DeployError::PoolBusy { resource, required, limit } => write!(
+                f,
+                "deploy_pool_busy: {} would require {}, above the configured limit {}. Retry later or submit to another validator.",
+                resource, required, limit
+            ),
+            DeployError::AdmissionBusy => write!(
+                f,
+                "deploy_admission_busy: admission state changed during retries. Deploy was not accepted. Retry later."
+            ),
         }
     }
 }
@@ -296,8 +340,9 @@ pub async fn hash_set_casper(
 
     // Same adoption, same reasoning, for the parameters the VALIDITY rules
     // fork on: parent spread (max-parent-depth), expiry and repeat-deploy
-    // windows (deploy-lifespan), the phlo floor (min-phlo-price), and the
-    // epoch slash authorization and neglect are judged in (epoch-length). The
+    // windows (deploy-lifespan), the phlo floor (min-phlo-price), the epoch
+    // slash authorization and neglect are judged in (epoch-length), and the
+    // per-deploy phlo cap (max-phlo-limit). The
     // assignment is unconditional — `reconcile(local, onchain) = onchain` —
     // and absent/out-of-range fails the node (see
     // `read_on_chain_consensus_parameters`).
@@ -311,6 +356,7 @@ pub async fn hash_set_casper(
         deploy_lifespan: casper_shard_conf.deploy_lifespan,
         min_phlo_price: casper_shard_conf.min_phlo_price.clone(),
         epoch_length: casper_shard_conf.epoch_length,
+        max_phlo_limit: casper_shard_conf.max_phlo_limit,
     };
     if onchain != local {
         tracing::info!(
@@ -323,6 +369,7 @@ pub async fn hash_set_casper(
     casper_shard_conf.deploy_lifespan = onchain.deploy_lifespan;
     casper_shard_conf.min_phlo_price = onchain.min_phlo_price;
     casper_shard_conf.epoch_length = onchain.epoch_length;
+    casper_shard_conf.max_phlo_limit = onchain.max_phlo_limit;
 
     // Startup validation ran on the LOCAL values; everything derived from or
     // judged against max-parent-depth is finished HERE, on the adopted one.
@@ -458,6 +505,10 @@ pub struct CasperSnapshot {
     /// was executed in one block and rejected during a descendant merge; the block
     /// creator uses this set to know which in-scope deploys are eligible for re-inclusion.
     pub rejected_in_scope: Arc<DashSet<Bytes>>,
+    /// Unforgeable-name seed of each deploy in the ancestry window, mapped to
+    /// the signatures of the deploys carrying it. A deploy whose seed maps to
+    /// another signature would create that deploy's names.
+    pub seeds_in_scope: Arc<DashMap<Vec<u8>, Vec<Bytes>>>,
     pub max_block_num: i64,
     pub max_seq_nums: HashMap<Validator, u64>,
     pub on_chain_state: OnChainCasperState,
@@ -488,6 +539,7 @@ impl CasperSnapshot {
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
             rejected_in_scope: Arc::new(DashSet::new()),
+            seeds_in_scope: Arc::new(DashMap::new()),
             max_block_num: 0,
             max_seq_nums: HashMap::new(),
             on_chain_state: OnChainCasperState::new(CasperShardConf::new()),
@@ -558,6 +610,7 @@ pub struct CasperShardConf {
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub min_phlo_price: TokenAmount,
+    pub max_phlo_limit: i64,
     /// When `true`, `add_deploy` triggers an immediate heartbeat-signal
     /// wake so the heartbeat task picks up the new deploy on the next
     /// tick rather than waiting up to `check_interval` seconds. Defaults
@@ -577,12 +630,23 @@ pub struct CasperShardConf {
     /// validator can still cite them. Shares the mergeable-channel GC
     /// horizon and predicate; requires `enable_mergeable_channel_gc = true`.
     pub enable_block_store_gc: bool,
+    /// Mark-and-sweep the `rspace/history` radix-trie LMDB env, deleting
+    /// nodes no retained state root can reach. Issue #923, Option D; #1061
+    /// fixed the LFB-bound walk and the writer-vs-sweep race. Default off:
+    /// enabling mutates the trie-node store, and the sweep's correctness
+    /// envelope assumes a stable `compute_gc_retention_roots` enumeration
+    /// combined with the rspace `PruneGuard`'s pinned-roots LRU — a soak
+    /// run should confirm no `MissingNode` regressions before flipping on
+    /// by default. File does not shrink after sweeping (LMDB holds freed
+    /// pages for reuse).
+    pub enable_history_pruning: bool,
     pub synchrony_recovery_stall_window: Duration,
     pub synchrony_recovery_cooldown: Duration,
     pub synchrony_recovery_max_bypasses: u32,
     pub synchrony_finalized_baseline_enabled: bool,
     pub synchrony_finalized_baseline_max_distance: u64,
     pub max_user_deploys_per_block: u32,
+    pub deploy_admission: DeployPoolLimits,
     /// Native token metadata baked into the TokenMetadata contract at genesis.
     /// Present on every node (joiner, validator, ceremony master, observer, standalone)
     /// so each path can log the effective values at startup.
@@ -618,22 +682,68 @@ impl CasperShardConf {
             epoch_length: 0,
             quarantine_length: 0,
             min_phlo_price: (0).into(),
+            max_phlo_limit: i64::MAX,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_depth_buffer: 10,
             enable_block_store_gc: false,
+            enable_history_pruning: false,
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),
             synchrony_recovery_max_bypasses: 2,
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
             max_user_deploys_per_block: 128,
+            deploy_admission: DeployPoolLimits::default(),
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
             active_validators_cache_max_entries: ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         }
+    }
+
+    /// Rspace-history retention floor for an anchor at `anchor_block_number`.
+    ///
+    /// Issue #1157: readers that query state by root compare the target
+    /// block's height against this floor. A block at or below the floor
+    /// has had its state nodes swept by the `enable_history_pruning`
+    /// pass, and the correct answer is an explicit "pruned" response —
+    /// not `MissingNode`, and not a partial walk. See
+    /// [`crate::rust::util::rspace_history_horizon::state_retention_floor`].
+    pub fn state_retention_floor(&self, anchor_block_number: i64) -> i64 {
+        crate::rust::util::rspace_history_horizon::state_retention_floor(
+            anchor_block_number,
+            self.max_parent_depth,
+            self.mergeable_channels_gc_depth_buffer,
+        )
+    }
+}
+
+#[cfg(test)]
+mod retention_floor_tests {
+    use super::*;
+
+    /// Issue #1157: the floor a reader checks must come from the shard-governed
+    /// parameters, not a per-node heuristic. Two configs differing only in
+    /// `max_parent_depth` must give different floors at the same anchor.
+    #[test]
+    fn state_retention_floor_tracks_conf_fields() {
+        let mut conf = CasperShardConf::new();
+        conf.max_parent_depth = 100;
+        conf.mergeable_channels_gc_depth_buffer = 10;
+        assert_eq!(conf.state_retention_floor(200), 90);
+
+        conf.max_parent_depth = 50;
+        assert_eq!(conf.state_retention_floor(200), 140);
+
+        // Below genesis clamps to zero.
+        conf.max_parent_depth = 300;
+        assert_eq!(conf.state_retention_floor(100), 0);
+
+        // Sentinel disables the window — floor at genesis.
+        conf.max_parent_depth = i32::MAX;
+        assert_eq!(conf.state_retention_floor(1_000_000), 0);
     }
 }
 

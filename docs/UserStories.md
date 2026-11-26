@@ -1,7 +1,7 @@
 ---
 doc_type: user_stories
 version: "1.1"
-last_updated: 2026-09-30
+last_updated: 2026-11-17
 ---
 
 # User Stories
@@ -22,6 +22,30 @@ This document captures user stories that drive feature development. User stories
 ---
 
 ## Active Stories
+
+#### US-010: Refuse excess deploy intake and record expiry drops
+
+As a deploy client, I want an explicit overload refusal so that I can retry or use another validator.
+I want an expiry outcome for an accepted deploy that no block includes.
+
+**Implemented in:** EPIC-012
+
+**Value Stream:** Transaction Processing
+
+**Status:** In progress
+
+**Acceptance Criteria:**
+
+- The deploy pool is bounded by record count and encoded bytes.
+- A full pool and admission contention return stable, retryable API errors without saving the candidate.
+- Concurrent requests cannot share the last free slot.
+- Admission saves the lifecycle row before the pool insert.
+- Lifecycle evaluation preserves consensus bounds and terminal records.
+
+**Design:** [Deploy admission](designs/deploy-admission.md).
+**Specification:** [Deploy admission](specs/deploy-admission.md).
+
+---
 
 #### US-014: Verified soak segment cleanup
 

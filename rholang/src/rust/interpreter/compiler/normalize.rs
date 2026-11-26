@@ -1,8 +1,10 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use models::rhoapi::{EMinus, EPlus, Expr, Par};
 use rholang_parser::ast::{AnnProc, Proc};
 use rholang_parser::RholangParser;
+use shared::rust::stack::with_stack_headroom;
 
 use super::bound_map_chain::BoundMapChain;
 use super::free_map::FreeMap;
@@ -10,6 +12,7 @@ use crate::rust::interpreter::compiler::normalizer::processes::p_ground_normaliz
 use crate::rust::interpreter::compiler::normalizer::processes::p_simple_type_normalizer::normalize_simple_type;
 use crate::rust::interpreter::compiler::utils::{BinaryExpr, UnaryExpr};
 use crate::rust::interpreter::errors::InterpreterError;
+use crate::rust::interpreter::nesting::MAX_NESTING_DEPTH;
 use crate::rust::interpreter::util::prepend_expr;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -77,10 +80,82 @@ pub struct CollectVisitOutputs {
     pub free_map: FreeMap<VarSort>,
 }
 
-/**
- * Rholang normalizer entry point
- */
+/// The most normalizer calls one compilation may nest, counting the calls
+/// that add no level. It bounds the work of chains of constructs that cancel
+/// out, such as `*@{ *@{ ... } }`, which nest calls but not the term.
+const MAX_NORMALIZER_CALLS: usize = 16 * MAX_NESTING_DEPTH;
+
+thread_local! {
+    /// The nesting level of the term being built and the normalizer calls
+    /// open on this thread. Normalization never yields, so one compilation
+    /// owns the thread until it returns.
+    static NESTING: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+}
+
+/// One open normalizer call. Refuses to open past the nesting limit, so the
+/// normalizer never builds a term deeper than a deploy may have.
+struct Frame {
+    levels: usize,
+}
+
+impl Frame {
+    fn open(levels: usize) -> Result<Frame, InterpreterError> {
+        NESTING.with(|nesting| {
+            let (level, calls) = nesting.get();
+            if level + levels > MAX_NESTING_DEPTH || calls >= MAX_NORMALIZER_CALLS {
+                return Err(InterpreterError::NestingLimitExceeded {
+                    limit: MAX_NESTING_DEPTH,
+                });
+            }
+            nesting.set((level + levels, calls + 1));
+            Ok(Frame { levels })
+        })
+    }
+}
+
+impl Drop for Frame {
+    fn drop(&mut self) {
+        NESTING.with(|nesting| {
+            let (level, calls) = nesting.get();
+            nesting.set((level - self.levels, calls - 1));
+        });
+    }
+}
+
+fn normalize_at_level<'ast>(
+    proc: &AnnProc<'ast>,
+    input: ProcVisitInputs,
+    env: &HashMap<String, Par>,
+    parser: &'ast RholangParser<'ast>,
+    levels: usize,
+) -> Result<ProcVisitOutputs, InterpreterError> {
+    let _frame = Frame::open(levels)?;
+    with_stack_headroom(|| normalize_ann_proc_level(proc, input, env, parser))
+}
+
+/// Normalizes `proc` into a term one level below the caller's: the caller
+/// nests the result inside the term it builds.
 pub fn normalize_ann_proc<'ast>(
+    proc: &AnnProc<'ast>,
+    input: ProcVisitInputs,
+    env: &HashMap<String, Par>,
+    parser: &'ast RholangParser<'ast>,
+) -> Result<ProcVisitOutputs, InterpreterError> {
+    normalize_at_level(proc, input, env, parser, 1)
+}
+
+/// Normalizes `proc` at the caller's own level: the caller joins the result
+/// to the term it builds, or returns it as that term.
+pub fn normalize_ann_proc_in_place<'ast>(
+    proc: &AnnProc<'ast>,
+    input: ProcVisitInputs,
+    env: &HashMap<String, Par>,
+    parser: &'ast RholangParser<'ast>,
+) -> Result<ProcVisitOutputs, InterpreterError> {
+    normalize_at_level(proc, input, env, parser, 0)
+}
+
+fn normalize_ann_proc_level<'ast>(
     proc: &AnnProc<'ast>,
     input: ProcVisitInputs,
     _env: &HashMap<String, Par>,
@@ -137,6 +212,10 @@ pub fn normalize_ann_proc<'ast>(
     }
 
     match &proc.proc {
+        Proc::Foreach { .. } => Err(InterpreterError::NormalizerError(
+            "foreach is not supported".to_string(),
+        )),
+
         Proc::Nil => Ok(ProcVisitOutputs {
             par: input.par.clone(),
             free_map: input.free_map.clone(),

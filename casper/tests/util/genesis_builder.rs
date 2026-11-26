@@ -233,6 +233,7 @@ impl GenesisBuilder {
                 max_parent_depth: 15,
                 deploy_lifespan: 50,
                 min_phlo_price: (0).into(),
+                max_phlo_limit: 20_000_000,
                 validators: bonds
                     .iter()
                     .map(|(pk, stake)| Validator {
