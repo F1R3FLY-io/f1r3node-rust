@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use models::create_bit_vector;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{ESet, GPrivate, GUnforgeable, Par};
+use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::sorted_par_hash_set::SortedParHashSet;
@@ -171,27 +172,28 @@ fn sorted_par_hash_set_should_sort_all_input() {
     let set = SortedParHashSet::create_from_vec(pars.clone());
 
     if let Some(unsorted) = pars.first() {
-        let sorted = SortedParHashSet::sort(unsorted);
+        let sorted = ParSortMatcher::sort_match(unsorted).term;
 
         check_sorted_input(
-            |elem: Par| set.clone().insert(elem),
+            |elem: Par| inserted(&set, &elem),
             unsorted.clone(),
             sorted.clone(),
         );
         check_sorted_input(
-            |elem: Par| set.clone().remove(elem),
+            |elem: Par| removed(&set, &elem),
             unsorted.clone(),
             sorted.clone(),
         );
+        let eset = ESet {
+            ps: pars.clone(),
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        };
         check_sorted_input(
-            |elem: Par| set.contains(elem),
+            |elem: Par| ParSetTypeMapper::contains(&eset, &elem),
             unsorted.clone(),
             sorted.clone(),
-        );
-        check_sorted_input(
-            |input: HashSet<Par>| set.clone().union(input),
-            pars.iter().cloned().collect(),
-            pars.iter().map(SortedParHashSet::sort).collect(),
         );
     }
 }
@@ -204,10 +206,49 @@ fn sorted_par_hash_set_should_preserve_sortedness_of_all_elements_and_whole_map(
     check_sorted(&set.sorted_pars);
 
     if let Some(par) = pars.first() {
-        check_sorted(&set.clone().insert(par.clone()).sorted_pars);
-        check_sorted(&set.clone().remove(par.clone()).sorted_pars);
-        check_sorted(&set.clone().union(HashSet::from([par.clone()])).sorted_pars);
+        check_sorted(&inserted(&set, par));
+        check_sorted(&removed(&set, par));
+        let other = SortedParHashSet::create_from_vec(vec![par.clone()]).sorted_pars;
+        check_sorted(&ParSetTypeMapper::union(set.sorted_pars.clone(), other));
     }
+}
+
+#[test]
+fn canonical_set_operations_match_a_rebuilt_set() {
+    let pars = create_pars();
+    let set = SortedParHashSet::create_from_vec(pars[..2].to_vec()).sorted_pars;
+    let other = SortedParHashSet::create_from_vec(pars[1..].to_vec()).sorted_pars;
+    let rebuilt = |ps: Vec<Par>| SortedParHashSet::create_from_vec(ps).sorted_pars;
+
+    assert_eq!(inserted_ps(&set, &pars[2]), rebuilt(pars.clone()));
+    assert_eq!(inserted_ps(&set, &pars[0]), set);
+    assert_eq!(removed_ps(&set, &pars[0]), rebuilt(vec![pars[1].clone()]));
+    assert_eq!(removed_ps(&set, &pars[2]), set);
+    assert_eq!(
+        ParSetTypeMapper::union(set.clone(), other.clone()),
+        rebuilt(pars.clone())
+    );
+    assert_eq!(
+        ParSetTypeMapper::diff(set.clone(), &other),
+        rebuilt(vec![pars[0].clone()])
+    );
+    assert_eq!(ParSetTypeMapper::diff(set.clone(), &[]), set);
+}
+
+fn inserted(set: &SortedParHashSet, elem: &Par) -> Vec<Par> { inserted_ps(&set.sorted_pars, elem) }
+
+fn removed(set: &SortedParHashSet, elem: &Par) -> Vec<Par> { removed_ps(&set.sorted_pars, elem) }
+
+fn inserted_ps(ps: &[Par], elem: &Par) -> Vec<Par> {
+    let mut ps = ps.to_vec();
+    ParSetTypeMapper::insert(&mut ps, elem);
+    ps
+}
+
+fn removed_ps(ps: &[Par], elem: &Par) -> Vec<Par> {
+    let mut ps = ps.to_vec();
+    ParSetTypeMapper::remove(&mut ps, elem);
+    ps
 }
 
 fn check_sorted(iterable: &[Par]) {

@@ -481,6 +481,7 @@ mod tests {
             max_parent_depth: 1,
             deploy_lifespan: 1,
             min_phlo_price: (1).into(),
+            max_phlo_limit: 20_000_000,
             pos_multi_sig_public_keys: vec![hex::encode(
                 &*standard_deploys::POS_GENERATOR_PUB_KEY.bytes,
             )],

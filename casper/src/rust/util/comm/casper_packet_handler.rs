@@ -22,6 +22,13 @@ use crate::rust::util::comm::fair_round_robin_dispatcher::{
     Dispatch, DispatcherConfig, FairRoundRobinDispatcher,
 };
 
+pub fn comm_error_from_casper(error: CasperError) -> CommError {
+    match error {
+        CasperError::CommError(inner) => inner,
+        other => CommError::CasperError(other.to_string()),
+    }
+}
+
 #[derive(Clone)]
 pub struct CasperPacketHandler {
     engine_cell: EngineCell,
@@ -53,7 +60,7 @@ impl PacketHandler for CasperPacketHandler {
         engine
             .handle(peer.clone(), message)
             .await
-            .map_err(|e| CommError::CasperError(e.to_string()))?;
+            .map_err(comm_error_from_casper)?;
 
         Ok(())
     }
@@ -240,7 +247,7 @@ impl PacketHandler for FairDispatcherPacketHandler {
         self.dispatcher
             .dispatch(block_creator, dispatcher_message)
             .await
-            .map_err(|e| CommError::CasperError(e.to_string()))?;
+            .map_err(comm_error_from_casper)?;
 
         Ok(())
     }
@@ -311,4 +318,26 @@ pub async fn fair_dispatcher(
 
     // Wrap in Arc and create packet handler
     Ok(FairDispatcherPacketHandler::new(Arc::new(dispatcher)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_comm_failure_inside_the_engine_reaches_the_transport_with_its_own_variant() {
+        let dns = CommError::DnsResolutionFailed(
+            "validator6-0.validator6".to_string(),
+            "Name or service not known".to_string(),
+        );
+
+        assert_eq!(
+            comm_error_from_casper(CasperError::CommError(dns.clone())),
+            dns
+        );
+        assert_eq!(
+            comm_error_from_casper(CasperError::RuntimeError("halted".to_string())),
+            CommError::CasperError(CasperError::RuntimeError("halted".to_string()).to_string())
+        );
+    }
 }

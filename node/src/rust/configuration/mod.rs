@@ -319,6 +319,13 @@ pub mod builder {
                 node_conf.casper.deploy_lifespan,
             ));
         }
+        if node_conf.casper.max_phlo_limit <= 0 {
+            return Err(eyre::eyre!(
+                "casper.max-phlo-limit ({}) must be positive: a non-positive cap admits \
+                no deploy",
+                node_conf.casper.max_phlo_limit,
+            ));
+        }
         if node_conf.casper.v6_fallback_distance == 0 {
             return Err(eyre::eyre!(
                 "casper.v6-fallback-distance must be at least 1: at zero a node would cite \
@@ -1154,6 +1161,14 @@ mod embedded_defaults_tests {
         assert!(
             builder::validate_config(&cfg).is_err(),
             "deploy-lifespan 0 must fail startup"
+        );
+
+        let mut cfg = base.clone();
+        cfg.casper.max_phlo_limit = 0;
+        let err = builder::validate_config(&cfg).expect_err("max-phlo-limit 0 must fail startup");
+        assert!(
+            err.to_string().contains("max-phlo-limit"),
+            "the cap check itself must fire, got: {err}"
         );
 
         let mut cfg = base.clone();

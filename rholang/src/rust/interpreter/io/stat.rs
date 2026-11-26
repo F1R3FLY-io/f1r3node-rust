@@ -13,8 +13,9 @@
 use std::fs::Metadata;
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EMap, Expr, KeyValuePair, Par};
-use shared::rust::BitSet;
+use models::rhoapi::{Expr, Par};
+use models::rust::par_map::ParMap;
+use models::rust::par_map_type_mapper::ParMapTypeMapper;
 
 use super::super::rho_type::{RhoNumber, RhoString};
 #[cfg(unix)]
@@ -67,18 +68,13 @@ impl Kind {
     }
 }
 
-fn kv(k: &str, v: Par) -> KeyValuePair {
-    KeyValuePair {
-        key: Some(RhoString::create_par(k.to_string())),
-        value: Some(v),
-    }
-}
+fn kv(k: &str, v: Par) -> (Par, Par) { (RhoString::create_par(k.to_string()), v) }
 
 /// Build a `stat` record for the entry at `path` given its (already
 /// fetched) metadata.  `name` is the basename shown in the record —
 /// callers pass either the last path component or the full logical name.
 pub fn stat_record(name: &str, meta: &Metadata, mode_kind: ConsensusMode) -> Par {
-    let mut pairs: Vec<KeyValuePair> = Vec::with_capacity(9);
+    let mut pairs: Vec<(Par, Par)> = Vec::with_capacity(9);
     pairs.push(kv("name", RhoString::create_par(name.to_string())));
     let kind = Kind::from_meta(meta);
     pairs.push(kv("kind", RhoString::create_par(kind.as_str().to_string())));
@@ -177,19 +173,12 @@ fn unix_mode_bits(meta: &Metadata) -> u32 {
     meta.mode() & 0o7777
 }
 
-/// Wrap a `Vec<KeyValuePair>` in a `Par` carrying an `EMap` expression.
-/// Note: `EMap.kvs` is a `prost` repeated field, so `Par`'s derived
-/// `PartialEq` (and therefore any downstream serialization / hashing)
-/// treats KV order as significant.  Callers that build records via
-/// this helper are pinning that order — see the per-record tests.
-fn map_par(kvs: Vec<KeyValuePair>) -> Par {
+/// Wrap the record's entries in a `Par` carrying a canonical `EMap`.
+fn map_par(entries: Vec<(Par, Par)>) -> Par {
     Par::default().with_exprs(vec![Expr {
-        expr_instance: Some(ExprInstance::EMapBody(EMap {
-            kvs,
-            locally_free: BitSet::default(),
-            connective_used: false,
-            remainder: None,
-        })),
+        expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
+            ParMap::create_from_vec(entries),
+        ))),
     }])
 }
 
@@ -549,67 +538,33 @@ mod stat_record_tests {
         );
     }
 
-    // --- EMap KV order pin ----------------------------------------
+    // --- Canonical KV order -----------------------------------------
 
-    /// `EMap.kvs` is a prost repeated field; `Par`'s derived
-    /// `PartialEq` (and therefore any downstream serialization /
-    /// hashing) treats KV order as significant.  Verify empirically
-    /// so future readers don't assume EMap normalizes.
+    /// Records are canonical maps: their key order is the canonical one,
+    /// whatever order the fields were collected in. A change here forks
+    /// every follower's WAL entry for `fs_stat` / `fs_entries`.
     #[test]
-    fn emap_kv_order_is_wire_significant() {
-        let a = map_par(vec![
-            kv("a", RhoNumber::create_par(1)),
-            kv("b", RhoNumber::create_par(2)),
-        ]);
-        let b = map_par(vec![
-            kv("b", RhoNumber::create_par(2)),
-            kv("a", RhoNumber::create_par(1)),
-        ]);
-        assert_ne!(
-            a, b,
-            "EMap.kvs is order-sensitive at Par PartialEq — insertion \
-             order in stat_record / error_record IS a consensus surface \
-             and per-record KV-order pins are load-bearing.  If this \
-             assertion ever flips (i.e. EMap normalizes on the wire), \
-             the per-record pins below become redundant but not \
-             incorrect."
-        );
-    }
-
-    /// Given the wire is order-sensitive (see above), pin the exact
-    /// KV insertion order that `stat_record` produces under Consensus
-    /// for a regular file: `[name, kind, size, mode]`.  A reorder
-    /// would silently fork every follower's WAL entry for
-    /// `fs_stat` / `fs_entries` on a regular file.
-    #[test]
-    fn stat_record_consensus_regular_file_kv_order_is_pinned() {
+    fn stat_record_consensus_regular_file_kv_order_is_canonical() {
         let (_dir, meta) = make_meta_with_mode(0o0644);
         let rec = stat_record("f", &meta, ConsensusMode::Consensus);
         let key_order = expect_map_key_order(&rec);
-        assert_eq!(
-            key_order,
-            vec!["name", "kind", "size", "mode"],
-            "consensus regular-file KV insertion order is a consensus \
-             surface; a reorder here forks every fs_stat replay"
-        );
+        assert_eq!(key_order, vec!["kind", "mode", "name", "size"]);
     }
 
-    /// Consensus directory record: `[name, kind, mode]` (no `size`).
     #[test]
-    fn stat_record_consensus_directory_kv_order_is_pinned() {
+    fn stat_record_consensus_directory_kv_order_is_canonical() {
         let dir = tempfile::tempdir().unwrap();
         let dir_meta = std::fs::metadata(dir.path()).unwrap();
         let rec = stat_record("d", &dir_meta, ConsensusMode::Consensus);
         let key_order = expect_map_key_order(&rec);
-        assert_eq!(key_order, vec!["name", "kind", "mode"]);
+        assert_eq!(key_order, vec!["kind", "mode", "name"]);
     }
 
-    /// `error_record` order: `[name, error]`.
     #[test]
-    fn error_record_kv_order_is_pinned() {
+    fn error_record_kv_order_is_canonical() {
         let rec = error_record("f", "permission denied");
         let key_order = expect_map_key_order(&rec);
-        assert_eq!(key_order, vec!["name", "error"]);
+        assert_eq!(key_order, vec!["error", "name"]);
     }
 
     fn expect_map_key_order(par: &Par) -> Vec<String> {

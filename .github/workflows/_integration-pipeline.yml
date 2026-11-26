@@ -55,7 +55,7 @@ env:
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit,
   # via `just repin-system-integration <sha>`.
-  SYSTEM_INTEGRATION_REF: 646efd00a11df7e17610d2c6399aaf32abbb4eda
+  SYSTEM_INTEGRATION_REF: 54f89b684fb64aa0357e23d266d734782f17cb62
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -1103,6 +1103,12 @@ jobs:
           done
           [ "$LFB" -ge 10 ] 2>/dev/null || (echo "FAIL: LFB only at #$LFB after 300s" && exit 1)
 
+      - name: Check malformed deploy rejection through the queue
+        run: |
+          bash scripts/ci/test-malformed-deploy.sh http://127.0.0.1:14403 \
+            docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml \
+            exec -T deploy-queue /opt/docker/bin/node --grpc-host 127.0.0.1 --grpc-port 40401
+
       - name: Collect logs
         if: always()
         shell: bash {0}
@@ -1131,7 +1137,7 @@ jobs:
     name: Smoke Test (Docker Shard)
     needs: build_docker_image
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
     steps:
@@ -1210,6 +1216,25 @@ jobs:
             sleep 5
           done
           [ "$LFB" -ge 10 ] 2>/dev/null || (echo "FAIL: LFB only at #$LFB after 300s" && exit 1)
+          echo "LFB_BEFORE_RESTART=$LFB" >> "$GITHUB_ENV"
+
+      - name: Restart shard with its data
+        shell: bash -ex {0}
+        run: docker compose -f docker/shard.yml -f docker/ci-ports.shard.yml restart
+
+      - name: Wait for finalization to advance after restart
+        shell: bash -ex {0}
+        run: |
+          for i in $(seq 1 60); do
+            LFB=$(curl -sf http://localhost:14403/api/last-finalized-block 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('blockInfo',{}).get('blockNumber',0))" 2>/dev/null || echo 0)
+            echo "  [$((i*5))s] LFB: #$LFB (before restart: #$LFB_BEFORE_RESTART)"
+            if [ "$LFB" -gt "$LFB_BEFORE_RESTART" ] 2>/dev/null; then
+              echo "Finalization advanced to LFB #$LFB after the restart"
+              break
+            fi
+            sleep 5
+          done
+          [ "$LFB" -gt "$LFB_BEFORE_RESTART" ] 2>/dev/null || (echo "FAIL: LFB #$LFB did not pass #$LFB_BEFORE_RESTART within 300s of the restart" && exit 1)
 
       - name: Collect logs
         if: always()

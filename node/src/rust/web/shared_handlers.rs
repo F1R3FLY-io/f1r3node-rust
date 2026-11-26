@@ -11,10 +11,11 @@ use axum::http::request::Parts;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
-    BlockNotFoundError, BlockPrunedError, DeployExpiredError, DeployNotFoundError,
-    DeployValidationError, ExploratoryDeployReadOnlyError, ExploratoryDeployRejection,
-    InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError,
-    ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError, ValidatorNotBondedError,
+    BlockNotFoundError, BlockPrunedError, BlockUnavailableError, DeployExpiredError,
+    DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
+    ExploratoryDeployRejection, InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError,
+    NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError,
+    ValidatorNotBondedError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::casper::DeployError;
@@ -98,10 +99,9 @@ pub struct ApiErrorResponse {
     /// `method_not_allowed`
     ///
     /// **410 Gone:**
-    /// `block_pruned` — the block was once held by this node but the
-    /// retention sweep has deleted it. The response body includes the
-    /// block height and the node's current prune floor so the consumer
-    /// can decide whether to retry against an archive node.
+    /// `block_pruned` — the block was once held by this node and the
+    /// retention sweep has advanced past its height, so the body has
+    /// been deleted. Permanent on this node; consult an archive.
     ///
     /// **413 Payload Too Large:**
     /// `deploy_too_large`
@@ -126,7 +126,11 @@ pub struct ApiErrorResponse {
     ///
     /// **503 Service Unavailable:**
     /// `observer_busy`, `deploy_pool_full` — carry `Retry-After`; `deploy_pool_busy`,
-    /// `deploy_admission_busy`, `validator_not_bonded`
+    /// `deploy_admission_busy`, `validator_not_bonded`,
+    /// `block_unavailable` — the DAG knows the hash but the body is
+    /// not in the store and the retention sweep has not advanced past
+    /// its height (LFS backfill horizon, pending-body race). Retry
+    /// may succeed.
     ///
     /// **504 Gateway Timeout:**
     /// `exploratory_timeout`
@@ -311,11 +315,25 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
             return classify_casper_error(ce);
         }
         match cause.downcast_ref::<DeployError>() {
+            Some(DeployError::ParsingError(_)) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "rholang_bad_term",
+                    cause.to_string(),
+                );
+            }
             Some(DeployError::DuplicateDeploy(_)) => {
                 return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
             }
             Some(DeployError::SeedReuse(_)) => {
                 return (StatusCode::CONFLICT, "seed_reuse", cause.to_string());
+            }
+            Some(DeployError::PhloLimitAboveCap { .. }) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "illegal_argument",
+                    cause.to_string(),
+                );
             }
             _ => {}
         }
@@ -378,6 +396,20 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         // deleted block apart from a gap.
         if cause.downcast_ref::<BlockPrunedError>().is_some() {
             return (StatusCode::GONE, "block_pruned", cause.to_string());
+        }
+        // `block_unavailable` is the retry-eligible cousin of
+        // `block_pruned` (#1087): the DAG metadata lists the hash but
+        // the body is not in the store AND the retention sweep has not
+        // yet advanced past this height. Causes include LFS-restore
+        // backfill horizons, pending-body races, or storage
+        // inconsistency. HTTP 503 Service Unavailable signals a
+        // retry-eligible miss rather than a permanent gap.
+        if cause.downcast_ref::<BlockUnavailableError>().is_some() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "block_unavailable",
+                cause.to_string(),
+            );
         }
         if cause.downcast_ref::<InvalidHashError>().is_some() {
             return (StatusCode::BAD_REQUEST, "invalid_hash", cause.to_string());
@@ -535,6 +567,11 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
             "out_of_phlogistons",
             ie.to_string(),
         ),
+        NestingLimitExceeded { .. } => (
+            S::UNPROCESSABLE_ENTITY,
+            "nesting_limit_exceeded",
+            ie.to_string(),
+        ),
         HostWorkRejected => (
             S::UNPROCESSABLE_ENTITY,
             "host_work_rejected",
@@ -546,6 +583,7 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         ReduceError(_)
         | BitmaskBitsCleared { .. }
         | IfConditionTypeError { .. }
+        | UnknownUrnError { .. }
         | MethodNotDefined { .. }
         | MethodArgumentNumberMismatch { .. }
         | OperatorNotDefined { .. }
@@ -790,7 +828,9 @@ pub async fn get_blocks_handler(
         (status = 200, description = "Block information", body = BlockInfoSerde),
         (status = 400, description = "Hash is shorter than 6 characters or contains non-hex characters (`invalid_hash`)", body = ApiErrorResponse),
         (status = 404, description = "No block matches the given hash or prefix (`block_not_found`)", body = ApiErrorResponse),
+        (status = 410, description = "Block known to DAG but body deleted by retention sweep at or below `prune_floor` (`block_pruned`); consult an archive", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`, `history_error`)", body = ApiErrorResponse),
+        (status = 503, description = "Block known to DAG but body missing with `block_height > prune_floor` (`block_unavailable`); retry may succeed", body = ApiErrorResponse),
     ),
     tag = "Blocks"
 )]
@@ -899,9 +939,9 @@ mod tests {
         use axum::http::StatusCode;
         use axum::response::IntoResponse;
         use casper::rust::api::block_api::{
-            BlockNotFoundError, BlockPrunedError, DeployExpiredError, DeployNotFoundError,
-            DeployValidationError, ExploratoryDeployReadOnlyError, InvalidHashError,
-            InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError,
+            BlockNotFoundError, BlockPrunedError, BlockUnavailableError, DeployExpiredError,
+            DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
+            InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError,
             ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError, ValidatorNotBondedError,
         };
         use casper::rust::casper::DeployError;
@@ -930,9 +970,10 @@ mod tests {
                 (StatusCode::NOT_FOUND, "block_not_found".to_string())
             );
             // A pruned block is deliberately 410 Gone, not 404 Not Found:
-            // the node held the block and the retention sweep deleted it.
-            // Consumers walking /reporting/trace can tell deleted history
-            // from a gap without probing an archive node first.
+            // the node held the block, the retention sweep has advanced
+            // past its height, and the body is gone. Consumers walking
+            // /reporting/trace can tell deleted history from a gap
+            // without probing an archive node first.
             assert_eq!(
                 classify(BlockPrunedError {
                     hash: "cc".to_string(),
@@ -940,6 +981,21 @@ mod tests {
                     prune_floor: 100,
                 }),
                 (StatusCode::GONE, "block_pruned".to_string())
+            );
+            // `block_unavailable` is the retry-eligible cousin: the DAG
+            // metadata names the hash but the body is absent and the
+            // retention sweep has NOT reached the height yet. HTTP 503
+            // signals "retry later" distinctly from 410 "gone forever".
+            assert_eq!(
+                classify(BlockUnavailableError {
+                    hash: "dd".to_string(),
+                    block_height: 150,
+                    prune_floor: 100,
+                }),
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "block_unavailable".to_string()
+                )
             );
             assert_eq!(
                 classify(InvalidHashError("bad hash".to_string())),
@@ -1018,11 +1074,39 @@ mod tests {
         }
 
         #[test]
+        fn a_phlo_limit_above_the_cap_is_an_illegal_argument() {
+            assert_eq!(
+                classify(DeployError::PhloLimitAboveCap {
+                    phlo_limit: 20_000_001,
+                    max_phlo_limit: 20_000_000,
+                }),
+                (StatusCode::BAD_REQUEST, "illegal_argument".to_string())
+            );
+        }
+
+        #[test]
         fn invalid_deploy_window_is_a_client_error() {
             assert_eq!(
                 classify(DeployError::InvalidFreshness),
                 (StatusCode::BAD_REQUEST, "invalid_deploy_window".to_string())
             );
+        }
+
+        #[tokio::test]
+        async fn deploy_parsing_errors_return_bad_term() {
+            let err = DeployError::parsing_error("unexpected end of input".into());
+            let response =
+                AppError(eyre::Report::new(err).wrap_err("deploy failed")).into_response();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "rholang_bad_term");
+            assert!(body["message"]
+                .as_str()
+                .unwrap()
+                .contains("unexpected end of input"));
         }
 
         #[tokio::test]

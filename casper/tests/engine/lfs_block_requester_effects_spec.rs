@@ -326,10 +326,12 @@ where
 
         let empty_queue = std::collections::VecDeque::new();
         let response_queue_pending = Arc::new(AtomicUsize::new(0));
+        let (_pruned_tx, pruned_rx) = mpsc::channel(1);
         let lfs_stream = casper::rust::engine::lfs_block_requester::stream(
             &approved_block,
             &empty_queue,
             response_rx,
+            pruned_rx,
             response_queue_pending.clone(),
             0,
             request_timeout,
@@ -1303,5 +1305,41 @@ mod tests {
         )
         .await
         .expect("Test should complete successfully");
+    }
+
+    #[tokio::test]
+    async fn accepted_blocks_are_logged_with_hex_hashes() {
+        use models::rust::casper::pretty_printer::PrettyPrinter;
+        use shared::rust::tracing_init::EventCapture;
+
+        let capture = EventCapture::new();
+        let _guard = capture.install();
+
+        let (b9, b8, _, _, _, _, _, _, _) = get_blocks();
+        let b8_hash = b8.block_hash.clone();
+
+        dag_from_block(
+            b9,
+            true,
+            std::time::Duration::from_secs(10 * 24 * 3600),
+            |mut mock| async move {
+                mock.next_request().await.expect("request for b8");
+                mock.receive_block(&[b8]).await.expect("Should receive b8");
+                mock.next_save().await.expect("Should save b8");
+                Ok(())
+            },
+        )
+        .await
+        .expect("Test should succeed");
+
+        let accepted = capture.with_message("accepted, adding");
+        let expected_prefix = format!(
+            "Block {} accepted",
+            PrettyPrinter::build_string_bytes(&b8_hash)
+        );
+        assert!(accepted
+            .iter()
+            .any(|event| event.message.starts_with(&expected_prefix)));
+        assert!(accepted.iter().all(|event| !event.message.contains("b\"")));
     }
 }

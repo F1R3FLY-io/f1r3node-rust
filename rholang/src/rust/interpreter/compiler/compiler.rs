@@ -1,6 +1,7 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/Compiler.scala
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use lazy_static::lazy_static;
 use models::rhoapi::connective::ConnectiveInstance;
@@ -10,8 +11,10 @@ use models::rust::rholang::sorter::sortable::Sortable;
 use regex::Regex;
 
 use super::normalize::normalize_ann_proc;
+use super::process_depth::process_depth;
 use crate::rust::interpreter::compiler::exports::ProcVisitInputs;
 use crate::rust::interpreter::errors::InterpreterError;
+use crate::rust::interpreter::nesting::MAX_NESTING_DEPTH;
 
 lazy_static! {
     static ref FLOAT_RE: Regex = Regex::new(
@@ -103,6 +106,11 @@ impl Compiler {
             validated::Validated::Good(procs) => {
                 if procs.len() == 1 {
                     let proc = procs.into_iter().next().unwrap();
+                    if process_depth(&proc) > MAX_NESTING_DEPTH {
+                        return Err(InterpreterError::NestingLimitExceeded {
+                            limit: MAX_NESTING_DEPTH,
+                        });
+                    }
                     let proc = if super::normalizer::cost_accounting::elaborate::current()
                         .is_some_and(|e| e.pass)
                     {
@@ -156,42 +164,39 @@ impl Compiler {
                     }
                 }
 
-                let connectives: Vec<String> = normalized_result
-                    .free_map
-                    .connectives
-                    .into_iter()
-                    .map(|(conn_type, source_position)| {
-                        format!(
-                            "{} at {}",
-                            connective_instance_to_string(conn_type),
-                            source_position
-                        )
-                    })
-                    .collect();
+                let connectives: Vec<String> =
+                    Arc::unwrap_or_clone(normalized_result.free_map.connectives)
+                        .into_iter()
+                        .map(|(conn_type, source_position)| {
+                            format!(
+                                "{} at {}",
+                                connective_instance_to_string(conn_type),
+                                source_position
+                            )
+                        })
+                        .collect();
 
                 return Err(InterpreterError::TopLevelLogicalConnectivesNotAllowedError(
                     connectives.join(", "),
                 ));
             } else if !normalized_result.free_map.wildcards.is_empty() {
-                let top_level_wildcard_list: Vec<String> = normalized_result
-                    .free_map
-                    .wildcards
-                    .into_iter()
-                    .map(|source_position| format!("_ (wildcard) at {}", source_position))
-                    .collect();
+                let top_level_wildcard_list: Vec<String> =
+                    Arc::unwrap_or_clone(normalized_result.free_map.wildcards)
+                        .into_iter()
+                        .map(|source_position| format!("_ (wildcard) at {}", source_position))
+                        .collect();
 
                 return Err(InterpreterError::TopLevelWildcardsNotAllowedError(
                     top_level_wildcard_list.join(", "),
                 ));
             } else {
-                let free_variable_list: Vec<String> = normalized_result
-                    .free_map
-                    .level_bindings
-                    .into_iter()
-                    .map(|(var_name, var_sort)| {
-                        format!("{} at {:?}", var_name, var_sort.source_span)
-                    })
-                    .collect();
+                let free_variable_list: Vec<String> =
+                    Arc::unwrap_or_clone(normalized_result.free_map.level_bindings)
+                        .into_iter()
+                        .map(|(var_name, var_sort)| {
+                            format!("{} at {:?}", var_name, var_sort.source_span)
+                        })
+                        .collect();
 
                 return Err(InterpreterError::TopLevelFreeVariablesNotAllowedError(
                     free_variable_list.join(", "),

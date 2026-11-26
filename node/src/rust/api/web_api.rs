@@ -30,6 +30,7 @@ use tracing::warn;
 use utoipa::ToSchema;
 
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
+use crate::rust::api::serde_types::blocks_by_heights_response::BlocksByHeightsResponseSerde;
 use crate::rust::api::serde_types::deploy_info::TransferInfoSerde;
 use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
 use crate::rust::web::block_info_enricher::extract_transfers_from_report;
@@ -125,13 +126,21 @@ pub trait WebApi {
         use_pre_state_hash: bool,
     ) -> Result<RhoDataResponse>;
 
-    /// Get blocks by height range
+    /// Get blocks by height range. The envelope carries `pruned`
+    /// entries (`block_height <= prune_floor`, permanent on this node)
+    /// and `unavailable` entries (`block_height > prune_floor`, body
+    /// missing but the retention sweep has not reached the height —
+    /// retry may succeed), plus the `prune_floor` captured at the
+    /// moment of the walk. The route turns this into either the
+    /// pre-#1087 bare array (default) or the full envelope
+    /// (`include_missing=true`); the trait always returns the envelope
+    /// so the handler can decide the wire shape.
     async fn get_blocks_by_heights(
         &self,
         start_block_number: i64,
         end_block_number: i64,
         view: ViewMode,
-    ) -> Result<Vec<BlockInfoSerde>>;
+    ) -> Result<BlocksByHeightsResponseSerde>;
 
     /// Check if a block is finalized
     async fn is_finalized(&self, hash: String) -> Result<bool>;
@@ -634,6 +643,7 @@ impl WebApi for WebApiImpl {
             deploy_lifespan: pacing.map(|p| p.deploy_lifespan),
             max_user_deploys_per_block: pacing.map(|p| p.max_user_deploys_per_block),
             max_parent_depth: pacing.map(|p| p.max_parent_depth),
+            max_phlo_limit: pacing.map(|p| p.max_phlo_limit),
         })
     }
 
@@ -902,31 +912,25 @@ impl WebApi for WebApiImpl {
         start_block_number: i64,
         end_block_number: i64,
         view: ViewMode,
-    ) -> Result<Vec<BlockInfoSerde>> {
+    ) -> Result<BlocksByHeightsResponseSerde> {
         if view == ViewMode::Full {
-            let blocks = BlockAPI::get_blocks_by_heights_full(
+            let response = BlockAPI::get_blocks_by_heights_full(
                 &self.engine_cell,
                 start_block_number,
                 end_block_number,
                 self.api_max_blocks_limit,
             )
             .await?;
-            Ok(blocks
-                .into_iter()
-                .map(BlockInfoSerde::try_from)
-                .collect::<Result<Vec<_>, _>>()?)
+            BlocksByHeightsResponseSerde::from_full(response)
         } else {
-            let blocks = BlockAPI::get_blocks_by_heights(
+            let response = BlockAPI::get_blocks_by_heights(
                 &self.engine_cell,
                 start_block_number,
                 end_block_number,
                 self.api_max_blocks_limit,
             )
             .await?;
-            Ok(blocks
-                .into_iter()
-                .map(|block| BlockInfoSerde::from_light(LightBlockInfoSerde::from(block)))
-                .collect())
+            Ok(BlocksByHeightsResponseSerde::from_light(response))
         }
     }
 
@@ -1657,6 +1661,9 @@ pub struct ApiStatus {
     /// How far below the tip a block may cite. `null` until casper is up.
     #[serde(rename = "maxParentDepth")]
     pub max_parent_depth: Option<i32>,
+    /// Largest phlo limit a deploy may declare. `null` until casper is up.
+    #[serde(rename = "maxPhloLimit")]
+    pub max_phlo_limit: Option<i64>,
 }
 
 /// The chain values a deploy client needs to pace and window its deploys,
@@ -1667,6 +1674,7 @@ pub struct DeployPacing {
     pub deploy_lifespan: i64,
     pub max_user_deploys_per_block: u32,
     pub max_parent_depth: i32,
+    pub max_phlo_limit: i64,
 }
 
 impl DeployPacing {
@@ -1680,6 +1688,7 @@ impl DeployPacing {
             deploy_lifespan: shard_conf.deploy_lifespan,
             max_user_deploys_per_block: shard_conf.max_user_deploys_per_block,
             max_parent_depth: shard_conf.max_parent_depth,
+            max_phlo_limit: shard_conf.max_phlo_limit,
         }))
     }
 }

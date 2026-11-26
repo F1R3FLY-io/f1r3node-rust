@@ -366,6 +366,27 @@ impl KeyValueDagRepresentation {
         })
     }
     pub fn lookup(&self, block_hash: &BlockHash) -> Result<Option<BlockMetadata>, KvStoreError> {
+        self.lookup_in(&self.block_metadata_index.read(), block_hash)
+    }
+
+    /// Metadata of every block, read under one hold of the metadata index, so
+    /// no finalization lands between two of the reads.
+    pub fn lookup_many(
+        &self,
+        block_hashes: &[BlockHash],
+    ) -> Result<Vec<Option<BlockMetadata>>, KvStoreError> {
+        let block_metadata_index = self.block_metadata_index.read();
+        block_hashes
+            .iter()
+            .map(|block_hash| self.lookup_in(&block_metadata_index, block_hash))
+            .collect()
+    }
+
+    fn lookup_in(
+        &self,
+        block_metadata_index: &BlockMetadataStore,
+        block_hash: &BlockHash,
+    ) -> Result<Option<BlockMetadata>, KvStoreError> {
         let expected = if let Some(history) = &self.history {
             if block_hash.len() != block_hash::LENGTH {
                 return Ok(None);
@@ -389,16 +410,12 @@ impl KeyValueDagRepresentation {
             }
             None
         };
-        let metadata = self
-            .block_metadata_index
-            .read()
-            .get(block_hash)?
-            .ok_or_else(|| {
-                KvStoreError::KeyNotFound(format!(
-                    "published block metadata missing: {}",
-                    hex::encode(block_hash)
-                ))
-            })?;
+        let metadata = block_metadata_index.get(block_hash)?.ok_or_else(|| {
+            KvStoreError::KeyNotFound(format!(
+                "published block metadata missing: {}",
+                hex::encode(block_hash)
+            ))
+        })?;
         if let Some((height, invalid)) = expected {
             if metadata.block_hash != *block_hash
                 || metadata.block_number != height
@@ -1353,7 +1370,7 @@ pub struct BlockDagKeyValueStorage {
     pub(crate) dag_generation: Arc<AtomicU64>,
     /// Lower bound on `fault_tolerance_value` across `finalized_block_set`,
     /// held as `f32` bits (`f32::to_bits` / `from_bits`) so it fits an atomic.
-    /// `propagate_ft_to_finalized_blocks` reads it to skip a scan that could
+    /// `propagate_ft_locked` reads it to skip a scan that could
     /// only raise blocks already at or above `ft_value`.
     ///
     /// The invariant is one-sided: too LOW costs one needless scan, too HIGH
@@ -1363,7 +1380,7 @@ pub struct BlockDagKeyValueStorage {
     ///
     /// Both writers hold `global_lock` exclusively — the lowering in
     /// `record_directly_finalized`'s persist closure and the raise at the end
-    /// of `propagate_ft_to_finalized_blocks`. That is what makes `Relaxed`
+    /// of `propagate_ft_locked`. That is what makes `Relaxed`
     /// sufficient here; a reader outside the lock would need stronger
     /// ordering, and could observe a stale-high bound.
     pub(crate) ft_lower_bound: Arc<AtomicU32>,
@@ -2385,7 +2402,9 @@ impl BlockDagKeyValueStorage {
         Fut: std::future::Future<Output = Result<(), KvStoreError>>,
     {
         use crate::rust::dag::finalization_commit::{CommitOutcome, CommitRefusal};
-        match self.commit_lfb(directly_finalized_hash.clone(), ft_value, |_| Ok(()))? {
+        match in_blocking(|| {
+            self.commit_lfb(directly_finalized_hash.clone(), ft_value, |_| Ok(()))
+        })? {
             CommitOutcome::Committed(marker) => {
                 let finalized: HashSet<BlockHash> =
                     marker.finalized_in_order().into_iter().collect();
@@ -2519,10 +2538,10 @@ impl BlockDagKeyValueStorage {
                 ])?;
             }
             metadata_guard.apply_finalized_in_memory(directly.clone(), directly_number, indirectly);
+            self.propagate_ft_locked(&mut metadata_guard, ft_value)?;
             drop(metadata_guard);
             marker
         };
-        self.propagate_ft_to_finalized_blocks(ft_value)?;
         Ok(CommitOutcome::Committed(marker))
     }
 
@@ -2634,38 +2653,37 @@ impl BlockDagKeyValueStorage {
         ])
     }
 
-    fn propagate_ft_to_finalized_blocks(&self, ft_value: f32) -> Result<(), KvStoreError> {
-        in_blocking(|| {
-            // P2-12: mutates `block_metadata_index`; exclusive lock.
-            let _lock_guard = self.global_lock.write();
+    /// Raises every finalized block below `ft_value` to it. The caller holds
+    /// `global_lock` and the metadata index exclusively.
+    fn propagate_ft_locked(
+        &self,
+        block_metadata_index: &mut BlockMetadataStore,
+        ft_value: f32,
+    ) -> Result<(), KvStoreError> {
+        // Nothing is below the bound and this scan only raises, so it would
+        // rewrite nothing. Skipping keeps `global_lock` off an O(finalized) walk.
+        if ft_value <= f32::from_bits(self.ft_lower_bound.load(Ordering::Relaxed)) {
+            metrics::counter!("propagate_ft.skipped", "source" => "f1r3fly.casper.block-dag")
+                .increment(1);
+            return Ok(());
+        }
 
-            // Nothing is below the bound and this scan only raises, so it would
-            // rewrite nothing. Skipping keeps `global_lock` off an O(finalized) walk.
-            if ft_value <= f32::from_bits(self.ft_lower_bound.load(Ordering::Relaxed)) {
-                metrics::counter!("propagate_ft.skipped", "source" => "f1r3fly.casper.block-dag")
-                    .increment(1);
-                return Ok(());
-            }
+        // Update ALL finalized blocks with lower FT, not just ancestors of the
+        // current LFB. In a multi-parent DAG, finalized blocks on orphaned
+        // branches are not reachable via the ancestor chain of the new LFB.
+        let scan_started = std::time::Instant::now();
+        let finalized_hashes = block_metadata_index.finalized_block_hashes();
+        let scanned = finalized_hashes.len();
+        block_metadata_index.update_ft_if_higher(finalized_hashes, ft_value)?;
+        metrics::histogram!("propagate_ft.scan.time", "source" => "f1r3fly.casper.block-dag")
+            .record(scan_started.elapsed().as_secs_f64());
+        metrics::histogram!("propagate_ft.scan.blocks", "source" => "f1r3fly.casper.block-dag")
+            .record(scanned as f64);
 
-            // Update ALL finalized blocks with lower FT, not just ancestors of the
-            // current LFB. In a multi-parent DAG, finalized blocks on orphaned
-            // branches are not reachable via the ancestor chain of the new LFB.
-            let scan_started = std::time::Instant::now();
-            let mut block_metadata_index_guard = self.block_metadata_index.write();
-            let finalized_hashes = block_metadata_index_guard.finalized_block_hashes();
-            let scanned = finalized_hashes.len();
-            block_metadata_index_guard.update_ft_if_higher(finalized_hashes, ft_value)?;
-            drop(block_metadata_index_guard);
-            metrics::histogram!("propagate_ft.scan.time", "source" => "f1r3fly.casper.block-dag")
-                .record(scan_started.elapsed().as_secs_f64());
-            metrics::histogram!("propagate_ft.scan.blocks", "source" => "f1r3fly.casper.block-dag")
-                .record(scanned as f64);
-
-            // Every finalized block is now at or above `ft_value`.
-            self.ft_lower_bound
-                .store(ft_value.to_bits(), Ordering::Relaxed);
-            Ok(())
-        })
+        // Every finalized block is now at or above `ft_value`.
+        self.ft_lower_bound
+            .store(ft_value.to_bits(), Ordering::Relaxed);
+        Ok(())
     }
 }
 
@@ -2765,6 +2783,12 @@ mod tests {
     #[test]
     fn ft_propagation_scan_hands_off_its_worker() {
         let dir = tempfile::tempdir().unwrap();
+        rspace_plus_plus::rspace::shared::open_env_without_sync(
+            &dir.path().join("dagstorage"),
+            1 << 30,
+            32,
+        )
+        .unwrap();
         let mapping: HashMap<Db, LmdbEnvConfig> = DAG_STORES
             .iter()
             .map(|name| {
@@ -2806,8 +2830,9 @@ mod tests {
                 storage.insert(&block, InsertMode::Approved).unwrap();
                 parent = Some(block.block_hash);
             }
-            Arc::new(storage)
+            (Arc::new(storage), parent.unwrap())
         });
+        let (storage, tip) = storage;
 
         let (scan, largest_gap) = runtime.block_on(async move {
             let ticks = Arc::new(parking_lot::Mutex::new(Vec::<Instant>::new()));
@@ -2821,7 +2846,10 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
             let (started, finished) = tokio::spawn(async move {
                 let started = Instant::now();
-                storage.propagate_ft_to_finalized_blocks(0.5).unwrap();
+                storage
+                    .record_directly_finalized(tip, 0.5, |_| async { Ok(()) })
+                    .await
+                    .unwrap();
                 (started, Instant::now())
             })
             .await
@@ -3013,7 +3041,13 @@ mod tests {
             .block_on(storage.record_directly_finalized(tip.clone(), 0.5, |_| async { Ok(()) }))
             .unwrap();
 
-        storage.propagate_ft_to_finalized_blocks(0.8).unwrap();
+        {
+            let _lock_guard = storage.global_lock.write();
+            let mut block_metadata_index = storage.block_metadata_index.write();
+            storage
+                .propagate_ft_locked(&mut block_metadata_index, 0.8)
+                .unwrap();
+        }
 
         let dag = storage.get_representation().unwrap();
         let ft = |hash: &BlockHash| dag.lookup_unsafe(hash).unwrap().fault_tolerance_value;
@@ -3022,6 +3056,106 @@ mod tests {
             ft(&chain[10].block_hash),
             0.5,
             "a finalized block that left memory keeps its value"
+        );
+    }
+
+    /// A reader of a chain's metadata never sees a finalized block above an
+    /// unfinalized parent, or a finalized parent's fault tolerance below its
+    /// finalized child's, while the chain is being finalized.
+    #[test]
+    fn a_chain_read_during_finalization_is_consistent() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let storage = Arc::new(runtime.block_on(async {
+            let mut kvm =
+                rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager::new();
+            BlockDagKeyValueStorage::new_with_hot_window(&mut kvm, 1024)
+                .await
+                .unwrap()
+        }));
+        let mut chain: Vec<BlockHash> = Vec::new();
+        for height in 0..400i64 {
+            let parents = chain.last().cloned().into_iter().collect();
+            let block = models::rust::block_implicits::get_random_block(
+                Some(height),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(parents),
+                Some(vec![]),
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            let mode = if height == 0 {
+                InsertMode::Approved
+            } else {
+                InsertMode::Normal
+            };
+            storage.insert(&block, mode).unwrap();
+            chain.push(block.block_hash.clone());
+        }
+
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = {
+            let storage = storage.clone();
+            let chain = chain.clone();
+            let done = done.clone();
+            std::thread::spawn(move || {
+                let mut reads = 0usize;
+                let mut inconsistent = Vec::new();
+                while !done.load(Ordering::Relaxed) {
+                    let dag = storage.get_representation().unwrap();
+                    let metadata: Vec<BlockMetadata> = dag
+                        .lookup_many(&chain)
+                        .unwrap()
+                        .into_iter()
+                        .map(Option::unwrap)
+                        .collect();
+                    for pair in metadata.windows(2) {
+                        let (parent, child) = (&pair[0], &pair[1]);
+                        if child.finalized
+                            && (!parent.finalized
+                                || parent.fault_tolerance_value < child.fault_tolerance_value)
+                        {
+                            inconsistent.push(format!(
+                                "#{} (finalized {}, {}) under #{} (finalized, {})",
+                                parent.block_number,
+                                parent.finalized,
+                                parent.fault_tolerance_value,
+                                child.block_number,
+                                child.fault_tolerance_value
+                            ));
+                        }
+                    }
+                    reads += 1;
+                }
+                (reads, inconsistent)
+            })
+        };
+
+        for (height, hash) in chain.iter().enumerate().skip(1) {
+            let ft = if height % 2 == 0 { 1.0 } else { 0.684 };
+            runtime
+                .block_on(storage.record_directly_finalized(hash.clone(), ft, |_| async { Ok(()) }))
+                .unwrap();
+        }
+        done.store(true, Ordering::Relaxed);
+        let (reads, inconsistent) = reader.join().unwrap();
+        assert!(reads > 0);
+        assert!(
+            inconsistent.is_empty(),
+            "{} of {reads} reads: {:?}",
+            inconsistent.len(),
+            &inconsistent[..1]
         );
     }
 }

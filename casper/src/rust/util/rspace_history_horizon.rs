@@ -219,6 +219,85 @@ pub fn lfs_seeded_min_block_number(unseeded: i64, floor_number: i64, frontier_nu
     std::cmp::max(0, std::cmp::min(unseeded, seed_reach))
 }
 
+/// Mark-set root enumeration for history GC passes.
+///
+/// Unlike [`compute_forward_horizon_roots`], which bounds the upper end of the
+/// walk at the LFB (an LFS joiner never needs state newer than LFB), a GC pass
+/// must retain the pre- and post-state roots of every block currently in the
+/// DAG — including blocks above the LFB. The pre-#1061-fix code reused
+/// [`compute_forward_horizon_roots`] here; its LFB cap deleted the trie nodes
+/// for every unfinalized block above the LFB, and the next replay panicked
+/// with `Missing node in database` within milliseconds of the first pass.
+///
+/// Walks every block with `block_number ≥ min_block_number`, up to
+/// `dag.latest_block_number()`. Emits each block's post-state and pre-state
+/// (post first within a layer so joiners / readers see the outer root before
+/// its merge intermediate). Deduped and ordered by descending height.
+///
+/// Blocks a sweep must retain are strictly a superset of what a joiner would
+/// sync, so the GC-side enumeration folds in the LFS case naturally; the two
+/// still live apart because the joiner case walks nothing above LFB.
+pub fn compute_gc_retention_roots(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    min_block_number: i64,
+) -> Result<Vec<Blake2b256Hash>, KvStoreError> {
+    let max_height = dag.latest_block_number();
+    let min_height = std::cmp::max(0, min_block_number);
+    if min_height > max_height {
+        return Ok(Vec::new());
+    }
+
+    // `latest_block_number()` returns the highest held block's number + 1, so
+    // passing `None` here uses that as the inclusive upper bound. The
+    // internal `..=end_number` range tolerates the extra value (no block
+    // lives at the `+1` height).
+    let layers = dag.topo_sort(min_height, None)?;
+
+    let mut roots: Vec<Blake2b256Hash> = Vec::new();
+    let mut seen: HashSet<Blake2b256Hash> = HashSet::new();
+    let mut visited = 0usize;
+    let mut absent = 0usize;
+    for layer in layers.iter().rev() {
+        for block_hash in layer {
+            visited += 1;
+            let block = match block_store.get(block_hash)? {
+                Some(b) => b,
+                None => {
+                    absent += 1;
+                    tracing::warn!(
+                        "compute_gc_retention_roots: block {} in DAG but missing from block_store",
+                        models::rust::casper::pretty_printer::PrettyPrinter::build_string_bytes(
+                            block_hash
+                        )
+                    );
+                    continue;
+                }
+            };
+            let post = Blake2b256Hash::from_bytes_prost(&block.body.state.post_state_hash);
+            if seen.insert(post.clone()) {
+                roots.push(post);
+            }
+            let pre = Blake2b256Hash::from_bytes_prost(&block.body.state.pre_state_hash);
+            if seen.insert(pre.clone()) {
+                roots.push(pre);
+            }
+        }
+    }
+
+    tracing::debug!(
+        target: "f1r3.trace.history_gc",
+        min_height,
+        max_height,
+        layers = layers.len(),
+        blocks_visited = visited,
+        blocks_absent_from_store = absent,
+        roots = roots.len(),
+        "gc retention walk"
+    );
+    Ok(roots)
+}
+
 /// The LFS floor for rspace STATE — the forward-horizon roots to import and the
 /// mergeable-channel replay range.
 ///

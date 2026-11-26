@@ -14,6 +14,7 @@ pub const GC_PAGE_SIZE: usize = 1_024;
 const DISCOVERY_KEY: &[u8] = b"gc.discovery";
 const RETRY_CURSOR_KEY: &[u8] = b"gc.retry-cursor";
 const EFFECTIVE_ANCHOR_KEY: &[u8] = b"gc.effective-anchor";
+const RESTORE_FLOOR_KEY: &[u8] = b"gc.restore-floor";
 
 #[derive(Clone, Copy)]
 pub struct DagGcSlots {
@@ -189,6 +190,35 @@ impl DagGcStore {
                     EFFECTIVE_ANCHOR_KEY.to_vec(),
                     encode(&next)?,
                 )?;
+            }
+            Ok(next)
+        })
+    }
+
+    pub fn restore_floor(&self) -> Result<Option<i64>, KvStoreError> {
+        self.group
+            .get(self.slots.state, RESTORE_FLOOR_KEY)?
+            .map(|bytes| decode(&bytes))
+            .transpose()
+    }
+
+    /// Monotonically raise the persisted restore floor to `height`. A block
+    /// at or below the floor is unreachable from the restored DAG: either it
+    /// is pre-restore cruft, or it was downloaded by a prior LFS whose anchor
+    /// this restore superseded. GC admits such blocks without the finalized
+    /// / moved-past gates that assume a connected DAG below the candidate.
+    /// A lower incoming height is a no-op; a restart cannot regress the
+    /// floor.
+    pub fn advance_restore_floor(&self, height: i64) -> Result<i64, KvStoreError> {
+        self.group.transaction(|tx| {
+            let current = tx
+                .get(self.slots.state, RESTORE_FLOOR_KEY)?
+                .map(|bytes| decode::<i64>(&bytes))
+                .transpose()?
+                .unwrap_or(i64::MIN);
+            let next = current.max(height);
+            if next != current {
+                tx.put(self.slots.state, RESTORE_FLOOR_KEY.to_vec(), encode(&next)?)?;
             }
             Ok(next)
         })

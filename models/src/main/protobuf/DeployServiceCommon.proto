@@ -44,6 +44,12 @@ message BlocksQuery {
 message BlocksQueryByHeight{
   int64 startBlockNumber = 1;
   int64 endBlockNumber   = 2;
+  // Opt into the pruned / unavailable metadata introduced by #1087.
+  // proto3 default is false, so existing clients see only `blockInfo`
+  // stream items as before. Clients that set it true also receive
+  // `pruned` and `unavailable` items for hashes topo_sort named at a
+  // walked height whose bodies this node no longer holds.
+  bool include_missing   = 3;
 }
 
 message DataAtNameQuery {
@@ -334,6 +340,7 @@ message Status {
   optional int64  deployLifespan         = 20;
   optional uint32 maxUserDeploysPerBlock = 21;
   optional int32  maxParentDepth         = 22;
+  optional int64  maxPhloLimit           = 23;
 }
 
 message VersionInfo {
