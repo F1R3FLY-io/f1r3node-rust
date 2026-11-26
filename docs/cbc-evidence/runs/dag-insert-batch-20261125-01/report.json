@@ -4,7 +4,7 @@
   "claim_id": "CLAIM-DAG-INSERT-BATCH-001",
   "claim": {
     "path": "docs/claims/dag-insert-batched-writes.md",
-    "sha256": "1418e4bb4c83b6b0fa9bc2ba69ba2d25156cebe396282e11c319de75590b04be"
+    "sha256": "3561abaa0464cd19d172d1306644448edc65831f045750c5a2386f558e4e605b"
   },
   "base_commit": "1caf7b8cfdf7e8d447b348af1c90ae3615f19010",
   "branch": "fix/1151-dag-insert-lock-stall",
@@ -13,7 +13,7 @@
     "block-storage/src/rust/dag/block_dag_key_value_storage.rs": "a247350dda3ee9a9e6e355cd3d7f709e9f13ce23dddace5f4bf80b47c8b23d6a",
     "block-storage/src/rust/dag/deploy_lifecycle_types.rs": "2a9e8f70bbb7034991fd67a9c3e251ba07d14f4af7bd5fe8000cc508a0fef94d"
   },
-  "status": "discharged",
+  "status": "binding-tier",
   "tiers": {
     "P1": "binding",
     "P2": "binding (tested instances)",
