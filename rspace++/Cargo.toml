@@ -46,6 +46,7 @@ multiset = "0.0.5"
 rholang-parser = { workspace = true }
 validated = { workspace = true }
 metrics = { workspace = true }
+lz4_flex = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dependencies.uuid]

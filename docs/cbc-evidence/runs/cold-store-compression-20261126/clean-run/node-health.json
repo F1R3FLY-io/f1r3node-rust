@@ -1,0 +1,47 @@
+[
+  {
+    "node": "boot",
+    "finalized_height": 68,
+    "dag_height": 71,
+    "ready": true,
+    "running_before_stop": true,
+    "oom": false,
+    "automatic_restarts": 0
+  },
+  {
+    "node": "validator1",
+    "finalized_height": 68,
+    "dag_height": 71,
+    "ready": true,
+    "running_before_stop": true,
+    "oom": false,
+    "automatic_restarts": 0
+  },
+  {
+    "node": "validator2",
+    "finalized_height": 68,
+    "dag_height": 71,
+    "ready": true,
+    "running_before_stop": true,
+    "oom": false,
+    "automatic_restarts": 0
+  },
+  {
+    "node": "validator3",
+    "finalized_height": 68,
+    "dag_height": 71,
+    "ready": true,
+    "running_before_stop": true,
+    "oom": false,
+    "automatic_restarts": 0
+  },
+  {
+    "node": "observer",
+    "finalized_height": 68,
+    "dag_height": 71,
+    "ready": true,
+    "running_before_stop": true,
+    "oom": false,
+    "automatic_restarts": 0
+  }
+]

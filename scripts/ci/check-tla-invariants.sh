@@ -119,6 +119,7 @@ POST_FIX_CONFIGS=(
     node_observation/MC_DisplayProjection
     scope_trapped_gc/MC_ScopeTrappedGC
     below_horizon_recovery/MC_BelowHorizonRecovery
+    cold_store_compression/MC_ColdStoreCompression
 )
 
 TLC_WORKERS=auto
@@ -141,6 +142,7 @@ if [[ "$SOAK_PR" == true ]]; then
         node_observation/MC_BoundedCapture
         node_observation/MC_PairedForkChoice
         node_observation/MC_DisplayProjection
+        cold_store_compression/MC_ColdStoreCompression
     )
     TLC_WORKERS=2
 fi
@@ -281,6 +283,11 @@ NEGATIVE_CONTROLS=(
     casper_soak/MC_CasperSoakHarness_control_unsafe:ControlVerdictExact
     scope_trapped_gc/MC_ScopeTrappedGC_payload_leak_pre_fix:Inv_N_NeverInParkedData
     scope_trapped_gc/MC_ScopeTrappedGC_body_mention_pre_fix:Inv_N_NeverInParkedBodyOnForgeable
+    cold_store_compression/MC_ColdStoreCompression_integrity_unsafe:CorruptionRefused
+    cold_store_compression/MC_ColdStoreCompression_export_unsafe:CanonicalExport
+    cold_store_compression/MC_ColdStoreCompression_delete_unsafe:ReplacementPreserved
+    cold_store_compression/MC_ColdStoreCompression_budget_unsafe:BudgetBounded
+    cold_store_compression/MC_ColdStoreCompression_release_unsafe:BudgetAccounted
 )
 
 # Areas whose expected-violation configurations are all registered. A
@@ -288,7 +295,7 @@ NEGATIVE_CONTROLS=(
 # directories that is absent from NEGATIVE_CONTROLS is a broken registration,
 # not a manual control. Other areas keep manual controls until they opt in
 # (docs/formal-verification.md).
-REGISTERED_CONTROL_AREAS=(carrier_index deploy_storage soak_disk casper_soak node_observation scope_trapped_gc)
+REGISTERED_CONTROL_AREAS=(carrier_index deploy_storage soak_disk casper_soak node_observation scope_trapped_gc cold_store_compression)
 for entry in "${POST_FIX_CONFIGS[@]}"; do
     area="${entry%%/*}"
     printf '%s\n' "${REGISTERED_CONTROL_AREAS[@]}" | grep -Fx "$area" >/dev/null || continue

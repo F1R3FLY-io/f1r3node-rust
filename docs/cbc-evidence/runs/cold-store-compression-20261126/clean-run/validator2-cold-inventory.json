@@ -1,0 +1,9 @@
+{
+  "allocated_file_bytes": 7106560,
+  "canonical_row_bytes": 15822907,
+  "compressed_rows": 1826,
+  "file_bytes": 7102464,
+  "live_page_bytes": 6549504,
+  "physical_row_bytes": 4272551,
+  "rows": 4362
+}

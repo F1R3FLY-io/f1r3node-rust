@@ -1,0 +1,312 @@
+{
+  "anchor": {
+    "blockInfo": {
+      "blockHash": "053806b61fc72e6ed2987733d10533aad1461cfda40b7dd927949412ebb3884d",
+      "blockNumber": 57,
+      "blockSize": "15254",
+      "bodyExtraBytes": "",
+      "bonds": [
+        {
+          "stake": "1000",
+          "validator": "0452f310f5b70e1c76f8d37ebd44611f7811a03c7133b26cd0d5cb12ca08fb49595b234c22208b654d8defa3ae52d9ac1482988dcb45e488918f320b2574a75807"
+        },
+        {
+          "stake": "1000",
+          "validator": "046ae12204ad880791a9ce54b1a5c482acaf67938c7558d2baebfd727d6de2836b91fee6aa558fc1d0225ed066d8500cf9f6592690509c4c2bbb00268313bbdf33"
+        },
+        {
+          "stake": "1000",
+          "validator": "04ca544b3b2e3b7b3f63da1ce411c57cdf7372039dba0e0532ff1eff7ce93fc044a9d3a4cc477a2265bc3c1c1ef2d4a84679170d394d5bcf69ba27ba26a9258dea"
+        }
+      ],
+      "deployCount": 0,
+      "extraBytes": "",
+      "faultTolerance": 0.33333334,
+      "headerExtraBytes": "",
+      "isFinalized": true,
+      "justifications": [
+        {
+          "latestBlockHash": "65a33bab4326992f6044e06a3b0a72cefdf19ffa51dc0531c09dc8f37bdbb372",
+          "validator": "0452f310f5b70e1c76f8d37ebd44611f7811a03c7133b26cd0d5cb12ca08fb49595b234c22208b654d8defa3ae52d9ac1482988dcb45e488918f320b2574a75807"
+        },
+        {
+          "latestBlockHash": "a9e1eefeee55ef7d01c5a16c6794ff7b1fdeeed5bfa4529c0e4e372fc442e29d",
+          "validator": "046ae12204ad880791a9ce54b1a5c482acaf67938c7558d2baebfd727d6de2836b91fee6aa558fc1d0225ed066d8500cf9f6592690509c4c2bbb00268313bbdf33"
+        },
+        {
+          "latestBlockHash": "ad38d78e8a9113613f324d64adf59e7de1ca9f307ed87a2411c0ee9245b363eb",
+          "validator": "04ca544b3b2e3b7b3f63da1ce411c57cdf7372039dba0e0532ff1eff7ce93fc044a9d3a4cc477a2265bc3c1c1ef2d4a84679170d394d5bcf69ba27ba26a9258dea"
+        }
+      ],
+      "parentsHashList": [
+        "65a33bab4326992f6044e06a3b0a72cefdf19ffa51dc0531c09dc8f37bdbb372",
+        "a9e1eefeee55ef7d01c5a16c6794ff7b1fdeeed5bfa4529c0e4e372fc442e29d",
+        "ad38d78e8a9113613f324d64adf59e7de1ca9f307ed87a2411c0ee9245b363eb"
+      ],
+      "postStateHash": "81f92cc626e75442e19c0560421d46a21ce93ef295190b668f5e8eca8b57f1ae",
+      "preStateHash": "81f92cc626e75442e19c0560421d46a21ce93ef295190b668f5e8eca8b57f1ae",
+      "rejectedDeploys": [],
+      "sender": "0452f310f5b70e1c76f8d37ebd44611f7811a03c7133b26cd0d5cb12ca08fb49595b234c22208b654d8defa3ae52d9ac1482988dcb45e488918f320b2574a75807",
+      "seqNum": 40,
+      "shardId": "root",
+      "sig": "3045022100d35d7ce6c5f8cc0c1c886d77544f633ff7c753bf67ed30995fe739b46dcdd320022064b6e08c4767af49e5a235853b9075bc248f7fe6a96b6ec6afce13c9edc0acf5",
+      "sigAlgorithm": "secp256k1",
+      "timestamp": 1795687838811,
+      "version": 1
+    },
+    "deploys": []
+  },
+  "observations": [
+    {
+      "block": {
+        "blockHash": "053806b61fc72e6ed2987733d10533aad1461cfda40b7dd927949412ebb3884d",
+        "blockNumber": 57,
+        "blockSize": "15254",
+        "bodyExtraBytes": "",
+        "bonds": [
+          {
+            "stake": "1000",
+            "validator": "0452f310f5b70e1c76f8d37ebd44611f7811a03c7133b26cd0d5cb12ca08fb49595b234c22208b654d8defa3ae52d9ac1482988dcb45e488918f320b2574a75807"
+          },
+          {
+            "stake": "1000",
+            "validator": "046ae12204ad880791a9ce54b1a5c482acaf67938c7558d2baebfd727d6de2836b91fee6aa558fc1d0225ed066d8500cf9f6592690509c4c2bbb00268313bbdf33"
+          },
+          {
+            "stake": "1000",
+            "validator": "04ca544b3b2e3b7b3f63da1ce411c57cdf7372039dba0e0532ff1eff7ce93fc044a9d3a4cc477a2265bc3c1c1ef2d4a84679170d394d5bcf69ba27ba26a9258dea"
+          }
+        ],
+        "deployCount": 0,
+        "extraBytes": "",
+        "faultTolerance": 0.33333334,
+        "headerExtraBytes": "",
+        "isFinalized": true,
+        "justifications": [
+          {
+            "latestBlockHash": "65a33bab4326992f6044e06a3b0a72cefdf19ffa51dc0531c09dc8f37bdbb372",
+            "validator": "0452f310f5b70e1c76f8d37ebd44611f7811a03c7133b26cd0d5cb12ca08fb49595b234c22208b654d8defa3ae52d9ac1482988dcb45e488918f320b2574a75807"
+          },
+          {
+            "latestBlockHash": "a9e1eefeee55ef7d01c5a16c6794ff7b1fdeeed5bfa4529c0e4e372fc442e29d",
+            "validator": "046ae12204ad880791a9ce54b1a5c482acaf67938c7558d2baebfd727d6de2836b91fee6aa558fc1d0225ed066d8500cf9f6592690509c4c2bbb00268313bbdf33"
+          },
+          {
+            "latestBlockHash": "ad38d78e8a9113613f324d64adf59e7de1ca9f307ed87a2411c0ee9245b363eb",
+            "validator": "04ca544b3b2e3b7b3f63da1ce411c57cdf7372039dba0e0532ff1eff7ce93fc044a9d3a4cc477a2265bc3c1c1ef2d4a84679170d394d5bcf69ba27ba26a9258dea"
+          }
+        ],
+        "parentsHashList": [
+          "65a33bab4326992f6044e06a3b0a72cefdf19ffa51dc0531c09dc8f37bdbb372",
+          "a9e1eefeee55ef7d01c5a16c6794ff7b1fdeeed5bfa4529c0e4e372fc442e29d",
+          "ad38d78e8a9113613f324d64adf59e7de1ca9f307ed87a2411c0ee9245b363eb"
+        ],
+        "postStateHash": "81f92cc626e75442e19c0560421d46a21ce93ef295190b668f5e8eca8b57f1ae",
+        "preStateHash": "81f92cc626e75442e19c0560421d46a21ce93ef295190b668f5e8eca8b57f1ae",
+        "rejectedDeploys": [],
+        "sender": "0452f310f5b70e1c76f8d37ebd44611f7811a03c7133b26cd0d5cb12ca08fb49595b234c22208b654d8defa3ae52d9ac1482988dcb45e488918f320b2574a75807",
+        "seqNum": 40,
+        "shardId": "root",
+        "sig": "3045022100d35d7ce6c5f8cc0c1c886d77544f633ff7c753bf67ed30995fe739b46dcdd320022064b6e08c4767af49e5a235853b9075bc248f7fe6a96b6ec6afce13c9edc0acf5",
+        "sigAlgorithm": "secp256k1",
+        "timestamp": 1795687838811,
+        "version": 1
+      },
+      "endpoint": "docker://cold-compression-shard-oydjh3-validator1"
+    },
+    {
+      "block": {
+        "blockHash": "053806b61fc72e6ed2987733d10533aad1461cfda40b7dd927949412ebb3884d",
+        "blockNumber": 57,
+        "blockSize": "15254",
+        "bodyExtraBytes": "",
+        "bonds": [
+          {
+            "stake": "1000",
+            "validator": "0452f310f5b70e1c76f8d37ebd44611f7811a03c7133b26cd0d5cb12ca08fb49595b234c22208b654d8defa3ae52d9ac1482988dcb45e488918f320b2574a75807"
+          },
+          {
+            "stake": "1000",
+            "validator": "046ae12204ad880791a9ce54b1a5c482acaf67938c7558d2baebfd727d6de2836b91fee6aa558fc1d0225ed066d8500cf9f6592690509c4c2bbb00268313bbdf33"
+          },
+          {
+            "stake": "1000",
+            "validator": "04ca544b3b2e3b7b3f63da1ce411c57cdf7372039dba0e0532ff1eff7ce93fc044a9d3a4cc477a2265bc3c1c1ef2d4a84679170d394d5bcf69ba27ba26a9258dea"
+          }
+        ],
+        "deployCount": 0,
+        "extraBytes": "",
+        "faultTolerance": 0.33333334,
+        "headerExtraBytes": "",
+        "isFinalized": true,
+        "justifications": [
+          {
+            "latestBlockHash": "65a33bab4326992f6044e06a3b0a72cefdf19ffa51dc0531c09dc8f37bdbb372",
+            "validator": "0452f310f5b70e1c76f8d37ebd44611f7811a03c7133b26cd0d5cb12ca08fb49595b234c22208b654d8defa3ae52d9ac1482988dcb45e488918f320b2574a75807"
+          },
+          {
+            "latestBlockHash": "a9e1eefeee55ef7d01c5a16c6794ff7b1fdeeed5bfa4529c0e4e372fc442e29d",
+            "validator": "046ae12204ad880791a9ce54b1a5c482acaf67938c7558d2baebfd727d6de2836b91fee6aa558fc1d0225ed066d8500cf9f6592690509c4c2bbb00268313bbdf33"
+          },
+          {
+            "latestBlockHash": "ad38d78e8a9113613f324d64adf59e7de1ca9f307ed87a2411c0ee9245b363eb",
+            "validator": "04ca544b3b2e3b7b3f63da1ce411c57cdf7372039dba0e0532ff1eff7ce93fc044a9d3a4cc477a2265bc3c1c1ef2d4a84679170d394d5bcf69ba27ba26a9258dea"
+          }
+        ],
+        "parentsHashList": [
+          "65a33bab4326992f6044e06a3b0a72cefdf19ffa51dc0531c09dc8f37bdbb372",
+          "a9e1eefeee55ef7d01c5a16c6794ff7b1fdeeed5bfa4529c0e4e372fc442e29d",
+          "ad38d78e8a9113613f324d64adf59e7de1ca9f307ed87a2411c0ee9245b363eb"
+        ],
+        "postStateHash": "81f92cc626e75442e19c0560421d46a21ce93ef295190b668f5e8eca8b57f1ae",
+        "preStateHash": "81f92cc626e75442e19c0560421d46a21ce93ef295190b668f5e8eca8b57f1ae",
+        "rejectedDeploys": [],
+        "sender": "0452f310f5b70e1c76f8d37ebd44611f7811a03c7133b26cd0d5cb12ca08fb49595b234c22208b654d8defa3ae52d9ac1482988dcb45e488918f320b2574a75807",
+        "seqNum": 40,
+        "shardId": "root",
+        "sig": "3045022100d35d7ce6c5f8cc0c1c886d77544f633ff7c753bf67ed30995fe739b46dcdd320022064b6e08c4767af49e5a235853b9075bc248f7fe6a96b6ec6afce13c9edc0acf5",
+        "sigAlgorithm": "secp256k1",
+        "timestamp": 1795687838811,
+        "version": 1
+      },
+      "endpoint": "docker://cold-compression-shard-oydjh3-validator2"
+    },
+    {
+      "block": {
+        "blockHash": "053806b61fc72e6ed2987733d10533aad1461cfda40b7dd927949412ebb3884d",
+        "blockNumber": 57,
+        "blockSize": "15254",
+        "bodyExtraBytes": "",
+        "bonds": [
+          {
+            "stake": "1000",
+            "validator": "0452f310f5b70e1c76f8d37ebd44611f7811a03c7133b26cd0d5cb12ca08fb49595b234c22208b654d8defa3ae52d9ac1482988dcb45e488918f320b2574a75807"
+          },
+          {
+            "stake": "1000",
+            "validator": "046ae12204ad880791a9ce54b1a5c482acaf67938c7558d2baebfd727d6de2836b91fee6aa558fc1d0225ed066d8500cf9f6592690509c4c2bbb00268313bbdf33"
+          },
+          {
+            "stake": "1000",
+            "validator": "04ca544b3b2e3b7b3f63da1ce411c57cdf7372039dba0e0532ff1eff7ce93fc044a9d3a4cc477a2265bc3c1c1ef2d4a84679170d394d5bcf69ba27ba26a9258dea"
+          }
+        ],
+        "deployCount": 0,
+        "extraBytes": "",
+        "faultTolerance": 0.33333334,
+        "headerExtraBytes": "",
+        "isFinalized": true,
+        "justifications": [
+          {
+            "latestBlockHash": "65a33bab4326992f6044e06a3b0a72cefdf19ffa51dc0531c09dc8f37bdbb372",
+            "validator": "0452f310f5b70e1c76f8d37ebd44611f7811a03c7133b26cd0d5cb12ca08fb49595b234c22208b654d8defa3ae52d9ac1482988dcb45e488918f320b2574a75807"
+          },
+          {
+            "latestBlockHash": "a9e1eefeee55ef7d01c5a16c6794ff7b1fdeeed5bfa4529c0e4e372fc442e29d",
+            "validator": "046ae12204ad880791a9ce54b1a5c482acaf67938c7558d2baebfd727d6de2836b91fee6aa558fc1d0225ed066d8500cf9f6592690509c4c2bbb00268313bbdf33"
+          },
+          {
+            "latestBlockHash": "ad38d78e8a9113613f324d64adf59e7de1ca9f307ed87a2411c0ee9245b363eb",
+            "validator": "04ca544b3b2e3b7b3f63da1ce411c57cdf7372039dba0e0532ff1eff7ce93fc044a9d3a4cc477a2265bc3c1c1ef2d4a84679170d394d5bcf69ba27ba26a9258dea"
+          }
+        ],
+        "parentsHashList": [
+          "65a33bab4326992f6044e06a3b0a72cefdf19ffa51dc0531c09dc8f37bdbb372",
+          "a9e1eefeee55ef7d01c5a16c6794ff7b1fdeeed5bfa4529c0e4e372fc442e29d",
+          "ad38d78e8a9113613f324d64adf59e7de1ca9f307ed87a2411c0ee9245b363eb"
+        ],
+        "postStateHash": "81f92cc626e75442e19c0560421d46a21ce93ef295190b668f5e8eca8b57f1ae",
+        "preStateHash": "81f92cc626e75442e19c0560421d46a21ce93ef295190b668f5e8eca8b57f1ae",
+        "rejectedDeploys": [],
+        "sender": "0452f310f5b70e1c76f8d37ebd44611f7811a03c7133b26cd0d5cb12ca08fb49595b234c22208b654d8defa3ae52d9ac1482988dcb45e488918f320b2574a75807",
+        "seqNum": 40,
+        "shardId": "root",
+        "sig": "3045022100d35d7ce6c5f8cc0c1c886d77544f633ff7c753bf67ed30995fe739b46dcdd320022064b6e08c4767af49e5a235853b9075bc248f7fe6a96b6ec6afce13c9edc0acf5",
+        "sigAlgorithm": "secp256k1",
+        "timestamp": 1795687838811,
+        "version": 1
+      },
+      "endpoint": "docker://cold-compression-shard-oydjh3-validator3"
+    },
+    {
+      "block": {
+        "blockHash": "053806b61fc72e6ed2987733d10533aad1461cfda40b7dd927949412ebb3884d",
+        "blockNumber": 57,
+        "blockSize": "15254",
+        "bodyExtraBytes": "",
+        "bonds": [
+          {
+            "stake": "1000",
+            "validator": "0452f310f5b70e1c76f8d37ebd44611f7811a03c7133b26cd0d5cb12ca08fb49595b234c22208b654d8defa3ae52d9ac1482988dcb45e488918f320b2574a75807"
+          },
+          {
+            "stake": "1000",
+            "validator": "046ae12204ad880791a9ce54b1a5c482acaf67938c7558d2baebfd727d6de2836b91fee6aa558fc1d0225ed066d8500cf9f6592690509c4c2bbb00268313bbdf33"
+          },
+          {
+            "stake": "1000",
+            "validator": "04ca544b3b2e3b7b3f63da1ce411c57cdf7372039dba0e0532ff1eff7ce93fc044a9d3a4cc477a2265bc3c1c1ef2d4a84679170d394d5bcf69ba27ba26a9258dea"
+          }
+        ],
+        "deployCount": 0,
+        "extraBytes": "",
+        "faultTolerance": 0.33333334,
+        "headerExtraBytes": "",
+        "isFinalized": true,
+        "justifications": [
+          {
+            "latestBlockHash": "65a33bab4326992f6044e06a3b0a72cefdf19ffa51dc0531c09dc8f37bdbb372",
+            "validator": "0452f310f5b70e1c76f8d37ebd44611f7811a03c7133b26cd0d5cb12ca08fb49595b234c22208b654d8defa3ae52d9ac1482988dcb45e488918f320b2574a75807"
+          },
+          {
+            "latestBlockHash": "a9e1eefeee55ef7d01c5a16c6794ff7b1fdeeed5bfa4529c0e4e372fc442e29d",
+            "validator": "046ae12204ad880791a9ce54b1a5c482acaf67938c7558d2baebfd727d6de2836b91fee6aa558fc1d0225ed066d8500cf9f6592690509c4c2bbb00268313bbdf33"
+          },
+          {
+            "latestBlockHash": "ad38d78e8a9113613f324d64adf59e7de1ca9f307ed87a2411c0ee9245b363eb",
+            "validator": "04ca544b3b2e3b7b3f63da1ce411c57cdf7372039dba0e0532ff1eff7ce93fc044a9d3a4cc477a2265bc3c1c1ef2d4a84679170d394d5bcf69ba27ba26a9258dea"
+          }
+        ],
+        "parentsHashList": [
+          "65a33bab4326992f6044e06a3b0a72cefdf19ffa51dc0531c09dc8f37bdbb372",
+          "a9e1eefeee55ef7d01c5a16c6794ff7b1fdeeed5bfa4529c0e4e372fc442e29d",
+          "ad38d78e8a9113613f324d64adf59e7de1ca9f307ed87a2411c0ee9245b363eb"
+        ],
+        "postStateHash": "81f92cc626e75442e19c0560421d46a21ce93ef295190b668f5e8eca8b57f1ae",
+        "preStateHash": "81f92cc626e75442e19c0560421d46a21ce93ef295190b668f5e8eca8b57f1ae",
+        "rejectedDeploys": [],
+        "sender": "0452f310f5b70e1c76f8d37ebd44611f7811a03c7133b26cd0d5cb12ca08fb49595b234c22208b654d8defa3ae52d9ac1482988dcb45e488918f320b2574a75807",
+        "seqNum": 40,
+        "shardId": "root",
+        "sig": "3045022100d35d7ce6c5f8cc0c1c886d77544f633ff7c753bf67ed30995fe739b46dcdd320022064b6e08c4767af49e5a235853b9075bc248f7fe6a96b6ec6afce13c9edc0acf5",
+        "sigAlgorithm": "secp256k1",
+        "timestamp": 1795687838811,
+        "version": 1
+      },
+      "endpoint": "docker://cold-compression-shard-oydjh3-observer",
+      "expr": [
+        {
+          "ExprList": {
+            "data": [
+              {
+                "ExprInt": {
+                  "data": "100"
+                }
+              },
+              {
+                "ExprInt": {
+                  "data": "100"
+                }
+              },
+              {
+                "ExprInt": {
+                  "data": "100000"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

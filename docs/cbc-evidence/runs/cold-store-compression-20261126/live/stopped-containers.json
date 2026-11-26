@@ -1,0 +1,27 @@
+[
+  {
+    "node": "boot",
+    "state": "exited",
+    "exit_code": 0
+  },
+  {
+    "node": "observer",
+    "state": "exited",
+    "exit_code": 0
+  },
+  {
+    "node": "validator1",
+    "state": "exited",
+    "exit_code": 0
+  },
+  {
+    "node": "validator2",
+    "state": "exited",
+    "exit_code": 0
+  },
+  {
+    "node": "validator3",
+    "state": "exited",
+    "exit_code": 0
+  }
+]

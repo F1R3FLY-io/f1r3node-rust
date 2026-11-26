@@ -1,0 +1,32 @@
+[
+  {
+    "node": "boot",
+    "samples": 23,
+    "max_sampled_memory_mib": 291.8,
+    "max_sampled_cpu_percent": 102.3
+  },
+  {
+    "node": "observer",
+    "samples": 1,
+    "max_sampled_memory_mib": 452.6,
+    "max_sampled_cpu_percent": 0.25
+  },
+  {
+    "node": "validator1",
+    "samples": 23,
+    "max_sampled_memory_mib": 288.8,
+    "max_sampled_cpu_percent": 103.47
+  },
+  {
+    "node": "validator2",
+    "samples": 23,
+    "max_sampled_memory_mib": 323.7,
+    "max_sampled_cpu_percent": 101.67
+  },
+  {
+    "node": "validator3",
+    "samples": 23,
+    "max_sampled_memory_mib": 347.3,
+    "max_sampled_cpu_percent": 92.82
+  }
+]

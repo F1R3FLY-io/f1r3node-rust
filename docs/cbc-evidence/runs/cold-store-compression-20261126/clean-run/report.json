@@ -1,0 +1,92 @@
+{
+  "schema": "cold-store-live-validation/v1",
+  "image": "sha256:a58fcd6d081d7b820d5c959dc32594d245e1ab2c626ec180cf5963021adb7cdf",
+  "genesis": true,
+  "counter_finalized": 100,
+  "locks_finalized": 100,
+  "common_finalized_state": true,
+  "restart_write_disabled": true,
+  "late_joiner": true,
+  "continued_finalization": true,
+  "oom": false,
+  "automatic_restarts": 0,
+  "physical_inventory_verified": true,
+  "run_id": "shard.OYdJh3",
+  "harness_exit": 0,
+  "workload_seconds": 206.610268857,
+  "node_binary_sha256": "96f5e58f25ab4406d8a0850374d8702e5b7483cf8738fc2cb2ca25d1cd2301ff",
+  "client_binary_sha256": "3f3cfa96876afe461c0c062591f7d5080942f412ca81e44074cf51fa28859961",
+  "inspector_binary_sha256": "795ff4d17e06d7bc27947e00e0871a9a69391b5fcb22f7de75e23c28eca2089f",
+  "restart_anchor_height": 58,
+  "final_anchor_height": 68,
+  "final_state": [
+    {
+      "ExprList": {
+        "data": [
+          {
+            "ExprInt": {
+              "data": "100"
+            }
+          },
+          {
+            "ExprInt": {
+              "data": "100"
+            }
+          },
+          {
+            "ExprInt": {
+              "data": "100000"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "node_health": [
+    {
+      "node": "boot",
+      "finalized_height": 68,
+      "dag_height": 71,
+      "ready": true,
+      "running_before_stop": true,
+      "oom": false,
+      "automatic_restarts": 0
+    },
+    {
+      "node": "validator1",
+      "finalized_height": 68,
+      "dag_height": 71,
+      "ready": true,
+      "running_before_stop": true,
+      "oom": false,
+      "automatic_restarts": 0
+    },
+    {
+      "node": "validator2",
+      "finalized_height": 68,
+      "dag_height": 71,
+      "ready": true,
+      "running_before_stop": true,
+      "oom": false,
+      "automatic_restarts": 0
+    },
+    {
+      "node": "validator3",
+      "finalized_height": 68,
+      "dag_height": 71,
+      "ready": true,
+      "running_before_stop": true,
+      "oom": false,
+      "automatic_restarts": 0
+    },
+    {
+      "node": "observer",
+      "finalized_height": 68,
+      "dag_height": 71,
+      "ready": true,
+      "running_before_stop": true,
+      "oom": false,
+      "automatic_restarts": 0
+    }
+  ]
+}
