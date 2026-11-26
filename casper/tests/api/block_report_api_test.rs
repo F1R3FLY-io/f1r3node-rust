@@ -170,6 +170,7 @@ impl Engine for CasperEngine {
 async fn api_over_a_finalized_chain(
     top: i64,
     retention: u32,
+    enable_history_pruning: bool,
     store: CompressedBlockEventInfoStore,
 ) -> (BlockReportAPI, Vec<BlockMessage>, Arc<AtomicUsize>) {
     let fixture = TestFixture::new().await;
@@ -222,6 +223,10 @@ async fn api_over_a_finalized_chain(
         dag,
     );
     casper.genesis_hash = Some(chain[0].block_hash.clone());
+    casper.last_finalized_block = chain.last().cloned();
+    casper.shard_conf.enable_history_pruning = enable_history_pruning;
+    casper.shard_conf.max_parent_depth = 2;
+    casper.shard_conf.mergeable_channels_gc_depth_buffer = 1;
     for block in &chain {
         casper.add_block_to_store(block.clone());
     }
@@ -469,7 +474,7 @@ fn cached(store: &CompressedBlockEventInfoStore, blocks: &[BlockMessage]) -> Vec
 #[tokio::test]
 async fn a_prune_step_deletes_reports_below_the_window_and_keeps_those_inside_it() {
     let store = report_store();
-    let (api, chain, _) = api_over_a_finalized_chain(200, 50, store.clone()).await;
+    let (api, chain, _) = api_over_a_finalized_chain(200, 50, false, store.clone()).await;
     let below = &chain[140..150];
     let inside = &chain[150..=160];
     cache(&store, below);
@@ -492,7 +497,7 @@ async fn a_prune_step_deletes_reports_below_the_window_and_keeps_those_inside_it
 #[tokio::test]
 async fn a_report_below_the_window_is_returned_but_not_cached() {
     let store = report_store();
-    let (api, chain, replays) = api_over_a_finalized_chain(200, 50, store.clone()).await;
+    let (api, chain, replays) = api_over_a_finalized_chain(200, 50, false, store.clone()).await;
 
     api.prewarm_block_report(chain[10].block_hash.clone())
         .await
@@ -504,7 +509,7 @@ async fn a_report_below_the_window_is_returned_but_not_cached() {
 #[tokio::test]
 async fn after_a_restart_a_prune_step_crosses_already_pruned_heights() {
     let store = report_store();
-    let (api, chain, _) = api_over_a_finalized_chain(6_000, 100, store.clone()).await;
+    let (api, chain, _) = api_over_a_finalized_chain(6_000, 100, false, store.clone()).await;
     let near = &chain[900..=900];
     let far = &chain[5_000..=5_000];
     cache(&store, near);
@@ -524,6 +529,37 @@ async fn after_a_restart_a_prune_step_crosses_already_pruned_heights() {
         .await
         .unwrap();
     assert_eq!(cached(&store, far), vec![false]);
+}
+
+#[tokio::test]
+async fn an_archive_replays_old_state_on_a_cache_miss_and_when_forced() {
+    let (api, chain, replays) = api_over_a_finalized_chain(5, 10, false, report_store()).await;
+    let hash = &chain[1].block_hash;
+    let cold = api.block_report(hash.clone(), false).await.unwrap();
+    assert_eq!(replays.load(Ordering::SeqCst), 1);
+    assert_eq!(api.block_report(hash.clone(), false).await.unwrap(), cold);
+    assert_eq!(replays.load(Ordering::SeqCst), 1);
+    assert_eq!(api.block_report(hash.clone(), true).await.unwrap(), cold);
+    assert_eq!(replays.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn a_pruning_node_rejects_replay_below_the_floor_and_allows_it_at_the_floor() {
+    let (api, chain, replays) = api_over_a_finalized_chain(5, 10, true, report_store()).await;
+    let hash = &chain[1].block_hash;
+    assert!(matches!(
+        api.block_report(hash.clone(), true).await,
+        Err(BlockReportError::PrunedState {
+            target_block_hash,
+            target_block_height: 1,
+            retention_floor: 2,
+        }) if target_block_hash == *hash
+    ));
+    assert_eq!(replays.load(Ordering::SeqCst), 0);
+    api.block_report(chain[2].block_hash.clone(), true)
+        .await
+        .unwrap();
+    assert_eq!(replays.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

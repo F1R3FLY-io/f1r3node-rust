@@ -302,13 +302,17 @@ impl BlockReportAPI {
         // target STRICTLY below the floor has been swept. This keeps
         // genesis-at-height-0 reportable on a fresh chain whose floor is
         // also 0.
-        let lfb_number = casper
-            .last_finalized_block()
-            .await
-            .ok()
-            .map(|lfb| lfb.body.state.block_number);
-        if let Some(lfb_number) = lfb_number {
-            let retention_floor = casper.casper_shard_conf().state_retention_floor(lfb_number);
+        let conf = casper.casper_shard_conf();
+        let retention_floor = if conf.enable_history_pruning {
+            casper
+                .last_finalized_block()
+                .await
+                .ok()
+                .map(|lfb| conf.state_retention_floor(lfb.body.state.block_number))
+        } else {
+            None
+        };
+        if let Some(retention_floor) = retention_floor {
             let target_height = block.body.state.block_number;
             if target_height < retention_floor {
                 metrics::counter!("block_report.pruned_state", "source" => "casper").increment(1);
