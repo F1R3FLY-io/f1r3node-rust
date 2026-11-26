@@ -590,6 +590,26 @@ async fn byte_array_append_is_charged_by_both_operands() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_map_remainder_is_charged_for_every_entry_it_takes() {
+    let mut charged = Vec::new();
+    for entries in [10usize, 1_000] {
+        let map = (0..entries).map(|i| format!("{i}: {i}")).collect::<Vec<_>>().join(", ");
+        let contract = format!("match {{{map}}} {{ {{0: 0 ...rest}} => @0!(1) _ => Nil }}");
+        let steps: i64 = charges(contract, "match steps").await.iter().sum();
+        assert!(
+            steps >= entries as i64,
+            "{entries} entries matched for {steps} steps"
+        );
+        charged.push(steps);
+    }
+    assert!(
+        charged[1] - charged[0] >= 990,
+        "a hundred times the entries cost {} more steps",
+        charged[1] - charged[0]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn string_comparison_is_charged_by_the_shorter_string() {
     for len in [16usize, 4_096] {
         let long = "a".repeat(len);

@@ -108,6 +108,7 @@ macro_rules! list_match {
 
                 let matches = match remainder {
                     Some(level) => {
+                        self.budget.spend(targets.len())?;
                         let fits: Vec<bool> = targets.iter().map(|t| t.locally_free(0).is_empty()).collect();
                         let snapshot = state.clone();
                         let mut result = move || snapshot.borrow().free_map.clone();
@@ -182,6 +183,7 @@ macro_rules! list_match {
                 pointer to the function on the heap, which can be stored on the stack.' - GPT-4
               */
               fn match_function(&mut self, pattern: Pattern<$type>, t: $type) -> Option<FreeMap> {
+                self.step()?;
                 let match_effect: Option<()> = match pattern {
                   Pattern::Term(p) => {
                      if !p.connective_used() {
