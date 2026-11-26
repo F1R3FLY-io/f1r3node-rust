@@ -132,10 +132,29 @@ fn branch_mergeable_channels(
     Ok(branch_mergeable)
 }
 
+/// Number cells a chain creates: its block's pre-state held no value there
+/// and its post-state does.
+fn number_cells_created(
+    chain: &DeployChainIndex,
+    mergeable_channels: &impl Fn(&DeployChainIndex) -> NumberChannelsDiff,
+) -> Vec<Blake2b256Hash> {
+    mergeable_channels(chain)
+        .into_keys()
+        .filter(|cell| {
+            chain
+                .state_changes
+                .datums_changes
+                .get(cell)
+                .is_some_and(|change| change.removed.is_empty() && !change.added.is_empty())
+        })
+        .collect()
+}
+
 fn split_unavailable_branch_consumes(
     branch: HashableSet<DeployChainIndex>,
     depends: &impl Fn(&DeployChainIndex, &DeployChainIndex) -> bool,
     mergeable_channels: &impl Fn(&DeployChainIndex) -> NumberChannelsDiff,
+    created_by_survivors: &HashSet<Blake2b256Hash>,
     base_data: &impl Fn(
         &Blake2b256Hash,
     ) -> Result<Vec<Vec<u8>>, rspace_plus_plus::rspace::errors::HistoryError>,
@@ -154,6 +173,7 @@ fn split_unavailable_branch_consumes(
     let branch_mergeable = branch_mergeable_channels(&branch_items, mergeable_channels)?;
     let mut available_data: HashMap<Blake2b256Hash, Vec<Vec<u8>>> = HashMap::new();
     let mut available_continuations: HashMap<Vec<Blake2b256Hash>, Vec<Vec<u8>>> = HashMap::new();
+    let mut base_holds_cell: HashMap<Blake2b256Hash, bool> = HashMap::new();
     // `mutable_key_type` is a false positive: DeployChainIndex's Hash/Eq use
     // only its immutable identity fields, not the interior-mutable caches.
     #[allow(clippy::mutable_key_type)]
@@ -177,7 +197,53 @@ fn split_unavailable_branch_consumes(
         let mut next_continuations = available_continuations.clone();
         let mut applicable = true;
 
+        // A number-cell delta applies to the base's value, absent read as 0.
+        // A chain that did not create the cell computed its delta on a value
+        // its block's pre-state held; with that cell missing from the base and
+        // created by no surviving chain, its creator's work is absent and
+        // applying the delta would make the cell from nothing.
+        let own_created = number_cells_created(chain, mergeable_channels);
+        for cell in chain_mergeable.keys() {
+            if own_created.contains(cell) || created_by_survivors.contains(cell) {
+                continue;
+            }
+            let in_base = match base_holds_cell.get(cell) {
+                Some(held) => *held,
+                None => {
+                    let held = !base_data(cell)?.is_empty();
+                    base_holds_cell.insert(cell.clone(), held);
+                    held
+                }
+            };
+            if !in_base {
+                metrics::counter!(
+                    crate::rust::metrics_constants::DAG_MERGE_REJECTED_NUMBER_CELL_WITHOUT_CREATOR_METRIC,
+                    "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+                )
+                .increment(1);
+                tracing::info!(
+                    target: "f1r3fly.merge.step",
+                    step = "merge.reject_number_cell_without_creator",
+                    cell = %hex::encode(cell.bytes()),
+                    src_block = %hex::encode(&chain.source_block_hash[..8.min(chain.source_block_hash.len())]),
+                    src_block_number = chain.source_block_number,
+                    sigs = ?chain
+                        .deploys_with_cost
+                        .0
+                        .iter()
+                        .map(|d| hex::encode(&d.deploy_id[..8.min(d.deploy_id.len())]))
+                        .collect::<Vec<_>>(),
+                    "rejected a chain whose number-cell write has no creator in the base or the merge"
+                );
+                applicable = false;
+                break;
+            }
+        }
+
         for entry in changes.datums_changes.iter() {
+            if !applicable {
+                break;
+            }
             let channel = entry.key();
             if chain_mergeable.contains_key(channel) {
                 continue;
@@ -313,12 +379,21 @@ fn split_unavailable_resolved_branches(
 ) -> Result<HashableSet<DeployChainIndex>, rspace_plus_plus::rspace::errors::HistoryError> {
     let mut kept_branches = Vec::new();
     let mut rejected_all = HashableSet(HashSet::new());
+    // A creator rejected later in this pass is caught by the retry loop,
+    // which recomputes this set over the narrower survivors.
+    let created_by_survivors: HashSet<Blake2b256Hash> = resolved
+        .to_merge
+        .iter()
+        .flat_map(|branch| branch.0.iter())
+        .flat_map(|chain| number_cells_created(chain, mergeable_channels))
+        .collect();
 
     for branch in std::mem::take(&mut resolved.to_merge) {
         let (kept, rejected) = split_unavailable_branch_consumes(
             branch,
             depends,
             mergeable_channels,
+            &created_by_survivors,
             base_data,
             base_continuations,
         )?;
@@ -2347,6 +2422,7 @@ mod tests {
             branch,
             &depends,
             &|chain| chain.event_log_index.number_channels_data.clone(),
+            &HashSet::new(),
             &|channel| {
                 if channel == &base_channel {
                     Ok(base_data_values.clone())
@@ -3124,11 +3200,16 @@ mod tests {
 
             // The property under test: what reaches the fold must pass the
             // availability check `make_trie_action` implicitly relies on.
+            let created_by_survivors: HashSet<Blake2b256Hash> = survivors
+                .iter()
+                .flat_map(|chain| number_cells_created(chain, &mergeable_fn))
+                .collect();
             for chain in &survivors {
                 let (kept, rejected) = split_unavailable_branch_consumes(
                     HashableSet(HashSet::from([chain.clone()])),
                     &depends_fn,
                     &mergeable_fn,
+                    &created_by_survivors,
                     &base_data,
                     &|_| Ok(Vec::new()),
                 )

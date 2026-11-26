@@ -1642,71 +1642,58 @@ impl DebruijnInterpreter {
                 }])
             }));
 
-            let add_urn = |new_env: Env<Par>, urn: String| {
-                if !self.urn_map.contains_key(&urn) {
-                    match new.injections.get(&urn) {
-                        Some(p) => {
-                            if p == &Par::default() {
-                                Ok(new_env.put(Par::default()))
-                            } else if let Some(gunf) = RhoUnforgeable::unapply(p) {
-                                if let Some(instance) = gunf.unf_instance {
-                                    Ok(new_env.put(Par::default().with_unforgeables(vec![
-                                        GUnforgeable {
-                                            unf_instance: Some(instance),
-                                        },
-                                    ])))
-                                } else {
-                                    Err(InterpreterError::BugFoundError(
-                                        "unf_instance field is None".to_string(),
-                                    ))
-                                }
-                            } else if let Some(expr) = RhoExpression::unapply(p) {
-                                if let Some(instance) = expr.expr_instance {
-                                    Ok(new_env.put(Par::default().with_exprs(vec![Expr {
-                                        expr_instance: Some(instance),
-                                    }])))
-                                } else {
-                                    Err(InterpreterError::BugFoundError(
-                                        "expr_instance field is None".to_string(),
-                                    ))
-                                }
+            let add_urn = |new_env: Env<Par>, urn: String| match self.urn_map.get(&urn) {
+                None => match new.injections.get(&urn) {
+                    Some(p) => {
+                        if p == &Par::default() {
+                            Ok(new_env.put(Par::default()))
+                        } else if let Some(gunf) = RhoUnforgeable::unapply(p) {
+                            if let Some(instance) = gunf.unf_instance {
+                                Ok(new_env.put(Par::default().with_unforgeables(vec![
+                                    GUnforgeable {
+                                        unf_instance: Some(instance),
+                                    },
+                                ])))
                             } else {
                                 Err(InterpreterError::BugFoundError(
-                                    "invalid injection".to_string(),
+                                    "unf_instance field is None".to_string(),
                                 ))
                             }
-                        }
-                        None => Err(InterpreterError::BugFoundError(format!(
-                            "No value set for {}. This is a bug in the normalizer or on the path from it.",
-                            urn
-                        ))),
-                    }
-                } else {
-                    match self.urn_map.get(&urn) {
-                        Some(p) => {
-                            if urn == "rho:system:bitmaskMergeableTag"
-                                && tracing::enabled!(
-                                    target: "f1r3fly.merge.tag_check.validation",
-                                    tracing::Level::DEBUG
-                                )
-                            {
-                                use prost::Message;
-                                let bytes = p.encode_to_vec();
-                                let hex: String =
-                                    bytes.iter().map(|b| format!("{:02x}", b)).collect();
-                                tracing::debug!(
-                                    target: "f1r3fly.merge.tag_check.validation",
-                                    "URI lookup at deploy: rho:system:bitmaskMergeableTag -> Par hex={}",
-                                    hex,
-                                );
+                        } else if let Some(expr) = RhoExpression::unapply(p) {
+                            if let Some(instance) = expr.expr_instance {
+                                Ok(new_env.put(Par::default().with_exprs(vec![Expr {
+                                    expr_instance: Some(instance),
+                                }])))
+                            } else {
+                                Err(InterpreterError::BugFoundError(
+                                    "expr_instance field is None".to_string(),
+                                ))
                             }
-                            Ok(new_env.put(p.clone()))
+                        } else {
+                            Err(InterpreterError::BugFoundError(
+                                "invalid injection".to_string(),
+                            ))
                         }
-                        None => Err(InterpreterError::ReduceError(format!(
-                            "Unknown urn for new: {}",
-                            urn
-                        ))),
                     }
+                    None => Err(InterpreterError::UnknownUrnError { urn }),
+                },
+                Some(p) => {
+                    if urn == "rho:system:bitmaskMergeableTag"
+                        && tracing::enabled!(
+                            target: "f1r3fly.merge.tag_check.validation",
+                            tracing::Level::DEBUG
+                        )
+                    {
+                        use prost::Message;
+                        let bytes = p.encode_to_vec();
+                        let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                        tracing::debug!(
+                            target: "f1r3fly.merge.tag_check.validation",
+                            "URI lookup at deploy: rho:system:bitmaskMergeableTag -> Par hex={}",
+                            hex,
+                        );
+                    }
+                    Ok(new_env.put(p.clone()))
                 }
             };
 

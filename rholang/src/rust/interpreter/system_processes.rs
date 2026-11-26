@@ -41,7 +41,7 @@ use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 #[cfg(feature = "chromadb")]
 use crate::rust::interpreter::chromadb_service::{CollectionEntries, Metadata};
 #[cfg(feature = "chromadb")]
-use crate::rust::interpreter::rho_type::{Extractor, RhoList, RhoNil};
+use crate::rust::interpreter::rho_type::{Extractor, RhoNil};
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/SystemProcesses.scala
 // NOTE: Not implementing Logger
@@ -454,7 +454,7 @@ impl FixedChannels {
     /// The URN + fixed channel were registered at slice 5.43 so
     /// FsGenesis composition (slice 5.36) could
     /// `new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`)`
-    /// without tripping `eval_new`'s "No value set for URN" check,
+    /// without tripping `eval_new`'s `UnknownUrnError`,
     /// even before the real handler landed.
     pub fn fs_remove_dir() -> Par { byte_name(58) }
 

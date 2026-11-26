@@ -1,0 +1,5 @@
+{
+  "schema": "soak-cleanup-admission/v1",
+  "status": "rejected",
+  "error": "The control root must be the Git worktree root."
+}

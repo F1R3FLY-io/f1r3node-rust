@@ -583,6 +583,7 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         ReduceError(_)
         | BitmaskBitsCleared { .. }
         | IfConditionTypeError { .. }
+        | UnknownUrnError { .. }
         | MethodNotDefined { .. }
         | MethodArgumentNumberMismatch { .. }
         | OperatorNotDefined { .. }
