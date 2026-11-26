@@ -1,7 +1,11 @@
 use casper::rust::util::{construct_deploy, proto_util};
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::Par;
+use models::rust::utils::new_gstring_par;
 use num_bigint::BigInt;
+use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
@@ -174,4 +178,130 @@ async fn two_transfers_to_the_same_fresh_address_accumulate() {
     assert!(is_true_nil_tuple(&items[0]), "first reply: {:?}", items[0]);
     assert!(is_true_nil_tuple(&items[1]), "second reply: {:?}", items[1]);
     assert_eq!(big_int(&items[2]), BigInt::from(3));
+}
+
+async fn retained_continuations(node: &TestNode, term: &str) -> (usize, usize) {
+    let root = Blake2b256Hash::from_bytes_prost(&proto_util::post_state_hash(&node.genesis));
+    let repository = node.runtime_manager.get_history_repo();
+    let before = repository.get_history_reader(&root).unwrap();
+    let mut runtime = node.runtime_manager.spawn_runtime().await.unwrap();
+    runtime.reset(&root).await.unwrap();
+
+    let result = runtime.evaluate_with_term(term).await.unwrap();
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    let completed = new_gstring_par("issue1101-lookups-completed".to_owned(), vec![], false);
+    assert_eq!(runtime.get_data(&completed).await.len(), 1);
+
+    let new_channels: Vec<_> = runtime
+        .get_hot_changes()
+        .await
+        .into_iter()
+        .filter(|(channels, row)| {
+            !row.wks.is_empty() && before.get_continuations_proj_generic(channels).is_empty()
+        })
+        .map(|(channels, _)| channels)
+        .collect();
+    let checkpoint = runtime.create_checkpoint().await;
+    let after = repository.get_history_reader(&checkpoint.root).unwrap();
+    let mut persistent = 0;
+    let mut linear = 0;
+    for entry in new_channels
+        .iter()
+        .flat_map(|channels| after.get_continuations_proj_generic(channels))
+    {
+        if entry.persist {
+            persistent += 1;
+        } else {
+            linear += 1;
+        }
+    }
+    (persistent, linear)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lookups_of_existing_vaults_do_not_persist_new_factory_continuations() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let address = |index: usize| {
+        VaultAddress::from_public_key(&genesis.genesis_vaults[index].1)
+            .unwrap()
+            .to_base58()
+    };
+    let sender = address(0);
+    let recipient = address(1);
+    let node = TestNode::standalone(genesis).await.unwrap();
+    let term = format!(
+        r#"
+new lookup(`rho:registry:lookup`), vaultCh, first, second, third in {{
+  lookup!(`rho:vault:system`, *vaultCh) |
+  for (@(_, vault) <- vaultCh) {{
+    @vault!("findOrCreate", "{sender}", *first) |
+    @vault!("findOrCreate", "{recipient}", *second) |
+    @vault!("findOrCreate", "{recipient}", *third) |
+    for (@(true, _) <- first & @(true, _) <- second & @(true, _) <- third) {{
+      @"issue1101-lookups-completed"!(true)
+    }}
+  }}
+}}
+"#
+    );
+    assert_eq!(
+        retained_continuations(&node, &term).await,
+        (0, 0),
+        "existing vault lookups leave persistent or linear continuations"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_lookups_of_a_fresh_vault_only_keep_one_vaults_continuations() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis).await.unwrap();
+    let source = |lookups| {
+        format!(
+            r#"
+new lookup(`rho:registry:lookup`), address(`rho:vault:address`), vaultCh, targetCh,
+    seed, first, second in {{
+  lookup!(`rho:vault:system`, *vaultCh) |
+  address!("fromUnforgeable", *seed, *targetCh) |
+  for (@(_, vault) <- vaultCh & @target <- targetCh) {{
+    {lookups}
+  }}
+}}
+"#
+        )
+    };
+    let single = source(
+        r#"
+    @vault!("findOrCreate", target, *first) |
+    for (@(true, _) <- first) { @"issue1101-lookups-completed"!(true) }
+"#,
+    );
+    let concurrent = source(
+        r#"
+    @vault!("findOrCreate", target, *first) |
+    @vault!("findOrCreate", target, *second) |
+    for (@(true, firstVault) <- first & @(true, secondVault) <- second) {
+      if (firstVault == secondVault) { @"issue1101-lookups-completed"!(true) }
+    }
+"#,
+    );
+    let single_retained = retained_continuations(&node, &single).await;
+    assert!(
+        single_retained.0 > 0,
+        "the new vault must install its own handlers"
+    );
+    assert_eq!(
+        single_retained.1, 0,
+        "creating one vault leaves a linear continuation"
+    );
+    assert_eq!(
+        retained_continuations(&node, &concurrent).await,
+        single_retained,
+        "concurrent lookups leave more continuations than one vault creation"
+    );
 }
