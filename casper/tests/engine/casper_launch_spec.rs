@@ -1,8 +1,13 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use casper::rust::engine::casper_launch::{CasperLaunch, CasperLaunchImpl};
 use casper::rust::engine::engine_cell::EngineCell;
+use casper::rust::heartbeat_signal::{
+    install_heartbeat_signal, new_heartbeat_signal_ref, HeartbeatSignal, HeartbeatSignalRef,
+};
+use casper::rust::util::construct_deploy::basic_deploy_data;
 use comm::rust::errors::CommError;
 use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
 use comm::rust::rp::rp_conf::RPConf;
@@ -12,6 +17,7 @@ use models::routing::protocol::Message as ProtocolMessage;
 use models::rust::casper::protocol::casper_message::ApprovedBlock;
 use prost::bytes::Bytes;
 use prost::Message;
+use rspace_plus_plus::rspace::history::Either;
 
 use crate::engine::setup::{minimal_casper_conf, TestFixture};
 
@@ -31,6 +37,22 @@ fn launcher(
     rp_conf: RPConf,
     engine_cell: Arc<EngineCell>,
 ) -> CasperLaunchImpl<TransportLayerStub> {
+    launcher_with_heartbeat(
+        fixture,
+        rp_conf,
+        engine_cell,
+        new_heartbeat_signal_ref(),
+        false,
+    )
+}
+
+fn launcher_with_heartbeat(
+    fixture: &TestFixture,
+    rp_conf: RPConf,
+    engine_cell: Arc<EngineCell>,
+    heartbeat_signal: HeartbeatSignalRef,
+    deploy_wake: bool,
+) -> CasperLaunchImpl<TransportLayerStub> {
     CasperLaunchImpl::new(
         fixture.transport_layer.clone(),
         rp_conf,
@@ -49,12 +71,56 @@ fn launcher(
         minimal_casper_conf(),
         true,
         true,
-        casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
+        heartbeat_signal,
         false,
-        false,
+        deploy_wake,
         Vec::new(),
         None,
     )
+}
+
+#[tokio::test]
+async fn only_a_new_admitted_deploy_wakes_an_enabled_heartbeat() {
+    #[derive(Default)]
+    struct WakeCounter(AtomicUsize);
+
+    impl HeartbeatSignal for WakeCounter {
+        fn trigger_wake(&self) { self.0.fetch_add(1, Ordering::Relaxed); }
+    }
+
+    for enabled in [false, true] {
+        let fixture = TestFixture::new().await;
+        stored_approved_block(&fixture);
+        let engine_cell = Arc::new(EngineCell::init());
+        let signal = new_heartbeat_signal_ref();
+        let wakes = Arc::new(WakeCounter::default());
+        assert!(install_heartbeat_signal(&signal, wakes.clone()));
+        let launch = launcher_with_heartbeat(
+            &fixture,
+            fixture.rp_conf_ask.clone(),
+            engine_cell.clone(),
+            signal,
+            enabled,
+        );
+
+        tokio::time::timeout(Duration::from_secs(60), launch.launch())
+            .await
+            .expect("launch returns")
+            .expect("launch succeeds");
+        let casper = engine_cell
+            .get()
+            .await
+            .with_casper()
+            .expect("node is Running");
+        let deploy = basic_deploy_data(24, None, Some(fixture.genesis.shard_id.clone())).unwrap();
+        assert!(matches!(
+            casper.deploy(deploy.clone()).unwrap(),
+            Either::Right(_)
+        ));
+        assert_eq!(wakes.0.load(Ordering::Relaxed), usize::from(enabled));
+        assert!(matches!(casper.deploy(deploy).unwrap(), Either::Left(_)));
+        assert_eq!(wakes.0.load(Ordering::Relaxed), usize::from(enabled));
+    }
 }
 
 fn approved_block_requests(fixture: &TestFixture) -> Vec<PeerNode> {

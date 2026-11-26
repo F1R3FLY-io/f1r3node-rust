@@ -26,7 +26,7 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 
 ## Active Coordination
 
-- **Heartbeat H1 coordination (2026-10-19).** `pi-session-heartbeat-h1-cbc` owns H1 implementation and TASK-021-28 after the runtime handoff. `claude-session-f1r3node-rust-71` runs the outside-sandbox checks. F1/F2 are the baseline at `ed9b3c996`. The [design](designs/deploy-heartbeat-wake.md) and [claim](claims/heartbeat-proposal-amplification-bound.md) record the H1 contract. Local coordination uses `docs/handoffs/channel-deploy-heartbeat-wake-2026-10-18.md`, not a published reference.
+- **Heartbeat H1 coordination (2026-10-19).** `pi-session-heartbeat-h1-cbc` owns H1 implementation and TASK-021-28 after the runtime handoff. `claude-session-f1r3node-rust-71` runs the outside-sandbox checks. F1/F2 are the baseline at `ed9b3c996`. The [design](designs/deploy-heartbeat-wake.md) records the H1 prototype. Local coordination uses `docs/handoffs/channel-deploy-heartbeat-wake-2026-10-18.md`, not a published reference.
 - **Maintainer identity ratification (2026-11-13).** Status: implemented locally on `ci/maintainer-identity-ratificatio`, claimed by Codex. The maintainer selected active `ci-maintainers` membership as an additional authority for commit authors. Focused policy, workflow, queue, and release checks passed. The registry proposal was removed. Review, commit, App configuration, and rollout through `master` and `ca-canary` remain pending.
 
 ### TASK-031-2: Correct HTTP deploy validation errors
@@ -1509,13 +1509,19 @@ tasks:
     blocked_by: []
     scope: "H1 implementation, claim revision, and source-bound verification. The runtime owner transferred H1 on 2026-10-18 after F1/F2 landed at ed9b3c996."
     design: docs/designs/deploy-heartbeat-wake.md
-    claim_spec: docs/claims/heartbeat-proposal-amplification-bound.md
     stage: "H1 acceptance at 0a4acca7a is recorded from the maintainer handoff with its stated limits. Performance and separate display-projection acceptance remain open. External policy/read-back audit is requested."
-    verification_record: docs/casper/validation/heartbeat-h1-verification-2026-10-19.md
     notes:
+      - "H1 claim: 9a7294eafa86da423339f522ec6742c28b763bc3:docs/claims/heartbeat-proposal-amplification-bound.md. Verification record: 9a7294eafa86da423339f522ec6742c28b763bc3:docs/casper/validation/heartbeat-h1-verification-2026-10-19.md."
       - "Renumbered from TASK-021-26 on 2026-10-25. The ID collided with the soak disk task that dev merged first. The claim spec and the validation records of 2026-10-19 keep TASK-021-26, because evidence ledgers pin them."
       - "2026-10-21 comparison (issue #24 comment 6319658249, design section 5.2): H1 failed the finalization p95 threshold of design section 5.1. H1 had 26.8 s, and F1/F2 had 24.7 s. The slow share and the block rate passed."
       - "2026-10-23 standup plan (issue #764, design section 7): H1 goes into dev and, through ca-sync, into the release train. It merges only after it meets all three thresholds. The revision continues on this branch, or on a new fix/ branch that is promoted to master for a weekend soak."
+      - "2026-11-26 plan (user): PR #768 stays in draft. F1 and F2 go forward separately on current dev. F1 wakes the heartbeat when a deploy arrives and autopropose is off. F2 rechecks at the end of the cooldown. Both keep the cooldown. H1 adds an exception to the cooldown and has not qualified yet."
+      - "2026-11-26 evidence state: no paired H1 result is newer than the 2026-10-21 comparison. The cost-accounting changes on ca-canary and ca-release removed the quadratic active-set work from the PoS epoch close and rewrote withdrawal scheduling. A-LIN stops the accounting protocol from adopting a finalized block that does not extend the main chain of the previous finalized block. None of these changes shows the H1 latency on dev or master, which use legacy PoS."
+      - "2026-11-26 CA port blocker: the accounting proposer can build a block that carries execution records and no new deploys. Block creation marks those records cited. The H1 rejection after the build can then discard the block, and later proposals skip the records. Keep H1 off on the accounting path until the deploy-only check runs before those updates. A test must show that the ordinary heartbeat still publishes record-only blocks."
+      - "2026-11-26 step 1 (dev): run new CI and a timing comparison for F1 and F2 on current dev. Compare a revised H1 with that F1 and F2 baseline over at least 20 matched high phases. H1 must meet all three recorded thresholds. Renew the correctness evidence for the updated code. The proposer.rs record is older than the dev merge ce70d8ee1."
+      - "2026-11-26 merge requirement: qualify the same F1/F2 change on dev and ca-canary before merging it into dev. Apply the same requirement to a future H1 candidate."
+      - "2026-11-26 step 2 (master and ca-canary): after the change merges to dev, run Promote and Back-merge from master with operation=promote, then with operation=ca-sync. The sync takes the current dev tip. Mergify merges the sync after its review and CI. The sync needs no soak before the merge."
+      - "2026-11-26 step 3 (ca-release): before a canary revision with H1 on is promoted, verify that order and execution both advance under load and that A-LIN records zero holds. The promoted ca-release commit needs its own successful 60-hour soak before the tag."
     acceptance:
       - "The revised claim is pending before H1 code begins, and the prior evidence remains unchanged in history."
       - "The implementation satisfies the routine-block bound, the request-credit bound, and the nonempty exemption under the configured cooldown."

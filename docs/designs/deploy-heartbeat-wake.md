@@ -1,6 +1,6 @@
 # Deploy Heartbeat Wake Design
 
-- **Status:** implemented. F1 and F2 are at `ed9b3c996`, and H1 is at `ab84edf83`, with the review fix `e7638bbd5`. The maintainer accepted the CbC claim on 2026-10-19 ([PR #768 comment 6265326408](https://github.com/F1R3FLY-io/f1r3node-rust/pull/768#issuecomment-6265326408)). The comparison run of section 5.1 failed one threshold (section 5.2). Section 7 gives the plan of 2026-10-23. Created on 2026-10-18.
+- **Status:** F1 and F2 are the shared merge candidate. Section 7 gives the qualification plan for `dev` and `ca-canary`. The H1 prototype is recorded at `ab84edf83` with the review fix `e7638bbd5`. Section 5.2 records the H1 comparison result.
 - **Branch:** `fix/issue-24-deploy-heartbeat-wake`
 - **Issue:** issue #24, high-phase and sustained-phase `test_load` failures after PR #695
 - **Tasks:** TASK-021-13 (the wait after inclusion), TASK-021-17 (metrics for each phase), TASK-021-28 (H1 implementation and verification)
@@ -13,13 +13,12 @@
 
 A validator with the default configuration does not react to a new deploy. The deploy waits for the next heartbeat check. A check that runs just before the deploys arrive builds an empty block, and that block starts the self-propose cooldown. The deploys then wait for a later check.
 
-This design adds three changes to the heartbeat:
+The shared candidate adds two changes to the heartbeat:
 
 1. **F1:** a deploy wakes the heartbeat when no other path proposes for it.
 2. **F2:** the heartbeat checks again when the cooldown ends, if deploys wait.
-3. **H1:** a deploy-responsive mode with hysteresis, in which an empty heartbeat block does not delay the next deploy block.
 
-The changes keep the self-propose cooldown as the bound on proposals (PR #308). They do not change block validity, fork choice, or finality.
+Both changes keep the self-propose cooldown as the bound on routine proposals (PR #308). H1 is a separate proposal for a deploy-responsive mode with hysteresis.
 
 ---
 
@@ -62,7 +61,7 @@ The mechanism explains about 1.4 s of extra selection delay and the extra empty 
 
 ### 3.1 F1: deploy wake without autopropose
 
-The launcher sets `deploy_heartbeat_wake_enabled` to `true` when it has no propose function, which is the case without `autopropose`. With `autopropose`, the deploy API proposes, and the wake stays off. This keeps the original rule against duplicate proposals.
+The node enables `deploy_heartbeat_wake_enabled` when the deploy API has no propose function. The shared admission path sends the wake after it accepts a deploy. A refused or duplicate submission returns before the wake.
 
 A wake does not bypass any lane rule. The heartbeat runs its normal check earlier.
 
@@ -70,7 +69,7 @@ A wake does not bypass any lane rule. The heartbeat runs its normal check earlie
 
 The heartbeat check returns one more value: the time until the cooldown ends, when the pending-deploy lane is blocked only by the cooldown. The loop then waits for the shorter of the check interval and that time.
 
-### 3.3 H1: deploy-responsive mode
+### 3.3 H1 prototype: deploy-responsive mode
 
 The mode remembers pending work observed at heartbeat checks. Deploy wakes and peer-block wakes share one signal, so a wake does not identify an arrival.
 
@@ -109,7 +108,7 @@ An exemption cannot gain empty-recovery authority past the height constraint. A 
 
 The cooldown after a successful user block remains enforced. Newly observed own blocks conservatively restore the publication clock if a result was lost.
 
-The [pending amplification claim](../claims/heartbeat-proposal-amplification-bound.md) defines the rolling windows and verification obligations. Its scope is one live heartbeat task, not durable credit across process restarts.
+The [H1 amplification claim at the prototype revision](https://github.com/F1R3FLY-io/f1r3node-rust/blob/9a7294eafa86da423339f522ec6742c28b763bc3/docs/claims/heartbeat-proposal-amplification-bound.md) defines the rolling windows and verification obligations. Its scope is one live heartbeat task.
 
 ### 3.4 Alternative not chosen: hold the empty block
 
@@ -134,7 +133,7 @@ H1 does not hold an empty block for batching. The cooldown from the last routine
 
 | Change | Test |
 |---|---|
-| F1 | Without a propose function, `add_deploy` wakes the heartbeat. With a propose function, it does not. |
+| F1 | Verify the wake configuration with and without an API propose function. Confirm that an admitted deploy signals once when deploy wake is enabled and a duplicate signals zero times. |
 | F2 | A lane decision that is blocked only by the cooldown returns the time until the cooldown ends. A decision blocked by a lag cap returns none. |
 | H1 state | `heartbeat_responsive_tests.rs` covers observed-pending hysteresis, expiry, re-entry, consumed credit, rolling windows, queue delay, and recovery priority. |
 | H1 execution | `h1_proposer_spec.rs` checks actual nonempty publication, failed-user and system-only classification, stale predecessors, and the height constraint. |
@@ -189,13 +188,12 @@ H1 is therefore not accepted. H1 removes the failing high phases, and it does no
 
 ---
 
-## 7. Plan (2026-10-23)
+## 7. Shared merge plan
 
-The standup meeting on 2026-10-23 resolved the plan of [issue #764](https://github.com/F1R3FLY-io/f1r3node-rust/issues/764). For this design, it decided these items:
+Qualify F1 and F2 on both `dev` and `ca-canary` before the merge to `dev`. Use the same patch on the two bases.
 
-- H1 goes into `dev` and into the release train. After the merge into `dev`, the next `ca-sync` brings H1 into `ca-canary`, and a promotion moves it to `ca-release`.
-- H1 merges only after it meets all three thresholds of section 5.1. The thresholds stay as the maintainer set them on 2026-10-19.
-- The revision of H1 continues on this branch, or on a new `fix/` branch. A new branch is promoted to `master` for a weekend soak, because a scheduled soak runs the driver of `master`.
-- Issue #24 measures its gate on `dev` first.
+1. Run the heartbeat and deploy admission tests on both candidates. Compare F1 and F2 with the current `dev` base under matched load.
+2. On an accounting shard, confirm that deploy admission wakes the heartbeat with autopropose off. Check that the cooldown and record-only proposals still permit order and execution to advance.
+3. Merge the qualified change to `dev`. Promote it to `master`, then run `ca-sync` from the Promote and Back-merge workflow.
 
-The revision must remove the finalization p95 difference of section 5.2. It must keep the result for the slow share and the block rate. A new comparison soak against the F1/F2 baseline measures the revision. That soak needs the soak disk fixes (PR #811 and PR #827), so that it reaches at least 20 `high` phases for each build.
+The [2026-10-23 decision](https://github.com/F1R3FLY-io/f1r3node-rust/issues/764) requires H1 to pass all three thresholds in section 5.1. An accounting version of H1 must also enforce the deploy requirement before the proposer marks execution records cited.

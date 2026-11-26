@@ -863,7 +863,7 @@ impl BlockAPI {
                 tokio::spawn(async move {
                     let mut attempt = 1u32;
                     loop {
-                        match tp(casper_for_propose.clone(), true.into()).await {
+                        match tp(casper_for_propose.clone(), true).await {
                             Ok(proposer_result) => match proposer_result {
                                 ProposerResult::Failure(status, seq_number) => {
                                     if should_retry_deploy_propose(&status)
@@ -1074,7 +1074,7 @@ impl BlockAPI {
 
         if let Some(casper) = eng.with_casper() {
             // Trigger propose
-            let proposer_result = match trigger_propose_f(casper, is_async.into()).await {
+            let proposer_result = match trigger_propose_f(casper, is_async).await {
                 Ok(proposer_result) => proposer_result,
                 Err(err) => {
                     let err_message = err.to_string();

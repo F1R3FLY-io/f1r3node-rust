@@ -6,9 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use casper::rust::blocks::ingest::block_ingest::{self, IngestSetup};
-use casper::rust::blocks::proposer::proposer::{
-    ProductionProposer, ProposeRequest, ProposerResult,
-};
+use casper::rust::blocks::proposer::proposer::{ProductionProposer, ProposerResult};
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::engine::casper_launch::CasperLaunch;
 use casper::rust::errors::CasperError;
@@ -39,7 +37,7 @@ const PROPOSER_QUEUE_MAX_PENDING: usize = 1_024;
 
 type ProposerQueueEntry = (
     Arc<dyn Casper + Send + Sync>,
-    ProposeRequest,
+    bool,
     oneshot::Sender<ProposerResult>,
     u8,
 );
@@ -665,14 +663,14 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         let queue_pending = proposer_queue_pending.clone();
         let queue_max_pending = proposer_queue_max_pending;
         Some(Arc::new(
-            move |casper: Arc<dyn MultiParentCasper + Send + Sync>, request: ProposeRequest| {
+            move |casper: Arc<dyn MultiParentCasper + Send + Sync>, is_async: bool| {
                 let queue_tx = queue_tx.clone();
                 let queue_pending = queue_pending.clone();
                 // Downcast to Arc<dyn Casper + Send + Sync> for the queue (MultiParentCasper extends Casper)
                 let casper_for_queue: Arc<dyn Casper + Send + Sync> = casper;
 
                 Box::pin(async move {
-                    debug!(async_mode = request.is_async, "Propose request enqueued");
+                    debug!(async_mode = is_async, "Propose request enqueued");
 
                     // Guard against unbounded queue growth under high deploy/autopropose load.
                     let enqueue_reserved = queue_pending
@@ -699,7 +697,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
                     // Send to proposer queue
                     match queue_tx
-                        .send((casper_for_queue, request, result_tx, 0))
+                        .send((casper_for_queue, is_async, result_tx, 0))
                         .await
                     {
                         Ok(()) => {}
@@ -728,6 +726,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     } else {
         None
     };
+
+    let propose_f_for_api = trigger_propose_f_opt.clone().filter(|_| conf.autopropose);
 
     // Proposer state ref - created if trigger_propose_f_opt exists
     // Wrapped in Arc for sharing across multiple API instances
@@ -775,12 +775,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             conf.protocol_server.disable_state_exporter,
             heartbeat_signal_ref.clone(),
             conf.standalone,
-            casper::rust::engine::casper_launch::deploy_heartbeat_wake_enabled(
-                &conf
-                    .autopropose
-                    .then(|| trigger_propose_f_opt.clone())
-                    .flatten(),
-            ),
+            casper::rust::engine::casper_launch::deploy_heartbeat_wake_enabled(&propose_f_for_api),
             {
                 // Project the merged FileIoProvisioning into the
                 // bundle format `fs_generator` consumes.  Combines
@@ -843,15 +838,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
     // API Servers - gRPC services for REPL, Deploy, Propose, and LSP
     let is_node_read_only = conf.casper.validator_private_key.is_none();
-
-    // Conditional propose function for autopropose.
-    // In validator nodes this must remain enabled even without deployer private key
-    // so normal deploy flow can trigger propose on-chain in non-dev mode.
-    let propose_f_for_api = if conf.autopropose {
-        trigger_propose_f_opt.clone()
-    } else {
-        None
-    };
 
     let block_report_api_for_return = block_report_api.clone();
 

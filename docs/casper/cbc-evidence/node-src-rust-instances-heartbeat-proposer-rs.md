@@ -1,108 +1,120 @@
 # CbC Evidence: node/src/rust/instances/heartbeat_proposer.rs
 
-**Status:** discharged for H1, with accepted limits.
+- **Status:** pending
+- **Adapter:** manual
+- **Commit:** ce70d8ee1fa24742888dc86be45aea8a123ee056
+- **Verified:** 2026-11-26T21:42:26Z
 
-This record identifies the heartbeat source at `da1c12ed1`. The maintainer accepted H1 at `0a4acca7a`, with the recorded assumptions and limits.
+Claim:
 
-This discharge records maintainer review. It does not claim a mechanized proof.
-
-The claim is `docs/claims/heartbeat-proposal-amplification-bound.md`. The review and test record is `docs/casper/validation/heartbeat-h1-verification-2026-10-19.md`.
-
-The original leader-only evidence remains unchanged in the retained history file. The pre-implementation registration remains unchanged in the checkpoint Git object below.
+> # Heartbeat Proposal Amplification Bound Claim
+>
+> ## Status
+>
+> This claim is mandatory for heartbeat recovery changes.
+>
+> Revised: the original formulation bounded amplification by silencing
+> non-leaders at high lag. Artifact replay of the CI finality stalls refuted
+> that mechanism: leader-only recovery is what held the stalls open.
+> Non-leaders logged "waiting for selected recovery leader" 81 and 114 times
+> in run 32284324989, 288 and 289 times in run 32397055615 (the 851-second
+> stall), while a single proposer — who cannot rebuild the mutual
+> justification a certification clique requires — proposed alone. The bound
+> is real; it is enforced by cadence and width, never by proposer exclusion.
+>
+> ## Claim
+>
+> A recent self-proposal must stop all routine heartbeat proposals until the
+> configured cooldown ends.
+>
+> A newly admitted deploy can wake the heartbeat when the API has no propose
+> function. A failed or duplicate admission does not send a deploy wake.
+> When only the cooldown blocks the pending-deploy lane, the heartbeat can
+> schedule an earlier check. The check evaluates the same proposal conditions.
+>
+> Deploy grace must not bypass the self-proposal cooldown; grace widens lag
+> caps only.
+>
+> Stale-LFB recovery is open to every bonded validator and paced solely by
+> the stale-recovery interval on both the LFB's age and the validator's own
+> silence: at most one recovery proposal per validator per interval.
+>
+> The pending-deploy backstop is open to every bonded validator on the same
+> interval pacing: user work is never gated behind a single proposer.
+>
+> Empty heartbeat proposals stop at the empty-frontier width cap, except
+> that a temporally idle validator retains one proposal per stale-recovery
+> interval through the cap (the consensus-deadlock escape).
+>
+> ## Formal statement
+>
+> ```text
+> recent_self(v) => not routine_proposal(v)
+> stale_lfb and recovery_interval_elapsed(v) and not backpressure => stale_lfb_recovery(v)
+> high_deploy_lag and pending(v) and recovery_interval_elapsed(v) and cooldown_elapsed(v) => pending_deploy_backstop(v)
+> proposals_per_interval(v) <= 1 during a stall
+> idle(v) and stale_lfb and recovery_interval_elapsed(v) => recovery_escape(v)
+> ```
+>
+> ## Evidence
+>
+> - `casper/tests/engine/casper_launch_spec.rs::only_a_new_admitted_deploy_wakes_an_enabled_heartbeat`
+> - `node/src/rust/instances/heartbeat_proposer.rs::cooldown_recheck_tests`
+> - `node/src/rust/instances/heartbeat_proposer.rs::deploy_grace_does_not_bypass_self_propose_cooldown`
+> - `node/src/rust/instances/heartbeat_proposer.rs::a_cooldown_hot_validator_defers_routine_lanes_but_never_recovery`
+> - `node/src/rust/instances/heartbeat_proposer.rs::high_lag_pending_deploy_backstop_fires_for_non_leaders_too`
+> - `node/src/rust/instances/heartbeat_proposer.rs::high_lag_pending_deploy_backstop_allows_leader`
+> - `node/src/rust/instances/heartbeat_proposer.rs::high_lag_stale_recovery_fires_for_every_validator`
+> - `node/src/rust/instances/heartbeat_proposer.rs::a_stalled_idle_non_leader_must_get_its_recovery_proposal`
+> - `node/src/rust/instances/heartbeat_proposer.rs::stale_recovery_breaks_the_empty_frontier_deadlock`
+>
+> ## Counter-evidence to the leader-only formulation
+>
+> - CI stall instances i1 (run 32284324989, 239 s) and i5 (run 32397055615,
+>   851 s): the stand-down counts above, measured from the shards' own logs.
+> - `casper/tests/finalized_floor/oracle_stall_replay_spec.rs`: exact oracle
+>   replays of both instances from committed fixtures — certification failed
+>   for want of mutual witnessing while one leader proposed.
+>
+> ## Gate rule
+>
+> A routine-lane cooldown bypass refutes this claim.
+>
+> A validator silenced during a stall — any bonded validator whose
+> stale-recovery interval has elapsed under a stale LFB and that still may
+> not propose — refutes this claim.
+>
+> More than one empty proposal per validator per stale-recovery interval
+> during a stall refutes this claim.
 
 ```json
 {
   "artifact": {
     "path": "node/src/rust/instances/heartbeat_proposer.rs",
-    "id": "node-src-rust-instances-heartbeat-proposer-rs",
-    "commit": "da1c12ed1",
-    "working_tree": false,
-    "sha256": "3c62915518a13bf20d8c79d0b1da106a3db5e26de6141412ef1f4fe287500576"
+    "commit": "ce70d8ee1fa24742888dc86be45aea8a123ee056",
+    "id": "node-src-rust-instances-heartbeat-proposer-rs"
   },
-  "claim": "docs/claims/heartbeat-proposal-amplification-bound.md",
-  "claim_digests": {
-    "docs/claims/heartbeat-proposal-amplification-bound.md": "0f62182a84d4f83eae00e6dab4647d1299ffddedb0e98d5840b42df7e57db44b"
-  },
-  "adapter": null,
-  "status": "discharged",
-  "scope": "h1-bounded-nonempty-cooldown-exemption",
+  "claim": "# Heartbeat Proposal Amplification Bound Claim\n\n## Status\n\nThis claim is mandatory for heartbeat recovery changes.\n\nRevised: the original formulation bounded amplification by silencing\nnon-leaders at high lag. Artifact replay of the CI finality stalls refuted\nthat mechanism: leader-only recovery is what held the stalls open.\nNon-leaders logged \"waiting for selected recovery leader\" 81 and 114 times\nin run 32284324989, 288 and 289 times in run 32397055615 (the 851-second\nstall), while a single proposer \u2014 who cannot rebuild the mutual\njustification a certification clique requires \u2014 proposed alone. The bound\nis real; it is enforced by cadence and width, never by proposer exclusion.\n\n## Claim\n\nA recent self-proposal must stop all routine heartbeat proposals until the\nconfigured cooldown ends.\n\nA newly admitted deploy can wake the heartbeat when the API has no propose\nfunction. A failed or duplicate admission does not send a deploy wake.\nWhen only the cooldown blocks the pending-deploy lane, the heartbeat can\nschedule an earlier check. The check evaluates the same proposal conditions.\n\nDeploy grace must not bypass the self-proposal cooldown; grace widens lag\ncaps only.\n\nStale-LFB recovery is open to every bonded validator and paced solely by\nthe stale-recovery interval on both the LFB's age and the validator's own\nsilence: at most one recovery proposal per validator per interval.\n\nThe pending-deploy backstop is open to every bonded validator on the same\ninterval pacing: user work is never gated behind a single proposer.\n\nEmpty heartbeat proposals stop at the empty-frontier width cap, except\nthat a temporally idle validator retains one proposal per stale-recovery\ninterval through the cap (the consensus-deadlock escape).\n\n## Formal statement\n\n```text\nrecent_self(v) => not routine_proposal(v)\nstale_lfb and recovery_interval_elapsed(v) and not backpressure => stale_lfb_recovery(v)\nhigh_deploy_lag and pending(v) and recovery_interval_elapsed(v) and cooldown_elapsed(v) => pending_deploy_backstop(v)\nproposals_per_interval(v) <= 1 during a stall\nidle(v) and stale_lfb and recovery_interval_elapsed(v) => recovery_escape(v)\n```\n\n## Evidence\n\n- `casper/tests/engine/casper_launch_spec.rs::only_a_new_admitted_deploy_wakes_an_enabled_heartbeat`\n- `node/src/rust/instances/heartbeat_proposer.rs::cooldown_recheck_tests`\n- `node/src/rust/instances/heartbeat_proposer.rs::deploy_grace_does_not_bypass_self_propose_cooldown`\n- `node/src/rust/instances/heartbeat_proposer.rs::a_cooldown_hot_validator_defers_routine_lanes_but_never_recovery`\n- `node/src/rust/instances/heartbeat_proposer.rs::high_lag_pending_deploy_backstop_fires_for_non_leaders_too`\n- `node/src/rust/instances/heartbeat_proposer.rs::high_lag_pending_deploy_backstop_allows_leader`\n- `node/src/rust/instances/heartbeat_proposer.rs::high_lag_stale_recovery_fires_for_every_validator`\n- `node/src/rust/instances/heartbeat_proposer.rs::a_stalled_idle_non_leader_must_get_its_recovery_proposal`\n- `node/src/rust/instances/heartbeat_proposer.rs::stale_recovery_breaks_the_empty_frontier_deadlock`\n\n## Counter-evidence to the leader-only formulation\n\n- CI stall instances i1 (run 32284324989, 239 s) and i5 (run 32397055615,\n  851 s): the stand-down counts above, measured from the shards' own logs.\n- `casper/tests/finalized_floor/oracle_stall_replay_spec.rs`: exact oracle\n  replays of both instances from committed fixtures \u2014 certification failed\n  for want of mutual witnessing while one leader proposed.\n\n## Gate rule\n\nA routine-lane cooldown bypass refutes this claim.\n\nA validator silenced during a stall \u2014 any bonded validator whose\nstale-recovery interval has elapsed under a stale LFB and that still may\nnot propose \u2014 refutes this claim.\n\nMore than one empty proposal per validator per stale-recovery interval\nduring a stall refutes this claim.\n",
+  "adapter": "manual",
+  "status": "pending",
   "evidence": {
-    "kind": "implementation-review-pending-verification",
-    "ref": "docs/casper/validation/heartbeat-h1-verification-2026-10-19.md",
-    "sha256": "d63ee22fa382d7ddfa8f344cce7cc7f0dfad47d1972c4b766880468542e53b60"
-  },
-  "tiers": {
-    "refutation": "partial-executable-checks-passed",
-    "construction": "reviewed-not-mechanized-accepted-with-limits",
-    "binding": "source-bound-checks-reviewed-and-accepted-with-limits"
-  },
-  "registration_history": {
-    "git_object": "b87d1dfe29ee6d06d1894aec3db872c63ff6829f:docs/casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-registration-20261018.md",
-    "sha256": "4ec41bec62214de8dc500e91abd0fd0920f83e21fc4e2dbde15972058d5ae87a"
-  },
-  "previous_ledger": {
-    "path": "docs/casper/cbc-evidence/history/node-src-rust-instances-heartbeat-proposer-rs-20260821.md",
-    "sha256": "e7ee126e11bf5a83a029bda23216afa7553887462cf1307430eac98d1b9eca7b",
-    "commit": "3fd707102"
-  },
-  "previous_review_record": {
-    "git_object": "0a4acca7a179d69e766e65672480390c02b45fe5:docs/casper/cbc-evidence/node-src-rust-instances-heartbeat-proposer-rs.md",
-    "sha256": "00da430134071695f259331fc341e28cb9324ad70a53a6e178c8dc90e72c93c2",
-    "report": {
-      "git_object": "0a4acca7a179d69e766e65672480390c02b45fe5:docs/casper/validation/heartbeat-h1-verification-2026-10-19.md",
-      "sha256": "37a9a5b80b2b5f2ceb5f003915acf438192cef771939bdffaba40f2efb21065e"
-    }
-  },
-  "verification_sources": {
-    "node/src/rust/instances/heartbeat_responsive_tests.rs": "034ce24f396ee3719013095e10970d3327cf4df5092daf3942dae1f284473ef3",
-    "node/src/rust/instances/proposer_instance.rs": "c76ea6698d479db9617bba7cad5f7868a74f217d7582b28ae7ec8c6309aa9431",
-    "casper/tests/add_block/h1_proposer_spec.rs": "b9f54549857fa29b0f008210c7e9b685a4304fd88a9eea1a79ec0b00d702b1c9"
-  },
-  "acceptance": {
-    "claim": "docs/claims/heartbeat-proposal-amplification-bound.md",
-    "claim_sha256": "0f62182a84d4f83eae00e6dab4647d1299ffddedb0e98d5840b42df7e57db44b",
-    "obligations": [
-      "H1-1",
-      "H1-2",
-      "H1-3",
-      "H1-4",
-      "H1-5"
-    ],
-    "artifact_scope": "h1-bounded-nonempty-cooldown-exemption",
-    "accepted_by": "jeffrey-l-turner",
-    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/768#issuecomment-6265326408",
-    "revision": "0a4acca7a179d69e766e65672480390c02b45fe5",
-    "reviewed_at": "2026-10-19T10:40:35Z",
-    "approval_type": "maintainer-review",
-    "provenance": "shared-maintainer-handoff",
-    "source_digests": {
-      "node/src/rust/instances/heartbeat_proposer.rs": "3c62915518a13bf20d8c79d0b1da106a3db5e26de6141412ef1f4fe287500576"
-    },
-    "accepted_evidence": {
-      "h1_report": {
-        "git_object": "0a4acca7a179d69e766e65672480390c02b45fe5:docs/casper/validation/heartbeat-h1-verification-2026-10-19.md",
-        "sha256": "37a9a5b80b2b5f2ceb5f003915acf438192cef771939bdffaba40f2efb21065e"
-      },
-      "api_renewal": {
-        "git_object": "0a4acca7a179d69e766e65672480390c02b45fe5:docs/casper/validation/api-display-projection-renewal-2026-10-19.md",
-        "sha256": "acfd02d5a6b477d453767a9b6b7871eb3c163b660f41f4c89b8ea613a2d46701"
-      }
-    },
-    "accepted_limits": [
-      "The construction argument is reviewed, not mechanized.",
-      "The bound assumes one live heartbeat task and sequential request awaits.",
-      "Block hashes are immutable and snapshots are consistent.",
-      "Publication effects precede successful callback completion.",
-      "No bound applies across process restarts or globally across excluded proposal paths.",
-      "Linux display admission and the Rocq recheck were not executed.",
-      "The agentic verifier result is executable-check evidence only."
-    ],
-    "not_accepted": [
-      "H1 performance qualification",
-      "CLAIM-CASPER-NODE-OBSERVATION-005"
-    ]
+    "kind": "rust-test-results",
+    "ref": "scripts/verify-heartbeat-proposal-bound.sh",
+    "detail": "The working-tree candidate passed 48 heartbeat tests on the dev base. This covers cooldown decisions, recheck scheduling and the existing recovery lanes. The admission integration tests passed separately. The source digest identifies the candidate. Formal discharge is pending."
   },
   "waiver": null,
-  "verified_at": null
+  "verified_at": "2026-11-26T21:42:26Z",
+  "verification_id": "815a4022-1725-4e28-b8ee-6c4d13577b4d",
+  "inputs": {
+    "artifact": "node/src/rust/instances/heartbeat_proposer.rs",
+    "source_sha256": "edd5aa018a48170b79bd665a6fb1c2fe37049385c2fe3de137538f871925a3a0",
+    "claim": {
+      "path": "docs/claims/heartbeat-proposal-amplification-bound.md",
+      "sha256": "e5c10f2b0bf6e8ee906c0665dfa5af41429ac77a39b7e7a54c12fe3bc9fa03a6"
+    }
+  },
+  "evidence_files": {
+    "scripts/verify-heartbeat-proposal-bound.sh": "ab2d10dce19da66d8d0c4965ebc7ff84ae5887f3a39f3706a3ab5b4650ea6065"
+  }
 }
 ```
