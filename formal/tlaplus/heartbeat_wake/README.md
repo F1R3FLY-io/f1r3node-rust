@@ -62,6 +62,8 @@ The B3 test runs the heartbeat task with a 200 ms check interval and a 1.5 s coo
 
 The original B3 RED control set the cooldown to zero only on a signal wake. It failed with three proposals at the first sample of the earlier test. All 58 heartbeat tests passed independently on the earlier `dev` candidate and the isolated `ca-canary` candidate with the same heartbeat source.
 
+The revised B3 test failed when a scratch control shortened the cooldown to 1.2 s. It recorded a proposal 288 ms before the deadline. The earlier test passed that control. A control that removed the cooldown failed with six early proposals.
+
 The cooldown recheck counter records a timer that expires after a shortened sleep. The new unit test checks that signal wakes and ordinary timer intervals leave the counter unchanged. The revised B3 test and the counter test passed in the 60-test heartbeat suite. This run used an isolated build target on the merged `dev` candidate.
 
 The B4 fixture sets both pending-deploy lag caps to one block. The validator is eight blocks ahead of the latest finalized block. At an own-block age of 1 s, the check must produce zero proposals and keep its 60 s interval. At 4 s, after the 3 s cooldown, the check must still produce zero proposals. The test supplies each age with a block timestamp and calls the production check directly.
@@ -85,9 +87,9 @@ cargo test --release -p casper --test mod engine::casper_launch_spec
 cargo test --release -p casper --test mod add_block::proposer_spec
 ```
 
-The checks assume that deploy admission supplies the reservation verdict and that the heartbeat supplies a consistent age and lane decision for each check. The formal models cover the local rules. They leave scheduler progress, multiple live tasks, accounting execution, and the legacy recovery claims open. The full amplification claim remains pending maintainer review and Rust binding across the complete claim.
+The checks assume that deploy admission supplies the reservation verdict and that the heartbeat supplies a consistent age and lane decision for each check. The formal models cover the local rules. The maintainer approved the F1 and F2 scope on 2026-11-27 at revision `60853a719`. Scheduler progress, multiple live tasks, accounting execution, and legacy recovery remain open proof obligations.
 
-The F1 and F2 patch adds a counter to `add_deploy` in `block_admission.rs`. The block dependency verdict code matches `dev`. The [buffer release claim](../../../docs/claims/casper-buffer-release.md) still has no discharge for this artifact.
+The F1 and F2 patch adds a counter to `add_deploy` in `block_admission.rs`. The block-ingest sources match `dev`. Commit `2cc05cedf` removed the legacy buffer wait verdict before this branch. The [buffer release claim](../../../docs/claims/casper-buffer-release.md) still has no discharge for this artifact.
 
 ## Local timing comparison
 
