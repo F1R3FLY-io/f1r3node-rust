@@ -8,6 +8,7 @@ use dashmap::DashMap;
 use proptest_derive::Arbitrary;
 use serde::{Deserialize, Serialize};
 
+use super::search_charge::GuardSize;
 use super::trace::event::{Consume, Produce};
 
 // The 'Arbitrary' macro is needed here for proptest in hot_store_spec.rs
@@ -17,6 +18,9 @@ pub struct Datum<A: Clone> {
     pub a: A,
     pub persist: bool,
     pub source: Produce,
+    /// `a`'s size as the space's matcher measures it, taken once when the
+    /// datum is made so a search can be priced without measuring it again.
+    pub size: usize,
 }
 
 /// The data on one channel as the matcher sees it: each datum with its index
@@ -26,9 +30,14 @@ pub type IndexedData<A> = Vec<(std::sync::Arc<Datum<A>>, i32)>;
 impl<A> Datum<A>
 where A: Clone + Serialize
 {
-    pub fn create<C: Serialize>(channel: &C, a: A, persist: bool) -> Datum<A> {
+    pub fn create<C: Serialize>(channel: &C, a: A, persist: bool, size: usize) -> Datum<A> {
         let source = Produce::create(channel, &a, persist);
-        Datum { a, persist, source }
+        Datum {
+            a,
+            persist,
+            source,
+            size,
+        }
     }
 }
 
@@ -41,6 +50,11 @@ pub struct WaitingContinuation<P: Clone, K: Clone> {
     pub persist: bool,
     pub peeks: BTreeSet<i32>,
     pub source: Consume,
+    /// Each pattern's size as the space's matcher measures it, taken once when
+    /// the receive is made.
+    pub pattern_sizes: Vec<usize>,
+    /// The size of the continuation's guard, taken at the same time.
+    pub guard_size: Option<GuardSize>,
 }
 
 impl<P, K> WaitingContinuation<P, K>
@@ -54,6 +68,8 @@ where
         continuation: &K,
         persist: bool,
         peeks: BTreeSet<i32>,
+        pattern_sizes: Vec<usize>,
+        guard_size: Option<GuardSize>,
     ) -> WaitingContinuation<P, K> {
         let source = Consume::create(channels, patterns, &continuation, persist);
         WaitingContinuation {
@@ -62,6 +78,8 @@ where
             persist,
             peeks,
             source,
+            pattern_sizes,
+            guard_size,
         }
     }
 }

@@ -8,6 +8,7 @@
 mod bridge_contract_concurrent_merge;
 mod integer_channel_resend_merge;
 mod registry_key_merge;
+mod search_charge_merge;
 mod foreign_genesis_rejection;
 mod store_items_flood_resilience;
 mod twin_arrival_order_spec;

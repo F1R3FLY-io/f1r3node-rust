@@ -50,7 +50,13 @@ where
             phase_a_locks: striped_locks::new_striped_locks(),
             phase_b_locks: striped_locks::new_striped_locks(),
             gc_roots: GcRootRegistry::new(),
+            search_charging_required: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    pub(crate) fn search_charging_required(&self) -> bool {
+        self.search_charging_required
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn create(
