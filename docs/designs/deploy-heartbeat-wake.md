@@ -197,3 +197,17 @@ Qualify F1 and F2 on both `dev` and `ca-canary` before the merge to `dev`. Use t
 3. Merge the qualified change to `dev`. Promote it to `master`, then run `ca-sync` from the Promote and Back-merge workflow.
 
 The [2026-10-23 decision](https://github.com/F1R3FLY-io/f1r3node-rust/issues/764) requires H1 to pass all three thresholds in section 5.1. An accounting version of H1 must also enforce the deploy requirement before the proposer marks execution records cited.
+
+### F1 and F2 timing on current `dev`
+
+The final F1 and F2 candidate `3c9ff855e77403f340a808374d406be529a4759d` passed the local timing test. The comparison reuses the recorded run of current `dev` at `71d435ea6f6a7d766b7e1bda29b96cc0017563ca`. Both runs used the same native subprocess harness on this host. Each run had one warm-up and five measured high-load phases at ten deploys per second.
+
+| Metric | `dev` | Final F1 and F2 |
+| --- | ---: | ---: |
+| Mean inclusion p95 | 6.36 s | 4.38 s |
+| Mean finalization p95 | 42.28 s | 38.82 s |
+| Mean blocks created per validator and phase | 9.8 | 12.0 |
+| Phases above 9 s inclusion p95 | 0 of 5 | 0 of 5 |
+| Unfinalized deploys | 0 | 0 |
+
+The last finalized block advanced in all five measured phases on both revisions. The separate accounting qualification uses the smoke and finality fixture in the [F1 and F2 evidence report](../../formal/tlaplus/heartbeat_wake/README.md#accounting-shard-smoke-and-finality-fixture).
