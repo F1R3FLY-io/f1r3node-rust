@@ -135,7 +135,7 @@ async fn http_intake_reports_the_queue_state_beside_the_node_status() {
             .status(),
         400
     );
-    let expected = json!({"state":"Expired","basisBlockHash":"ab","basisBlockHeight":9});
+    let expected = json!({"state":"Expired","basis_block_hash":"ab","basis_block_height":9});
     let unknown = deploy(0, "root", 3);
     let forwarded: Value = reconcile(request_body(&unknown))
         .await

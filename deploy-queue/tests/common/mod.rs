@@ -98,7 +98,7 @@ async fn deploy_status(State(node): State<FakeNode>) -> Json<Value> {
 
 async fn reconcile(Json(request): Json<DeployRequest>) -> Json<Value> {
     request.to_signed().expect("forwarded signed deploy");
-    Json(json!({"state":"Expired","basisBlockHash":"ab","basisBlockHeight":9}))
+    Json(json!({"state":"Expired","basis_block_hash":"ab","basis_block_height":9}))
 }
 
 async fn take_deploy(State(node): State<FakeNode>, Json(request): Json<DeployRequest>) -> Response {

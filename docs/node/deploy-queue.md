@@ -101,7 +101,8 @@ A node never answers `Rejected`. The gRPC status gives it as `DEPLOY_STATE_REJEC
 change. Send the saved signed deploy to `POST /api/deploy-finalization-status` or in the gRPC query's
 optional `deploy` field. The queue checks the signature before returning a local status.
 For an unknown deploy, the queue forwards the request to the node and returns its verdict, including
-`basisBlockHash` and `basisBlockHeight`. See the [reconciliation API](api-reference.md#post-apideploy-finalization-status).
+`basis_block_hash` and `basis_block_height` in HTTP responses.
+See the [reconciliation API](api-reference.md#post-apideploy-finalization-status).
 
 ## Watching deploys
 

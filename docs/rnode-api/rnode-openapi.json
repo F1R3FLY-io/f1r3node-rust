@@ -1447,8 +1447,8 @@
         "state": {"type": "string", "enum": ["Pending", "Finalized", "Failed", "Expired"]},
         "rejection_count": {"type": "integer", "minimum": 0},
         "latest_block_hash": {"type": "string", "x-nullable": true},
-        "basisBlockHash": {"type": "string", "x-nullable": true},
-        "basisBlockHeight": {"type": "integer", "format": "int64", "x-nullable": true}
+        "basis_block_hash": {"type": "string", "x-nullable": true},
+        "basis_block_height": {"type": "integer", "format": "int64", "x-nullable": true}
       }
     },
     "DeployRequest": {

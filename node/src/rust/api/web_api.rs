@@ -216,9 +216,7 @@ pub struct DeployFinalizationStatusJson {
     /// the adopted last finalized block a reconciled never-observed verdict
     /// was judged against. Absent (`null`) on pure register lookups and
     /// when this node could not resolve a floor.
-    #[serde(rename = "basisBlockHash")]
     pub basis_block_hash: Option<String>,
-    #[serde(rename = "basisBlockHeight")]
     pub basis_block_height: Option<i64>,
 }
 

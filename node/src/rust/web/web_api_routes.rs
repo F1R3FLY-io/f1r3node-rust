@@ -387,7 +387,7 @@ pub async fn deploy_finalization_status_handler(
     responses(
         (
             status = 200,
-            description = "Canonical-state finalization status. A sig the register has never observed is reconciled against the floor of the adopted last finalized block (#1103): a deploy proven unable to execute answers Expired, and the verdict basis is named in `basisBlockHash` / `basisBlockHeight`. Every unverifiable case keeps Pending",
+            description = "Canonical-state finalization status. For a signature absent from the register, the node checks the floor of its adopted last finalized block and the carrier index. The response reports the basis in `basis_block_hash` and `basis_block_height`. An unresolved verdict stays Pending.",
             body = crate::rust::api::web_api::DeployFinalizationStatusJson
         ),
         (status = 400, description = "Malformed JSON (`invalid_request_body`); invalid amounts, keys, signature, or shard mismatch (`illegal_argument`)", body = ApiErrorResponse),
@@ -1793,8 +1793,11 @@ mod router_tests {
         let (status, json) = get_response("/deploy-finalization-status/ccdd").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["state"], "Finalized");
-        assert!(json["basisBlockHash"].is_null());
-        assert!(json["basisBlockHeight"].is_null());
+        assert_eq!(json.get("basis_block_hash"), Some(&serde_json::Value::Null));
+        assert_eq!(
+            json.get("basis_block_height"),
+            Some(&serde_json::Value::Null)
+        );
 
         // #1103: POSTing the saved signed deploy reconciles a
         // never-observed sig and names the verdict basis.
@@ -1805,8 +1808,8 @@ mod router_tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["state"], "Expired");
-        assert_eq!(json["basisBlockHash"], "bb");
-        assert_eq!(json["basisBlockHeight"], 7);
+        assert_eq!(json["basis_block_hash"], "bb");
+        assert_eq!(json["basis_block_height"], 7);
 
         let (status, json) = get_response("/pending-deploys?deployer=04aa").await;
         assert_eq!(status, StatusCode::OK);
