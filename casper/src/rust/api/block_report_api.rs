@@ -99,11 +99,8 @@ pub enum BlockReportError {
     BlockNotFound(BlockHash),
     #[error("Block report pre-state is unavailable for block {0:?}")]
     StateUnavailable(BlockHash),
-    /// Issue #1157: the target block's state has been swept past the
-    /// rspace-history retention floor, so the replay needed to produce an
-    /// event log can never run on this node. Distinct from
-    /// `StateUnavailable` (which may clear when sync catches up); this is
-    /// permanent on this node.
+    /// The block is below this pruning node's history retention floor.
+    /// Its state is outside the window guaranteed for replay.
     #[error(
         "Block report cannot replay block {target_block_hash:?} (height {target_block_height}): \
          state has been swept past retention floor (height {retention_floor})"
@@ -291,24 +288,11 @@ impl BlockReportAPI {
             }
         }
 
-        // Issue #1157: a block whose state is below the rspace-history
-        // retention floor cannot be replayed on this node — the trie
-        // nodes are gone. Classify here so the caller gets a typed
-        // `PrunedState` instead of a vaguer `StateUnavailable` (which
-        // promises a retry may succeed).
-        //
-        // Boundary: the GC retains blocks at exactly `state_retention_floor`
-        // (`compute_gc_retention_roots` walks `height ≥ floor`), so only a
-        // target STRICTLY below the floor has been swept. This keeps
-        // genesis-at-height-0 reportable on a fresh chain whose floor is
-        // also 0.
-        let lfb_number = casper
-            .last_finalized_block()
-            .await
-            .ok()
-            .map(|lfb| lfb.body.state.block_number);
-        if let Some(lfb_number) = lfb_number {
-            let retention_floor = casper.casper_shard_conf().state_retention_floor(lfb_number);
+        // History GC retains the floor itself. Archive nodes skip the
+        // height check and verify the requested pre-state below.
+        if let Some(retention_floor) =
+            BlockAPI::current_state_retention_floor(casper.as_ref()).await
+        {
             let target_height = block.body.state.block_number;
             if target_height < retention_floor {
                 metrics::counter!("block_report.pruned_state", "source" => "casper").increment(1);
