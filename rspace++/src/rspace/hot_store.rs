@@ -1255,6 +1255,7 @@ mod behavior_tests {
             a: value.to_string(),
             persist: false,
             source: Default::default(),
+            size: value.len(),
         }
     }
 

@@ -1,6 +1,7 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/ChargingRSpace.scala
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use models::rhoapi::tagged_continuation::TaggedCont;
@@ -12,13 +13,14 @@ use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceResult,
 };
+use rspace_plus_plus::rspace::search_charge::{self, SearchCharger, SearchWork};
 use rspace_plus_plus::rspace::trace::event::Produce;
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::util::unpack_option;
 
 use crate::rust::interpreter::accounting::_cost;
 use crate::rust::interpreter::accounting::costs::{
-    comm_copy_cost, comm_event_storage_cost, event_storage_cost, storage_cost_consume,
+    comm_copy_cost, comm_event_storage_cost, event_storage_cost, search_cost, storage_cost_consume,
     storage_cost_produce, Cost,
 };
 use crate::rust::interpreter::errors::InterpreterError;
@@ -60,6 +62,7 @@ impl ChargingRSpace {
         struct ChargingRSpace<T> {
             space: T,
             cost: _cost,
+            search_charger: SearchCharger,
         }
 
         #[async_trait]
@@ -85,10 +88,12 @@ impl ChargingRSpace {
 
                 let id = consume_id_bytes(&continuation)?;
                 let channels_count = channels.len() as i64;
-                let consume_res = self
-                    .space
-                    .consume(channels, patterns, continuation, persist, peeks)
-                    .await?;
+                let consume_res = search_charge::charged(
+                    self.search_charger.clone(),
+                    self.space
+                        .consume(channels, patterns, continuation, persist, peeks),
+                )
+                .await?;
 
                 handle_result(
                     consume_res
@@ -118,7 +123,11 @@ impl ChargingRSpace {
                 self.cost.charge(storage_cost_produce(&channel, &data))?;
 
                 let id = data.random_state.clone();
-                let produce_res = self.space.produce(channel, data, persist).await?;
+                let produce_res = search_charge::charged(
+                    self.search_charger.clone(),
+                    self.space.produce(channel, data, persist),
+                )
+                .await?;
                 handle_result(
                     produce_res
                         .as_ref()
@@ -199,16 +208,14 @@ impl ChargingRSpace {
                 pattern: Vec<BindPattern>,
             ) -> Result<Option<(TaggedContinuation, Vec<ListParWithRandom>)>, RSpaceError>
             {
-                let consume_res = self
-                    .space
-                    .consume(
-                        channel,
-                        pattern,
-                        TaggedContinuation::default(),
-                        false,
-                        BTreeSet::new(),
-                    )
-                    .await?;
+                let consume_res = search_charge::uncharged(self.space.consume(
+                    channel,
+                    pattern,
+                    TaggedContinuation::default(),
+                    false,
+                    BTreeSet::new(),
+                ))
+                .await?;
                 Ok(unpack_option(&consume_res))
             }
 
@@ -249,6 +256,16 @@ impl ChargingRSpace {
                 self.space.check_replay_data().await
             }
 
+            fn require_search_charging(&self) { self.space.require_search_charging() }
+
+            async fn search_work(
+                &self,
+                pre_state: &SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+                term_log: std::ops::Range<usize>,
+            ) -> Result<Vec<SearchWork>, RSpaceError> {
+                self.space.search_work(pre_state, term_log).await
+            }
+
             async fn is_replay(&self) -> bool { self.space.is_replay().await }
 
             async fn update_produce(&self, produce: Produce) -> () {
@@ -263,7 +280,16 @@ impl ChargingRSpace {
             }
         }
 
-        ChargingRSpace { space, cost }
+        space.require_search_charging();
+        let search_charger: SearchCharger = {
+            let cost = cost.clone();
+            Arc::new(move |work| cost.charge(search_cost(work)).is_ok())
+        };
+        ChargingRSpace {
+            space,
+            cost,
+            search_charger,
+        }
     }
 }
 
