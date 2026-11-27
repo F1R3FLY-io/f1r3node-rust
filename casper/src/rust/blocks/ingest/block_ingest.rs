@@ -455,17 +455,19 @@ async fn run_intake(
                 Ok(Some(block)) => match check_off_runtime(block).await {
                     // A local lookup always gets a report, or its need would
                     // never reach the network.
-                    Ok(checked) => attached.intake.admit(&checked, None).or_else(|error| {
-                        tracing::warn!(
-                            hash = %PrettyPrinter::build_string_bytes(&hash),
-                            %error,
-                            "intake of a stored block failed; asking the network"
-                        );
-                        Ok(IngestInput::LocalMiss { hash })
-                    }),
+                    LocalCheck::Checked(checked) => {
+                        attached.intake.admit(&checked, None).or_else(|error| {
+                            tracing::warn!(
+                                hash = %PrettyPrinter::build_string_bytes(&hash),
+                                %error,
+                                "intake of a stored block failed; asking the network"
+                            );
+                            Ok(IngestInput::LocalMiss { hash })
+                        })
+                    }
                     // A bad copy this node stored would shadow the honest
                     // block: delete it, and ask the network.
-                    Err((refused, _)) => {
+                    LocalCheck::Refused(refused) => {
                         if let Err(error) = block_store.discard_copy(&refused) {
                             tracing::warn!(
                                 hash = %PrettyPrinter::build_string_bytes(&hash),
@@ -475,6 +477,7 @@ async fn run_intake(
                         }
                         Ok(IngestInput::LocalMiss { hash })
                     }
+                    LocalCheck::NotRun => Ok(IngestInput::LocalMiss { hash }),
                 },
                 Ok(None) => Ok(IngestInput::LocalMiss { hash }),
                 Err(error) => {
@@ -498,18 +501,37 @@ async fn run_intake(
     }
 }
 
+#[derive(Debug)]
+enum LocalCheck {
+    Checked(CheckedBlock),
+    Refused(Box<BlockMessage>),
+    NotRun,
+}
+
+fn local_check_outcome(
+    joined: Result<
+        Result<CheckedBlock, (Box<BlockMessage>, IntegrityFailure)>,
+        tokio::task::JoinError,
+    >,
+) -> LocalCheck {
+    match joined {
+        Ok(Ok(checked)) => LocalCheck::Checked(checked),
+        Ok(Err((refused, _))) => LocalCheck::Refused(refused),
+        Err(_) => LocalCheck::NotRun,
+    }
+}
+
 /// The integrity check of a stored copy, off the async runtime. A check that
-/// cannot run counts as a malformed copy, so the block is asked for again.
-async fn check_off_runtime(
-    block: BlockMessage,
-) -> Result<CheckedBlock, (Box<BlockMessage>, IntegrityFailure)> {
-    let copy = block.clone();
-    tokio::task::spawn_blocking(move || CheckedBlock::check(copy, BLOCK_INGEST_METRICS_SOURCE))
-        .await
-        .unwrap_or_else(|error| {
-            tracing::error!(%error, "integrity check of a stored block failed to run");
-            Err((Box::new(block), IntegrityFailure::Malformed))
-        })
+/// cannot run leaves the copy in place, and the block is asked for again.
+async fn check_off_runtime(block: BlockMessage) -> LocalCheck {
+    let joined = tokio::task::spawn_blocking(move || {
+        CheckedBlock::check(block, BLOCK_INGEST_METRICS_SOURCE)
+    })
+    .await;
+    if let Err(error) = &joined {
+        tracing::error!(%error, "integrity check of a stored block failed to run");
+    }
+    local_check_outcome(joined)
 }
 
 async fn run_validation<T: TransportLayer + Send + Sync + 'static>(
@@ -865,4 +887,24 @@ fn record_oldest_validation(oldest_ms: Option<u64>) {
         "source" => BLOCK_PROCESSOR_METRICS_SOURCE
     )
     .set(oldest_ms.map_or(0.0, |ms| ms as f64 / 1_000.0));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_check_that_fails_to_run_does_not_refuse_the_stored_copy() {
+        let joined = tokio::task::spawn_blocking(
+            || -> Result<CheckedBlock, (Box<BlockMessage>, IntegrityFailure)> {
+                panic!("the integrity check did not run")
+            },
+        )
+        .await;
+        assert!(joined.is_err(), "the check task must fail for this test");
+        assert!(
+            matches!(local_check_outcome(joined), LocalCheck::NotRun),
+            "a check that did not run must not refuse the copy"
+        );
+    }
 }

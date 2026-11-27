@@ -256,6 +256,15 @@ impl PendingBlocks {
 
     pub fn remove(&self, hash: &BlockHash) -> bool { self.lock().remove(hash).is_some() }
 
+    pub fn remove_if(&self, hash: &BlockHash, expected: &BlockMessage) -> bool {
+        let mut inner = self.lock();
+        let matches = inner
+            .entries
+            .get(hash)
+            .is_some_and(|entry| decode(&entry.encoded) == *expected);
+        matches && inner.remove(hash).is_some()
+    }
+
     pub fn len(&self) -> usize { self.lock().entries.len() }
 
     pub fn is_empty(&self) -> bool { self.len() == 0 }
@@ -309,6 +318,23 @@ mod tests {
             max_bytes,
             max_per_sender,
         }
+    }
+
+    #[test]
+    fn remove_if_keeps_a_different_body_held_under_the_same_hash() {
+        let area = PendingBlocks::new(PendingBlockLimits::default());
+        let held = block(1, 1);
+        let mut expected = held.clone();
+        expected.seq_num += 1;
+        insert(&area, &held, PendingClass::Unsolicited);
+        assert!(
+            !area.remove_if(&held.block_hash, &expected),
+            "a body that differs from the expected one stays"
+        );
+        assert_eq!(area.get(&held.block_hash), Some(held.clone()));
+        assert!(area.remove_if(&held.block_hash, &held));
+        assert!(area.is_empty());
+        assert_eq!(area.bytes(), 0);
     }
 
     #[test]
