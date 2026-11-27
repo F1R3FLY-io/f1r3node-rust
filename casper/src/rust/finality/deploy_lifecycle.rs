@@ -1528,6 +1528,7 @@ mod tests {
             sig: Bytes::from_static(b"rejected-sig"),
             carrier: Bytes::from_static(b"carrier-hash-000000000000000000"),
             duplicate: false,
+            ..Default::default()
         };
         let mut a = block_at(1, vec![genesis.block_hash.clone()], 321);
         a.body.rejected_deploys = vec![record.clone()];
@@ -1684,6 +1685,7 @@ mod settle_and_release_tests {
             sig: sig_b.clone(),
             carrier: b.block_hash.clone(),
             duplicate: false,
+            ..Default::default()
         }];
         let next = chain_block(3, Some(&merge));
         let last = chain_block(4, Some(&next));
@@ -1885,6 +1887,7 @@ mod settle_and_release_tests {
             sig: sig.clone(),
             carrier: Bytes::from_static(b"carrier-never-ingested-here-000"),
             duplicate: false,
+            ..Default::default()
         }];
         let mut chain = vec![genesis, recorder];
         for number in 2..=4 {

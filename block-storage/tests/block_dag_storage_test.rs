@@ -1264,6 +1264,7 @@ fn canonical_appearance_is_the_latest_inclusion_never_a_record_carrier() {
             sig: deploy.deploy.sig.clone(),
             duplicate: false,
             carrier: inclusion.block_hash.clone(),
+            ..Default::default()
         }];
 
         for b in [&inclusion, &rejecting_merge] {
@@ -1336,6 +1337,7 @@ fn insert_projects_lifecycle_events_and_carrier_entries() {
             sig: rejected_sig.clone(),
             duplicate: true,
             carrier: carrier.clone(),
+            ..Default::default()
         }];
         dag_storage
             .insert(

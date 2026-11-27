@@ -441,6 +441,7 @@ async fn seen_deploys_wait_for_finalized_recovery_buffer() {
             sig: deploy.sig.clone(),
             duplicate: false,
             carrier: Bytes::new(),
+            ..Default::default()
         },
     ])
     .await;
@@ -771,6 +772,7 @@ async fn recovered_deploy_selection_uses_normal_retry_window() {
                 sig: d.sig.clone(),
                 duplicate: false,
                 carrier: Bytes::new(),
+                ..Default::default()
             },
         )
         .collect();
@@ -937,6 +939,7 @@ async fn pool_retry_of_an_unsettled_rejection_is_deferred_by_the_gate() {
                 sig: deploy.sig.clone(),
                 duplicate: false,
                 carrier: Bytes::new(),
+                ..Default::default()
             },
         ],
     )
@@ -1118,6 +1121,7 @@ async fn buffered_retry_admission_follows_the_recovered_deploys_policy_switch() 
             sig: deploy.sig.clone(),
             duplicate: false,
             carrier: Bytes::new(),
+            ..Default::default()
         },
     ])
     .await;

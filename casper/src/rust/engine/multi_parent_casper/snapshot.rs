@@ -237,6 +237,84 @@ pub(crate) async fn compute_snapshot(
             .cmp(&a_main)
             .then_with(|| a.block_hash.cmp(&b.block_hash))
     });
+    // TASK-016-5 — C1 over the admissible parent set (issue #294).
+    // After ghost_main_parent takes position 0, promote a sibling that
+    // carries strictly more retryable prior rejections. The promoted
+    // parent becomes the merge base (through `compute_parents_post_state`),
+    // so its accumulated losses are in base state rather than in scope —
+    // the structural prerequisite for a retried deploy to land. Fork
+    // choice stays deploy-content-blind (P4): C1 is proposer packaging
+    // policy over on-DAG data, not a fork-choice weight.
+    //
+    // A parent is admissible when its post-state passes TASK-016-3's
+    // protected-cell cardinality rule. REPLAY enforces that rule on every
+    // accepted block, so any parent already in the DAG is admissible by
+    // construction and no extra check runs here. See the decision-record
+    // row in docs/casper/CONSENSUS_PHILOSOPHY.md.
+    //
+    // Loss score of a parent = max over its body.deploys of the retryable
+    // rejection count a walk up the parent's main-parent chain
+    // (bounded by `deploy_lifespan`) records for that deploy sig.
+    if sorted_parents_list.len() >= 2 {
+        let deploy_lifespan_cap = this.casper_shard_conf.deploy_lifespan.clamp(1, 256) as usize;
+        let mut loss_scores: Vec<u64> = Vec::with_capacity(sorted_parents_list.len());
+        for parent in &sorted_parents_list {
+            let sigs: HashSet<Bytes> = parent
+                .body
+                .deploys
+                .iter()
+                .map(|pd| pd.deploy.sig.clone())
+                .collect();
+            if sigs.is_empty() {
+                loss_scores.push(0);
+                continue;
+            }
+            let mut counts: HashMap<Bytes, u64> = HashMap::with_capacity(sigs.len());
+            for s in &sigs {
+                counts.insert(s.clone(), 0);
+            }
+            let mut cursor = parent.header.parents_hash_list.first().cloned();
+            let mut walked = 0usize;
+            while let Some(hash) = cursor {
+                if walked >= deploy_lifespan_cap {
+                    break;
+                }
+                walked += 1;
+                let block = match this.block_store.get(&hash)? {
+                    Some(b) => b,
+                    None => break,
+                };
+                for r in &block.body.rejected_deploys {
+                    if r.reason.is_retryable() && !r.duplicate {
+                        if let Some(c) = counts.get_mut(&r.sig) {
+                            *c += 1;
+                        }
+                    }
+                }
+                cursor = block.header.parents_hash_list.first().cloned();
+            }
+            loss_scores.push(counts.values().copied().max().unwrap_or(0));
+        }
+        if let Some((max_idx, &max_score)) = loss_scores
+            .iter()
+            .enumerate()
+            .max_by_key(|&(idx, &score)| (score, std::cmp::Reverse(idx)))
+        {
+            // Strictly-greater, not merely equal, so the ghost choice is
+            // preserved when no parent carries more losses than it.
+            if max_idx != 0 && max_score > loss_scores[0] {
+                let promoted = sorted_parents_list.remove(max_idx);
+                tracing::info!(
+                    target: "f1r3fly.casper.parent_selection",
+                    promoted = %hex::encode(&promoted.block_hash[..8.min(promoted.block_hash.len())]),
+                    loss_score = max_score,
+                    ghost_loss_score = loss_scores[0],
+                    "C1 base-bias remedy: promoting sibling with strictly more retryable prior rejections to parents[0]"
+                );
+                sorted_parents_list.insert(0, promoted);
+            }
+        }
+    }
     // The candidate set IS the latest-message frontier. Parent selection
     // only ORDERS it (the ghost-first sort above) and never drops tips: a
     // block that merges every tip keeps every branch's state in its cone,

@@ -7453,6 +7453,7 @@ mod tests {
                 sig: retry.sig.clone(),
                 duplicate: false,
                 carrier: genesis_block.block_hash.clone(),
+                ..Default::default()
             },
         ];
         let parent_block = test_block(
@@ -7568,6 +7569,7 @@ mod tests {
                 sig: retry.sig.clone(),
                 duplicate: false,
                 carrier: floor.block_hash.clone(),
+                ..Default::default()
             },
         ];
         let left = test_block(

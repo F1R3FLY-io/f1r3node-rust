@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::RejectedDeploy;
+use models::rust::casper::protocol::casper_message::{RejectedDeploy, RejectionReason};
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
@@ -639,7 +639,15 @@ fn count_kept_records(
     records: impl IntoIterator<Item = RejectedDeploy>,
 ) {
     for record in records {
-        if !record.duplicate {
+        // Retryable rejections carry prior-loss priority; terminal
+        // rejections (DuplicateOccurrence, SafetyInvariantViolation) do
+        // not — a permanently unsafe deploy cannot gain priority through
+        // repeated terminal rejections. Pre-activation records
+        // (reason=Unspecified) fall back to the legacy `!duplicate` rule
+        // via `is_retryable()` returning true and the explicit duplicate
+        // guard, preserving exact behavior on records written before the
+        // typed-reason field activated.
+        if record.reason.is_retryable() && !record.duplicate {
             *counts.entry(record.sig).or_insert(0) += 1;
         }
     }
@@ -2124,10 +2132,22 @@ pub fn merge(
     let mut rejected_user_deploys: Vec<RejectedDeploy> = Vec::new();
     for (id, src) in &all_pairs {
         if !is_system_deploy_id(id) {
+            let duplicate = duplicate_of(id)?;
+            // all_pairs collects sigs from every losing chain: either a
+            // merge-conflict loss (adjudicated against a kept chain) or a
+            // chain whose effect was already visible (duplicate). The
+            // reason is derived from the same authenticated facts a
+            // validator recomputes.
+            let reason = if duplicate {
+                RejectionReason::DuplicateOccurrence
+            } else {
+                RejectionReason::MergeConflict
+            };
             rejected_user_deploys.push(RejectedDeploy {
                 sig: id.clone(),
-                duplicate: duplicate_of(id)?,
+                duplicate,
                 carrier: src.clone(),
+                reason,
             });
         }
     }
@@ -2148,10 +2168,19 @@ pub fn merge(
         for (id, src) in collateral_lost_pairs {
             if !existing_ids.contains(&id) {
                 let duplicate = duplicate_of(&id)?;
+                // Collateral-chain drops reach this arm only when their own
+                // deploy had no conflict — the chain was dropped because a
+                // sibling in the same adjudicated group lost. Retryable.
+                let reason = if duplicate {
+                    RejectionReason::DuplicateOccurrence
+                } else {
+                    RejectionReason::CollateralChainDrop
+                };
                 rejected_user_deploys.push(RejectedDeploy {
                     sig: id,
                     duplicate,
                     carrier: src,
+                    reason,
                 });
             }
         }
@@ -2508,6 +2537,7 @@ mod tests {
                     sig: sig.clone(),
                     duplicate: false,
                     carrier: Bytes::from(vec![3u8; 32]),
+                    ..Default::default()
                 }])
             } else {
                 Ok(vec![
@@ -2515,11 +2545,13 @@ mod tests {
                         sig: sig.clone(),
                         duplicate: false,
                         carrier: Bytes::from(vec![4u8; 32]),
+                        ..Default::default()
                     },
                     RejectedDeploy {
                         sig: sig.clone(),
                         duplicate: true,
                         carrier: Bytes::from(vec![5u8; 32]),
+                        ..Default::default()
                     },
                 ])
             }
@@ -2552,6 +2584,7 @@ mod tests {
                 sig: sig.clone(),
                 duplicate: false,
                 carrier: Bytes::from(vec![2u8; 32]),
+                ..Default::default()
             }])
         })
         .expect("derive scope counts");
