@@ -361,3 +361,127 @@ async fn a_snapshot_reports_a_missing_body_for_a_bonded_validator() {
         "unexpected error: {error}"
     );
 }
+
+#[tokio::test]
+async fn a_snapshot_keeps_a_still_bonded_validator_with_an_old_latest_message() {
+    use casper::rust::finality::floor::floor_committee;
+    use rspace_plus_plus::rspace::history::Either;
+
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    parameters.2.proof_of_stake.deploy_lifespan = 4;
+    parameters.2.proof_of_stake.max_parent_depth = 3;
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    let mut nodes = TestNode::create_network_with_overrides(
+        genesis,
+        4,
+        crate::helper::test_node::ShardOverrides {
+            synchrony_constraint_threshold: Some(0.0),
+            finalization_rate: Some(0),
+            max_parent_depth: Some(3),
+            deploy_lifespan: Some(4),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    for node in &mut nodes {
+        node.allow_empty_blocks = true;
+    }
+
+    let quiet = nodes[0].validator_id_opt.as_ref().unwrap().clone();
+    let quiet_key = prost::bytes::Bytes::copy_from_slice(&quiet.public_key.bytes);
+    let last = nodes[0].create_block_unsafe(&[]).await.unwrap();
+    for node in &mut nodes {
+        assert!(matches!(
+            node.add_block(last.clone()).await.unwrap(),
+            Either::Right(_)
+        ));
+    }
+
+    let retention_depth = {
+        let conf = nodes[1].casper.casper_shard_conf();
+        i64::from(conf.max_parent_depth)
+            + i64::from(conf.mergeable_channels_gc_depth_buffer)
+            + conf.deploy_lifespan
+    };
+
+    let mut aged = false;
+    for round in 0..80 {
+        let block = nodes[1 + round % 3].create_block_unsafe(&[]).await.unwrap();
+        for node in &mut nodes {
+            assert!(matches!(
+                node.add_block(block.clone()).await.unwrap(),
+                Either::Right(_)
+            ));
+            node.casper.finalize().await.unwrap();
+        }
+        let dag = nodes[1].casper.block_dag().await.unwrap();
+        let Some(floor_hash) = dag.get_cached_floor(&dag.last_finalized_block()).unwrap() else {
+            continue;
+        };
+        let floor_number = dag.block_number_unsafe(&floor_hash).unwrap();
+        if dag.is_finalized(&last.block_hash).unwrap()
+            && floor_number.saturating_sub(last.body.state.block_number) > retention_depth
+        {
+            aged = true;
+            break;
+        }
+    }
+    assert!(
+        aged,
+        "the quiet validator's block must age past the body-retention window"
+    );
+
+    let dag = nodes[1].casper.block_dag().await.unwrap();
+    assert_eq!(
+        dag.latest_message_hashes().get(&quiet_key),
+        Some(&last.block_hash),
+        "the quiet validator still owns its old latest message"
+    );
+    let floor_hash = dag
+        .get_cached_floor(&dag.last_finalized_block())
+        .unwrap()
+        .unwrap();
+    let floor_block = nodes[1].block_store.get(&floor_hash).unwrap().unwrap();
+    let committee = floor_committee(
+        &nodes[1].runtime_manager,
+        &floor_block.body.state.post_state_hash,
+    )
+    .await
+    .unwrap();
+    assert!(
+        committee.iter().any(|bond| bond.validator == quiet_key),
+        "the quiet validator must still be bonded for this regression"
+    );
+
+    assert!(nodes[1]
+        .block_store
+        .get(&last.block_hash)
+        .unwrap()
+        .is_some());
+    let snapshot = nodes[1].casper.get_snapshot().await.unwrap();
+    assert!(snapshot
+        .justifications
+        .iter()
+        .any(|j| j.validator == quiet_key && j.latest_block_hash == last.block_hash));
+    assert!(nodes[1]
+        .block_store
+        .discard_stored(&last.block_hash)
+        .unwrap());
+    let error = nodes[1]
+        .casper
+        .get_snapshot()
+        .await
+        .err()
+        .expect("the quiet validator never left the committee");
+    assert!(
+        error.to_string().contains(&format!(
+            "parent block referenced by latest_messages missing from block_store: {}",
+            hex::encode(&last.block_hash)
+        )),
+        "unexpected error: {error}"
+    );
+}

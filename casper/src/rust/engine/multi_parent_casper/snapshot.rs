@@ -136,6 +136,10 @@ fn missing_parent(meta: &BlockMetadata) -> KvStoreError {
     ))
 }
 
+fn is_retirable_candidate(meta: &BlockMetadata, floor: &Floor) -> bool {
+    meta.finalized && meta.block_number < floor.block_number
+}
+
 async fn exclude_missing_retired_parents(
     this: &MultiParentCasperImpl,
     dag: &KeyValueDagRepresentation,
@@ -154,7 +158,7 @@ async fn exclude_missing_retired_parents(
     };
     if let Some(meta) = missing
         .iter()
-        .find(|meta| !meta.finalized || meta.block_number >= floor.block_number)
+        .find(|meta| !is_retirable_candidate(meta, &floor))
     {
         return Err(missing_parent(meta).into());
     }
@@ -861,6 +865,42 @@ mod tests {
             &lfb,
             &[parent_b, parent_a]
         ));
+    }
+
+    #[test]
+    fn snapshot_parent_candidates_only_retire_finalized_blocks_below_the_floor() {
+        use super::{is_retirable_candidate, BlockMetadata, Floor};
+        let block = block_implicits::get_random_block_default();
+        let mut meta = BlockMetadata::from_block(&block, None, None, Some(true));
+        let floor = Floor {
+            hash: block.block_hash.clone(),
+            block_number: 10,
+        };
+        meta.block_number = 10;
+        assert!(!is_retirable_candidate(&meta, &floor));
+        meta.block_hash = prost::bytes::Bytes::from_static(b"sibling");
+        assert!(!is_retirable_candidate(&meta, &floor));
+        meta.block_number = 11;
+        assert!(!is_retirable_candidate(&meta, &floor));
+        meta.block_number = 9;
+        assert!(is_retirable_candidate(&meta, &floor));
+        meta.finalized = false;
+        assert!(!is_retirable_candidate(&meta, &floor));
+    }
+
+    #[tokio::test]
+    async fn snapshot_parent_candidates_require_exit_evidence_when_history_is_missing() {
+        let mut kvm = InMemoryStoreManager::new();
+        let storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        let mut genesis = block_implicits::get_random_block_default();
+        genesis.body.state.block_number = 0;
+        genesis.header.parents_hash_list.clear();
+        storage.insert(&genesis, InsertMode::Approved).unwrap();
+        let dag = storage.get_representation().unwrap();
+        let latest = super::BlockMetadata::from_block(&genesis, None, None, Some(true));
+        let missing = prost::bytes::Bytes::from_static(b"missing history");
+        assert!(dag.lookup(&missing).unwrap().is_none());
+        assert!(!super::left_committee_after(&dag, &missing, &latest).unwrap());
     }
 
     #[tokio::test]
