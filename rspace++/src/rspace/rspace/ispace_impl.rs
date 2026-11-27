@@ -276,6 +276,19 @@ where
         panic!("\nERROR: RSpace check_replay_data should not be called here");
     }
 
+    fn require_search_charging(&self) {
+        self.search_charging_required
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    async fn search_work(
+        &self,
+        _pre_state: &SoftCheckpoint<C, P, A, K>,
+        _term_log: std::ops::Range<usize>,
+    ) -> Result<Vec<crate::rspace::search_charge::SearchWork>, RSpaceError> {
+        Err(RSpaceError::BugFoundError("only replay recomputes what searches cost".to_string()))
+    }
+
     async fn is_replay(&self) -> bool { false }
 
     async fn update_produce(&self, produce_ref: Produce) -> () {

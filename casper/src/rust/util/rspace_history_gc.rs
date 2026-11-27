@@ -54,6 +54,7 @@ use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use rspace_plus_plus::rspace::history::cold_gc::AuditReport;
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 
 use crate::rust::casper::CasperShardConf;
@@ -76,6 +77,21 @@ pub struct HistoryGcResult {
     pub pins_mid_pass_added: usize,
     pub marked_from_pins: usize,
     pub batches: usize,
+    /// Issue #1181: number of roots that retired from the retention
+    /// window on this pass. For a `NoopColdGc` repository (the default
+    /// until the setup path is wired) this is always 0 and no cold-store
+    /// side effects occur.
+    pub cold_retired_roots: usize,
+    /// Issue #1181, Phase 4. Cold-store entries scanned by the sweep
+    /// in this pass. Zero when `enable-cold-gc-sweep = false`.
+    pub cold_scanned: usize,
+    /// Cold-store entries deleted by the sweep this pass.
+    pub cold_deleted: usize,
+    /// `true` when the sweep refused to run because its retention
+    /// preconditions were not met (empty retention set). Surfaced
+    /// so operators can distinguish "nothing to sweep" from
+    /// "sweep skipped for safety."
+    pub cold_sweep_skipped: bool,
 }
 
 /// Run one full mark-and-sweep pass over `rspace/history`.
@@ -142,6 +158,36 @@ pub fn prune_history_once(
         return Ok(HistoryGcResult::default());
     }
 
+    // Phase 1.5: cold-store GC retention advance (issue #1181).
+    //
+    // The repository's `ColdGc` diffs the new retention set against
+    // its persisted record of the previous pass's set; every root
+    // that falls out triggers `on_expire`, which walks the retiring
+    // root's tree (still present in history — the sweep below has
+    // not run yet) and decrements the refcount of each leaf it
+    // references. The call persists `roots` as the new retention set
+    // before returning.
+    //
+    // Default-wired `NoopColdGc` returns an empty Vec and performs no
+    // side effects, so this is a cheap call on repositories that have
+    // not opted into cold-store bookkeeping.
+    let retired = match runtime.history_repo.cold_gc_advance_retention(&roots) {
+        Ok(retired) => retired,
+        Err(e) => {
+            // A cold-GC bookkeeping failure must not block history
+            // pruning — the history sweep is itself correctness-
+            // preserving and the refcount drift surfaced by this
+            // failure is caught by the audit comparator (future
+            // commit). Log and continue.
+            tracing::warn!(
+                target: "f1r3.trace.cold_gc",
+                error = %e,
+                "cold_gc_advance_retention failed; history prune will still run"
+            );
+            Vec::new()
+        }
+    };
+
     // Phase 2: atomic prune inside the rspace++ layer.
     //
     // `prune_history_atomic` holds the rspace-level sweep lock for the
@@ -155,9 +201,49 @@ pub fn prune_history_once(
         .prune_history_atomic(&roots)
         .map_err(|e| CasperError::Other(format!("history prune: {}", e)))?;
 
+    // Phase 3: cold-store sweep (issue #1181, Phase 4). Runs AFTER
+    // history prune so the history-side mark set (which pins
+    // not-yet-DAG-reached roots via PruneGuard) cannot temporarily
+    // make a cold entry look orphaned. The cold sweep's own fence is
+    // the LmdbColdGc mutex, which serializes the batch against any
+    // concurrent on_checkpoint that would add a fresh reference.
+    //
+    // Gated separately from bookkeeping so operators can turn on
+    // refcount tracking and watch the audit comparator before
+    // committing to destructive sweeps.
+    let (cold_scanned, cold_deleted, cold_sweep_skipped) = if conf.enable_cold_gc_sweep {
+        match runtime.history_repo.cold_gc_sweep() {
+            Ok(sweep) => (
+                sweep.scanned,
+                sweep.deleted,
+                sweep.skipped_preconditions_not_met,
+            ),
+            Err(e) => {
+                tracing::warn!(
+                    target: "f1r3.trace.cold_gc",
+                    error = %e,
+                    "cold-GC sweep failed; history prune result still returned"
+                );
+                (0, 0, false)
+            }
+        }
+    } else {
+        (0, 0, false)
+    };
+
     metrics::histogram!("rspace_history_gc.marked").record(pruned.marked as f64);
     metrics::counter!("rspace_history_gc_deleted").increment(pruned.swept as u64);
     metrics::histogram!("rspace_history_gc.pass.time").record(started.elapsed().as_secs_f64());
+    // Issue #1181: how many roots retired this pass. 0 under the
+    // default `NoopColdGc` wiring; nonzero once setup opts into
+    // refcount tracking.
+    metrics::histogram!("rspace_cold_gc.retired_roots").record(retired.len() as f64);
+    // Issue #1181, Phase 4. Zero when sweep is disabled or skipped.
+    metrics::histogram!("rspace_cold_gc.sweep.scanned").record(cold_scanned as f64);
+    metrics::counter!("rspace_cold_gc_sweep_deleted").increment(cold_deleted as u64);
+    if cold_sweep_skipped {
+        metrics::counter!("rspace_cold_gc_sweep_skipped").increment(1);
+    }
     // Issue #1098: expose the pinned-roots view so operators can see
     // whether the mark set is dominated by pins (meaning age-based
     // eviction, not DAG walk, is doing the heavy lifting against bloat).
@@ -178,6 +264,10 @@ pub fn prune_history_once(
         pins_mid_pass_added = pruned.pins_mid_pass_added,
         marked_from_pins = pruned.marked_from_pins,
         batches = pruned.batches,
+        cold_retired_roots = retired.len(),
+        cold_scanned,
+        cold_deleted,
+        cold_sweep_skipped,
         elapsed_s = started.elapsed().as_secs_f64(),
         "history GC pass complete"
     );
@@ -190,7 +280,74 @@ pub fn prune_history_once(
         pins_mid_pass_added: pruned.pins_mid_pass_added,
         marked_from_pins: pruned.marked_from_pins,
         batches: pruned.batches,
+        cold_retired_roots: retired.len(),
+        cold_scanned,
+        cold_deleted,
+        cold_sweep_skipped,
     })
+}
+
+/// Run one cold-GC audit pass (issue #1181, Phase 2). Walks every root
+/// in the implementation's retention-set store, computes expected
+/// refcounts, and diffs them against the actual refcount store.
+///
+/// Non-zero `divergence_total` indicates a drift bug — the invariant
+/// `refcount[H] = |{retained R : H ∈ leaves(R)}|` has been violated.
+/// Emitted as both metrics and a structured warn-level log so
+/// operators have a canary without needing to parse the audit report
+/// themselves. On a `NoopColdGc` repository the report is empty and
+/// no walks run.
+///
+/// **Not for hot-loop invocation.** The audit holds the cold-GC
+/// implementation's internal mutex for its whole duration, which
+/// serializes against `do_checkpoint` and `advance_retention`. At
+/// production scale (~1000-root retention × ~89k leaves per root) a
+/// single pass is tens of seconds to minutes, and every checkpoint
+/// commit waits on the same mutex throughout. Invoke during
+/// quiescent windows (idle validators, pre-propose intervals,
+/// operator-triggered health checks) or against a cold replica of
+/// the state, not from the casper loop tick. A future revision may
+/// use an LMDB read txn to decouple from the mutex.
+pub fn run_cold_gc_audit(runtime: &Arc<RuntimeManager>) -> Result<AuditReport, CasperError> {
+    let started = std::time::Instant::now();
+    let report = runtime
+        .history_repo
+        .cold_gc_audit()
+        .map_err(|e| CasperError::Other(format!("cold-GC audit: {}", e)))?;
+
+    metrics::histogram!("rspace_cold_gc.audit.refcount_entries")
+        .record(report.refcount_entries as f64);
+    metrics::histogram!("rspace_cold_gc.audit.expected_entries")
+        .record(report.expected_entries as f64);
+    metrics::histogram!("rspace_cold_gc.audit.divergence_total")
+        .record(report.divergence_total as f64);
+    metrics::histogram!("rspace_cold_gc.audit.pass.time").record(started.elapsed().as_secs_f64());
+
+    if report.divergence_total == 0 {
+        tracing::info!(
+            target: "f1r3.trace.cold_gc",
+            refcount_entries = report.refcount_entries,
+            expected_entries = report.expected_entries,
+            elapsed_s = started.elapsed().as_secs_f64(),
+            "cold-GC audit: refcount invariant holds"
+        );
+    } else {
+        // The audit's sample list is bounded, so printing it as a
+        // debug-formatted field is safe. If divergence_total is
+        // large but samples is capped, operators see the capped
+        // sample plus the true total.
+        tracing::warn!(
+            target: "f1r3.trace.cold_gc",
+            refcount_entries = report.refcount_entries,
+            expected_entries = report.expected_entries,
+            divergence_total = report.divergence_total,
+            samples = ?report.samples,
+            elapsed_s = started.elapsed().as_secs_f64(),
+            "cold-GC audit: INVARIANT DRIFT detected — refcount store disagrees with mark walk"
+        );
+    }
+
+    Ok(report)
 }
 
 #[cfg(test)]
