@@ -5,7 +5,7 @@ use casper::rust::v6::genesis_wallets::{
     bonds_total, genesis_supply_of, read_bond_balance, read_genesis_supply, read_legacy_bonds,
     read_wallet_balance, wallets_supply,
 };
-use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
+use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V7};
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use rholang::rust::interpreter::accounting::rev_stack::{WalletOwner, MAX_AMOUNT};
@@ -127,10 +127,10 @@ async fn a_v6_genesis_holds_wallets_txt_on_native_stacks() {
         .map(|i| fresh_vault(i + 1))
         .chain([alice.clone(), bob.clone(), carol.clone(), duplicate])
         .collect();
-    let genesis = parameters(PROTOCOL_V6, vaults.clone());
+    let genesis = parameters(PROTOCOL_V7, vaults.clone());
     let block = Genesis::create_genesis_block_with_policy(&rm, &genesis, Some(&policy()))
         .await
-        .expect("a protocol 6 genesis builds");
+        .expect("a protocol 7 genesis builds");
     assert!(block.body.deploys.iter().all(|d| !d.is_failed));
     let post = &block.body.state.post_state_hash;
 
@@ -222,13 +222,13 @@ async fn a_legacy_genesis_mints_no_native_stacks() {
 #[tokio::test]
 async fn a_v6_genesis_refuses_a_supply_beyond_the_largest_amount() {
     let rm = runtime_manager().await;
-    let too_big = parameters(PROTOCOL_V6, vec![fresh_vault(MAX_AMOUNT as u128 + 1)]);
+    let too_big = parameters(PROTOCOL_V7, vec![fresh_vault(MAX_AMOUNT as u128 + 1)]);
     assert!(
         Genesis::create_genesis_block_with_policy(&rm, &too_big, Some(&policy()))
             .await
             .is_err()
     );
-    let overflow = parameters(PROTOCOL_V6, vec![
+    let overflow = parameters(PROTOCOL_V7, vec![
         fresh_vault(MAX_AMOUNT as u128),
         fresh_vault(1),
     ]);
@@ -244,7 +244,7 @@ fn only_pos_v6_binds_the_bond_admin_name_and_only_the_rev_genesis_deploys_bind_t
     use casper::rust::genesis::contracts::standard_deploys::pos_v6_generator;
 
     let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
-    genesis.version = PROTOCOL_V6;
+    genesis.version = PROTOCOL_V7;
     genesis.vaults = (0..3)
         .map(|_| Vault {
             vault_address: VaultAddress::from_public_key(&Secp256k1.new_key_pair().1).unwrap(),

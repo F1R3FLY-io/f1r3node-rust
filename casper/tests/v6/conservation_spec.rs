@@ -7,7 +7,7 @@ use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::v6::backend::ExecutionBackend;
 use casper::rust::v6::conservation::{check_at, AuditSchedule, Conservation, WalletIndex};
 use casper::rust::v6::executor::BlockExecutor;
-use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
+use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V7};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
@@ -43,7 +43,7 @@ async fn shard(funded: &[(&Party, u128)]) -> (Arc<RuntimeManager>, BlockMessage)
     )
     .await;
     let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
-    genesis.version = PROTOCOL_V6;
+    genesis.version = PROTOCOL_V7;
     genesis.vaults = funded
         .iter()
         .map(|(p, balance)| Vault {

@@ -65,6 +65,7 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     /// (`approve_block_protocol.rs:206`); threaded here so the two
     /// sides stay in sync when either lifts cadence from `None`.
     pub consensus_fs_snapshot_cadence: Option<u64>,
+    pub protocol_version: i64,
 
     // Infrastructure
     transport: Arc<T>,
@@ -97,6 +98,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_decimals: u32,
         fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
         consensus_fs_snapshot_cadence: Option<u64>,
+        protocol_version: i64,
         transport: Arc<T>,
         conf: Arc<RPConf>,
     ) -> Result<Self, CasperError> {
@@ -141,6 +143,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             native_token_decimals,
             fs_bundle,
             consensus_fs_snapshot_cadence,
+            protocol_version,
             transport,
             conf,
         })
@@ -203,6 +206,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_decimals: u32,
         fs_bundle: &[crate::rust::genesis::contracts::fs_genesis::BundleEntry],
         consensus_fs_snapshot_cadence: Option<u64>,
+        protocol_version: i64,
     ) -> Result<(), String> {
         // Basic checks – required sigs, absence of system deploys, bonds equality
         if candidate.required_sigs < required_sigs {
@@ -287,8 +291,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         // their validators to approve a non-empty bundle must ship
         // the same `storage.{oracle,consensus}-static-*` entries to
         // every participant.
+        let resource_policy = (protocol_version == crate::rust::v6::resource_policy::PROTOCOL_V7)
+            .then(crate::rust::v6::resource_policy::ShardResourcePolicy::default);
         let genesis_blessed_contracts =
-            crate::rust::genesis::genesis::Genesis::default_blessed_terms(
+            crate::rust::genesis::genesis::Genesis::default_blessed_terms_with_policy(
                 &pos_params,
                 vaults,
                 (i64::MAX as u64).into(),
@@ -298,6 +304,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
                 native_token_decimals,
                 fs_bundle,
                 consensus_fs_snapshot_cadence,
+                resource_policy.as_ref(),
             );
 
         let block_deploys: &Vec<ProcessedDeploy> = &block.body.deploys;
@@ -400,6 +407,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             self.native_token_decimals,
             &self.fs_bundle,
             self.consensus_fs_snapshot_cadence,
+            self.protocol_version,
         )
         .await
     }

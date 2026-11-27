@@ -1202,7 +1202,12 @@ impl TestNode {
             epoch_length,
             quarantine_length: 20000,
             min_phlo_price: (1).into(),
-            max_phlo_limit: consensus_parameters.max_phlo_limit,
+            max_phlo_limit: if v6_config.is_some() {
+                casper::rust::v6::resource_policy::ShardResourcePolicy::default()
+                    .effective_max_phlo_limit(consensus_parameters.max_phlo_limit)
+            } else {
+                consensus_parameters.max_phlo_limit
+            },
             deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled

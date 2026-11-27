@@ -720,6 +720,11 @@ identity (D-04). The ledger entries name protocol 6, which was the PR #216
 value at comparison time. The
 [ratification meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) of 2026-09-16 superseded it.
 
+Protocol 7 is the cost-accounted protocol, and a new genesis uses it by
+default. On `ca-canary`, the code named it protocol 6 (`PROTOCOL_V6`) until
+2026-11-20. The status API reports the protocol of the shard as
+`casperProtocolVersion`.
+
 **Preferred usage.** Use for the version boundary at which a ratified wire
 or semantics change activates.
 *Distinguish from* [accounting authority version 8](#accounting-authority-version-8),
@@ -733,7 +738,8 @@ Accounting authority version 8 is the version of the reusable node-level
 accounting module that the cost-accounting work introduces. It is
 independent of the Casper protocol version. Ledger entry
 [D-01](./design/decision-ledger/01-protocol-version-authority.md) records the
-separation.
+separation. The constant `ACCOUNTING_AUTHORITY_VERSION` holds the value, and
+the status API reports it as `accountingAuthorityVersion`.
 
 **Preferred usage.** Use for the accounting module version when a document
 must name it beside the protocol version.
@@ -756,3 +762,92 @@ invariant. Ledger README section 2.2 states that rule.
 and can require a FIP as a condition.
 *Avoid*: "FIPS approval" for one proposal, and "FIPS 204" or "FIPS 205",
 which are NIST signature standards and not this process.
+
+### Fault-tolerance threshold
+
+The fault-tolerance threshold `t` is the minimum fault tolerance at which
+the clique oracle finalizes a block. The proof-of-stake contract holds it as
+an integer in parts per million, and `getFaultToleranceThresholdPpm` returns
+it. The finality decision uses the exact ppm value. The `f32` value in
+`CasperShardConf` is for display only.
+
+**Preferred usage.** Use `t` in formulas and "fault-tolerance threshold" in
+prose. It is a governed [shard parameter](../Glossary.md#shard-parameter).
+*Distinguish from* the fault tolerance of one block, which the oracle
+computes and compares with `t`.
+*Avoid*: "FTT" without a first use of the full name.
+
+### Maximum parent depth
+
+The maximum parent depth is the largest height distance that a secondary
+parent can have from the main parent of a block. A larger distance makes
+the block `InvalidParents`. The same value bounds the citability horizon of
+the deploy lifecycle. `getConsensusParameters` returns it.
+
+**Preferred usage.** Use for the validity bound. It is a governed shard
+parameter.
+*Distinguish from* the maximum number of parents, which caps the parent
+count and is a node-local setting today.
+
+### Consensus parameter adoption
+
+In consensus parameter adoption, a node replaces its local values of the
+governed Casper parameters with the proof-of-stake contract values. `hash_set_casper` in `casper/src/rust/casper.rs`
+does it once, on the post-state of the approved block. It covers the
+[fault-tolerance threshold](#fault-tolerance-threshold), the
+[maximum parent depth](#maximum-parent-depth), the
+[deploy lifespan](#deploy-lifespan), the minimum phlo price, and the epoch
+length. A missing or out-of-range value stops the node.
+
+**Preferred usage.** Use "adoption point" for `hash_set_casper`.
+*Distinguish from* a [parameter change](../Glossary.md#parameter-change).
+Adoption reads values once, and no change path exists yet.
+
+### Cooperative multi-signature vault
+
+The cooperative multi-signature vault is the vault that genesis creates
+from `pos-multi-sig-public-keys` and `pos-multi-sig-quorum`.
+`MultiSigSystemVault.rho` checks the quorum for each transfer. The keys are
+not validator keys, and the proof-of-stake contract has no control of the
+vault.
+
+**Preferred usage.** Use for this vault only.
+*Distinguish from* a
+[governance authorization](../Glossary.md#governance-authorization), which a
+coalition of validators gives for a parameter change.
+*Avoid*: "PoS multisig" for validator governance.
+
+## Replication Boundary Mapping
+
+CBC Casper is the `cbc-casper` [replication medium](../Glossary.md#replication-medium)
+of the [replication boundary design](../designs/replication-boundary.md). The
+table maps each boundary term to its Casper term. The Casper terms stay
+canonical inside Casper documents.
+
+| Boundary term | Casper term |
+|---|---|
+| [Commit](../Glossary.md#commit) | Block, with its parents and deploys |
+| [Finality event](../Glossary.md#finality-event) | A new [last finalized block (LFB)](#last-finalized-block-lfb) from the clique oracle |
+| [Mechanism evidence](../Glossary.md#mechanism-evidence) | Justifications, sequence number, bonds, and the fault tolerance value |
+| [Membership view](../Glossary.md#membership-view) | Bonded validators and their stake |
+| `DagMedium` capability | Parents, [merge scope](#merge-scope), and the [finalized floor](#finalized-floor) |
+| `EquivocationEvidence` capability | Equivocation records of the [equivocation detector](#equivocation-detector) |
+| Proposal timing (internal to the CBC Casper adapter) | Heartbeat proposal and [block proposal](#block-proposal) |
+| [Shard parameter](../Glossary.md#shard-parameter), governed class | Values that [consensus parameter adoption](#consensus-parameter-adoption) reads, and the quarantine length, bond limits, and active-validator count in the proof-of-stake contract |
+| [Governance authorization](../Glossary.md#governance-authorization) | Proposed: signatures of validators whose stake forms an actionable coalition. No Casper path exists yet |
+| [Activation point](../Glossary.md#activation-point) | Proposed: a block pre-state that holds the change, or a finalized block plus a fixed delay. Not selected |
+| [Visibility rule](../Glossary.md#visibility-rule) | A block is judged with the values in its justifications. Proposed for slash and neglect verdicts |
+
+## Coalition Structure Mapping
+
+The [semitopology glossary](../semitopology/GLOSSARY.md) states the
+coalition vocabulary of the boundary. Section 16 of the
+[replication boundary design](../designs/replication-boundary.md) proposes
+the `CoalitionStructure` type.
+
+| Semitopology term | Casper term |
+|---|---|
+| Point | Bonded validator |
+| [Actionable coalition](../Glossary.md#actionable-coalition) | A clique of agreeing validators with stake `w > S(1 + t) / 2`, where `S` is the total stake and `t` is the fault tolerance threshold |
+| [Intertwined](../semitopology/GLOSSARY.md#intertwined) | Two such cliques share more than `tS` stake |
+| `CoalitionStructure` form | `Threshold`, with the bonds as weights |

@@ -6,7 +6,7 @@ use casper::rust::blocks::proposer::proposer::DeploySelection;
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::v6::block_record::BlockRecord;
 use casper::rust::v6::body::V6Records;
-use casper::rust::v6::resource_policy::PROTOCOL_V6;
+use casper::rust::v6::resource_policy::PROTOCOL_V7;
 use casper::rust::v6::V6Engine;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
@@ -148,9 +148,9 @@ pub async fn v6_genesis() -> GenesisContext { v6_genesis_with(None).await }
 
 pub async fn v6_genesis_with(validators: Option<usize>) -> GenesisContext {
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, validators);
-    parameters.2.version = PROTOCOL_V6;
+    parameters.2.version = PROTOCOL_V7;
     GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
         .await
-        .expect("a protocol-6 genesis")
+        .expect("a protocol-7 genesis")
 }

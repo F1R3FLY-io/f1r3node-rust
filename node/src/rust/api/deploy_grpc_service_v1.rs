@@ -1182,13 +1182,15 @@ impl DeployService for DeployGrpcServiceV1Impl {
 
         // Advertise the values admission and validity actually enforce — the
         // chain-adopted ones; local conf only until casper is up.
-        let (min_phlo_price, epoch_length) = match self.engine_cell.get().await.with_casper() {
-            Some(casper) => (
-                casper.casper_shard_conf().min_phlo_price.clone(),
-                casper.casper_shard_conf().epoch_length,
-            ),
-            None => (self.min_phlo_price.clone(), self.epoch_length),
-        };
+        let (min_phlo_price, epoch_length, casper_protocol_version) =
+            match self.engine_cell.get().await.with_casper() {
+                Some(casper) => (
+                    casper.casper_shard_conf().min_phlo_price.clone(),
+                    casper.casper_shard_conf().epoch_length,
+                    Some(casper.casper_shard_conf().casper_version),
+                ),
+                None => (self.min_phlo_price.clone(), self.epoch_length, None),
+            };
         let current_epoch = if epoch_length > 0 && lfb_number >= 0 {
             lfb_number / epoch_length as i64
         } else {
@@ -1228,6 +1230,8 @@ impl DeployService for DeployGrpcServiceV1Impl {
             max_user_deploys_per_block: pacing.map(|p| p.max_user_deploys_per_block),
             max_parent_depth: pacing.map(|p| p.max_parent_depth),
             max_phlo_limit: pacing.map(|p| p.max_phlo_limit),
+            casper_protocol_version,
+            accounting_authority_version: casper::rust::v6::ACCOUNTING_AUTHORITY_VERSION,
         };
 
         Ok(tonic::Response::new(StatusResponse {

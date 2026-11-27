@@ -13,7 +13,7 @@ pub const DEFAULT_DEMAND_CAP: i64 = ((DEFAULT_BLOCK_RECORD_BYTES as u64
     - DEFAULT_BLOCK_OVERHEAD_BYTES)
     * 1_000
     / DEFAULT_LOG_MILLIBYTES_PER_PHLO) as i64;
-pub const PROTOCOL_V6: i64 = 6;
+pub const PROTOCOL_V7: i64 = 7;
 const ENCODING_VERSION: u8 = 2;
 const ENCODED_LEN: usize = 57;
 
@@ -145,6 +145,10 @@ impl ShardResourcePolicy {
             min_phlo_price: 0.into(),
         }
     }
+
+    pub fn effective_max_phlo_limit(&self, max_phlo_limit: i64) -> i64 {
+        max_phlo_limit.min(self.demand_cap)
+    }
 }
 
 #[cfg(test)]
@@ -166,6 +170,20 @@ mod tests {
         assert_eq!(limits.demand_cap, 11);
         assert_eq!(limits.max_record_bytes, 1024);
         assert_eq!(Limits::default().max_records, DEFAULT_BLOCK_RECORDS);
+    }
+
+    #[test]
+    fn the_effective_phlo_cap_is_the_smaller_of_the_shard_cap_and_the_demand_cap() {
+        let policy = ShardResourcePolicy::default();
+        assert_eq!(
+            policy.effective_max_phlo_limit(20_000_000),
+            DEFAULT_DEMAND_CAP
+        );
+        assert_eq!(
+            policy.effective_max_phlo_limit(DEFAULT_DEMAND_CAP),
+            DEFAULT_DEMAND_CAP
+        );
+        assert_eq!(policy.effective_max_phlo_limit(500_000), 500_000);
     }
 
     #[test]

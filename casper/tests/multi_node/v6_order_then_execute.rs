@@ -284,6 +284,58 @@ async fn offers_are_refused_once_the_pool_is_full() {
     }
 }
 
+#[tokio::test]
+async fn a_deploy_above_the_block_demand_cap_is_refused_at_admission() {
+    use casper::rust::casper::{Casper, DeployError, MultiParentCasper};
+    use casper::rust::v6::resource_policy::DEFAULT_DEMAND_CAP;
+    use rspace_plus_plus::rspace::history::Either;
+
+    let genesis = genesis().await;
+    let deploys = Deploys::new(&genesis);
+    let node = TestNode::create_v6_network_with_block_deploys(genesis, 1, 1)
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        node.casper.casper_shard_conf().max_phlo_limit,
+        DEFAULT_DEMAND_CAP
+    );
+
+    let offer = |offset: i64, phlo_limit: i64| {
+        construct_deploy::source_deploy(
+            "Nil".to_string(),
+            deploys.now + offset,
+            Some(phlo_limit),
+            None,
+            None,
+            None,
+            Some(deploys.shard_id.clone()),
+        )
+        .unwrap()
+    };
+    match node
+        .casper
+        .deploy(offer(1, DEFAULT_DEMAND_CAP + 1))
+        .unwrap()
+    {
+        Either::Left(DeployError::PhloLimitAboveCap {
+            phlo_limit,
+            max_phlo_limit,
+        }) => {
+            assert_eq!(phlo_limit, DEFAULT_DEMAND_CAP + 1);
+            assert_eq!(max_phlo_limit, DEFAULT_DEMAND_CAP);
+        }
+        other => panic!(
+            "expected the demand cap to refuse the offer, got {:?}",
+            other
+        ),
+    }
+    assert!(matches!(
+        node.casper.deploy(offer(2, DEFAULT_DEMAND_CAP)).unwrap(),
+        Either::Right(_)
+    ));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_lfb_follows_the_attested_canonical_roots_below_the_order_floor() {
     let genesis = crate::helper::v6_network::v6_genesis_with(Some(3)).await;

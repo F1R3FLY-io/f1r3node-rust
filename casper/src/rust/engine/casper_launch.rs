@@ -468,6 +468,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             // lockstep — a divergence trips the deploy-list length
             // check at validate_candidate.
             None,
+            self.conf.genesis_block_data.protocol_version,
             self.transport_layer.clone(),
             Arc::new(self.rp_conf_ask.clone()),
         )?;

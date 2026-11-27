@@ -1,6 +1,6 @@
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::v6::genesis_wallets::{read_bond_balance, read_legacy_bonds};
-use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
+use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V7};
 
 use crate::util::genesis_builder::GenesisBuilder;
 use crate::util::rholang::resources::mk_runtime_manager;
@@ -24,7 +24,7 @@ async fn a_v6_genesis_runs_pos_on_native_bonds_and_the_vault_facade() {
     let rm = mk_runtime_manager("v6-pos", Some(Genesis::default_mergeable_tags_arc())).await;
     let (_, vault_keys, mut genesis) =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
-    genesis.version = PROTOCOL_V6;
+    genesis.version = PROTOCOL_V7;
     genesis.proof_of_stake.maximum_bond = shared::rust::token_amount::TokenAmount::max();
     let block = Genesis::create_genesis_block_with_policy(
         &rm,
@@ -119,7 +119,7 @@ fn bonds_map(size: usize, seed: u64) -> String {
 async fn the_one_expression_active_set_pick_agrees_with_the_list_ops_pick() {
     let rm = mk_runtime_manager("v6-active-set", Some(Genesis::default_mergeable_tags_arc())).await;
     let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
-    genesis.version = PROTOCOL_V6;
+    genesis.version = PROTOCOL_V7;
     let block = Genesis::create_genesis_block_with_policy(
         &rm,
         &genesis,

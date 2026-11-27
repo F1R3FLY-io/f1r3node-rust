@@ -341,6 +341,10 @@ message Status {
   optional uint32 maxUserDeploysPerBlock = 21;
   optional int32  maxParentDepth         = 22;
   optional int64  maxPhloLimit           = 23;
+  // Casper protocol version of the shard; absent until casper is up. The
+  // accounting authority version is independent of it.
+  optional int64  casperProtocolVersion      = 24;
+  uint32          accountingAuthorityVersion = 25;
 }
 
 message VersionInfo {

@@ -335,7 +335,7 @@ pub mod builder {
         if node_conf.casper.v6_execution_lag_threshold == 0 {
             return Err(eyre::eyre!(
                 "casper.v6-execution-lag-threshold must be at least 1: the execution-lag \
-                gate is part of protocol-6 backpressure and cannot be turned off"
+                gate is part of protocol-7 backpressure and cannot be turned off"
             ));
         }
         if node_conf.casper.genesis_block_data.epoch_length <= 0 {

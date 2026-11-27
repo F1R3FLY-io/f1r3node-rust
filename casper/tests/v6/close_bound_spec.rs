@@ -10,7 +10,7 @@ use casper::rust::v6::block_record::{BlockRecord, EnvelopeOutcome};
 use casper::rust::v6::executor::BlockExecutor;
 use casper::rust::v6::genesis_wallets::read_wallet_balance;
 use casper::rust::v6::record::ExecutionRecord;
-use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
+use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V7};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
@@ -68,7 +68,7 @@ async fn shard_with(
         .map(|(_, pk)| (pk.clone(), 1_000.into()))
         .collect();
     let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters(keys, &bonds);
-    genesis.version = PROTOCOL_V6;
+    genesis.version = PROTOCOL_V7;
     genesis.proof_of_stake.epoch_length = epoch_length;
     genesis.proof_of_stake.quarantine_length = quarantine_length;
     genesis.vaults = funded

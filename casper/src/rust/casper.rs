@@ -384,13 +384,13 @@ pub async fn hash_set_casper(
     // using. The ppm remains the sole DECISION input; this f32 is display-only.
     casper_shard_conf.fault_tolerance_threshold = (onchain_ppm as f64 / 1_000_000.0) as f32;
 
-    if approved_block.header.version == crate::rust::v6::resource_policy::PROTOCOL_V6 {
+    casper_shard_conf.casper_version = approved_block.header.version;
+    if approved_block.header.version == crate::rust::v6::resource_policy::PROTOCOL_V7 {
         tracing::info!(
             target: "f1r3fly.v6",
-            "the approved block is protocol 6: this node runs the v6 executor"
+            "the approved block is protocol 7: this node runs the v6 executor"
         );
         casper_shard_conf.v6_order_then_execute = true;
-        casper_shard_conf.casper_version = approved_block.header.version;
     }
 
     // Same adoption, same reasoning, for the parameters the VALIDITY rules
@@ -510,6 +510,16 @@ pub async fn hash_set_casper(
                 crate::rust::v6::resource_policy::ShardResourcePolicy::default()
             }
         };
+        let max_phlo_limit = policy.effective_max_phlo_limit(casper_shard_conf.max_phlo_limit);
+        if max_phlo_limit != casper_shard_conf.max_phlo_limit {
+            tracing::info!(
+                target: "f1r3fly.v6",
+                max_phlo_limit = casper_shard_conf.max_phlo_limit,
+                demand_cap = policy.demand_cap,
+                "a deploy cannot declare more phlo than the block demand cap: the shard's phlo cap is the demand cap"
+            );
+            casper_shard_conf.max_phlo_limit = max_phlo_limit;
+        }
         let engine = crate::rust::v6::V6Engine::new(
             &approved_block,
             runtime_manager.clone(),
@@ -656,9 +666,10 @@ impl OnChainCasperState {
     }
 }
 
-/// Protocol version stamped into proposed block headers and judged against
-/// peers' blocks. Changes only with a coordinated protocol upgrade.
-pub const CASPER_PROTOCOL_VERSION: i64 = 1;
+/// Protocol version of a new genesis. A running node stamps and judges
+/// blocks with the version of its approved block. Changes only with a
+/// coordinated protocol upgrade.
+pub const CASPER_PROTOCOL_VERSION: i64 = crate::rust::v6::resource_policy::PROTOCOL_V7;
 
 #[derive(Debug, Clone)]
 pub struct CasperShardConf {

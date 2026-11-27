@@ -1308,6 +1308,8 @@ mod router_tests {
                 max_user_deploys_per_block: Some(4),
                 max_parent_depth: Some(25),
                 max_phlo_limit: Some(20_000_000),
+                casper_protocol_version: Some(7),
+                accounting_authority_version: 8,
             })
         }
 

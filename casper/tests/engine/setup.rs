@@ -115,11 +115,16 @@ pub struct TestFixture {
 }
 
 impl TestFixture {
-    pub async fn new() -> Self {
+    pub async fn new() -> Self { Self::at_protocol(None).await }
+
+    pub async fn at_protocol(protocol_version: Option<i64>) -> Self {
         // Scala: val params @ (_, _, genesisParams) = GenesisBuilder.buildGenesisParameters()
         let mut genesis_builder = GenesisBuilder::new();
-        let genesis_parameters_tuple =
+        let mut genesis_parameters_tuple =
             GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+        if let Some(version) = protocol_version {
+            genesis_parameters_tuple.2.version = version;
+        }
         let (_, _, genesis_params) = genesis_parameters_tuple.clone();
 
         // Scala: val context = GenesisBuilder.buildGenesis(params)
@@ -405,6 +410,7 @@ impl TestFixture {
             // their own genesis block with an empty bundle.
             Vec::new(),
             None,
+            genesis_params.version,
             transport_layer.clone(),
             Arc::new(rp_conf.clone()),
         )
