@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use casper::rust::block_status::ValidBlock;
 use casper::rust::blocks::ingest::dependency_tracker::{
     BodyAt, DependencyTracker, HeldMeta, Work, READY_AGE_LIMIT_DISPATCHES,
 };
@@ -7,6 +8,7 @@ use casper::rust::blocks::ingest::ingest_view::IngestView;
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::util::{construct_deploy, proto_util};
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
@@ -143,6 +145,11 @@ async fn dispatch_released_blocks(
                 .find(|child| child.block_hash == hash)
                 .unwrap();
             let verdict = receiver.process_block(block.clone()).await.unwrap();
+            assert_eq!(
+                verdict,
+                Either::Right(ValidBlock::Valid),
+                "the released block {hash:?} must validate"
+            );
             verdicts.insert(hash.to_vec(), format!("{verdict:?}"));
             order.push(hash.clone());
         }

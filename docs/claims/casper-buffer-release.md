@@ -84,7 +84,7 @@ A validation failure without a verdict schedules a separate retry. The delay inc
 
 The owner's proactive passes select unsolicited entries using the class limits and the per-sender low-water mark. To make room for a solicited block that exceeded a global limit, the owner selects unsolicited victims first. It can then select solicited entries only above the refused block's height.
 
-At a sender limit, the owner selects that sender's unsolicited entries first. It can then select solicited entries from that sender that wait on the refused block. When a pass finds enough room, the owner reserves the capacity before it frees the selected entries.
+If the sender limit causes a solicited block's refusal, the owner selects that sender's unsolicited entries first. It can then select solicited entries from that sender that wait on the refused block. When a reactive pass finds enough room, the owner reserves the capacity before it frees the selected entries.
 
 ## Block ingest review
 
@@ -131,7 +131,7 @@ The [tracker](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) now ass
 
 #### C4. Verdict invariance for released blocks
 
-**Pending.** [`released_blocks_keep_their_verdicts_and_dag_in_both_dispatch_orders`](../../casper/tests/blocks/release_order_invariance_spec.rs) holds two valid blocks on different parents. The test drives the production dependency tracker, records its selected order, and validates the released blocks in that order. It uses the same blocks and checks their verdicts, DAG membership, and latest messages in both runs.
+**Pending.** [`released_blocks_keep_their_verdicts_and_dag_in_both_dispatch_orders`](../../casper/tests/blocks/release_order_invariance_spec.rs) holds two valid blocks on different parents. The test drives the production dependency tracker, records its selected order, and validates the released blocks in that order. It requires a valid verdict for each block in both runs and compares their DAG membership and latest messages.
 
 The second run ages one released block by `READY_AGE_LIMIT_DISPATCHES` dispatches of fixture work. At the next selection, the test asserts that the overdue block takes the slot while a lower entry is ready. The C4 coverage here uses two independent valid blocks and one validation order per schedule.
 
@@ -165,7 +165,7 @@ Tests cover the known-block fast path and concurrent receipts. [Receipt verifica
 
 - `each_class_is_refused_at_its_own_share_of_the_area` and `the_byte_marks_reserve_room_for_known_senders_and_requested_blocks` cover admission limits.
 - `proactive_passes_evict_only_unsolicited_blocks`, `a_refused_requested_block_evicts_unsolicited_before_requested_blocks`, and `a_refused_block_takes_no_room_from_a_lower_requested_block` cover the eviction passes.
-- `a_requested_parent_at_its_sender_quota_makes_room_among_its_own_requested_children` covers the sender limit. `the_room_made_for_a_refused_block_is_reserved_before_it_is_freed` covers reservations.
+- `a_sender_at_its_quota_loses_only_its_own_unsolicited_blocks` and `a_requested_parent_at_its_sender_quota_makes_room_among_its_own_requested_children` cover the sender limit for solicited blocks. `the_room_made_for_a_refused_block_is_reserved_before_it_is_freed` checks reservations.
 
 ## Historical seam premises
 
