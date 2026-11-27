@@ -114,7 +114,7 @@ Claim:
   },
   "waiver": null,
   "verified_at": "2026-11-27T00:05:35Z",
-  "verification_id": "954ddbd0-66de-48d2-9a44-9053fa5fa2a0",
+  "verification_id": "913b0c8a-a038-42de-b6bd-7f0f6344f55b",
   "inputs": {
     "artifact": "casper/src/rust/blocks/proposer/proposer.rs",
     "source_sha256": "ebfdb11d68d0e49de763caca5a3dbf2f85581d2eda8fb29099621421dcf4aa2e",
@@ -124,7 +124,7 @@ Claim:
     }
   },
   "evidence_files": {
-    "formal/tlaplus/heartbeat_wake/README.md": "7eb189905240a3b2c649d1eae109ad4456764f26021b1f0f935c97b3dd0fbd81"
+    "formal/tlaplus/heartbeat_wake/README.md": "241beccc463e00d52a77c0c2171228fb09321f6c9282243fee8d880a10e3845d"
   }
 }
 ```

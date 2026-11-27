@@ -253,6 +253,13 @@ impl HeartbeatProposer {
                 };
 
                 tracing::debug!("Heartbeat: Woke from {}", wake_source);
+                if cooldown_recheck_ran(wake_source == "timer", sleep_for, config.check_interval) {
+                    metrics::counter!(
+                        casper::rust::metrics_constants::HEARTBEAT_COOLDOWN_RECHECK_METRIC,
+                        "source" => casper::rust::metrics_constants::VALIDATOR_METRICS_SOURCE
+                    )
+                    .increment(1);
+                }
                 let eng = engine_cell.get().await;
 
                 // Access Casper if available and run the check
@@ -282,13 +289,6 @@ impl HeartbeatProposer {
                         Ok(outcome) => {
                             next_sleep =
                                 next_heartbeat_sleep(config.check_interval, outcome.recheck_after);
-                            if next_sleep < config.check_interval {
-                                metrics::counter!(
-                                    casper::rust::metrics_constants::HEARTBEAT_COOLDOWN_RECHECK_METRIC,
-                                    "source" => casper::rust::metrics_constants::VALIDATOR_METRICS_SOURCE
-                                )
-                                .increment(1);
-                            }
                             if outcome.refresh_deploy_grace_window {
                                 let grace_ms = config.deploy_finalization_grace.as_millis();
                                 let grace_duration = Duration::from_millis(std::cmp::min(
@@ -1210,6 +1210,14 @@ fn cooldown_recheck_delay(
     (remaining_ms > 0).then(|| Duration::from_millis(remaining_ms.min(u128::from(u64::MAX)) as u64))
 }
 
+fn cooldown_recheck_ran(
+    woke_by_timer: bool,
+    slept_for: Duration,
+    check_interval: Duration,
+) -> bool {
+    woke_by_timer && slept_for < check_interval
+}
+
 fn next_heartbeat_sleep(check_interval: Duration, recheck_after: Option<Duration>) -> Duration {
     const MIN_RECHECK: Duration = Duration::from_millis(10);
     recheck_after
@@ -1613,6 +1621,32 @@ mod tests {
             (count, func)
         }
 
+        fn create_recording_propose_function(
+        ) -> (Arc<std::sync::Mutex<Vec<u128>>>, Arc<ProposeFunction>) {
+            use casper::rust::blocks::proposer::propose_result::{ProposeStatus, ProposeSuccess};
+            use casper::rust::blocks::proposer::proposer::ProposerResult;
+
+            let times_ms = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorded = times_ms.clone();
+            let func: Arc<ProposeFunction> = Arc::new(move |_casper, _is_async| {
+                recorded.lock().unwrap().push(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis(),
+                );
+                Box::pin(async {
+                    Ok(ProposerResult::Success(
+                        ProposeStatus::Success(ProposeSuccess {
+                            result: casper::rust::block_status::ValidBlock::Valid,
+                        }),
+                        models::rust::block_implicits::get_random_block_default(),
+                    ))
+                })
+            });
+            (times_ms, func)
+        }
+
         fn test_hash(byte: u8) -> BlockHash { Bytes::from(vec![byte; 32]) }
 
         fn test_validator(byte: u8) -> Bytes {
@@ -1955,18 +1989,19 @@ mod tests {
                     create_lfb_with_age(100),
                     1,
                 );
-            let mut own_block = models::rust::block_implicits::get_random_block_default();
-            own_block.block_hash = test_hash(0x1a);
-            own_block.header.timestamp = SystemTime::now()
+            let own_block_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_millis() as i64;
+                .as_millis();
+            let mut own_block = models::rust::block_implicits::get_random_block_default();
+            own_block.block_hash = test_hash(0x1a);
+            own_block.header.timestamp = own_block_ms as i64;
             casper.insert_block(&own_block);
             let engine_cell = Arc::new(EngineCell::init());
             engine_cell
                 .set(Arc::new(EngineWithCasper::new(Arc::new(casper))))
                 .await;
-            let (propose_count, propose_func) = create_counting_propose_function();
+            let (proposal_times_ms, propose_func) = create_recording_propose_function();
             let heartbeat_signal_ref = new_heartbeat_signal_ref();
             let config = HeartbeatConf {
                 enabled: true,
@@ -1975,6 +2010,7 @@ mod tests {
                 self_propose_cooldown: Duration::from_millis(1_500),
                 ..HeartbeatConf::default()
             };
+            let cooldown_deadline_ms = own_block_ms + config.self_propose_cooldown.as_millis();
             let handle = HeartbeatProposer::create(
                 engine_cell,
                 Some(propose_func),
@@ -1993,16 +2029,26 @@ mod tests {
                     .expect("heartbeat installs its wake signal")
                     .trigger_wake();
             }
-            assert_eq!(
-                propose_count.load(Ordering::SeqCst),
-                0,
-                "a deploy wake inside the cooldown must not propose"
-            );
-            tokio::time::sleep(Duration::from_millis(1_000)).await;
+            let give_up = std::time::Instant::now() + Duration::from_secs(5);
+            while proposal_times_ms.lock().unwrap().is_empty()
+                && std::time::Instant::now() < give_up
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
             handle.abort();
+            let times = proposal_times_ms.lock().unwrap().clone();
             assert!(
-                propose_count.load(Ordering::SeqCst) >= 1,
+                !times.is_empty(),
                 "the pending deploy is proposed after the cooldown ends"
+            );
+            let early_by_ms: Vec<u128> = times
+                .iter()
+                .filter(|&&at| at < cooldown_deadline_ms)
+                .map(|&at| cooldown_deadline_ms - at)
+                .collect();
+            assert!(
+                early_by_ms.is_empty(),
+                "a deploy wake inside the cooldown must not propose; proposals came {early_by_ms:?} ms before the deadline"
             );
         }
 
@@ -3239,7 +3285,10 @@ mod tests {
 mod cooldown_recheck_tests {
     use std::time::Duration;
 
-    use super::{cooldown_recheck_delay, decide_lanes, next_heartbeat_sleep, LaneInputs};
+    use super::{
+        cooldown_recheck_delay, cooldown_recheck_ran, decide_lanes, next_heartbeat_sleep,
+        LaneInputs,
+    };
 
     fn pending_in_cooldown() -> LaneInputs {
         LaneInputs {
@@ -3261,6 +3310,19 @@ mod cooldown_recheck_tests {
             deploy_recovery_max_lag: 64,
             effective_frontier_chase_cap: 20,
         }
+    }
+
+    #[test]
+    fn only_a_timer_that_ends_a_shortened_sleep_counts_as_a_cooldown_recheck() {
+        let interval = Duration::from_secs(60);
+        let shortened = Duration::from_millis(1_400);
+        assert!(cooldown_recheck_ran(true, shortened, interval));
+        assert!(
+            !cooldown_recheck_ran(false, shortened, interval),
+            "a signal that interrupts a shortened sleep is not a cooldown recheck"
+        );
+        assert!(!cooldown_recheck_ran(true, interval, interval));
+        assert!(!cooldown_recheck_ran(false, interval, interval));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # CbC Evidence: scripts/ci/check-tla-invariants.sh
 
-The pending record binds the heartbeat wake registration checks to the current script. The earlier node observation evidence remains available in the previous record.
+The refreshed record covers node observation model registration. Named maintainer acceptance remains pending.
 
 The gate retains its separate `CLAIM-CASPER-SOAK-001` obligations. Its prior discharge applies to the source bytes in the previous record.
 The prior harness evidence remains recorded below. This package does not automatically extend that discharge to changed source bytes.
@@ -12,8 +12,10 @@ The prior harness evidence remains recorded below. This package does not automat
   "artifact": {
     "path": "scripts/ci/check-tla-invariants.sh",
     "id": "scripts-ci-check-tla-invariants-sh",
-    "commit": "fe64a7fe84eaaf633138cea93ba2b9b4441e5477",
-    "sha256": "54b10f2ba7e4667ab5ebb6f59b017802bd532cfeba2d6239f85c99469a1a3292"
+    "commit": "4aa93d11cf7a4c318074975dd4266208575c8aca",
+    "commit_is_base": true,
+    "working_tree": true,
+    "sha256": "a12e47c0c9d4bb6c488dadc55baa77e3e5c108f32d2df3e888bc641a25dc442e"
   },
   "claim": "docs/claims/casper-node-observation.md",
   "claim_ids": [
@@ -26,18 +28,18 @@ The prior harness evidence remains recorded below. This package does not automat
     "docs/claims/casper-node-authority-snapshot.md": "c2bd97d63c74e4fad19a8817a21e044fc358957623c3e8968c3f8535b60964c6",
     "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf"
   },
-  "adapter": "manual",
+  "adapter": null,
   "status": "pending",
-  "scope": "node-observation-and-heartbeat-model-registration",
+  "scope": "node-observation-model-registration",
   "evidence": {
-    "kind": "formal-gate-registration-check",
-    "ref": "formal/tlaplus/heartbeat_wake/README.md",
-    "detail": "The local pull request tier passed 19 positive configurations and 101 exact negative controls. The fixture checked all four heartbeat configurations in both tiers. GitHub run 45914904668 passed the TLA+ check on the final branch head. The earlier node observation review remains pending."
+    "kind": "bounded-models-and-gate-regression-awaiting-acceptance",
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-03/report.json",
+    "sha256": "dc7acd04b4da21aaac99b8a19d0bd56193a85a24a914e9bb09f0334892c6300c"
   },
   "previous_record": {
-    "commit": "3c9ff855e77403f340a808374d406be529a4759d",
+    "commit": "4aa93d11cf7a4c318074975dd4266208575c8aca",
     "path": "docs/casper/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
-    "sha256": "1a40b10c19427c28765b935d36efcdd672e1771240f1f2b951673852b404a1ba"
+    "sha256": "519c3c3b0e2bb8dd546538b4fa4c4f6399ceda1c51d0e9e7c39377ffb75bcadc"
   },
   "tiers": {
     "refutation": "pending",
@@ -45,7 +47,7 @@ The prior harness evidence remains recorded below. This package does not automat
     "binding": "pending"
   },
   "waiver": null,
-  "verified_at": "2026-11-27T01:05:42Z",
+  "verified_at": null,
   "prior_harness_evidence": {
     "scope": "bounded-harness-only",
     "status": "discharged",
@@ -77,23 +79,6 @@ The prior harness evidence remains recorded below. This package does not automat
     "archive_sha256": "b595d2a87fc11dadec09f4d8ac50cc09a977ffc537b945edf06900c742e2243d",
     "member": "docs/casper/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
     "sha256": "4f00bf92dc209855ab2a55e880742a51ac07d967e48530317ee370e459e35d14"
-  },
-  "prior_node_observation_evidence": {
-    "kind": "bounded-models-and-gate-regression-awaiting-acceptance",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-03/report.json",
-    "sha256": "dc7acd04b4da21aaac99b8a19d0bd56193a85a24a914e9bb09f0334892c6300c"
-  },
-  "verification_id": "7e7d36be-da9f-41c1-9788-ce32a5550aa2",
-  "inputs": {
-    "artifact": "scripts/ci/check-tla-invariants.sh",
-    "source_sha256": "54b10f2ba7e4667ab5ebb6f59b017802bd532cfeba2d6239f85c99469a1a3292",
-    "claim": {
-      "path": "docs/claims/casper-node-observation.md",
-      "sha256": "08264846e75c159027dc6ae2e58e70a5ddc46ba1956f260abaa8aa7b7698bf47"
-    }
-  },
-  "evidence_files": {
-    "formal/tlaplus/heartbeat_wake/README.md": "7eb189905240a3b2c649d1eae109ad4456764f26021b1f0f935c97b3dd0fbd81"
   }
 }
 ```
@@ -177,6 +162,44 @@ This record moved from `docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md`
     "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5924422936",
     "revision": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f",
     "reviewed_at": "2026-10-01T03:56:25Z"
+  }
+}
+```
+
+
+## Claim CLAIM-HEARTBEAT-WAKE-REGISTRATION-001
+
+```json
+{
+  "artifact": {
+    "path": "scripts/ci/check-tla-invariants.sh",
+    "commit": "fe64a7fe84eaaf633138cea93ba2b9b4441e5477",
+    "id": "scripts-ci-check-tla-invariants-sh"
+  },
+  "claim": "docs/claims/heartbeat-wake-model-registration.md",
+  "adapter": "manual",
+  "status": "pending",
+  "scope": "heartbeat-wake-model-registration",
+  "evidence": {
+    "kind": "formal-gate-registration-check",
+    "ref": "formal/tlaplus/heartbeat_wake/README.md",
+    "detail": "The source-bound pull request tier passed 19 positive configurations and 101 expected negative controls. The gate fixture checked all four heartbeat configurations in both tiers."
+  },
+  "waiver": null,
+  "verified_at": "2026-11-27T13:27:15Z",
+  "claim_id": "CLAIM-HEARTBEAT-WAKE-REGISTRATION-001",
+  "schema": "cbc-claim/v1",
+  "verification_id": "62b5d920-428c-415f-9f88-ff1027f9f723",
+  "inputs": {
+    "artifact": "scripts/ci/check-tla-invariants.sh",
+    "source_sha256": "54b10f2ba7e4667ab5ebb6f59b017802bd532cfeba2d6239f85c99469a1a3292",
+    "claim": {
+      "path": "docs/claims/heartbeat-wake-model-registration.md",
+      "sha256": "507fe1b40a849f49db935b30e53487e3cfd2452a9374bfc006639a242a882e43"
+    }
+  },
+  "evidence_files": {
+    "formal/tlaplus/heartbeat_wake/README.md": "241beccc463e00d52a77c0c2171228fb09321f6c9282243fee8d880a10e3845d"
   }
 }
 ```

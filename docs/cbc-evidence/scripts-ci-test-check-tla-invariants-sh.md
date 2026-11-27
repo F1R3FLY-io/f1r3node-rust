@@ -37,7 +37,7 @@ Claim:
   },
   "waiver": null,
   "verified_at": "2026-11-26T23:43:46Z",
-  "verification_id": "0be38536-769b-4218-81df-ed134e336c8c",
+  "verification_id": "f13d0924-5481-4d0a-8a12-80a60da95e24",
   "inputs": {
     "artifact": "scripts/ci/test-check-tla-invariants.sh",
     "source_sha256": "98830ea9f2b08b237b718d39a438db3fd182646dacf0371609c726a7ae926f26",
@@ -47,7 +47,7 @@ Claim:
     }
   },
   "evidence_files": {
-    "formal/tlaplus/heartbeat_wake/README.md": "7eb189905240a3b2c649d1eae109ad4456764f26021b1f0f935c97b3dd0fbd81"
+    "formal/tlaplus/heartbeat_wake/README.md": "241beccc463e00d52a77c0c2171228fb09321f6c9282243fee8d880a10e3845d"
   }
 }
 ```

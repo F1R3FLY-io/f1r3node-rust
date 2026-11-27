@@ -2,8 +2,8 @@
 
 - **Status:** pending
 - **Adapter:** manual
-- **Commit:** 24703ab47f8a56f5ca61c2b669a0a9b259e06010
-- **Verified:** 2026-11-27T00:05:35Z
+- **Commit:** 61292b2b750b8a3ed00629cf481e0b4c03a5b014
+- **Verified:** 2026-11-27T13:31:37Z
 
 Claim:
 
@@ -101,7 +101,7 @@ Claim:
 {
   "artifact": {
     "path": "node/src/rust/instances/heartbeat_proposer.rs",
-    "commit": "24703ab47f8a56f5ca61c2b669a0a9b259e06010",
+    "commit": "61292b2b750b8a3ed00629cf481e0b4c03a5b014",
     "id": "node-src-rust-instances-heartbeat-proposer-rs",
     "working_tree": true,
     "commit_is_base": true
@@ -112,21 +112,21 @@ Claim:
   "evidence": {
     "kind": "tla-rocq-rust",
     "ref": "formal/tlaplus/heartbeat_wake/README.md",
-    "detail": "TLC checked 82,945 states and found three expected counterexample traces. Rocq checked seven closed theorems. Rust passed 221,184 lane decision cases and 504 cooldown timing cases. The B2 mutation restored the full interval and failed the focused test. The B3 control produced three early proposals. The B4 test rejected three lag-cap mutations. Two advanced the timer and one made a proposal after the cooldown. All 59 heartbeat tests passed on both candidates. The full claim remains pending."
+    "detail": "TLC checked 82,945 states and three expected counterexamples. The clean Rocq gate passed, and the eight declaration controls failed as expected. Rust passed 221,184 lane decisions and 504 timing cases. All 60 heartbeat tests passed on the merged dev candidate, including the B3 deadline and shortened-timer counter tests. The full claim remains pending."
   },
   "waiver": null,
-  "verified_at": "2026-11-27T00:05:35Z",
-  "verification_id": "7d039ba1-282f-4a0e-add6-e4718df394b1",
+  "verified_at": "2026-11-27T13:31:37Z",
+  "verification_id": "77a1cd03-da5d-4d1a-aabc-4a6b7314fd86",
   "inputs": {
     "artifact": "node/src/rust/instances/heartbeat_proposer.rs",
-    "source_sha256": "10029a14b6062bf7d5a6916c7f187d28fb8832a6d2deb6d9f3cf12fa20ebde79",
+    "source_sha256": "4b63cce0a392eb39d259e0a801479b665d9099b63a5a50bc85703e90bb1da92b",
     "claim": {
       "path": "docs/claims/heartbeat-proposal-amplification-bound.md",
       "sha256": "0aaf12e3cc42d2e8fd068f0263742c25b41cd7a7ea3f3ef9be907103a92797d0"
     }
   },
   "evidence_files": {
-    "formal/tlaplus/heartbeat_wake/README.md": "7eb189905240a3b2c649d1eae109ad4456764f26021b1f0f935c97b3dd0fbd81"
+    "formal/tlaplus/heartbeat_wake/README.md": "241beccc463e00d52a77c0c2171228fb09321f6c9282243fee8d880a10e3845d"
   }
 }
 ```

@@ -118,14 +118,14 @@ H1 does not hold an empty block for batching. The cooldown from the last routine
 
 ### 3.5 Metrics
 
-| Metric | Kind | Meaning |
-|---|---|---|
-| `heartbeat.deploy-wake` | Counter | Wakes from F1 |
-| `heartbeat.cooldown-recheck` | Counter | Checks from F2 |
-| `heartbeat.responsive-mode.entered` and `.exited` | Counters | Mode changes |
-| `heartbeat.responsive-mode.cooldown-exempt` | Counter | Deploy blocks that H1 let through after an empty block |
+| Metric | Kind | Scope | Meaning |
+|---|---|---|---|
+| `heartbeat.deploy-wake` | Counter | F1 | Deploy wake signals |
+| `heartbeat.cooldown-recheck` | Counter | F2 | Firings of shortened cooldown timers |
+| `heartbeat.responsive-mode.entered` and `.exited` | Counters | H1 prototype | Mode changes |
+| `heartbeat.responsive-mode.cooldown-exempt` | Counter | H1 prototype | Deploy blocks that H1 let through after an empty block |
 
-`scripts/bench/extend-issue24-metrics.sh` adds them, so the phase summary can show them.
+The [phase metrics collector](../../scripts/bench/extend-issue24-metrics.sh) collects the F1 and F2 counters.
 
 ---
 

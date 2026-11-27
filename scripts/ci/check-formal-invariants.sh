@@ -122,27 +122,40 @@ check_assumptions() {
     fi
 }
 
+reject_rocq_declarations() {
+    local project="$1" declarations='Axioms?|Admitted|Parameters?|Conjectures?' status
+    local theories="$REPO_ROOT/formal/rocq/$project/theories"
+    declarations+="${2:-}"
+    if [[ ! -d "$theories" ]]; then
+        printf 'ERROR: missing Rocq source directory for %s.\n' "$project" >&2
+        return 2
+    fi
+    if grep -rnE --include='*.v' "^[[:space:]]*(${declarations})\b" "$theories"; then
+        printf 'ERROR: prohibited Rocq declaration in %s.\n' "$project" >&2
+        return 1
+    else
+        status=$?
+        if ((status != 1)); then
+            printf 'ERROR: could not scan Rocq declarations in %s.\n' "$project" >&2
+            return "$status"
+        fi
+    fi
+}
+
 run_rocq_checks() {
     echo "== Rocq kernel verification =="
     command -v coq_makefile >/dev/null
     command -v coqc >/dev/null
     command -v coqchk >/dev/null
 
-    ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?|Hypothes[ie]s)\b" \
-        "$REPO_ROOT/formal/rocq/slashing/theories/"
-    ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
-        "$REPO_ROOT/formal/rocq/fork_choice/theories/"
-    ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
-        "$REPO_ROOT/formal/rocq/rspace_guards/theories/"
-    ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
-        "$REPO_ROOT/formal/rocq/scope_trapped_gc/theories/"
-
-    ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
-        "$REPO_ROOT/formal/rocq/node_observation/theories/"
-    ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
-        "$REPO_ROOT/formal/rocq/node_authority/theories/"
-    ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
-        "$REPO_ROOT/formal/rocq/heartbeat_wake/theories/"
+    reject_rocq_declarations slashing '|Hypothes[ie]s'
+    reject_rocq_declarations fork_choice
+    reject_rocq_declarations rspace_guards
+    reject_rocq_declarations scope_trapped_gc
+    reject_rocq_declarations node_observation
+    reject_rocq_declarations node_authority
+    reject_rocq_declarations heartbeat_wake
+    reject_rocq_declarations node_observation/b11
 
     build_rocq_project heartbeat_wake HeartbeatWake
     check_assumptions heartbeat_wake HeartbeatWake 7 \
@@ -182,8 +195,6 @@ run_rocq_checks() {
         capture_scratch_preserves_production \
         capture_scratch_preserves_sibling
 
-    ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
-        "$REPO_ROOT/formal/rocq/node_observation/b11/theories/"
     build_rocq_project node_observation/b11 NodeObservationB11
     check_assumptions node_observation/b11 NodeObservationB11 8 \
         canonical_integer_roundtrip \

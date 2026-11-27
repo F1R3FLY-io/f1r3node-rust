@@ -2,8 +2,8 @@
 
 - **Status:** pending
 - **Adapter:** manual
-- **Commit:** fe64a7fe84eaaf633138cea93ba2b9b4441e5477
-- **Verified:** 2026-11-26T23:43:46Z
+- **Commit:** 61292b2b750b8a3ed00629cf481e0b4c03a5b014
+- **Verified:** 2026-11-27T13:31:37Z
 
 Claim:
 
@@ -14,7 +14,9 @@ Claim:
   "artifact": {
     "path": "scripts/ci/check-formal-invariants.sh",
     "id": "scripts-ci-check-formal-invariants-sh",
-    "commit": "fe64a7fe84eaaf633138cea93ba2b9b4441e5477"
+    "commit": "61292b2b750b8a3ed00629cf481e0b4c03a5b014",
+    "working_tree": true,
+    "commit_is_base": true
   },
   "claim": "The heartbeat wake models use the verification gate in docs/claims/soak-formal-gate.md.",
   "claim_ids": [
@@ -35,21 +37,21 @@ Claim:
   "evidence": {
     "kind": "formal-gate-registration-check",
     "ref": "formal/tlaplus/heartbeat_wake/README.md",
-    "detail": "The full local Rocq suite compiled HeartbeatWake, passed the kernel check, and reported all seven added theorems closed. The other registered Rocq projects passed in the same run. These checks cover heartbeat registration. The previous record preserves the maintainer acceptance for the earlier source."
+    "detail": "The Rocq gate rejected a scratch Admitted declaration in each of its eight projects and refused a missing source directory. The clean run passed all eight builds and kernel checks. All 75 listed theorem checks reported closed assumptions. Earlier maintainer acceptance applies to the previous record."
   },
   "waiver": null,
-  "verified_at": "2026-11-26T23:43:46Z",
-  "verification_id": "901f68c8-4737-46d9-95f7-24ea649584a4",
+  "verified_at": "2026-11-27T13:31:37Z",
+  "verification_id": "56924fa9-cbaa-40ec-9927-131039072f1a",
   "inputs": {
     "artifact": "scripts/ci/check-formal-invariants.sh",
-    "source_sha256": "e0ccf0d7ae287f5fe94b8833d6cd86d6062a581617a4336393b6048e50674dba",
+    "source_sha256": "902dd2a717231b4867e521fb371caacf069e87232ce120a37dde12792692b6e6",
     "claim": {
       "path": "docs/claims/soak-formal-gate.md",
       "sha256": "8a4ea8738cdeb6e100d475c4f18eb33992a0dbeed56b929f69047ef3b7140b8a"
     }
   },
   "evidence_files": {
-    "formal/tlaplus/heartbeat_wake/README.md": "7eb189905240a3b2c649d1eae109ad4456764f26021b1f0f935c97b3dd0fbd81"
+    "formal/tlaplus/heartbeat_wake/README.md": "241beccc463e00d52a77c0c2171228fb09321f6c9282243fee8d880a10e3845d"
   }
 }
 ```
