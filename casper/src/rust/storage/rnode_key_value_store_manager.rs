@@ -223,6 +223,19 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             Db::new("rspace-cold".to_string(), None),
             rspace_cold_env_config(),
         ));
+        // Cold-store GC bookkeeping sub-DBs (issue #1181). Registered
+        // unconditionally so the store manager can open them whenever
+        // `casper.enable-cold-gc-bookkeeping` is on; opening a
+        // registered-but-unused DB has no disk cost. Live in the cold
+        // env alongside `rspace-cold`.
+        mappings.push((
+            Db::new("rspace-cold-refcount".to_string(), None),
+            rspace_cold_env_config(),
+        ));
+        mappings.push((
+            Db::new("rspace-retention-set".to_string(), None),
+            rspace_cold_env_config(),
+        ));
     } else {
         // Legacy config has the same database name for all maps
         mappings.push((

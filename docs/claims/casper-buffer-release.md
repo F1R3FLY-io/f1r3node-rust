@@ -28,6 +28,10 @@ references:
 
 ## Context
 
+[Issue #1188](https://github.com/F1R3FLY-io/f1r3node-rust/issues/1188) reviews this claim after block ingest replaced the Casper buffer and block retriever.
+C3 specifies the new dispatch rule. The other conditions keep their earlier wording for comparison with block ingest.
+The artifact list and historical discharge plan record the scope of the earlier claim.
+
 A received block parks in the casper buffer while one of its dependencies (a parent or a justification) is not validated. Issue #24 measured that under sustained load 56% of received blocks park, for 7.1 s median and 39.6 s p90, while replay takes 0.5 to 1.1 s. Parked blocks stretch the finality rounds, and the finalization tail fails the `test_load` 45 s gate.
 
 A code trace on 2026-10-07 found three release-path causes. A released block re-enters the tail of the one shared processing queue, behind gossip. The release scan reads every buffered block after every processed block. A block with a stale parent link can be dropped as already processed and stay parked until the 180 s stale prune.
@@ -39,7 +43,7 @@ TASK-021-18 (stall-loop item A7) extends the claim with C5 and C6. A code readin
 - The overflow prune of the buffer sorts dependency-free entries youngest first and removes the first one. It removes the newest block, which is often the block that just became ready.
 - A recovery re-request for a buffered block gets a duplicate copy as its reply. The copy has the verdict `AlreadyProcessed`, and its disposal calls `ack_processed`. That call clears the re-fetch cooldown, the retry counter, and the quarantine of the block. The retry budget then never runs out.
 
-## Definitions
+## Historical definitions
 
 - **Validated:** a block hash is in the block DAG or in the invalid-block set.
 - **Ready:** every dependency of a buffered block is validated.
@@ -52,7 +56,14 @@ TASK-021-18 (stall-loop item A7) extends the claim with C5 and C6. A code readin
 
 **C2. No stale hold.** A released block is processed. The pipeline does not drop it as already processed because of a stale link. A block never keeps a stale link to a dependency after that dependency is validated. This rule also holds when the dependency check of the block races with the validation of the dependency.
 
-**C3. Release order without starvation.** A released block is processed before every gossip block that entered the queue after the release. Gossip blocks still progress: within a bounded number of processing steps, the pipeline takes a gossip block when one is waiting.
+**C3. Bounded dispatch wait.** The block ingest dispatcher selects the lowest-height ready entry when no entry is overdue. An entry becomes overdue after `K = READY_AGE_LIMIT_DISPATCHES = 32` dispatches of other entries. The dispatcher selects overdue entries in the order they entered the ready set.
+
+- A ready entry is a held block that the tracker can select for a worker.
+- The count starts when the tracker puts the entry in the ready set. A return to the ready set after waiting or retry starts a new count.
+- Let `A` be the number of entries already ahead in ready-set entry order when the entry becomes ready. An entry that leaves and returns receives a new place in that order.
+- If the entry stays ready and validation slots keep freeing, the dispatcher selects it within `K + A + 1` dispatch opportunities, including its own dispatch. Each opportunity selects one entry for a free slot.
+
+After `K` other dispatches, the entry is overdue. At most `A` entries can still precede it. Later entries cannot take priority over it while it is overdue. This claim counts dispatches from readiness to selection. Worker run time and wall-clock delay are outside this bound.
 
 **C4. Verdict invariance.** The validation verdict of a block, and the resulting DAG, do not depend on the order in which ready blocks are processed. C3 changes only the order and the latency of processing, never a validation result.
 
@@ -64,13 +75,85 @@ TASK-021-18 (stall-loop item A7) extends the claim with C5 and C6. A code readin
 
 **C8. Fair pending eviction.** The pending area keeps three tiers: unsolicited blocks from an unknown sender, unsolicited blocks from a known sender, and solicited blocks. A known sender has a latest message in the DAG of this node. An insert evicts only entries in its own tier or in a lower tier, oldest entry of the lowest tier first. A flood of blocks from new sender keys therefore never evicts a pending block from a known sender.
 
-## Seam premises (documented, not proven)
+## Block ingest review
+
+The review uses the block ingest branch from `dev` at `3c6a46d28`. The claim stays pending.
+
+### C3 acceptance
+
+The maintainer accepted the restated C3 on 2026-11-27 at `c7338aa51d3e38e94a46726894a25d751c2e079b`. The acceptance applies to these source bytes:
+
+```text
+0bbfc2183a1beeaecbf73e2051d0f4aeabca203bcb9b0be8f555e9f1daab60c1  casper/src/rust/blocks/ingest/dependency_tracker.rs
+1a258bd7d0a3efb8bd698c15f51e996e162b9f2aa73550fe95223390b27948fc  casper/src/rust/blocks/ingest/ingest_state_tests.rs
+```
+
+A later change to either file needs a new review of C3. The other conditions stay pending: C1, C2, C4, C5, C6, and C8 under issue #1196, and C7 under issue #1194. C4 stays open because the age bound changes the order of released blocks, and the existing test covers only independent ready blocks. The claim status stays `pending` until every condition has a recorded result.
+
+### C3 evidence
+
+The first regression checks that lower heights take dispatches 1 through 32 and the ready height-5 block takes dispatch 33. The second checks two overdue blocks first held ready. They take dispatches 33 and 34 in ready order even though the second has a lower height. [Issue #1188 test results](https://github.com/F1R3FLY-io/f1r3node-rust/issues/1188#issuecomment-7222005932).
+
+- [`a_ready_block_is_dispatched_while_one_sender_keeps_sending_lower_heights`](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs)
+- [`overdue_blocks_are_dispatched_in_the_order_they_became_ready`](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs)
+
+At `c286f1ef9`, the tracker broke equal dispatch-count ties by the sequence at first hold. A scratch test held one block waiting and then held a second block ready. The first block became ready before the next dispatch. The second block had `A = 0` and took dispatch 34. The bound requires dispatch by 33 in that case.
+
+The [tracker](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) now assigns a distinct sequence on each entry to the ready set. The added regression reverses hold and ready order within one dispatch interval. It checks that the block with `A = 0` takes dispatch 33.
+
+- [`a_block_held_earlier_but_ready_later_does_not_pass_an_older_ready_block`](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs)
+
+### Other conditions
+
+#### C1. Release liveness
+
+The event-driven transition holds for a retained waiter after the owner handles its last required event. If a worker still holds the dependency, the owner waits for the worker outcome. A deferred shape check can add more dependencies. The current rule needs to define release as entry to the ready set and use C3 for dispatch.
+
+Dependency satisfaction uses DAG membership, including recorded equivocations. A rejection that leaves no DAG entry removes the dependent blocks. The rule also needs to account for state-root import and retry expiration.
+
+Tests cover parent arrival and both orders of the insert and outcome events. [Owner events](../../casper/src/rust/blocks/ingest/block_ingest.rs), [insert and outcome handling](../../casper/src/rust/blocks/ingest/ingest_state.rs), [readiness tests](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs).
+
+#### C2. No stale hold
+
+The owner removes tracked waits when it completes the dependency insert. On a successful store read, an obsolete worker result that names an already-satisfied dependency causes a bounded retry. A retry can reach the failure limit and quarantine the block. The current rule needs to describe owner inputs and worker snapshots.
+
+The stale-snapshot test checks that repeated obsolete results reach the failure limit. [Tracker insert](../../casper/src/rust/blocks/ingest/dependency_tracker.rs), [worker outcomes](../../casper/src/rust/blocks/ingest/ingest_state.rs), [stale-snapshot test](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs).
+
+#### C5. Eviction order
+
+The earlier oldest-first prune and `max_prune_batch` fail as descriptions of block ingest. A disk eviction starts with the sender that has the most held disk entries and an eligible victim. The pending policy uses solicitation, trust, and height. Working entries stay with their workers.
+
+Tests cover victim order, protection for working entries, and the disk bound under a sender flood. [Victim selection and tests](../../casper/src/rust/blocks/ingest/dependency_tracker.rs), [disk-bound test](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs).
+
+#### C6. Re-fetch rate limit
+
+A duplicate report for a held block leaves tracking intact. An active quarantine defers its need. A completed insert clears the need and validation failures. The duplicate fast path can skip the body, and quarantine has its own expiration. The current rule needs separate terms for network fetch pacing and validation retries.
+
+Tests cover duplicate receipts, the network request interval, and a local copy during quarantine. [Owner receive tests](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs), [fetch pacing and tests](../../casper/src/rust/blocks/ingest/fetch_scheduler.rs).
+
+#### C7. Integrity before hash-keyed state
+
+The ban on all hash-keyed reads fails. Receipt verification uses a temporary hash slot and reads known-block state before checking integrity. A refused network body does not enter intake.
+
+The deletion rule for a refused body that this node stored needs a separate review before C7 is restated.
+
+Tests cover the known-block fast path and concurrent receipts. [Receipt verification and tests](../../casper/src/rust/blocks/ingest/receipt_verifier.rs).
+
+#### C8. Fair pending eviction
+
+Admission still protects capacity for known senders and requested blocks. A known sender has a verified signature and a bond at the last finalized block. Pending storage refuses inserts above the class limit. The owner evicts separately and selects higher blocks first within each trust class. At equal heights, it prefers the entry held most recently. The earlier last-message definition and oldest-first eviction rule fail.
+
+Tests cover capacity protection from unknown senders and eviction order when a requested block needs room. [Intake classification](../../casper/src/rust/blocks/ingest/intake_worker.rs), [pending limits and tests](../../block-storage/src/rust/pending_blocks.rs), [requested-block eviction tests](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs).
+
+## Historical seam premises
 
 - **Dependency closure.** A block is processed only after all its dependencies are validated. C4 depends on this premise: validation of a block reads only the block and its validated dependencies.
 - **Invalid set.** A dependency in the invalid-block set counts as validated for release. The rules that put a hash into that set are outside this claim.
 - **Bounded buffer.** The buffer keeps its existing size limits and its stale prune as a safety net. C1 and C2 make the stale prune unnecessary for correct release, but this claim does not remove it.
 
-## Discharge plan
+## Historical discharge plan
+
+This plan covers the implementation before block ingest.
 
 The status of each item is recorded here as the TDD cycles complete.
 

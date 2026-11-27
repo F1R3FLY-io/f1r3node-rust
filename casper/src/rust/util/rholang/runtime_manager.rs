@@ -1770,8 +1770,42 @@ impl RuntimeManager {
         exploratory_deploy_config: ExploratoryDeployConfig,
         replay_lock: Arc<ReplayLock>,
     ) -> (RuntimeManager, RhoHistoryRepository) {
+        use rspace_plus_plus::rspace::history::cold_gc::NoopColdGc;
+        Self::create_with_history_config_with_cold_gc(
+            store,
+            mergeable_store,
+            mergeable_tags,
+            external_services,
+            exploratory_deploy_config,
+            replay_lock,
+            Arc::new(NoopColdGc),
+        )
+    }
+
+    /// Variant of [`create_with_history_config`][Self::create_with_history_config]
+    /// that wires an explicit cold-store GC implementation (issue
+    /// #1181). The production path reads
+    /// `casper.enable_cold_gc_bookkeeping`: when on, it opens the
+    /// refcount + retention sub-DBs via
+    /// `rspace_store_manager::get_or_create_cold_gc_stores` and
+    /// constructs an `LmdbColdGc`; when off (the default), it passes
+    /// `NoopColdGc` and no sub-DBs are opened.
+    pub fn create_with_history_config_with_cold_gc(
+        store: RSpaceStore,
+        mergeable_store: MergeableStore,
+        mergeable_tags: std::sync::Arc<
+            std::collections::HashMap<
+                Par,
+                rspace_plus_plus::rspace::merger::merging_logic::MergeType,
+            >,
+        >,
+        external_services: ExternalServices,
+        exploratory_deploy_config: ExploratoryDeployConfig,
+        replay_lock: Arc<ReplayLock>,
+        cold_gc: Arc<dyn rspace_plus_plus::rspace::history::cold_gc::ColdGc>,
+    ) -> (RuntimeManager, RhoHistoryRepository) {
         let (rspace, replay_rspace) =
-            RSpace::create_with_replay(store, Arc::new(Box::new(Matcher)))
+            RSpace::create_with_replay_and_cold_gc(store, Arc::new(Box::new(Matcher)), cold_gc)
                 .expect("Failed to create RSpaceWithReplay");
 
         let history_repo = rspace.get_history_repository();
