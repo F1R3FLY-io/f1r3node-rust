@@ -88,7 +88,7 @@ If the sender limit causes a solicited block's refusal, the owner selects that s
 
 ## Block ingest review
 
-The review uses block ingest on `dev` at `adbfc74db` and the dispatch policy from PR #1191. The claim stays pending.
+The review uses block ingest on `dev` at `3a3426baa`, which includes the dispatch policy from PR #1191. The claim stays pending.
 
 ### C3 acceptance
 
@@ -135,7 +135,7 @@ The [tracker](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) now ass
 
 The second run ages one released block by `READY_AGE_LIMIT_DISPATCHES` dispatches of fixture work. At the next selection, the test asserts that the overdue block takes the slot while a lower entry is ready. The C4 coverage here uses two independent valid blocks and one validation order per schedule.
 
-The test depends on the scheduler and threshold defined by [PR #1191](https://github.com/F1R3FLY-io/f1r3node-rust/pull/1191). Both order-invariance tests passed in the build of that PR at `0f67c82f1`.
+The test depends on the scheduler and threshold from [PR #1191](https://github.com/F1R3FLY-io/f1r3node-rust/pull/1191). Both order-invariance tests passed on `dev` at `3a3426baa`, which includes PR #1191.
 
 The earlier [`ready_blocks_reach_the_same_dag_and_verdicts_in_every_processing_order`](../../casper/tests/blocks/release_order_invariance_spec.rs) remains evidence for three independent blocks that start ready.
 

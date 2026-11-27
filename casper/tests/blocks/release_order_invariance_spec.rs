@@ -87,6 +87,7 @@ async fn dispatch_released_blocks(
     let receiver = &mut nodes[3];
     receiver.shutoff().unwrap();
 
+    assert!(first < 2, "first selects one of the two released blocks");
     let second = 1 - first;
     let mut tracker = DependencyTracker::new(IngestView::new());
     for (child, parent) in children.iter().zip(parents) {
