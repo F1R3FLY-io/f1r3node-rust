@@ -9,6 +9,7 @@ use rspace_plus_plus::rspace::errors::{HistoryError, RadixTreeError, RootError};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
 use rspace_plus_plus::rspace::history::checkpoint_writer::{CheckpointWriter, KvCheckpointWriter};
+use rspace_plus_plus::rspace::history::cold_gc::NoopColdGc;
 use rspace_plus_plus::rspace::history::history::HistoryInstances;
 use rspace_plus_plus::rspace::history::history_reader::HistoryReader;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
@@ -861,6 +862,7 @@ fn empty_repository_over(
         rspace_exporter: Arc::new(EmptyExporter),
         rspace_importer: Arc::new(EmptyImporter),
         prune_guard: Arc::new(PruneGuard::new()),
+        cold_gc: Arc::new(NoopColdGc),
         _marker: std::marker::PhantomData,
     }
 }
