@@ -103,7 +103,7 @@ fn eval_expr_to_par(expr: &Expr, env: &Env<Par>) -> Result<Par, EvalError> {
 
         ExprInstance::ENotBody(ENot { p }) => {
             let inner = require_par(p.as_ref())?;
-            let evaled = eval(&inner, env)?;
+            let evaled = eval(inner, env)?;
             let v = single_expr_instance(&evaled)?;
             match v {
                 ExprInstance::GBool(b) => Ok(par_with_bool(!b)),
@@ -113,7 +113,7 @@ fn eval_expr_to_par(expr: &Expr, env: &Env<Par>) -> Result<Par, EvalError> {
 
         ExprInstance::ENegBody(ENeg { p }) => {
             let inner = require_par(p.as_ref())?;
-            let evaled = eval(&inner, env)?;
+            let evaled = eval(inner, env)?;
             let v = single_expr_instance(&evaled)?;
             match v {
                 ExprInstance::GInt(i) => i
@@ -199,6 +199,40 @@ fn eval_expr_to_par(expr: &Expr, env: &Env<Par>) -> Result<Par, EvalError> {
     }
 }
 
+/// How many variable references evaluating `par` resolves. Each one clones
+/// its bound value and walks it, so evaluation costs about this many times
+/// the bound values' size, plus the size of `par`. Follows `eval`'s descent.
+pub fn variable_references(par: &Par) -> usize {
+    par.exprs.iter().map(expr_variable_references).sum()
+}
+
+fn expr_variable_references(expr: &Expr) -> usize {
+    // An absent operand fails evaluation before anything is resolved.
+    let operand = |p: &Option<Par>| p.as_ref().map_or(0, variable_references);
+    match expr.expr_instance.as_ref() {
+        Some(ExprInstance::EVarBody(_)) => 1,
+        Some(ExprInstance::ENotBody(ENot { p })) | Some(ExprInstance::ENegBody(ENeg { p })) => {
+            operand(p)
+        }
+        Some(
+            ExprInstance::EAndBody(EAnd { p1, p2 })
+            | ExprInstance::EOrBody(EOr { p1, p2 })
+            | ExprInstance::EEqBody(EEq { p1, p2 })
+            | ExprInstance::ENeqBody(ENeq { p1, p2 })
+            | ExprInstance::ELtBody(ELt { p1, p2 })
+            | ExprInstance::ELteBody(ELte { p1, p2 })
+            | ExprInstance::EGtBody(EGt { p1, p2 })
+            | ExprInstance::EGteBody(EGte { p1, p2 })
+            | ExprInstance::EPlusBody(EPlus { p1, p2 })
+            | ExprInstance::EMinusBody(EMinus { p1, p2 })
+            | ExprInstance::EMultBody(EMult { p1, p2 })
+            | ExprInstance::EDivBody(models::rhoapi::EDiv { p1, p2 })
+            | ExprInstance::EModBody(models::rhoapi::EMod { p1, p2 }),
+        ) => operand(p1) + operand(p2),
+        _ => 0,
+    }
+}
+
 fn resolve_var(v: &Var, env: &Env<Par>) -> Result<Par, EvalError> {
     match v.var_instance.as_ref() {
         Some(VarInstance::BoundVar(idx)) => env
@@ -209,8 +243,8 @@ fn resolve_var(v: &Var, env: &Env<Par>) -> Result<Par, EvalError> {
     }
 }
 
-fn require_par(p: Option<&Par>) -> Result<Par, EvalError> {
-    p.cloned().ok_or(EvalError::MissingExprInstance)
+fn require_par(p: Option<&Par>) -> Result<&Par, EvalError> {
+    p.ok_or(EvalError::MissingExprInstance)
 }
 
 fn par_with_expr(e: Expr) -> Par {
@@ -266,8 +300,8 @@ fn bool_binop<F>(
 where
     F: Fn(bool, bool) -> bool,
 {
-    let v1 = single_expr_instance(&eval(&require_par(p1)?, env)?)?;
-    let v2 = single_expr_instance(&eval(&require_par(p2)?, env)?)?;
+    let v1 = single_expr_instance(&eval(require_par(p1)?, env)?)?;
+    let v2 = single_expr_instance(&eval(require_par(p2)?, env)?)?;
     match (&v1, &v2) {
         (ExprInstance::GBool(b1), ExprInstance::GBool(b2)) => Ok(par_with_bool(f(*b1, *b2))),
         _ => Err(operator_mismatch_binary(op, &v1, &v2)),
@@ -280,8 +314,8 @@ fn eq_binop(
     env: &Env<Par>,
     expect_eq: bool,
 ) -> Result<Par, EvalError> {
-    let lhs = eval(&require_par(p1)?, env)?;
-    let rhs = eval(&require_par(p2)?, env)?;
+    let lhs = eval(require_par(p1)?, env)?;
+    let rhs = eval(require_par(p2)?, env)?;
     // IEEE 754: any comparison involving NaN is false (so == is false and
     // != is true). Mirrors `par_contains_nan_double` in the full reducer.
     let eq = if par_contains_nan_double(&lhs) || par_contains_nan_double(&rhs) {
@@ -320,8 +354,8 @@ fn cmp_binop<F>(
 where
     F: Fn(i64) -> bool,
 {
-    let v1 = single_expr_instance(&eval(&require_par(p1)?, env)?)?;
-    let v2 = single_expr_instance(&eval(&require_par(p2)?, env)?)?;
+    let v1 = single_expr_instance(&eval(require_par(p1)?, env)?)?;
+    let v2 = single_expr_instance(&eval(require_par(p2)?, env)?)?;
     let order: i64 = match (&v1, &v2) {
         (ExprInstance::GInt(i1), ExprInstance::GInt(i2)) => i64::from(i1.cmp(i2) as i8),
         (ExprInstance::GString(s1), ExprInstance::GString(s2)) => i64::from(s1.cmp(s2) as i8),
@@ -341,8 +375,8 @@ fn int_binop_checked<F>(
 where
     F: Fn(i64, i64) -> Option<i64>,
 {
-    let v1 = single_expr_instance(&eval(&require_par(p1)?, env)?)?;
-    let v2 = single_expr_instance(&eval(&require_par(p2)?, env)?)?;
+    let v1 = single_expr_instance(&eval(require_par(p1)?, env)?)?;
+    let v2 = single_expr_instance(&eval(require_par(p2)?, env)?)?;
     match (&v1, &v2) {
         (ExprInstance::GInt(i1), ExprInstance::GInt(i2)) => f(*i1, *i2)
             .map(par_with_int)
@@ -361,8 +395,8 @@ fn int_div_or_mod<F>(
 where
     F: Fn(i64, i64) -> Option<i64>,
 {
-    let v1 = single_expr_instance(&eval(&require_par(p1)?, env)?)?;
-    let v2 = single_expr_instance(&eval(&require_par(p2)?, env)?)?;
+    let v1 = single_expr_instance(&eval(require_par(p1)?, env)?)?;
+    let v2 = single_expr_instance(&eval(require_par(p2)?, env)?)?;
     match (&v1, &v2) {
         (ExprInstance::GInt(_), ExprInstance::GInt(0)) => Err(EvalError::DivisionByZero),
         (ExprInstance::GInt(i1), ExprInstance::GInt(i2)) => f(*i1, *i2)

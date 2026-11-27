@@ -320,6 +320,20 @@ pub trait ISpace<
 
     async fn check_replay_data(&self) -> Result<(), RSpaceError>;
 
+    /// Makes every later search on this space fail unless a charging scope
+    /// pays for it. A space that does not charge searches, such as replay's,
+    /// has nothing to require.
+    fn require_search_charging(&self);
+
+    /// The work of each search a deploy's term paid for in play, one entry
+    /// per charge, recomputed from `term_log`, the term's events in the rigged
+    /// log, from `pre_state`, the state the term started from. Replay only.
+    async fn search_work(
+        &self,
+        pre_state: &SoftCheckpoint<C, P, A, K>,
+        term_log: std::ops::Range<usize>,
+    ) -> Result<Vec<crate::rspace::search_charge::SearchWork>, RSpaceError>;
+
     async fn is_replay(&self) -> bool;
 
     async fn update_produce(&self, produce: Produce) -> ();

@@ -466,6 +466,98 @@ async fn a_match_is_charged_per_step_and_replays_identically() {
     .unwrap()
 }
 
+/// A persistent send or receive that matches on arrival is issued again, so
+/// play and replay, running in different orders, perform different numbers of
+/// sends and receives; replay finds the term's part of the log from the
+/// recorded range, not from what it performed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terms_whose_persistent_sends_and_receives_are_issued_again_replay_identically() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            runtime_manager.replay_cache = None;
+            let state = genesis_block.body.state.post_state_hash;
+            for (term, fails) in [
+                ("for (@x <<- @1) { Nil } | @1!(42)", false),
+                (
+                    "new c in { contract c(@n) = { Nil } | c!(1) | c!(2) | c!(3) }",
+                    false,
+                ),
+                ("@0!!(0) | @0!!(0) | for (_ <- @0) { Nil }", false),
+                (
+                    "new x(`rho:does:not:exist`) in { Nil } | \
+                     new c in { contract c(@n) = { Nil } | c!(1) | c!(2) }",
+                    true,
+                ),
+            ] {
+                for _ in 0..10 {
+                    let deploy = construct_deploy::source_deploy_now_full(
+                        term.to_string(),
+                        Some(1_000_000),
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                    let (next, processed) =
+                        compute_state(&mut runtime_manager, &genesis_context, deploy, &state).await;
+                    assert_eq!(processed.is_failed, fails, "{term}");
+                    assert!(
+                        processed.user_log.start > 0
+                            && processed.user_log.end < processed.deploy_log.len(),
+                        "{term}: the term's events {:?} lie between the precharge's and the \
+                         refund's in a log of {}",
+                        processed.user_log,
+                        processed.deploy_log.len()
+                    );
+                    let replayed = replay_compute_state(
+                        &mut runtime_manager,
+                        &genesis_context,
+                        processed,
+                        &state,
+                    )
+                    .await
+                    .unwrap_or_else(|error| panic!("{term}: {error:?}"));
+                    assert_eq!(replayed, next, "{term}");
+                }
+            }
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_user_log_outside_the_deploy_log_fails_replay_as_a_search_mismatch() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            runtime_manager.replay_cache = None;
+            let state = genesis_block.body.state.post_state_hash;
+            let deploy = construct_deploy::source_deploy_now_full(
+                "@0!(0)".to_string(),
+                Some(1_000_000),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let (_, mut processed) =
+                compute_state(&mut runtime_manager, &genesis_context, deploy, &state).await;
+            processed.user_log = processed.user_log.start..processed.deploy_log.len() + 1;
+
+            match replay_compute_state(&mut runtime_manager, &genesis_context, processed, &state)
+                .await
+            {
+                Err(CasperError::ReplayFailure(ReplayFailure::SearchMismatch { .. })) => {}
+                other => panic!("expected a search mismatch, got {other:?}"),
+            }
+        },
+    )
+    .await
+    .unwrap()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_deploy_binding_an_unknown_urn_fails_for_the_work_done_and_replays_identically() {
     with_runtime_manager(
@@ -1912,8 +2004,8 @@ async fn replaycomputestate_should_catch_discrepancies_in_initial_and_replay_cos
             initial_cost,
             replay_cost,
         })) => {
-            assert_eq!(initial_cost, 322);
-            assert_eq!(replay_cost, 323);
+            assert_eq!(initial_cost, 329);
+            assert_eq!(replay_cost, 330);
         }
         _ => panic!("Expected ReplayCostMismatch error"),
     }

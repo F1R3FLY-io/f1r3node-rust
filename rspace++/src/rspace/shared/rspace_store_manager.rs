@@ -3,6 +3,7 @@ use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use shared::rust::store::key_value_store::KeyValueStore;
 use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
 
 use super::env_cache;
@@ -102,4 +103,23 @@ fn open_lmdb_store(
         Some(open_db) => Ok(LmdbKeyValueStore::new(env, open_db)),
         None => panic!("\nFailed to open database: {}", db_name),
     }
+}
+
+/// Create (or reopen) the two sub-DBs that back `LmdbColdGc` (issue
+/// #1181). Both live in the cold env so an operator who is willing
+/// to drop their cold data can wipe all three stores together by
+/// removing `rspace/cold/`.
+///
+/// Called only when `casper.enable-cold-gc-bookkeeping` is on. When
+/// off, the node constructs `NoopColdGc` and does not open these
+/// sub-DBs, so a disabled node has no new files on disk.
+pub fn get_or_create_cold_gc_stores(
+    lmdb_path: &str,
+    map_size: usize,
+) -> Result<(Arc<dyn KeyValueStore>, Arc<dyn KeyValueStore>), heed::Error> {
+    let cold_env_path = format!("{}/rspace/cold", lmdb_path);
+    create_dir_all(&cold_env_path).expect("Failed to create RSpace++ cold directory");
+    let refcount = create_lmdb_store(&cold_env_path, "rspace-cold-refcount", map_size)?;
+    let retention = create_lmdb_store(&cold_env_path, "rspace-retention-set", map_size)?;
+    Ok((Arc::new(refcount), Arc::new(retention)))
 }
