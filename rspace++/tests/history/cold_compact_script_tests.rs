@@ -27,11 +27,27 @@ fn file_len(path: &std::path::Path) -> u64 {
 
 /// Populate a fresh env with sparse data (many writes, delete half),
 /// run the compact script, and assert `data.mdb` shrinks and keys
-/// survive. If `mdb_copy` is not on PATH, the test skips.
+/// survive. Skips if `mdb_copy` is absent OR if its version is not
+/// LMDB 0.9: the node writes 0.9-format envs (heed 0.22.1 /
+/// lmdb-master-sys 0.2.6), and LMDB 1.0 tools refuse to open them
+/// (MDB_INVALID). The script itself version-gates and refuses up
+/// front; this test matches that behavior by skipping rather than
+/// asserting success on an incompatible tool.
 #[test]
 fn compact_script_shrinks_cold_env_and_preserves_data() {
-    if Command::new("mdb_copy").arg("--help").output().is_err() {
-        eprintln!("skip: mdb_copy not on PATH");
+    let ver = match Command::new("mdb_copy").arg("-V").output() {
+        Ok(o) => {
+            let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
+            s.push_str(&String::from_utf8_lossy(&o.stderr));
+            s
+        }
+        Err(_) => {
+            eprintln!("skip: mdb_copy not on PATH");
+            return;
+        }
+    };
+    if !ver.contains("LMDB 0.9") {
+        eprintln!("skip: mdb_copy is not LMDB 0.9 (reports: {})", ver.lines().next().unwrap_or(""));
         return;
     }
 
