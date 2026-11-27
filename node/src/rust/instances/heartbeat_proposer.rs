@@ -1931,6 +1931,81 @@ mod tests {
             );
         }
 
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_deploy_wake_during_the_cooldown_makes_no_proposal_before_the_cooldown_ends() {
+            use casper::rust::engine::engine_cell::EngineCell;
+            use casper::rust::engine::engine_with_casper::EngineWithCasper;
+
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let mut snapshot =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                validator_id.clone().into(),
+            );
+            snapshot
+                .dag
+                .fixture_mut()
+                .latest_messages_map
+                .insert(validator_id, test_hash(0x1a));
+            let casper =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new_with_pending_deploys(
+                    snapshot,
+                    create_lfb_with_age(100),
+                    1,
+                );
+            let mut own_block = models::rust::block_implicits::get_random_block_default();
+            own_block.block_hash = test_hash(0x1a);
+            own_block.header.timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+            casper.insert_block(&own_block);
+            let engine_cell = Arc::new(EngineCell::init());
+            engine_cell
+                .set(Arc::new(EngineWithCasper::new(Arc::new(casper))))
+                .await;
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let heartbeat_signal_ref = new_heartbeat_signal_ref();
+            let config = HeartbeatConf {
+                enabled: true,
+                check_interval: Duration::from_millis(200),
+                max_lfb_age: Duration::from_secs(10),
+                self_propose_cooldown: Duration::from_millis(1_500),
+                ..HeartbeatConf::default()
+            };
+            let handle = HeartbeatProposer::create(
+                engine_cell,
+                Some(propose_func),
+                validator,
+                config,
+                10,
+                heartbeat_signal_ref.clone(),
+                false,
+            )
+            .expect("heartbeat starts");
+
+            for _ in 0..4 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                heartbeat_signal_ref
+                    .get()
+                    .expect("heartbeat installs its wake signal")
+                    .trigger_wake();
+            }
+            assert_eq!(
+                propose_count.load(Ordering::SeqCst),
+                0,
+                "a deploy wake inside the cooldown must not propose"
+            );
+            tokio::time::sleep(Duration::from_millis(1_000)).await;
+            handle.abort();
+            assert!(
+                propose_count.load(Ordering::SeqCst) >= 1,
+                "the pending deploy is proposed after the cooldown ends"
+            );
+        }
+
         #[tokio::test]
         async fn do_heartbeat_check_triggers_propose_when_lfb_stale() {
             // Create validator identity
@@ -2789,6 +2864,64 @@ mod tests {
 
             assert!(result.is_ok(), "do_heartbeat_check should succeed");
             assert_eq!(propose_count.load(Ordering::SeqCst), 0);
+        }
+
+        async fn lag_capped_check(own_block_age_ms: i64) -> (usize, Duration) {
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let (snapshot, lfb) = wide_unfinalized_snapshot(validator_id);
+            let casper_impl =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new_with_pending_deploys(
+                    snapshot, lfb, 1,
+                );
+            let mut self_tip = models::rust::block_implicits::get_random_block_default();
+            self_tip.block_hash = test_hash(0x18);
+            self_tip.header.timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64
+                - own_block_age_ms;
+            casper_impl.insert_block(&self_tip);
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(casper_impl);
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let mut config = empty_frontier_backpressure_config();
+            config.check_interval = Duration::from_secs(60);
+            config.self_propose_cooldown = Duration::from_secs(3);
+            config.advanced.pending_deploy_max_lag = 1;
+            config.advanced.deploy_recovery_max_lag = 1;
+            config.stale_recovery_min_interval = Some(Duration::from_secs(15));
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+            let outcome = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await
+            .expect("do_heartbeat_check");
+            (
+                propose_count.load(Ordering::SeqCst),
+                next_heartbeat_sleep(config.check_interval, outcome.recheck_after),
+            )
+        }
+
+        #[tokio::test]
+        async fn a_deploy_held_by_the_lag_cap_is_not_proposed_at_the_cooldown_end_check() {
+            let (proposals, next_check) = lag_capped_check(1_000).await;
+            assert_eq!(proposals, 0);
+            assert_eq!(
+                next_check,
+                Duration::from_secs(60),
+                "a deploy held by the lag cap must not schedule a cooldown-end check"
+            );
+            let (proposals, _) = lag_capped_check(4_000).await;
+            assert_eq!(
+                proposals, 0,
+                "after the cooldown, a deploy held by the lag cap must not be proposed"
+            );
         }
 
         /// The terminal ucc-stall state (session 3cd723b6): finalization

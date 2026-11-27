@@ -52,6 +52,16 @@ The B2 test uses a pending deploy and an own block about 1 s old. The cooldown i
 
 The B2 RED control made `cooldown_recheck_delay` return `None` in a scratch copy. The test failed with a 60 s delay. The existing F2 code passed the test before any production edit. An independent run passed all 57 heartbeat tests. The implementing agent also reported that strict Clippy and formatting checks passed.
 
+The B3 test runs the heartbeat task with a 200 ms check interval and a 1.5 s cooldown. It sends four deploy wake signals 250 ms apart. It observes zero proposals at about 1 s and at least one at about 2 s. The test checks the proposal count at those two times.
+
+The implementing agent's B3 RED control set the cooldown to zero only on a signal wake. It failed with three proposals at the first sample. The production code passed. All 58 heartbeat tests passed independently on the `dev` candidate and the isolated `ca-canary` candidate with the same heartbeat source.
+
+The B4 fixture sets both pending-deploy lag caps to one block. The validator is eight blocks ahead of the latest finalized block. At an own-block age of 1 s, the check must produce zero proposals and keep its 60 s interval. At 4 s, after the 3 s cooldown, the check must still produce zero proposals. The test supplies each age with a block timestamp and calls the production check directly.
+
+The implementing agent's B4 RED controls each failed on a scratch copy. `RecheckDespiteLag` scheduled a 2 s recheck. A control that removed the lag cap from pending-deploy eligibility scheduled a 1.999 s recheck. A control that removed the lag cap only from the proposal decision made one proposal after the cooldown. This last control failed the proposal-count assertion independently of the timer assertion.
+
+All 59 heartbeat tests passed on the `dev` candidate and the isolated `ca-canary` candidate with the same B4 source.
+
 All eight proposer integration tests passed. The [proposer source](../../../casper/src/rust/blocks/proposer/proposer.rs) has the same bytes as `dev` at `71d435ea6f6a7d766b7e1bda29b96cc0017563ca`. The tests cover proposal constraints, publication effects, and empty recovery under the height constraint.
 
 The [lane binding check](check-lane-binding.sh) compiled the baseline and candidate `decide_lanes` functions and checked 221,184 cases. It covered all 13 Boolean inputs and three relations to each lag cap. The existing lane decisions matched in every case. The new flag was true exactly when an active cooldown was the sole reason the pending-deploy lane was ineligible.
@@ -110,7 +120,7 @@ acb8bcab18784bb02b8e5d3e3207d3131eac874de02aec1756d68061dba688e6  scripts/ci/che
 e0ccf0d7ae287f5fe94b8833d6cd86d6062a581617a4336393b6048e50674dba  scripts/ci/check-formal-invariants.sh
 54b10f2ba7e4667ab5ebb6f59b017802bd532cfeba2d6239f85c99469a1a3292  scripts/ci/check-tla-invariants.sh
 98830ea9f2b08b237b718d39a438db3fd182646dacf0371609c726a7ae926f26  scripts/ci/test-check-tla-invariants.sh
-24b96ac9caccc326204610851347e69fa786aa3819e9618420d6b56789a1fd0e  node/src/rust/instances/heartbeat_proposer.rs
+10029a14b6062bf7d5a6916c7f187d28fb8832a6d2deb6d9f3cf12fa20ebde79  node/src/rust/instances/heartbeat_proposer.rs
 7456a8df25a36b68c13698181189912154322e87073c3701ee02d14e23b2ed3d  node/src/rust/runtime/setup.rs
 cdac4c88a4d782a500fb68813bf0cc7dd0b936c7c3ee1721d7ae9302a86e0505  casper/src/rust/engine/casper_launch.rs
 ebfdb11d68d0e49de763caca5a3dbf2f85581d2eda8fb29099621421dcf4aa2e  casper/src/rust/blocks/proposer/proposer.rs

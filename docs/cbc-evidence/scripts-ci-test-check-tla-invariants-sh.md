@@ -1,75 +1,53 @@
 # CbC Evidence: scripts/ci/test-check-tla-invariants.sh
 
-The merge `c9ca12821` combined the changes of both branches to this script. This record is pending for the merged bytes. The earlier accepted or verified version is in `previous_record`.
+- **Status:** pending
+- **Adapter:** manual
+- **Commit:** fe64a7fe84eaaf633138cea93ba2b9b4441e5477
+- **Verified:** 2026-11-26T23:43:46Z
+
+Claim:
+
+> The heartbeat wake models use the verification gate in docs/claims/soak-formal-gate.md.
 
 ```json
 {
   "artifact": {
     "path": "scripts/ci/test-check-tla-invariants.sh",
     "id": "scripts-ci-test-check-tla-invariants-sh",
-    "commit": "c9ca128214ce137708f852cdc252840e217df7a2",
-    "commit_is_base": true,
-    "working_tree": false,
-    "sha256": "a17031a06f349c91dc877cf1acff173b84eddb2d3637b93360fc93a5194e5654",
-    "sha256_at_registration": "af7fd80db3397c204e96da3ec706083e9c39e89430dc9970384af075c66025e6",
-    "sha256_before_refresh": "af7fd80db3397c204e96da3ec706083e9c39e89430dc9970384af075c66025e6",
-    "sha256_before_verification_refresh": "ac647001494500c87fdff20b5c1743508e643fab96cc41505b15762fbf7b8c00"
+    "commit": "fe64a7fe84eaaf633138cea93ba2b9b4441e5477"
   },
-  "claim": "docs/claims/casper-node-display-projection.md",
+  "claim": "The heartbeat wake models use the verification gate in docs/claims/soak-formal-gate.md.",
   "claim_ids": [
     "CLAIM-CASPER-NODE-OBSERVATION-004",
-    "CLAIM-CASPER-NODE-OBSERVATION-005"
+    "CLAIM-CASPER-NODE-OBSERVATION-005",
+    "CLAIM-SOAK-GATE-001"
   ],
-  "claim_digests": {
-    "docs/claims/casper-node-fork-choice-observation.md": "c007214aad05afbcd100c0e37fd18b166463147b5fa2e1e797743ab814b15a49",
-    "docs/claims/casper-node-display-projection.md": "6310f626415a6ba2d1250e2d656fdcb576415c6153deda1a26da55c617b8faad"
-  },
+  "adapter": "manual",
   "status": "pending",
-  "scope": "stack-merge-refresh-20261001-01",
   "previous_record": {
-    "artifact": "scripts/ci/test-check-tla-invariants.sh",
+    "commit": "24703ab47f8a56f5ca61c2b669a0a9b259e06010",
     "path": "docs/cbc-evidence/scripts-ci-test-check-tla-invariants-sh.md",
-    "sha256": "c11b46b862dc89d091e545c4b36133dec7d96c78be14fb9aa4ad3f863ec966ab",
-    "commit": "c9ca128214ce137708f852cdc252840e217df7a2",
-    "status": "discharged",
-    "scope": "batch-e-acceptance-01"
+    "sha256": "6a71303b85d61e074510868de8daec1a4b905c49605fe36d73f56c65001c3030",
+    "status": "pending"
   },
-  "evidence": null,
-  "tiers": {
-    "refutation": "pending",
-    "construction": "pending",
-    "binding": "pending"
+  "evidence": {
+    "kind": "formal-gate-registration-check",
+    "ref": "formal/tlaplus/heartbeat_wake/README.md",
+    "detail": "The local fixture accepted all 101 exact control verdicts and checked that all four heartbeat configurations run in both tiers. The fixture also exercised refusal and workflow routing. The separate pull request tier ran the pinned TLC jar and passed 19 clean configurations and 101 expected violations. These checks cover heartbeat registration. Earlier claim evidence remains at the previous record."
   },
-  "soak": "pending",
   "waiver": null,
-  "verified_at": null,
-  "previous_refresh_record": {
-    "path": "docs/cbc-evidence/scripts-ci-test-check-tla-invariants-sh.md",
-    "commit": "7b023678c8ab6e32fe8266624cf10e087ef89d57",
-    "sha256": "6d5ec6c42eac1250387178bf620942317162c0d7e1974660ff5a8b6b83bd4cfa"
+  "verified_at": "2026-11-26T23:43:46Z",
+  "verification_id": "0be38536-769b-4218-81df-ed134e336c8c",
+  "inputs": {
+    "artifact": "scripts/ci/test-check-tla-invariants.sh",
+    "source_sha256": "98830ea9f2b08b237b718d39a438db3fd182646dacf0371609c726a7ae926f26",
+    "claim": {
+      "path": "docs/claims/soak-formal-gate.md",
+      "sha256": "8a4ea8738cdeb6e100d475c4f18eb33992a0dbeed56b929f69047ef3b7140b8a"
+    }
   },
-  "claim_digests_before_refresh": {
-    "docs/claims/casper-node-fork-choice-observation.md": "24619b06b7c3c4b3849227cea5126c237a9f45e97c628205003866ee6c3c1940",
-    "docs/claims/casper-node-display-projection.md": "ace855346324009b5f08972b5c12e043abaf8889ff40501b525d0fa09cd49dce"
-  },
-  "refreshed_at": "2026-10-01T01:06:08.639Z",
-  "refresh_scope": "batch-e-final-source-evidence-renewal",
-  "claim_digests_before_verification_refresh": {
-    "docs/claims/casper-node-fork-choice-observation.md": "c007214aad05afbcd100c0e37fd18b166463147b5fa2e1e797743ab814b15a49",
-    "docs/claims/casper-node-display-projection.md": "ace855346324009b5f08972b5c12e043abaf8889ff40501b525d0fa09cd49dce"
-  },
-  "verification_refresh_record": {
-    "path": "docs/cbc-evidence/scripts-ci-test-check-tla-invariants-sh.md",
-    "commit": "c83b16f30b28fd9ef3fb7dcdccaa1ff4876cbd03",
-    "sha256": "4bfd9be2599dc204d2910e77a6d0db64261cbd244e4a106dae630c0b9dd89630"
-  },
-  "verification_observation": {
-    "scope": "batch-e-final-source-verification-20261001-01",
-    "refutation": "bounded-models-passed",
-    "construction": "scoped-integer-proofs-passed-with-declared-gaps",
-    "binding": "named-source-tests-passed-not-refinement",
-    "adapter_discharge": false
-  },
-  "refresh_reason": "The merge c9ca12821 of feature/casper-node-observation into formal/soak-casper-consensus combined the changes of both branches to this script. The accepted record applies to the earlier bytes only."
+  "evidence_files": {
+    "formal/tlaplus/heartbeat_wake/README.md": "7eb189905240a3b2c649d1eae109ad4456764f26021b1f0f935c97b3dd0fbd81"
+  }
 }
 ```
