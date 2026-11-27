@@ -165,8 +165,12 @@ impl DeployGrpcServiceV1Impl {
         &self,
         sig: prost::bytes::Bytes,
         proto: DeployDataProto,
+        permit: Option<DeployRequestPermit>,
     ) -> eyre::Result<ReconciledStatus> {
-        let permit = self.deploy_limiter.try_acquire()?;
+        let permit = match permit {
+            Some(permit) => permit,
+            None => self.deploy_limiter.try_acquire()?,
+        };
         let engine = self.engine_cell.clone();
         let shard = self.shard_id.clone();
         crate::rust::web::shared_handlers::offload(move || async move {
@@ -897,11 +901,15 @@ impl DeployService for DeployGrpcServiceV1Impl {
     /// finalized block; the response names that basis.
     async fn deploy_finalization_status(
         &self,
-        request: tonic::Request<DeployFinalizationStatusQuery>,
+        mut request: tonic::Request<DeployFinalizationStatusQuery>,
     ) -> Result<tonic::Response<DeployFinalizationStatusResponse>, tonic::Status> {
+        let permit = request.extensions_mut().remove::<DeployRequestPermit>();
         let request = request.into_inner();
         let verdict = match request.deploy {
-            Some(proto) => self.reconcile_deploy(request.deploy_sig, proto).await,
+            Some(proto) => {
+                self.reconcile_deploy(request.deploy_sig, proto, permit)
+                    .await
+            }
             None => BlockAPI::deploy_finalization_status(&self.engine_cell, &request.deploy_sig)
                 .await
                 .map(ReconciledStatus::from_lookup),
@@ -1776,22 +1784,25 @@ mod tests {
             DeployServiceServer::new(service().with_deploy_limiter(limiter.clone())),
             limiter,
         );
-        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counter = reads.clone();
-        let body = axum::body::Body::from_stream(tokio_stream::once(()).map(move |()| {
-            counter.fetch_add(1, Ordering::SeqCst);
-            Ok::<_, std::convert::Infallible>(tonic::codegen::Bytes::from_static(
-                b"invalid protobuf",
-            ))
-        }));
-        let request = tonic::codegen::http::Request::builder()
-            .uri("/casper.v1.DeployService/doDeploy")
-            .header("content-type", "application/grpc")
-            .body(tonic::body::Body::new(body))
-            .unwrap();
-        let response = server.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), axum::http::StatusCode::OK);
-        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        for path in [
+            "/casper.v1.DeployService/doDeploy",
+            "/casper.v1.DeployService/deployFinalizationStatus",
+        ] {
+            let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = reads.clone();
+            let body = axum::body::Body::from_stream(tokio_stream::once(()).map(move |()| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, std::convert::Infallible>(tonic::codegen::Bytes::new())
+            }));
+            let request = tonic::codegen::http::Request::builder()
+                .uri(path)
+                .header("content-type", "application/grpc")
+                .body(tonic::body::Body::new(body))
+                .unwrap();
+            let response = server.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            assert_eq!(reads.load(Ordering::SeqCst), 0, "{path}");
+        }
         let mut client = DeployServiceClient::new(server);
         assert!(client
             .status(())
@@ -1800,6 +1811,45 @@ mod tests {
             .into_inner()
             .message
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn ingress_status_query_uses_its_response_envelope_and_reuses_the_permit() {
+        use models::casper::v1::deploy_finalization_status_response::Message;
+        use models::casper::v1::deploy_service_client::DeployServiceClient;
+        use models::casper::v1::deploy_service_server::DeployServiceServer;
+
+        use crate::rust::api::grpc_package::DeployIngressService;
+
+        let limiter = DeployRequestLimiter::new(Some(1)).unwrap();
+        let permit = limiter.try_acquire().unwrap();
+        let server = DeployIngressService::new(
+            DeployServiceServer::new(service().with_deploy_limiter(limiter.clone())),
+            limiter.clone(),
+        );
+        let mut client = DeployServiceClient::new(server);
+        let deploy = signed_deploy_proto();
+        let query = DeployFinalizationStatusQuery {
+            deploy_sig: deploy.sig.clone(),
+            deploy: Some(deploy),
+        };
+
+        let response = client
+            .deploy_finalization_status(query.clone())
+            .await
+            .unwrap();
+        let Some(Message::Error(error)) = response.into_inner().message else {
+            panic!("expected the busy service error");
+        };
+        assert!(error.messages[0].starts_with("deploy_admission_busy:"));
+
+        drop(permit);
+        let response = client.deploy_finalization_status(query).await.unwrap();
+        let Some(Message::Error(error)) = response.into_inner().message else {
+            panic!("expected the missing Casper service error");
+        };
+        assert!(error.messages[0].contains("casper instance was not available"));
+        assert!(limiter.try_acquire().is_ok());
     }
 
     #[tokio::test]
