@@ -12,6 +12,7 @@ use super::{RSpace, RSpaceStore};
 use crate::rspace::errors::{HistoryRepositoryError, RSpaceError};
 use crate::rspace::gc_roots::GcRootRegistry;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::history::cold_gc::{ColdGc, NoopColdGc};
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
 use crate::rspace::hot_store::{HotStore, HotStoreInstances};
@@ -77,7 +78,34 @@ where
         A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
         K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
     {
-        let setup = Self::create_history_repo(store).unwrap();
+        Self::create_with_cold_gc(store, matcher, Arc::new(NoopColdGc))
+    }
+
+    /// Variant of [`create`][Self::create] that wires an explicit
+    /// [`ColdGc`]. Callers that opt into cold-store GC bookkeeping
+    /// (issue #1181) pass an `LmdbColdGc`; others use `NoopColdGc`
+    /// via [`create`][Self::create].
+    pub fn create_with_cold_gc(
+        store: RSpaceStore,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
+        cold_gc: Arc<dyn ColdGc>,
+    ) -> Result<RSpace<C, P, A, K>, HistoryRepositoryError>
+    where
+        C: Clone
+            + Debug
+            + Default
+            + Send
+            + Sync
+            + Serialize
+            + Ord
+            + Hash
+            + for<'a> Deserialize<'a>
+            + 'static,
+        P: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+        A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+        K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+    {
+        let setup = Self::create_history_repo_with_cold_gc(store, cold_gc)?;
         let (history_reader, store) = setup;
         let space = Self::apply(Arc::new(history_reader), store, matcher);
         Ok(space)
@@ -102,7 +130,32 @@ where
         A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
         K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
     {
-        let setup = Self::create_history_repo(store).unwrap();
+        Self::create_with_replay_and_cold_gc(store, matcher, Arc::new(NoopColdGc))
+    }
+
+    /// Variant of [`create_with_replay`][Self::create_with_replay] that
+    /// wires an explicit [`ColdGc`]. Issue #1181.
+    pub fn create_with_replay_and_cold_gc(
+        store: RSpaceStore,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
+        cold_gc: Arc<dyn ColdGc>,
+    ) -> Result<(RSpace<C, P, A, K>, ReplayRSpace<C, P, A, K>), HistoryRepositoryError>
+    where
+        C: Clone
+            + Debug
+            + Default
+            + Send
+            + Sync
+            + Serialize
+            + Ord
+            + Hash
+            + for<'a> Deserialize<'a>
+            + 'static,
+        P: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+        A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+        K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+    {
+        let setup = Self::create_history_repo_with_cold_gc(store, cold_gc)?;
         let (history_repo, store) = setup;
         let history_repo_arc = Arc::new(history_repo);
 
@@ -148,8 +201,43 @@ where
         A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
         K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
     {
-        let history_repo =
-            HistoryRepositoryInstances::lmdb_repository(store.history, store.roots, store.cold)?;
+        Self::create_history_repo_with_cold_gc(store, Arc::new(NoopColdGc))
+    }
+
+    /// Variant of [`create_history_repo`][Self::create_history_repo]
+    /// that wires an explicit [`ColdGc`] into the repository. Used by
+    /// the cold-store GC bookkeeping path (issue #1181).
+    pub fn create_history_repo_with_cold_gc(
+        store: RSpaceStore,
+        cold_gc: Arc<dyn ColdGc>,
+    ) -> Result<
+        (
+            Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>,
+            Box<dyn HotStore<C, P, A, K>>,
+        ),
+        HistoryRepositoryError,
+    >
+    where
+        C: Clone
+            + Debug
+            + Default
+            + Send
+            + Sync
+            + Serialize
+            + for<'a> Deserialize<'a>
+            + Eq
+            + Hash
+            + 'static,
+        P: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+        A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+        K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+    {
+        let history_repo = HistoryRepositoryInstances::lmdb_repository_with_cold_gc(
+            store.history,
+            store.roots,
+            store.cold,
+            cold_gc,
+        )?;
 
         let history_reader = history_repo.get_history_reader(&history_repo.root())?;
 

@@ -18,6 +18,7 @@ use crate::rspace::errors::{HistoryError, RadixTreeError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
 use crate::rspace::history::checkpoint_writer::CheckpointWriter;
+use crate::rspace::history::cold_gc::ColdGc;
 use crate::rspace::history::cold_store::PersistedData;
 use crate::rspace::history::history::History;
 use crate::rspace::history::history_repository::HistoryRepository;
@@ -67,6 +68,12 @@ pub struct HistoryRepositoryImpl<C, P, A, K> {
     /// trie store; `do_checkpoint` and `reset` return a fresh repository
     /// instance but keep the same `prune_guard`.
     pub prune_guard: Arc<PruneGuard>,
+    /// Hook invoked after every checkpoint commit and by the casper
+    /// retention-window driver on expiry (issue #1181). Shared by Arc
+    /// across every derived `HistoryRepositoryImpl`. Defaults to
+    /// `NoopColdGc`; a real refcount-tracking implementation is wired
+    /// via `HistoryRepositoryImpl::with_cold_gc`.
+    pub cold_gc: Arc<dyn ColdGc>,
     pub _marker: PhantomData<(C, P, A, K)>,
 }
 
@@ -175,6 +182,7 @@ where
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
             prune_guard: self.prune_guard.clone(),
+            cold_gc: self.cold_gc.clone(),
             _marker: PhantomData,
         })
     }
@@ -490,47 +498,58 @@ where
         metrics::histogram!(HISTORY_CHECKPOINT_PARTITION_TIME_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
             .record(partition_start.elapsed().as_secs_f64());
 
-        // store cold data
-        {
-            let serialize_start = Instant::now();
-            let mut serialized_bytes = 0u64;
-            let serialized_cold_actions = cold_actions
-                .into_iter()
-                .map(|(key, value)| {
-                    let serialized_key = bincode::serialize(&key)
-                        .expect("History Respository Impl: Failed to serialize");
-                    let serialized_value = bincode::serialize(&value)
-                        .expect("History Respository Impl: Failed to serialize");
-                    serialized_bytes = serialized_bytes
-                        .saturating_add(serialized_key.len() as u64)
-                        .saturating_add(serialized_value.len() as u64);
-                    (serialized_key, serialized_value)
-                })
-                .collect();
-            metrics::histogram!(HISTORY_CHECKPOINT_SERIALIZE_TIME_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
-                .record(serialize_start.elapsed().as_secs_f64());
-            metrics::histogram!(HISTORY_CHECKPOINT_SERIALIZED_BYTES_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
-                .record(serialized_bytes as f64);
-
-            let leaf_write_start = Instant::now();
-            self.leaf_store
-                .put_if_absent(serialized_cold_actions)
-                .expect("History Repository Impl: Failed to put if absent");
-            metrics::histogram!(HISTORY_CHECKPOINT_LEAF_WRITE_TIME_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
-                .record(leaf_write_start.elapsed().as_secs_f64());
-        };
+        // Serialize cold data (no lock needed — this is CPU work on a
+        // local Vec).
+        let serialize_start = Instant::now();
+        let mut serialized_bytes = 0u64;
+        let serialized_cold_actions: Vec<(Vec<u8>, Vec<u8>)> = cold_actions
+            .into_iter()
+            .map(|(key, value)| {
+                let serialized_key = bincode::serialize(&key)
+                    .expect("History Respository Impl: Failed to serialize");
+                let serialized_value = bincode::serialize(&value)
+                    .expect("History Respository Impl: Failed to serialize");
+                serialized_bytes = serialized_bytes
+                    .saturating_add(serialized_key.len() as u64)
+                    .saturating_add(serialized_value.len() as u64);
+                (serialized_key, serialized_value)
+            })
+            .collect();
+        metrics::histogram!(HISTORY_CHECKPOINT_SERIALIZE_TIME_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
+            .record(serialize_start.elapsed().as_secs_f64());
+        metrics::histogram!(HISTORY_CHECKPOINT_SERIALIZED_BYTES_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
+            .record(serialized_bytes as f64);
 
         // store everything related to history (history data, new root and populate
         // cache for new root).
         //
-        // Hold the prune guard's shared side across `stage` (which reads
-        // the store via `pending_writes` to decide which content-addressed
-        // nodes to skip) and `checkpoint_writer.write` (which lands the
-        // remaining nodes). If the sweep fires between those two steps,
-        // it could delete a hash the stage decided to skip, leaving the
-        // new state with a dangling pointer. See
-        // `rspace::history::prune_guard` for the full rationale.
+        // Hold the prune guard's shared side across the cold write,
+        // `stage` (which reads the store via `pending_writes` to
+        // decide which content-addressed nodes to skip), and
+        // `checkpoint_writer.write` (which lands the remaining
+        // nodes). Two races close under this guard:
+        //
+        // * **History** (issue #1061): if the history pruner fires between `stage`'s
+        //   content-addressed `contains` check and `write`'s `put`, it could delete a
+        //   hash `stage` decided to skip, leaving the new state with a dangling
+        //   pointer.
+        // * **Cold** (issue #1181, Phase 4): without the fence, the cold-GC sweep
+        //   (`enter_sweep`) could run between `leaf_store.put_if_absent` and
+        //   `cold_gc.on_checkpoint`, observe the fresh cold entry as refcount-zero, and
+        //   delete it before the subsequent refcount write lands.
+        //
+        // Both pruners take the exclusive side in short bursts, so
+        // holding the shared side across cold + history writes only
+        // competes with those bursts.
         let _prune_lock = self.prune_guard.enter_write();
+
+        // store cold data under the shared prune guard.
+        let leaf_write_start = Instant::now();
+        self.leaf_store
+            .put_if_absent(serialized_cold_actions)
+            .expect("History Repository Impl: Failed to put if absent");
+        metrics::histogram!(HISTORY_CHECKPOINT_LEAF_WRITE_TIME_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
+            .record(leaf_write_start.elapsed().as_secs_f64());
 
         let (new_history, nodes, lock_wait, process_time) = {
             let lock_start = Instant::now();
@@ -547,6 +566,11 @@ where
             .record(process_time.as_secs_f64());
 
         let new_root = new_history.root();
+        let prev_root = self
+            .current_history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .root();
         // Pin the new root before writing so the next sweep retains it even
         // if the DAG has not yet caught up to the block that will reference
         // it as a pre/post state.
@@ -559,6 +583,24 @@ where
         metrics::histogram!(HISTORY_CHECKPOINT_ROOT_COMMIT_TIME_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
             .record(commit_start.elapsed().as_secs_f64());
 
+        // Cold-store GC bookkeeping (issue #1181). Invoked under the
+        // prune-guard shared side held above, so the implementation's
+        // tree walk does not race the history pruner's delete batches.
+        // Default `NoopColdGc` is a cheap call; a refcount-tracking
+        // implementation can walk `new_root`'s tree here.
+        if let Err(e) =
+            self.cold_gc
+                .on_checkpoint(&new_root, &prev_root, self.history_kv_store.as_ref())
+        {
+            tracing::warn!(
+                target: "f1r3.trace.cold_gc",
+                error = %e,
+                new_root = %new_root,
+                prev_root = %prev_root,
+                "cold_gc.on_checkpoint failed — refcount bookkeeping may drift"
+            );
+        }
+
         let next = Box::new(HistoryRepositoryImpl {
             current_history: Arc::new(Mutex::new(new_history)),
             roots_repository: self.roots_repository.clone(),
@@ -568,6 +610,7 @@ where
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
             prune_guard: self.prune_guard.clone(),
+            cold_gc: self.cold_gc.clone(),
             _marker: PhantomData,
         });
         metrics::histogram!(HISTORY_CHECKPOINT_TIME_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
@@ -613,6 +656,7 @@ where
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
             prune_guard: self.prune_guard.clone(),
+            cold_gc: self.cold_gc.clone(),
             _marker: PhantomData,
         }))
     }
@@ -659,6 +703,25 @@ where
     }
 
     fn history_store(&self) -> Arc<dyn KeyValueStore> { self.history_kv_store.clone() }
+
+    fn cold_gc_advance_retention(
+        &self,
+        new_retention_set: &[Blake2b256Hash],
+    ) -> Result<Vec<Blake2b256Hash>, HistoryError> {
+        self.cold_gc
+            .advance_retention(new_retention_set, self.history_kv_store.as_ref())
+    }
+
+    fn cold_gc_audit(&self) -> Result<crate::rspace::history::cold_gc::AuditReport, HistoryError> {
+        self.cold_gc.audit(self.history_kv_store.as_ref())
+    }
+
+    fn cold_gc_sweep(&self) -> Result<crate::rspace::history::cold_gc::SweepReport, HistoryError> {
+        self.cold_gc.sweep(self.leaf_store.as_ref())
+    }
+    // (Trait returns `AuditReport` and `SweepReport`; full paths
+    // here avoid adding another import in a file that otherwise
+    // pulls types from this neighborhood via `super::cold_gc`.)
 
     fn prune_history_atomic(
         &self,
