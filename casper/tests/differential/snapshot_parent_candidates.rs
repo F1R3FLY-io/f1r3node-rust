@@ -197,6 +197,11 @@ async fn snapshots_handle_withdrawal_gc_and_rebonding_with_the_same_key() {
         retired,
         "the finalized floor must record the validator's exit"
     );
+    assert!(nodes[1]
+        .block_store
+        .get(&last_leaving.block_hash)
+        .unwrap()
+        .is_some());
     let before = nodes[1].casper.get_snapshot().await.unwrap();
     let dag = nodes[1].casper.block_dag().await.unwrap();
     assert_eq!(
@@ -252,6 +257,7 @@ async fn snapshots_handle_withdrawal_gc_and_rebonding_with_the_same_key() {
             .map(|block| &block.block_hash)
             .collect::<Vec<_>>()
     );
+    assert_eq!(before.max_seq_nums, after.max_seq_nums);
     assert_eq!(before.justifications, after.justifications);
     assert_eq!(
         before.on_chain_state.bonds_map,
@@ -272,6 +278,11 @@ async fn snapshots_handle_withdrawal_gc_and_rebonding_with_the_same_key() {
         Some(shard_id),
     )
     .unwrap();
+    assert!(nodes[2]
+        .block_store
+        .get(&last_leaving.block_hash)
+        .unwrap()
+        .is_some());
     let rebond_block = nodes[2].create_block_unsafe(&[rebond]).await.unwrap();
     assert_eq!(rebond_block.body.deploys.len(), 1);
     assert!(!rebond_block.body.deploys[0].is_failed);
