@@ -433,7 +433,7 @@ fn settle_blocking(
     advanced: bool,
 ) -> Result<(), CasperError> {
     use crate::rust::finality::deploy_lifecycle::{
-        record_settle_timing, release_settled, settle, Settled,
+        carrier_prune_cutoff, record_settle_timing, release_settled, settle, Settled,
     };
 
     if let Err(e) = ctx.finalized_bond_cache.refresh(&ctx.block_dag_storage) {
@@ -482,7 +482,12 @@ fn settle_blocking(
     let prune_ms = if advanced {
         let prune_started = std::time::Instant::now();
         let lfb_height = dag.block_number_unsafe(&dag.last_finalized_block())?;
-        if let Err(e) = dag.prune_carriers_below(lfb_height - ctx.shard_conf.deploy_lifespan) {
+        let cutoff = carrier_prune_cutoff(
+            lfb_height,
+            ctx.shard_conf.deploy_lifespan,
+            ctx.shard_conf.max_parent_depth,
+        );
+        if let Err(e) = dag.prune_carriers_below(cutoff) {
             tracing::warn!("carrier-index prune failed (retention only): {}", e);
         }
         Some(prune_started.elapsed().as_millis())

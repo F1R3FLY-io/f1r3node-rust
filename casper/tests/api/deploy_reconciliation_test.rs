@@ -19,9 +19,12 @@ use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use casper::rust::finality::floor::floor_of_block;
 use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::util::construct_deploy::source_deploy_now;
+use casper::rust::util::rholang::interpreter_util::MAX_FLOOR_DISTANCE_BLOCKS;
+use casper::rust::validate::Validate;
 use crypto::rust::public_key::PublicKey;
 use models::rust::block_implicits::get_random_block;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, ProcessedDeploy};
+use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
 use crate::helper::test_node::TestNode;
@@ -170,13 +173,11 @@ async fn chain_without_coverage(
     (dag_storage, block_store, blocks)
 }
 
-/// The bound is closed at the basis and open one past it
-/// (`bound = valid_after + deploy_lifespan + citability_horizon`), and an
-/// Expired verdict names the basis it was judged against.
+/// The basis must pass the window, floor allowance, and citability horizon.
 #[tokio::test]
 async fn a_never_observed_deploy_expires_exactly_past_the_bound_and_names_the_basis() {
-    // bound = 5 + 10 + 10 = 25; basis height 25 stays Pending.
-    let (dag_storage, block_store, blocks) = adopted_chain(26).await;
+    let bound = 5 + 10 + MAX_FLOOR_DISTANCE_BLOCKS + 10;
+    let (dag_storage, block_store, blocks) = adopted_chain(bound + 1).await;
     let dag = dag_storage.get_representation().expect("dag");
     let deploy = never_observed_deploy(5);
     let reconciled =
@@ -185,11 +186,10 @@ async fn a_never_observed_deploy_expires_exactly_past_the_bound_and_names_the_ba
             .expect("reconcile at the bound");
     assert_eq!(reconciled.status.state, DeployFinalizationState::Pending);
     let basis = reconciled.basis.expect("the basis is resolvable");
-    assert_eq!(basis.block_number, 25, "the basis is the LFB's floor");
-    assert_eq!(basis.hash, blocks[25].block_hash);
+    assert_eq!(basis.block_number, bound, "the basis is the LFB's floor");
+    assert_eq!(basis.hash, blocks[bound as usize].block_hash);
 
-    // One block further, the basis passes the bound: proven Expired.
-    let (dag_storage, block_store, blocks) = adopted_chain(27).await;
+    let (dag_storage, block_store, blocks) = adopted_chain(bound + 2).await;
     let dag = dag_storage.get_representation().expect("dag");
     let reconciled =
         deploy_reconciliation::reconcile(&dag, &block_store, &conf(10, 10), 0, &deploy)
@@ -201,8 +201,8 @@ async fn a_never_observed_deploy_expires_exactly_past_the_bound_and_names_the_ba
     let basis = reconciled
         .basis
         .expect("an Expired verdict names its basis");
-    assert_eq!(basis.block_number, 26);
-    assert_eq!(basis.hash, blocks[26].block_hash);
+    assert_eq!(basis.block_number, bound + 1);
+    assert_eq!(basis.hash, blocks[(bound + 1) as usize].block_hash);
 }
 
 /// Delayed inclusion is still possible while the basis is inside the
@@ -210,7 +210,6 @@ async fn a_never_observed_deploy_expires_exactly_past_the_bound_and_names_the_ba
 /// verdict stays Pending and still reports how far the basis advanced.
 #[tokio::test]
 async fn a_never_observed_deploy_stays_pending_while_the_basis_is_inside_the_window() {
-    // bound = 5 + 20 + 10 = 35; the basis (29) has not passed it.
     let (dag_storage, block_store, _blocks) = adopted_chain(30).await;
     let dag = dag_storage.get_representation().expect("dag");
     let deploy = never_observed_deploy(5);
@@ -238,9 +237,10 @@ async fn a_delayed_carrier_replaces_the_unobserved_answer() {
     assert_eq!(before.basis.unwrap().hash, blocks[13].block_hash);
 
     let mut carrier = chain_block(15, blocks.last());
-    carrier.body.deploys.push(
-        models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(deploy.clone()),
-    );
+    carrier
+        .body
+        .deploys
+        .push(ProcessedDeploy::empty(deploy.clone()));
     block_store.put_block_message(&carrier).unwrap();
     let dag = storage.insert(&carrier, InsertMode::Normal).unwrap();
     let after = deploy_reconciliation::reconcile(&dag, &block_store, &config, 0, &deploy)
@@ -249,6 +249,95 @@ async fn a_delayed_carrier_replaces_the_unobserved_answer() {
     assert_eq!(after.status.state, DeployFinalizationState::Pending);
     assert_eq!(after.status.latest_block_hash, Some(carrier.block_hash));
     assert!(after.basis.is_none());
+}
+
+#[tokio::test]
+async fn a_held_equivocation_stays_pending_until_the_register_records_its_carrier() {
+    let bound = 5 + 10 + MAX_FLOOR_DISTANCE_BLOCKS + 10;
+    let (storage, block_store, blocks) = adopted_chain(bound + 2).await;
+    let deploy = never_observed_deploy(5);
+    let mut carrier = chain_block(12, Some(&blocks[11]));
+    carrier.sender = blocks[12].sender.clone();
+    carrier.seq_num = blocks[12].seq_num;
+    carrier
+        .body
+        .deploys
+        .push(ProcessedDeploy::empty(deploy.clone()));
+    block_store.put_block_message(&carrier).unwrap();
+    let dag = storage
+        .insert(&carrier, InsertMode::Equivocation {
+            sibling: blocks[12].block_hash.clone(),
+        })
+        .unwrap();
+    assert!(dag
+        .deploy_lifecycle_events(deploy.sig.as_ref())
+        .unwrap()
+        .is_none());
+    assert!(!dag
+        .carrier_index_proves_absence(deploy.sig.as_ref())
+        .unwrap());
+
+    let config = conf(10, 10);
+    let held = deploy_reconciliation::reconcile(&dag, &block_store, &config, 0, &deploy)
+        .await
+        .unwrap();
+    assert_eq!(held.status.state, DeployFinalizationState::Pending);
+    assert_eq!(held.basis.unwrap().block_number, bound + 1);
+
+    storage.record_deploy_events(&carrier).unwrap();
+    let recorded = deploy_reconciliation::reconcile(&dag, &block_store, &config, 0, &deploy)
+        .await
+        .unwrap();
+    assert_eq!(recorded.status.state, DeployFinalizationState::Pending);
+    assert_eq!(recorded.status.latest_block_hash, Some(carrier.block_hash));
+    assert!(recorded.basis.is_none());
+}
+
+#[tokio::test]
+async fn a_floor_lagged_carrier_above_the_reconciliation_bound_stays_pending() {
+    let window_end = 5 + 10;
+    let bound = window_end + MAX_FLOOR_DISTANCE_BLOCKS + 10;
+    let (storage, block_store, blocks) = adopted_chain(bound + 2).await;
+    let deploy = never_observed_deploy(5);
+    let floor = &blocks[(window_end - 1) as usize];
+    let mut parent = floor.clone();
+    for height in window_end..=bound {
+        let block = chain_block(height, Some(&parent));
+        block_store.put_block_message(&block).unwrap();
+        let dag = storage.insert(&block, InsertMode::Normal).unwrap();
+        dag.put_cached_floor(block.block_hash.clone(), floor.block_hash.clone())
+            .unwrap();
+        parent = block;
+    }
+    let height = (bound + 1) as usize;
+    let mut carrier = chain_block(height as i64, Some(&parent));
+    carrier.sender = blocks[height].sender.clone();
+    carrier.seq_num = blocks[height].seq_num;
+    carrier
+        .body
+        .deploys
+        .push(ProcessedDeploy::empty(deploy.clone()));
+    assert!(matches!(
+        Validate::transaction_expiration(&carrier, 10, Some(window_end - 1)),
+        Either::Right(_)
+    ));
+    assert!(matches!(
+        Validate::transaction_expiration(&carrier, 10, None),
+        Either::Left(_)
+    ));
+    block_store.put_block_message(&carrier).unwrap();
+    let dag = storage
+        .insert(&carrier, InsertMode::Equivocation {
+            sibling: blocks[height].block_hash.clone(),
+        })
+        .unwrap();
+    dag.put_cached_floor(carrier.block_hash, floor.block_hash.clone())
+        .unwrap();
+    let result = deploy_reconciliation::reconcile(&dag, &block_store, &conf(10, 10), 0, &deploy)
+        .await
+        .unwrap();
+    assert_eq!(result.status.state, DeployFinalizationState::Pending);
+    assert_eq!(result.basis.unwrap().block_number, bound + 1);
 }
 
 /// Unlimited contestability (`max_parent_depth = i32::MAX`) means nothing
@@ -272,7 +361,7 @@ async fn unlimited_contestability_keeps_a_never_observed_deploy_pending() {
 /// proof.
 #[tokio::test]
 async fn a_window_below_the_restore_anchor_fails_closed_to_pending() {
-    let (dag_storage, block_store, _blocks) = adopted_chain(30).await;
+    let (dag_storage, block_store, _blocks) = adopted_chain(27 + MAX_FLOOR_DISTANCE_BLOCKS).await;
     let dag = dag_storage.get_representation().expect("dag");
     let deploy = never_observed_deploy(5);
 
@@ -293,7 +382,8 @@ async fn a_window_below_the_restore_anchor_fails_closed_to_pending() {
 
 #[tokio::test]
 async fn an_upgrade_cannot_prove_absence_before_index_coverage() {
-    let (storage, block_store, _) = chain_without_coverage(30).await;
+    let top = 30 + MAX_FLOOR_DISTANCE_BLOCKS;
+    let (storage, block_store, _) = chain_without_coverage(top).await;
     let dag = storage.get_representation().unwrap();
     let deploy = never_observed_deploy(5);
     let config = conf(1, 1);
@@ -303,11 +393,48 @@ async fn an_upgrade_cannot_prove_absence_before_index_coverage() {
         reconcile(&deploy).await.unwrap().status.state,
         DeployFinalizationState::Pending
     );
-    assert_eq!(storage.ensure_carrier_watermark().unwrap(), Some(31));
+    assert_eq!(storage.ensure_carrier_watermark().unwrap(), Some(top + 1));
     assert_eq!(
         reconcile(&deploy).await.unwrap().status.state,
         DeployFinalizationState::Pending
     );
+}
+
+#[tokio::test]
+async fn a_pruned_carrier_range_stays_pending_below_the_inclusive_cutoff() {
+    let (storage, block_store, blocks) = adopted_chain(29 + MAX_FLOOR_DISTANCE_BLOCKS).await;
+    let pruned = never_observed_deploy(5);
+    let mut carrier = chain_block(6, Some(&blocks[5]));
+    carrier.sender = blocks[6].sender.clone();
+    carrier.seq_num = blocks[6].seq_num;
+    carrier
+        .body
+        .deploys
+        .push(ProcessedDeploy::empty(pruned.clone()));
+    block_store.put_block_message(&carrier).unwrap();
+    let dag = storage
+        .insert(&carrier, InsertMode::Equivocation {
+            sibling: blocks[6].block_hash.clone(),
+        })
+        .unwrap();
+    assert_eq!(dag.prune_carriers_below(7).unwrap(), 1);
+    assert_eq!(dag.carrier_index_prune_cutoff().unwrap(), Some(7));
+    assert!(dag
+        .carrier_index_proves_absence(pruned.sig.as_ref())
+        .unwrap());
+
+    let config = conf(10, 10);
+    let result = deploy_reconciliation::reconcile(&dag, &block_store, &config, 0, &pruned)
+        .await
+        .unwrap();
+    assert_eq!(result.status.state, DeployFinalizationState::Pending);
+    assert!(result.basis.is_some());
+
+    let covered = never_observed_deploy(6);
+    let result = deploy_reconciliation::reconcile(&dag, &block_store, &config, 0, &covered)
+        .await
+        .unwrap();
+    assert_eq!(result.status.state, DeployFinalizationState::Expired);
 }
 
 #[tokio::test]

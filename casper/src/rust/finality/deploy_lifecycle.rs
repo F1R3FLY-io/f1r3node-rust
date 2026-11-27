@@ -57,6 +57,28 @@ pub(crate) fn citability_horizon(max_parent_depth: i32) -> Option<i64> {
     (max_parent_depth != i32::MAX).then_some(i64::from(max_parent_depth))
 }
 
+pub(crate) fn reconciliation_horizon(max_parent_depth: i32) -> Option<i64> {
+    use crate::rust::util::rholang::interpreter_util::MAX_FLOOR_DISTANCE_BLOCKS;
+
+    citability_horizon(max_parent_depth)
+        .filter(|&depth| depth >= 0)
+        .map(|depth| depth + MAX_FLOOR_DISTANCE_BLOCKS)
+}
+
+pub(crate) fn carrier_prune_cutoff(
+    lfb_height: i64,
+    deploy_lifespan: i64,
+    max_parent_depth: i32,
+) -> i64 {
+    let cutoff = lfb_height.saturating_sub(deploy_lifespan);
+    match reconciliation_horizon(max_parent_depth) {
+        Some(horizon) => cutoff
+            .saturating_sub(horizon)
+            .saturating_sub(deploy_lifespan),
+        None => cutoff,
+    }
+}
+
 pub(crate) fn contestability_bound(
     valid_after: i64,
     deploy_lifespan: i64,
@@ -720,6 +742,37 @@ fn settle_at_lfb(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn contestability_bound_saturates_at_both_expiry_additions() {
+        let bound = |valid_after, lifespan, inclusion, horizon| {
+            super::contestability_bound(valid_after, lifespan, [inclusion].into_iter(), horizon)
+        };
+        assert_eq!(bound(5, 10, 12, Some(4)), Some(19));
+        assert_eq!(bound(5, 10, 20, Some(4)), Some(24));
+        assert_eq!(bound(i64::MAX - 2, 3, 12, Some(1)), Some(i64::MAX));
+        assert_eq!(bound(5, 10, i64::MAX - 1, Some(2)), Some(i64::MAX));
+        assert_eq!(bound(5, 10, 12, None), None);
+    }
+
+    #[test]
+    fn carrier_pruning_keeps_the_first_carrier_through_the_reconciliation_window() {
+        let (valid_after, lifespan, depth) = (1000, 300, 25);
+        let bound = valid_after + lifespan + super::reconciliation_horizon(depth).unwrap();
+        let lfb_at_end_of_retention = bound + 1 + lifespan;
+        assert_eq!(
+            super::carrier_prune_cutoff(lfb_at_end_of_retention, lifespan, depth),
+            valid_after + 1
+        );
+        assert_eq!(
+            super::carrier_prune_cutoff(lfb_at_end_of_retention + 1, lifespan, depth),
+            valid_after + 2
+        );
+        assert_eq!(
+            super::carrier_prune_cutoff(lfb_at_end_of_retention, lifespan, i32::MAX),
+            lfb_at_end_of_retention - lifespan
+        );
+    }
+
     use models::rust::block_implicits::get_random_block;
     use models::rust::casper::protocol::casper_message::{BlockMessage, RejectedDeploy};
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;

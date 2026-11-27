@@ -6,31 +6,14 @@
 //! validators reject its resubmission as expired. A caller that still holds
 //! the SAVED SIGNED DEPLOY can ask for a reconciliation verdict instead.
 //!
-//! The verdict rests on the lifecycle register's ingest-first invariant: a
-//! sig absent from the register was never in any canonical body this node
-//! holds, so it is not on the basis's state lineage and has no failed
-//! execution in the basis's DAG closure — both preconditions
-//! `beyond_contest_state` needs are covered by register absence, with no
-//! lineage walk. Only the contestability bound remains, applied to a
-//! record-less row: `Expired` once
-//! `basis_height > valid_after + deploy_lifespan + citability_horizon`.
+//! Reconciliation requires a resolved basis past the validity window, the
+//! merge-floor distance allowance, and the citability horizon. It requires
+//! carrier-index coverage from the first possible carrier height. A held
+//! carrier keeps the verdict `Pending` at every height, including when it
+//! awaits equivocation validation. Missing history also keeps it `Pending`.
 //!
-//! Every unverifiable case fails closed to `Pending`:
-//! - before the bound (delayed inclusion is still possible, a lagging
-//!   observer's basis simply has not passed it yet);
-//! - unlimited contestability (`max_parent_depth = i32::MAX` — nothing is
-//!   ever provably uncitable);
-//! - the validity window may lie at or below this node's restore anchor
-//!   (LFS/GC truncation): bodies there were never ingested, so register
-//!   absence proves nothing; a carrier can sit as low as
-//!   `valid_after + 1`, hence the `valid_after < anchor` guard;
-//! - the basis floor itself is not resolvable from the blocks this node
-//!   holds.
-//!
-//! `expirationTimestamp` is verified as part of the signed deploy but never
-//! decides the verdict: wall-clock expiry is admission policy, not
-//! finalized chain evidence, and the block window closes on its own
-//! schedule regardless.
+//! Admission and block validation use `expirationTimestamp`.
+//! Reconciliation uses the finalized block heights.
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -44,7 +27,7 @@ use super::deploy_finalization_status::{
 use crate::rust::casper::CasperShardConf;
 use crate::rust::errors::CasperError;
 use crate::rust::finality::deploy_lifecycle::{
-    citability_horizon, contestability_bound, verdict_basis_floor,
+    contestability_bound, reconciliation_horizon, verdict_basis_floor,
 };
 use crate::rust::finality::floor::Floor;
 use crate::rust::safety::clique_oracle::FtThreshold;
@@ -56,10 +39,8 @@ type ApiErr<T> = eyre::Result<T>;
 #[derive(Clone, Debug)]
 pub struct ReconciledStatus {
     pub status: DeployFinalizationStatus,
-    /// The floor of the adopted last finalized block the verdict was judged
-    /// against. `None` on register lookups (nothing was judged) and when
-    /// this node could not resolve a floor (a pending verdict carries no
-    /// basis — the caller cannot use it as evidence).
+    /// The floor of the adopted last finalized block used for reconciliation.
+    /// Register answers and queries with an unresolved floor have no basis.
     pub basis: Option<Floor>,
 }
 
@@ -73,36 +54,34 @@ impl ReconciledStatus {
     }
 }
 
-/// The never-observed verdict against a resolved basis, mirroring
-/// `beyond_contest_state` applied to a record-less row: no inclusion
-/// events exist, so the contestability bound collapses to the validity
-/// window's end plus the citability horizon. Saturating addition keeps a
-/// pathological window fail-closed (an overflown bound is never passed).
-pub(crate) fn never_observed_state(
+/// The first possible carrier height once the resolved basis passes the
+/// reconciliation bound and the window lies above the restore anchor.
+fn carrier_scan_start(
     basis_height: i64,
     valid_after: i64,
     deploy_lifespan: i64,
     horizon: Option<i64>,
     effective_anchor: i64,
-    coverage_from: Option<i64>,
-) -> DeployFinalizationState {
-    use DeployFinalizationState::{Expired, Pending};
-    // Restore gap: carriers can sit at heights from `valid_after + 1`
-    // upward, and bodies at or below the anchor were never ingested, so
-    // register absence proves nothing about them.
-    let first_carrier = valid_after.saturating_add(1).max(0);
-    if (effective_anchor > 0 && valid_after < effective_anchor)
-        || coverage_from.is_none_or(|start| first_carrier < start)
-    {
-        return Pending;
+) -> Option<i64> {
+    if (effective_anchor > 0 && valid_after < effective_anchor) || deploy_lifespan < 0 {
+        return None;
     }
-    if contestability_bound(valid_after, deploy_lifespan, std::iter::empty(), horizon)
-        .is_some_and(|bound| basis_height > bound)
-    {
-        Expired
-    } else {
-        Pending
-    }
+    let bound = contestability_bound(valid_after, deploy_lifespan, std::iter::empty(), horizon)?;
+    (basis_height > bound).then_some(valid_after.checked_add(1)?.max(0))
+}
+
+fn carrier_history_proves_absence(
+    dag: &KeyValueDagRepresentation,
+    sig: &[u8],
+    first_carrier: i64,
+) -> ApiErr<bool> {
+    let covers = |cutoff: Option<i64>| cutoff.is_none_or(|cutoff| cutoff <= first_carrier);
+    Ok(dag
+        .carrier_index_watermark()?
+        .is_some_and(|start| start <= first_carrier)
+        && covers(dag.carrier_index_prune_cutoff()?)
+        && dag.carrier_index_proves_absence(sig)?
+        && covers(dag.carrier_index_prune_cutoff()?))
 }
 
 /// Resolve a sig's status, reconciling a never-observed sig from the saved
@@ -129,18 +108,26 @@ pub async fn reconcile(
         return Ok(ReconciledStatus::from_lookup(status));
     }
 
-    let horizon = citability_horizon(shard_conf.max_parent_depth);
+    let horizon = reconciliation_horizon(shard_conf.max_parent_depth);
     let ftt = FtThreshold::from_ppm(shard_conf.fault_tolerance_threshold_ppm);
     let (state, basis) = match verdict_basis_floor(dag, block_store, ftt).await {
         Ok(floor) => {
-            let state = never_observed_state(
+            let scan_start = carrier_scan_start(
                 floor.block_number,
                 deploy.data.valid_after_block_number,
                 shard_conf.deploy_lifespan,
                 horizon,
                 effective_anchor,
-                dag.carrier_index_watermark()?,
             );
+            let state = match scan_start {
+                Some(start) if carrier_history_proves_absence(dag, sig, start)? => {
+                    if let Some(status) = lookup_register(dag, sig)? {
+                        return Ok(ReconciledStatus::from_lookup(status));
+                    }
+                    DeployFinalizationState::Expired
+                }
+                _ => DeployFinalizationState::Pending,
+            };
             (state, Some(floor))
         }
         Err(CasperError::BlockNotHeld(missing, _)) => {
@@ -175,60 +162,29 @@ mod tests {
 
     #[test]
     fn the_bound_is_closed_at_basis_and_open_past_it() {
-        use DeployFinalizationState::{Expired, Pending};
         let horizon = Some(10);
-        // bound = 5 + 30 + 10 = 45
-        assert_eq!(
-            never_observed_state(45, 5, 30, horizon, 0, Some(0)),
-            Pending
-        );
-        assert_eq!(
-            never_observed_state(46, 5, 30, horizon, 0, Some(6)),
-            Expired
-        );
-        assert_eq!(
-            never_observed_state(46, 5, 30, horizon, 0, Some(7)),
-            Pending
-        );
-        assert_eq!(
-            never_observed_state(46, -1, 30, horizon, 0, Some(0)),
-            Expired
-        );
+        assert_eq!(carrier_scan_start(45, 5, 30, horizon, 0), None);
+        assert_eq!(carrier_scan_start(46, 5, 30, horizon, 0), Some(6));
+        assert_eq!(carrier_scan_start(46, -1, 30, horizon, 0), Some(0));
     }
 
     #[test]
     fn unlimited_contestability_never_expires() {
-        assert_eq!(
-            never_observed_state(i64::MAX, 5, 30, None, 0, Some(0)),
-            DeployFinalizationState::Pending
-        );
+        assert_eq!(carrier_scan_start(i64::MAX, 5, 30, None, 0), None);
     }
 
     #[test]
     fn a_window_below_the_restore_anchor_stays_pending() {
-        use DeployFinalizationState::{Expired, Pending};
-        // Past the bound, window start above the anchor: proven.
-        assert_eq!(
-            never_observed_state(100, 50, 30, Some(10), 20, Some(0)),
-            Expired
-        );
-        assert_eq!(
-            never_observed_state(100, 50, 30, Some(10), 60, Some(0)),
-            Pending
-        );
-        // Boundary: valid_after == anchor means the lowest carrier sits
-        // strictly above the anchor, so absence is again a proof.
-        assert_eq!(
-            never_observed_state(101, 60, 30, Some(10), 60, Some(0)),
-            Expired
-        );
+        assert_eq!(carrier_scan_start(100, 50, 30, Some(10), 20), Some(51));
+        assert_eq!(carrier_scan_start(100, 50, 30, Some(10), 60), None);
+        assert_eq!(carrier_scan_start(101, 60, 30, Some(10), 60), Some(61));
     }
 
     #[test]
     fn a_pathological_window_saturates_to_pending() {
         assert_eq!(
-            never_observed_state(i64::MAX, i64::MAX, i64::MAX, Some(i64::MAX), 0, Some(0)),
-            DeployFinalizationState::Pending
+            carrier_scan_start(i64::MAX, i64::MAX - 1, 1, Some(10), 0),
+            None
         );
     }
 }
