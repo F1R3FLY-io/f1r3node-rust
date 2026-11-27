@@ -30,7 +30,7 @@ references:
 
 [Issue #1188](https://github.com/F1R3FLY-io/f1r3node-rust/issues/1188) reviews this claim after block ingest replaced the Casper buffer and block retriever.
 The current conditions describe the owner, dependency tracker, validation workers, and fetch scheduler.
-Issue #1196 covers C1, C2, C4, C5, C6, and C8. Their evidence stays pending for maintainer review.
+Issue #1196 covers C1, C2, C4, C5, C6, and C8. The review below records their acceptance.
 The artifact list and historical discharge plan record the scope of the earlier claim.
 
 A received block parks in the casper buffer while one of its dependencies (a parent or a justification) is not validated. Issue #24 measured that under sustained load 56% of received blocks park, for 7.1 s median and 39.6 s p90, while replay takes 0.5 to 1.1 s. Parked blocks stretch the finality rounds, and the finalization tail fails the `test_load` 45 s gate.
@@ -99,7 +99,7 @@ The maintainer accepted the restated C3 on 2026-11-27 at `c7338aa51d3e38e94a4672
 1a258bd7d0a3efb8bd698c15f51e996e162b9f2aa73550fe95223390b27948fc  casper/src/rust/blocks/ingest/ingest_state_tests.rs
 ```
 
-A later change to either file needs a new review of C3. The other conditions stay pending: C1, C2, C4, C5, C6, and C8 under issue #1196, and C7 under issue #1194. C4 stays open because the age bound changes the order of released blocks, and the existing test covers only independent ready blocks. The claim status stays `pending` until every condition has a recorded result.
+A later change to either file needs a new review of C3. The claim status stays `pending` while C7 waits for PR #1197.
 
 ### C3 evidence
 
@@ -114,11 +114,40 @@ The [tracker](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) now ass
 
 - [`a_block_held_earlier_but_ready_later_does_not_pass_an_older_ready_block`](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs)
 
+### C1, C2, C4, C5, C6, and C8 acceptance
+
+The maintainer accepted C1, C2, C4, C5, C6, and C8 on 2026-11-27. The maintainer re-confirmed C5 on the same date after review of the working-entry test.
+The acceptance applies to the files below in the commit that contains this section.
+
+```text
+a247350dda3ee9a9e6e355cd3d7f709e9f13ce23dddace5f4bf80b47c8b23d6a  block-storage/src/rust/dag/block_dag_key_value_storage.rs
+31955bf2fc3bf2c152eecebe84390e87c01769fd763a46478b3b26e8a95e857d  block-storage/src/rust/key_value_block_store.rs
+ab414964f87672e5793fa8822656a723a5424982e1371ada8ded40b6c969c648  block-storage/src/rust/pending_blocks.rs
+2c19088def271cecbc15280bc6e56f4175c7f3e8384e069c3aa3134bfcf98dfa  casper/src/rust/blocks/ingest/block_ingest.rs
+91acaaca613b8c77fd863c13dfdb5bd5f3b2b3e08ec1db2f79da3ab623d29ea5  casper/src/rust/blocks/ingest/checked_block.rs
+787e916a24e81229b1a55644453317810c124a8fd488a8f0c10987ef41598059  casper/src/rust/blocks/ingest/dependency_tracker.rs
+6cf29b37d10d2a596d154606cfa40e7106ee708ae870a838f9371848a8241e62  casper/src/rust/blocks/ingest/fetch_scheduler.rs
+eda5d13e8c27121aea5ea1e65f86fc6080f82ae3ff1fe86792f9b3c458e4fb70  casper/src/rust/blocks/ingest/ingest_state.rs
+1a258bd7d0a3efb8bd698c15f51e996e162b9f2aa73550fe95223390b27948fc  casper/src/rust/blocks/ingest/ingest_state_tests.rs
+dc56029d437e712e043a15ca44f9ee4c021d347138e0327901877ec2ddfc3048  casper/src/rust/blocks/ingest/ingest_view.rs
+ff09224ac151b154994a7929af8c429af1d773dc3d867c7476c48556d2f05641  casper/src/rust/blocks/ingest/intake_worker.rs
+70037531d6395f55869d4713e249efe70199d79389982113fad3f50bd4216019  casper/src/rust/blocks/ingest/validation_worker.rs
+cbed7c15e71e8cfc3989fc0f9bdaf6daf88f6af199767c11c053fc35d9805512  casper/src/rust/engine/multi_parent_casper/block_admission.rs
+7eaf58fa21a50678739e40f9c3a402e3931b5121690b6dfb7b479ee25c2380e2  casper/src/rust/engine/multi_parent_casper/dispatch.rs
+b8f11462aa41efd22ae4afbeb67c4320bcf22e660db7fca245334a486d71d9b1  casper/src/rust/engine/multi_parent_casper/validation_dispatcher.rs
+27bdc36e144ca3b444d4a2d4e767141e007dd941b8e11cafddd2cb2d1fa1b305  casper/tests/blocks/release_order_invariance_spec.rs
+ef18c37f2cb697477d6fbd35a5b9478f8363c35241a3fda5b2e3e09f5b134c32  casper/tests/helper/inline_ingest.rs
+d6a7203c7a3fd9cc652a6df716496c3a367ec15d3903b8509a4dcc6129488425  casper/tests/helper/test_node.rs
+d2be8703bf1e83e78be381991129f53f4bee3de978dfcd2ce23c14839a4ac3d1  node/tests/block_queue_livelock.rs
+```
+
+A later change to any file listed above needs a new review of the affected conditions. The claim stays `pending` while C7 waits for PR #1197.
+
 ### Other conditions
 
 #### C1. Release liveness
 
-**Pending.** The [owner tests](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs) cover the events that clear waits.
+**Accepted.** The [owner tests](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs) cover the events that clear waits.
 
 - `a_block_is_dispatched_once_its_parents_are_inserted` and `a_block_is_dispatched_once_its_parent_is_inserted_when_the_outcome_arrives_first` cover the two orders of the insert and worker outcome.
 - `a_deferred_block_cites_the_rest_once_its_main_parent_shows_it_fits` covers dependencies found by the deferred shape check.
@@ -127,11 +156,11 @@ The [tracker](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) now ass
 
 #### C2. No stale dependency wait
 
-**Pending.** [`a_block_is_ready_once_its_last_dependency_is_inserted`](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) checks that an insert clears the wait. [`a_validation_that_keeps_naming_a_dependency_in_the_dag_is_bounded`](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs) checks that repeated obsolete results reach the failure limit.
+**Accepted.** [`a_block_is_ready_once_its_last_dependency_is_inserted`](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) checks that an insert clears the wait. [`a_validation_that_keeps_naming_a_dependency_in_the_dag_is_bounded`](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs) checks that repeated obsolete results reach the failure limit.
 
 #### C4. Verdict invariance for released blocks
 
-**Pending.** [`released_blocks_keep_their_verdicts_and_dag_in_both_dispatch_orders`](../../casper/tests/blocks/release_order_invariance_spec.rs) holds two valid blocks on different parents. The test drives the production dependency tracker, records its selected order, and validates the released blocks in that order. It requires a valid verdict for each block in both runs and compares their DAG membership and latest messages.
+**Accepted.** [`released_blocks_keep_their_verdicts_and_dag_in_both_dispatch_orders`](../../casper/tests/blocks/release_order_invariance_spec.rs) holds two valid blocks on different parents. The test drives the production dependency tracker, records its selected order, and validates the released blocks in that order. It requires a valid verdict for each block in both runs and compares their DAG membership and latest messages.
 
 The second run ages one released block by `READY_AGE_LIMIT_DISPATCHES` dispatches of fixture work. At the next selection, the test asserts that the overdue block takes the slot while a lower entry is ready. The C4 coverage here uses two independent valid blocks and one validation order per schedule.
 
@@ -141,11 +170,11 @@ The earlier [`ready_blocks_reach_the_same_dag_and_verdicts_in_every_processing_o
 
 #### C5. Eviction order
 
-**Pending.** [`victims_are_untrusted_first_then_highest_first_and_never_in_work`](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) checks victim order and protects working entries. [`a_held_block_another_held_block_waits_on_counts_as_solicited`](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) checks the solicited class. [`a_sender_flooding_the_disk_bound_cannot_evict_other_senders_blocks`](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs) exercises disk eviction under pressure from one sender.
+**Accepted.** [`victims_are_untrusted_first_then_highest_first_and_never_in_work`](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) checks victim order. [`a_block_being_validated_is_never_an_eviction_victim`](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) checks that both victim selectors skip a working entry. [`a_held_block_another_held_block_waits_on_counts_as_solicited`](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) checks the solicited class. [`a_sender_flooding_the_disk_bound_cannot_evict_other_senders_blocks`](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs) exercises disk eviction under pressure from one sender.
 
 #### C6. Fetch and validation retry pacing
 
-**Pending.** The [fetch scheduler tests](../../casper/src/rust/blocks/ingest/fetch_scheduler.rs) and [owner tests](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs) cover the two types of retry.
+**Accepted.** The [fetch scheduler tests](../../casper/src/rust/blocks/ingest/fetch_scheduler.rs) and [owner tests](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs) cover the two types of retry.
 
 - `a_need_is_not_asked_again_before_its_interval`, `announcements_do_not_ask_for_a_need_faster_than_the_base_interval`, and `retries_slow_to_the_slowest_interval_and_never_end` cover network pacing while a need remains.
 - `a_block_received_twice_is_held_and_dispatched_once` covers duplicate receipt. `a_failed_validation_waits_before_its_retry` and `a_block_that_keeps_failing_is_dropped_and_quarantined` cover validation.
@@ -161,7 +190,7 @@ Tests cover the known-block fast path and concurrent receipts. [Receipt verifica
 
 #### C8. Pending admission and eviction
 
-**Pending.** The [pending-store tests](../../block-storage/src/rust/pending_blocks.rs) verify capacity by admission class. The [owner tests](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs) verify selection and reservations.
+**Accepted.** The [pending-store tests](../../block-storage/src/rust/pending_blocks.rs) verify capacity by admission class. The [owner tests](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs) verify selection and reservations.
 
 - `each_class_is_refused_at_its_own_share_of_the_area` and `the_byte_marks_reserve_room_for_known_senders_and_requested_blocks` cover admission limits.
 - `proactive_passes_evict_only_unsolicited_blocks`, `a_refused_requested_block_evicts_unsolicited_before_requested_blocks`, and `a_refused_block_takes_no_room_from_a_lower_requested_block` cover the eviction passes.
