@@ -2,6 +2,7 @@
 //! binary (`init`) and test suites (`init_for_tests`).
 
 mod bounded_file;
+mod capture;
 
 use std::path::Path;
 
@@ -13,6 +14,8 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::Registry;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
+
+pub use self::capture::{CapturedEvent, EventCapture};
 
 /// HOCON-deserializable logging configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

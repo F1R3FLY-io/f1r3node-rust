@@ -57,6 +57,9 @@ pub enum InterpreterError {
     IfConditionTypeError {
         actual_type: String,
     },
+    UnknownUrnError {
+        urn: String,
+    },
     AggregateError {
         interpreter_errors: Vec<InterpreterError>,
     },
@@ -250,6 +253,10 @@ impl fmt::Display for InterpreterError {
                 "Error: `if` condition must evaluate to a boolean, but got {}.",
                 actual_type
             ),
+
+            InterpreterError::UnknownUrnError { urn } => {
+                write!(f, "Error: `new` binds the unknown URN {}.", urn)
+            }
 
             InterpreterError::OperatorExpectedError {
                 op,
@@ -552,6 +559,12 @@ mod tests {
                     actual_type: "Int".to_string(),
                 },
                 "Error: `if` condition must evaluate to a boolean, but got Int.".to_string(),
+            ),
+            (
+                InterpreterError::UnknownUrnError {
+                    urn: "rho:does:not:exist".to_string(),
+                },
+                "Error: `new` binds the unknown URN rho:does:not:exist.".to_string(),
             ),
             (
                 InterpreterError::OpenAIError("o".to_string()),

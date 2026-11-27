@@ -21,7 +21,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
-use heed::{Env, EnvOpenOptions};
+use heed::{Env, EnvFlags, EnvOpenOptions};
 
 static ENV_CACHE: OnceLock<StdMutex<HashMap<PathBuf, Arc<Env>>>> = OnceLock::new();
 
@@ -32,10 +32,33 @@ pub fn get_or_open_env(
     max_env_size: usize,
     max_dbs: u32,
 ) -> Result<Arc<Env>, heed::Error> {
+    open_cached(dir_path, max_env_size, max_dbs, false)
+}
+
+pub fn open_env_without_sync(
+    dir_path: &Path,
+    max_env_size: usize,
+    max_dbs: u32,
+) -> Result<Arc<Env>, heed::Error> {
+    open_cached(dir_path, max_env_size, max_dbs, true)
+}
+
+fn open_cached(
+    dir_path: &Path,
+    max_env_size: usize,
+    max_dbs: u32,
+    without_sync: bool,
+) -> Result<Arc<Env>, heed::Error> {
     let cache = ENV_CACHE.get_or_init(|| StdMutex::new(HashMap::new()));
     let mut cache_lock = cache.lock().expect("LMDB env cache mutex poisoned");
 
     if let Some(env) = cache_lock.get(dir_path) {
+        if without_sync && env.get_flags()? & EnvFlags::NO_SYNC.bits() == 0 {
+            return Err(heed::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "the LMDB environment is already open with a durable sync",
+            )));
+        }
         return Ok(env.clone());
     }
 
@@ -44,6 +67,9 @@ pub fn get_or_open_env(
     env_builder.map_size(max_env_size);
     env_builder.max_dbs(max_dbs);
     env_builder.max_readers(2048);
+    if without_sync {
+        unsafe { env_builder.flags(EnvFlags::NO_SYNC) };
+    }
     // SAFETY: heed::EnvOpenOptions::open is unsafe because LMDB mmaps the
     // data file. Callers must guarantee that:
     //   1. No other process modifies the file while this Env is alive.
@@ -62,6 +88,46 @@ pub fn get_or_open_env(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_environment_opened_without_sync_stays_without_sync_for_later_consumers() {
+        let dir = tempfile::tempdir().unwrap();
+        open_env_without_sync(dir.path(), 1 << 20, 4).unwrap();
+        let env = get_or_open_env(dir.path(), 1 << 20, 4).unwrap();
+        assert_ne!(env.get_flags().unwrap() & EnvFlags::NO_SYNC.bits(), 0);
+    }
+
+    #[test]
+    fn opening_without_sync_refuses_a_path_already_open_with_a_durable_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let durable = get_or_open_env(dir.path(), 1 << 20, 4).unwrap();
+        assert!(open_env_without_sync(dir.path(), 1 << 20, 4).is_err());
+        assert_eq!(durable.get_flags().unwrap() & EnvFlags::NO_SYNC.bits(), 0);
+    }
+
+    #[test]
+    fn concurrent_openings_without_sync_share_one_environment_without_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let envs: Vec<Arc<Env>> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || open_env_without_sync(&path, 1 << 20, 4).unwrap())
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert!(envs.iter().all(|env| Arc::ptr_eq(env, &envs[0])));
+        assert_ne!(envs[0].get_flags().unwrap() & EnvFlags::NO_SYNC.bits(), 0);
+    }
+
+    #[test]
+    fn an_environment_opened_normally_syncs_each_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = get_or_open_env(dir.path(), 1 << 20, 4).unwrap();
+        assert_eq!(env.get_flags().unwrap() & EnvFlags::NO_SYNC.bits(), 0);
+    }
 
     #[test]
     fn environment_stays_open_after_every_consumer_drops() {

@@ -428,13 +428,7 @@ impl Engine {
         match command {
             Command::Intake { deploy, reply } => {
                 let result = self.intake(deploy)?;
-                match &result {
-                    Ok(_) => metrics::counter!("deploy_queue.accepted").increment(1),
-                    Err(refusal) => {
-                        metrics::counter!("deploy_queue.refused", "reason" => refusal.kind())
-                            .increment(1)
-                    }
-                }
+                count_intake(&result);
                 self.intake_replies.push((reply, result));
             }
             Command::Status { sig, reply } => {
@@ -1495,6 +1489,18 @@ impl DeadlineIndex {
 /// still build on another.
 fn citable_depth(shard: &ShardValues) -> i64 { i64::from(shard.max_parent_depth) }
 
+fn count_intake(result: &Result<Sig, IntakeError>) {
+    match result {
+        Ok(_) => metrics::counter!("deploy_queue.accepted").increment(1),
+        Err(refusal) => metrics::counter!(
+            "deploy_queue.refused",
+            "reason" => refusal.kind(),
+            "cause" => refusal.cause().unwrap_or("none")
+        )
+        .increment(1),
+    }
+}
+
 fn fits_storage(held: u64, payload: u64, budget: u64) -> bool {
     held.checked_add(payload)
         .is_some_and(|total| total <= budget)
@@ -1619,6 +1625,26 @@ async fn wait_until(at: Option<Instant>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refusal_counts_under_its_reason_and_cause() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || {
+            count_intake(&Err(IntakeError::QueueFull {
+                retry_after_secs: 12,
+                cause: Congestion::Storage,
+            }));
+            count_intake(&Err(IntakeError::Stopped));
+        });
+        let rendered = handle.render();
+        for series in [
+            r#"deploy_queue_refused{reason="deploy_queue_full",cause="storage"} 1"#,
+            r#"deploy_queue_refused{reason="deploy_queue_stopped",cause="none"} 1"#,
+        ] {
+            assert!(rendered.contains(series), "{series} in:\n{rendered}");
+        }
+    }
 
     #[test]
     fn storage_admits_up_to_its_budget_and_never_overflows() {

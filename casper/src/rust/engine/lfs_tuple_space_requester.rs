@@ -1,6 +1,5 @@
 // See casper/src/main/scala/coop/rchain/casper/engine/LfsTupleSpaceRequester.scala
 
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,6 +8,7 @@ use std::time::Duration;
 use async_stream;
 use async_trait::async_trait;
 use futures::Stream;
+use imbl::HashMap;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, StoreItemsMessage};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::rspace_importer::{RSpaceImporter, RSpaceImporterInstance};
@@ -157,57 +157,21 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
         Self { d: new_d }
     }
 
-    /// Arm a pagination cursor for request.
-    ///
-    /// Unlike [`ST::add`], a key that is already `Done` is returned to `Init`.
-    /// Cursors converge — adjacent block states share nearly all of their trie —
-    /// and a root arriving at a path another root has already finished still
-    /// needs that path's chain walked with it in the root set. Leaving it `Done`
-    /// strands the root: its `set_root` never fires, yet every entry reads Done,
-    /// so the run reports success without it.
-    ///
-    /// Keys still in flight (`Init`/`Requested`/`Received`) are left alone —
-    /// they will complete for the merged root set on their own.
-    pub fn re_arm(&self, key: Key) -> Self {
-        let mut new_d = self.d.clone();
-        match self.d.get(&key) {
-            None | Some(ReqStatus::Done) => {
-                new_d.insert(key, ReqStatus::Init);
-            }
-            Some(_) => {}
-        }
-        Self { d: new_d }
-    }
-
     /// Get next keys not already requested or in case of resend together with Requested.
     ///
     /// **Scala equivalent**: `def getNext(resend: Boolean): (ST[Key], Seq[Key])`
     pub fn get_next(&self, resend: bool) -> (Self, Vec<Key>) {
-        self.get_next_bounded(resend, usize::MAX)
-    }
-
-    pub fn get_next_bounded(&self, resend: bool, limit: usize) -> (Self, Vec<Key>) {
         let mut new_d = self.d.clone();
         let mut requested_keys: Vec<Key> = Vec::new();
-        let mut in_flight = 0usize;
 
         for (key, status) in &self.d {
-            if *status == ReqStatus::Requested {
-                in_flight += 1;
-                if resend {
+            match status {
+                ReqStatus::Init => {
+                    new_d.insert(key.clone(), ReqStatus::Requested);
                     requested_keys.push(key.clone());
                 }
-            }
-        }
-
-        for (key, status) in &self.d {
-            if in_flight >= limit {
-                break;
-            }
-            if *status == ReqStatus::Init {
-                new_d.insert(key.clone(), ReqStatus::Requested);
-                requested_keys.push(key.clone());
-                in_flight += 1;
+                ReqStatus::Requested if resend => requested_keys.push(key.clone()),
+                _ => {}
             }
         }
 

@@ -2402,7 +2402,9 @@ impl BlockDagKeyValueStorage {
         Fut: std::future::Future<Output = Result<(), KvStoreError>>,
     {
         use crate::rust::dag::finalization_commit::{CommitOutcome, CommitRefusal};
-        match self.commit_lfb(directly_finalized_hash.clone(), ft_value, |_| Ok(()))? {
+        match in_blocking(|| {
+            self.commit_lfb(directly_finalized_hash.clone(), ft_value, |_| Ok(()))
+        })? {
             CommitOutcome::Committed(marker) => {
                 let finalized: HashSet<BlockHash> =
                     marker.finalized_in_order().into_iter().collect();
@@ -2781,6 +2783,12 @@ mod tests {
     #[test]
     fn ft_propagation_scan_hands_off_its_worker() {
         let dir = tempfile::tempdir().unwrap();
+        rspace_plus_plus::rspace::shared::open_env_without_sync(
+            &dir.path().join("dagstorage"),
+            1 << 30,
+            32,
+        )
+        .unwrap();
         let mapping: HashMap<Db, LmdbEnvConfig> = DAG_STORES
             .iter()
             .map(|name| {

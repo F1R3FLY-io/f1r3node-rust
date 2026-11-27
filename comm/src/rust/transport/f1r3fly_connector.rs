@@ -1,15 +1,18 @@
 // F1r3fly Connector for tonic's connect_with_connector API
 // This implements Service<Uri> to provide custom TLS connections to tonic
 
+use std::collections::HashSet;
 use std::error::Error as StdError;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use http::Uri;
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 use tower::Service;
 
 use crate::rust::transport::f1r3fly_tls_connector::F1r3flyTlsConnector;
@@ -20,6 +23,15 @@ use crate::rust::utils::resolve_hostname_to_ip;
 
 /// Default connection timeout for F1r3fly connections (30 seconds)
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Shared set of peers whose TCP connection most recently failed. Keys are the
+/// hex-encoded peer node identifier (the same string used for TLS hostname
+/// verification). Used to log the first failure for a peer at `WARN` and
+/// subsequent failures at `DEBUG`, mirroring the pattern for DNS failures.
+pub type UnreachablePeers = Arc<Mutex<HashSet<String>>>;
+
+/// Build an empty [`UnreachablePeers`] tracker.
+pub fn new_unreachable_peers() -> UnreachablePeers { Arc::new(Mutex::new(HashSet::new())) }
 
 /// F1r3fly Connector for tonic's connect_with_connector API
 ///
@@ -32,6 +44,9 @@ pub struct F1r3flyConnector {
     connect_timeout: Duration,
     /// F1r3fly address to use for TLS hostname verification (instead of IP address)
     peer_f1r3fly_address: String,
+    /// Shared tracker of peers that most recently failed to connect; used to
+    /// gate the log level of TCP connection failures.
+    unreachable_peers: UnreachablePeers,
 }
 
 /// Error type for F1r3flyConnector
@@ -69,6 +84,7 @@ impl F1r3flyConnector {
             tls_connector,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             peer_f1r3fly_address,
+            unreachable_peers: new_unreachable_peers(),
         })
     }
 
@@ -87,12 +103,35 @@ impl F1r3flyConnector {
         peer_f1r3fly_address: String,
         connect_timeout: Duration,
     ) -> Result<Self, F1r3flyTlsTransportError> {
+        Self::new_with_timeout_and_tracker(
+            network_id,
+            cert,
+            key,
+            peer_f1r3fly_address,
+            connect_timeout,
+            new_unreachable_peers(),
+        )
+    }
+
+    /// Create a new F1r3flyConnector with custom timeout that shares an
+    /// [`UnreachablePeers`] tracker with its caller. The tracker lets the
+    /// caller log the first TCP failure for a peer at `WARN` and subsequent
+    /// failures at `DEBUG`, and observe reconnects.
+    pub fn new_with_timeout_and_tracker(
+        network_id: String,
+        cert: &str,
+        key: &str,
+        peer_f1r3fly_address: String,
+        connect_timeout: Duration,
+        unreachable_peers: UnreachablePeers,
+    ) -> Result<Self, F1r3flyTlsTransportError> {
         let tls_connector = F1r3flyTlsConnector::new(network_id, cert, key)?;
 
         Ok(Self {
             tls_connector,
             connect_timeout,
             peer_f1r3fly_address,
+            unreachable_peers,
         })
     }
 
@@ -133,6 +172,20 @@ impl F1r3flyConnector {
     pub fn peer_f1r3fly_address(&self) -> &str { &self.peer_f1r3fly_address }
 }
 
+/// Record that a peer's TCP connection most recently failed. Returns `true`
+/// when the entry is newly added (i.e. this is the first failure since the
+/// last success or since startup), so callers can log the first failure at
+/// `WARN` and subsequent failures at `DEBUG`.
+async fn mark_unreachable(peers: &UnreachablePeers, peer_f1r3fly_address: &str) -> bool {
+    peers.lock().await.insert(peer_f1r3fly_address.to_string())
+}
+
+/// Clear the "unreachable" mark for a peer. Returns `true` when the peer was
+/// previously marked, so callers can log the reconnect.
+async fn clear_unreachable(peers: &UnreachablePeers, peer_f1r3fly_address: &str) -> bool {
+    peers.lock().await.remove(peer_f1r3fly_address)
+}
+
 impl Service<Uri> for F1r3flyConnector {
     type Response = F1r3flyClientTlsTransport<TcpStream>;
     type Error = Box<dyn StdError + Send + Sync>;
@@ -147,6 +200,7 @@ impl Service<Uri> for F1r3flyConnector {
         let tls_connector = self.tls_connector.clone();
         let connect_timeout = self.connect_timeout;
         let peer_f1r3fly_address = self.peer_f1r3fly_address.clone();
+        let unreachable_peers = self.unreachable_peers.clone();
 
         Box::pin(async move {
             // Step 1: Extract and resolve address (with async DNS)
@@ -154,6 +208,7 @@ impl Service<Uri> for F1r3flyConnector {
                 tls_connector: tls_connector.clone(),
                 connect_timeout,
                 peer_f1r3fly_address: peer_f1r3fly_address.clone(),
+                unreachable_peers: unreachable_peers.clone(),
             };
 
             let addr = connector.extract_address(&uri).await.map_err(|e| {
@@ -166,19 +221,31 @@ impl Service<Uri> for F1r3flyConnector {
             })?;
 
             // Step 2: Establish TCP connection with timeout
-            let tcp_stream = tokio::time::timeout(connect_timeout, TcpStream::connect(addr))
-                .await
-                .map_err(|_| {
-                    tracing::error!(addr = %addr, timeout = ?connect_timeout, "F1r3flyConnector TCP connection timed out");
-                    Box::new(F1r3flyConnectorError::ConnectionTimeout {
+            let tcp_result = tokio::time::timeout(connect_timeout, TcpStream::connect(addr)).await;
+            let tcp_stream = match tcp_result {
+                Ok(Ok(stream)) => stream,
+                Err(_) => {
+                    let first = mark_unreachable(&unreachable_peers, &peer_f1r3fly_address).await;
+                    if first {
+                        tracing::warn!(addr = %addr, timeout = ?connect_timeout, "F1r3flyConnector TCP connection timed out");
+                    } else {
+                        tracing::debug!(addr = %addr, timeout = ?connect_timeout, "F1r3flyConnector TCP connection timed out");
+                    }
+                    return Err(Box::new(F1r3flyConnectorError::ConnectionTimeout {
                         timeout: connect_timeout,
-                    }) as Box<dyn StdError + Send + Sync>
-                })?
-                .map_err(|e| {
-                    tracing::error!(addr = %addr, error = %e, "F1r3flyConnector TCP connection failed");
-                    Box::new(F1r3flyConnectorError::TcpConnectionError(e))
-                        as Box<dyn StdError + Send + Sync>
-                })?;
+                    }) as Box<dyn StdError + Send + Sync>);
+                }
+                Ok(Err(e)) => {
+                    let first = mark_unreachable(&unreachable_peers, &peer_f1r3fly_address).await;
+                    if first {
+                        tracing::warn!(addr = %addr, error = %e, "F1r3flyConnector TCP connection failed");
+                    } else {
+                        tracing::debug!(addr = %addr, error = %e, "F1r3flyConnector TCP connection failed");
+                    }
+                    return Err(Box::new(F1r3flyConnectorError::TcpConnectionError(e))
+                        as Box<dyn StdError + Send + Sync>);
+                }
+            };
 
             // Step 3: Establish F1r3fly TLS connection with F1r3fly address as hostname
             let tls_transport = tokio::time::timeout(
@@ -193,10 +260,18 @@ impl Service<Uri> for F1r3flyConnector {
                 }) as Box<dyn StdError + Send + Sync>
             })?
             .map_err(|e| {
-                tracing::error!(addr = %addr, error = %e, "F1r3flyConnector TLS handshake failed");
+                tracing::warn!(addr = %addr, error = %e, "F1r3flyConnector TLS handshake failed");
                 Box::new(F1r3flyConnectorError::TlsConnectionError(e))
                     as Box<dyn StdError + Send + Sync>
             })?;
+
+            if clear_unreachable(&unreachable_peers, &peer_f1r3fly_address).await {
+                tracing::info!(
+                    addr = %addr,
+                    peer = %peer_f1r3fly_address,
+                    "F1r3flyConnector reconnected to previously unreachable peer"
+                );
+            }
 
             tracing::info!(
                 "F1r3flyConnector: TLS connection established to {} with hostname verification: {}",
@@ -387,5 +462,104 @@ mod tests {
 
         let uri_error = F1r3flyConnectorError::UriParseError("invalid URI".to_string());
         assert!(uri_error.to_string().contains("Failed to parse URI"));
+    }
+
+    /// Return a port that has been bound and immediately released, so the next
+    /// TCP connect attempt to it on localhost refuses promptly.
+    async fn released_localhost_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        port
+    }
+
+    #[tokio::test]
+    async fn tcp_connect_failure_is_logged_at_warn_then_debug_per_peer() {
+        use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
+        use shared::rust::tracing_init::EventCapture;
+        use tracing::Level;
+
+        let capture = EventCapture::new();
+        let _guard = capture.install();
+
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
+        let cert_pem = CertificatePrinter::print_certificate(
+            &CertificateHelper::generate_certificate(&secret_key, &public_key).unwrap(),
+        );
+        let key_pem = CertificatePrinter::print_private_key_from_secret(&secret_key).unwrap();
+        let peer_address = hex::encode(CertificateHelper::public_address(&public_key).unwrap());
+
+        let unreachable = new_unreachable_peers();
+        let mut connector = F1r3flyConnector::new_with_timeout_and_tracker(
+            "test".to_string(),
+            &cert_pem,
+            &key_pem,
+            peer_address.clone(),
+            Duration::from_secs(1),
+            unreachable.clone(),
+        )
+        .unwrap();
+
+        let port = released_localhost_port().await;
+        let uri: Uri = format!("http://127.0.0.1:{port}/").parse().unwrap();
+
+        // First attempt to the unreachable peer: WARN.
+        let before = capture.events().len();
+        let first = connector.call(uri.clone()).await;
+        assert!(first.is_err(), "connect to a released port must fail");
+        let first_events: Vec<_> = capture.events()[before..]
+            .iter()
+            .filter(|e| e.message.contains("F1r3flyConnector TCP connection"))
+            .cloned()
+            .collect();
+        assert_eq!(
+            first_events.len(),
+            1,
+            "exactly one TCP failure line: {first_events:?}"
+        );
+        assert_eq!(first_events[0].level, Level::WARN);
+
+        // Second attempt to the same peer without any success in between: DEBUG.
+        let before = capture.events().len();
+        let second = connector.call(uri.clone()).await;
+        assert!(second.is_err());
+        let second_events: Vec<_> = capture.events()[before..]
+            .iter()
+            .filter(|e| e.message.contains("F1r3flyConnector TCP connection"))
+            .cloned()
+            .collect();
+        assert_eq!(
+            second_events.len(),
+            1,
+            "exactly one TCP failure line: {second_events:?}"
+        );
+        assert_eq!(second_events[0].level, Level::DEBUG);
+
+        // No ERROR-level TCP connection lines at any point.
+        assert!(capture
+            .with_message("F1r3flyConnector TCP connection")
+            .iter()
+            .all(|e| e.level != Level::ERROR));
+
+        // A different peer's first failure logs WARN independently.
+        let other_peer = hex::encode([0x11; 20]);
+        let mut other = F1r3flyConnector::new_with_timeout_and_tracker(
+            "test".to_string(),
+            &cert_pem,
+            &key_pem,
+            other_peer,
+            Duration::from_secs(1),
+            unreachable.clone(),
+        )
+        .unwrap();
+        let before = capture.events().len();
+        let _ = other.call(uri).await;
+        let other_events: Vec<_> = capture.events()[before..]
+            .iter()
+            .filter(|e| e.message.contains("F1r3flyConnector TCP connection"))
+            .cloned()
+            .collect();
+        assert_eq!(other_events.len(), 1);
+        assert_eq!(other_events[0].level, Level::WARN);
     }
 }

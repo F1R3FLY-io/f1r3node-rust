@@ -137,6 +137,10 @@ pub fn normalize_ann_proc<'ast>(
     }
 
     match &proc.proc {
+        Proc::Foreach { .. } => Err(InterpreterError::NormalizerError(
+            "foreach is not supported".to_string(),
+        )),
+
         Proc::Nil => Ok(ProcVisitOutputs {
             par: input.par.clone(),
             free_map: input.free_map.clone(),
