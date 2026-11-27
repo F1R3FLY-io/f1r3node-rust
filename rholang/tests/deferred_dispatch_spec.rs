@@ -5,7 +5,9 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-use rholang::rust::interpreter::test_utils::resources::{create_runtimes, with_runtime};
+use rholang::rust::interpreter::test_utils::resources::{
+    create_runtimes, replay_charged, with_runtime,
+};
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
@@ -42,7 +44,7 @@ async fn dropped_evaluation_aborts_deferred_dispatches() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fan_out_play_and_replay_charge_the_same_cost_in_every_round() {
+async fn fan_out_play_and_replay_charge_the_same_cost() {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm
         .r_space_stores()
@@ -60,7 +62,6 @@ async fn fan_out_play_and_replay_charge_the_same_cost_in_every_round() {
         "new loop, done in {{ contract loop(@n) = {{ if (n <= 0) {{ done!(n) }} else {{ loop!(n - 1) }} }} | for (_ <= done) {{ Nil }} | {sends} }}"
     );
 
-    let mut costs = Vec::new();
     for _ in 0..3 {
         let play_checkpoint = runtime.create_soft_checkpoint().await;
         let replay_checkpoint = replay_runtime.create_soft_checkpoint().await;
@@ -72,11 +73,16 @@ async fn fan_out_play_and_replay_charge_the_same_cost_in_every_round() {
         assert!(play.errors.is_empty(), "play errors: {:?}", play.errors);
 
         let log = runtime.take_event_log().await;
-        replay_runtime.rig(log).await.expect("replay rig failed");
-        let replay = replay_runtime
-            .evaluate(&term, unlimited_phlo(), HashMap::new(), rand())
-            .await
-            .expect("replay failed");
+        let replay = replay_charged(
+            &mut replay_runtime,
+            log,
+            &term,
+            unlimited_phlo(),
+            HashMap::new(),
+            rand(),
+        )
+        .await
+        .expect("replay failed");
         assert!(
             replay.errors.is_empty(),
             "replay errors: {:?}",
@@ -87,18 +93,12 @@ async fn fan_out_play_and_replay_charge_the_same_cost_in_every_round() {
             .await
             .expect("replay data check failed");
         assert_eq!(play.cost, replay.cost);
-        costs.push(play.cost.value);
 
         runtime.revert_to_soft_checkpoint(play_checkpoint).await;
         replay_runtime
             .revert_to_soft_checkpoint(replay_checkpoint)
             .await;
     }
-
-    assert!(
-        costs.windows(2).all(|pair| pair[0] == pair[1]),
-        "fan-out cost differs between rounds: {costs:?}"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -3,8 +3,6 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use models::rust::par_map_type_mapper::ParMapTypeMapper;
-use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::{single_expr, vector_par};
 use models::rust::utils::*;
 use shared::rust::stack::with_stack_headroom;
@@ -590,26 +588,13 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
             ) => self.fold_match(&tlist, &plist, None).map(|_| ()),
 
             (
-                Some(ESetBody(
-                    t_set @ ESet {
-                        ps: _,
-                        locally_free: _,
-                        connective_used: _,
-                        remainder: _,
-                    },
-                )),
-                Some(ESetBody(
-                    ref p_set @ ESet {
-                        ps: _,
-                        locally_free: _,
-                        connective_used: _,
-                        remainder: ref rem,
-                    },
-                )),
+                Some(ESetBody(ESet { ps: tlist, .. })),
+                Some(ESetBody(ESet {
+                    ps: plist,
+                    remainder: ref rem,
+                    ..
+                })),
             ) => {
-                let tlist = ParSetTypeMapper::eset_to_par_set(t_set.clone()).ps;
-                let plist = ParSetTypeMapper::eset_to_par_set(p_set.clone()).ps;
-
                 let is_wildcard = match rem {
                     Some(Var {
                         var_instance: Some(Wildcard(_)),
@@ -629,8 +614,8 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                 };
 
                 self.list_match_single_(
-                    tlist.sorted_pars,
-                    plist.sorted_pars,
+                    tlist,
+                    plist,
                     &merger,
                     remainder_var_opt.copied(),
                     is_wildcard,
@@ -638,25 +623,23 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
             }
 
             (
-                Some(EMapBody(
-                    t_emap @ EMap {
-                        kvs: _,
-                        locally_free: _,
-                        connective_used: _,
-                        remainder: _,
-                    },
-                )),
-                Some(EMapBody(
-                    ref p_emap @ EMap {
-                        kvs: _,
-                        locally_free: _,
-                        connective_used: _,
-                        remainder: ref rem,
-                    },
-                )),
+                Some(EMapBody(EMap { kvs: tkvs, .. })),
+                Some(EMapBody(EMap {
+                    kvs: pkvs,
+                    remainder: ref rem,
+                    ..
+                })),
             ) => {
-                let tlist = ParMapTypeMapper::emap_to_par_map(t_emap.clone()).ps;
-                let plist = ParMapTypeMapper::emap_to_par_map(p_emap.clone()).ps;
+                let entries = |kvs: Vec<KeyValuePair>| -> Vec<(Par, Par)> {
+                    kvs.into_iter()
+                        .map(|kv| {
+                            (
+                                kv.key.expect("EMap entry has a key"),
+                                kv.value.expect("EMap entry has a value"),
+                            )
+                        })
+                        .collect()
+                };
 
                 let is_wildcard = match rem {
                     Some(Var {
@@ -687,8 +670,8 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                 };
 
                 self.list_match_single_(
-                    tlist.sorted_list,
-                    plist.sorted_list,
+                    entries(tkvs),
+                    entries(pkvs),
                     &merger,
                     remainder_var_opt.copied(),
                     is_wildcard,

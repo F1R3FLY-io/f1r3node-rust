@@ -1356,6 +1356,7 @@ async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence()
             deploy: d.clone(),
             cost: PCost { cost: 0 },
             deploy_log: vec![],
+            user_log: 0..0,
             is_failed: false,
             system_deploy_error: None,
         })

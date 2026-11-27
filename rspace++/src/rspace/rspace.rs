@@ -95,6 +95,9 @@ pub struct RSpace<C, P, A, K> {
     // hold a `GcRootHandle` here for the lifetime of the reference, and
     // the sweep in ops_sweep skips any trapped id that is currently pinned.
     pub gc_roots: Arc<GcRootRegistry>,
+    // Set once a charging space wraps this one: from then on a search run
+    // outside a charging scope is a bug, not a free search.
+    search_charging_required: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl<C, P, A, K> RSpace<C, P, A, K>

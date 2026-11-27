@@ -23,6 +23,9 @@ pub enum RSpaceError {
         leftover_count: usize,
         leftover: Vec<String>,
     },
+    /// Recounting a deploy's searches from its log found the log taking
+    /// something that was not waiting, or naming events outside the deploy.
+    SearchMismatch(String),
 }
 
 impl std::fmt::Display for RSpaceError {
@@ -46,6 +49,7 @@ impl std::fmt::Display for RSpaceError {
                 "Unused COMM event: replayData multimap has {} elements left; leftover={:?}",
                 leftover_count, leftover
             ),
+            RSpaceError::SearchMismatch(detail) => write!(f, "Search mismatch: {}", detail),
         }
     }
 }

@@ -15,6 +15,10 @@ pub enum ReplayFailure {
         msg: String,
     },
 
+    SearchMismatch {
+        msg: String,
+    },
+
     ReplayCostMismatch {
         initial_cost: u64,
         replay_cost: u64,
@@ -37,6 +41,8 @@ impl ReplayFailure {
     }
 
     pub fn unused_comm_event(msg: String) -> Self { ReplayFailure::UnusedCOMMEvent { msg } }
+
+    pub fn search_mismatch(msg: String) -> Self { ReplayFailure::SearchMismatch { msg } }
 
     pub fn replay_cost_mismatch(initial_cost: u64, replay_cost: u64) -> Self {
         ReplayFailure::ReplayCostMismatch {
@@ -71,6 +77,9 @@ impl std::fmt::Display for ReplayFailure {
             }
             ReplayFailure::UnusedCOMMEvent { msg } => {
                 write!(f, "Unused COMM event: {}", msg)
+            }
+            ReplayFailure::SearchMismatch { msg } => {
+                write!(f, "Search mismatch: {}", msg)
             }
             ReplayFailure::ReplayCostMismatch {
                 initial_cost,
