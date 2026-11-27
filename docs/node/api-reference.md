@@ -486,8 +486,8 @@ answers `Rejected`.
 | `state` | string | Deploy finalization state |
 | `rejection_count` | int | Number of times the deploy was rejected during finalization |
 | `latest_block_hash` | string/null | Hex block hash where the deploy was last seen; `null` if never included |
-| `basisBlockHash` | string/null | Verdict basis (see `POST` below); `null` on this endpoint |
-| `basisBlockHeight` | int/null | Verdict basis (see `POST` below); `null` on this endpoint |
+| `basis_block_hash` | string/null | Verdict basis hash. This endpoint returns `null`. |
+| `basis_block_height` | int/null | Verdict basis height. This endpoint returns `null`. |
 
 | Status | Condition |
 |--------|-----------|
@@ -498,14 +498,18 @@ answers `Rejected`.
 #### `POST /api/deploy-finalization-status`
 
 Send the saved signed JSON used for [deploy submission](#post-apideploy).
-The node verifies the signature and shard. If the lifecycle register has a record for the signature,
-the node returns that status. Otherwise, it checks the window against the floor of its adopted last finalized block.
+The HTTP and gRPC endpoints validate the deploy amounts, parameters, signature, and shard.
+If the lifecycle register has a record for the signature, the node returns that status.
+Otherwise, the node uses the floor of its adopted last finalized block as the verdict basis.
 
 An unknown deploy can return `Expired` when the floor height exceeds
-`validAfterBlockNumber + deployLifespan + maxParentDepth` and the node can account for the entire inclusion window.
-The status stays `Pending` at the bound, while the observer is behind it, or when contestability is unlimited.
-An unresolved floor, a restore gap, or a window that predates index coverage also keeps the status `Pending`.
-The wall-clock field `expirationTimestamp` affects admission only.
+`validAfterBlockNumber + deployLifespan + maxParentDepth + 256`. The additional 256 blocks
+allow for floor lag on the merge path. The carrier index must also cover the first possible carrier height.
+It must show that the signature is absent at every indexed height. An indexed carrier awaiting validation keeps the status `Pending`.
+
+The status stays `Pending` at or below the bound and when contestability is unlimited.
+An unresolved floor, a restore gap, or incomplete carrier index coverage also keeps the status `Pending`.
+Admission and block validation use `expirationTimestamp`. Reconciliation uses finalized block heights.
 
 ```bash
 curl -X POST http://localhost:40403/api/deploy-finalization-status \
@@ -514,13 +518,16 @@ curl -X POST http://localhost:40403/api/deploy-finalization-status \
 ```
 
 ```json
-{"state": "Expired", "rejection_count": 0, "latest_block_hash": null, "basisBlockHash": "3bfdf56f...", "basisBlockHeight": 1234}
+{"state": "Expired", "rejection_count": 0, "latest_block_hash": null, "basis_block_hash": "3bfdf56f...", "basis_block_height": 1234}
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `basisBlockHash` | string/null | Hex hash of the floor of the adopted last finalized block the verdict was judged against; `null` on register lookups and when this node cannot resolve a floor |
-| `basisBlockHeight` | int/null | Height of that basis block |
+| `basis_block_hash` | string/null | Hex hash of the basis block. Register answers and queries with an unresolved floor return `null`. |
+| `basis_block_height` | int/null | Height of that basis block |
+
+The gRPC `deployFinalizationStatus` method shares the node's pre-decode request limit with `doDeploy`.
+When all slots are in use, the response carries the service error `deploy_admission_busy`.
 
 For `Pending`, keep the reservation. A register verdict of `Finalized` means the deploy already took effect.
 
