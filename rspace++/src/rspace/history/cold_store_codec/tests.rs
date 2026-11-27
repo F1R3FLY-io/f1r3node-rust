@@ -78,6 +78,210 @@ fn legacy_variants_and_both_key_formats_remain_exact() {
 }
 
 #[test]
+fn raw_reads_do_not_rehash_leaf_payloads() {
+    for enabled in [false, true] {
+        for kind in 0..3 {
+            for serialized_key in [false, true] {
+                let store = codec(enabled);
+                let (key, canonical) = fixture(kind, vec![11; 8192], serialized_key);
+                store.inner.put_one(key.clone(), canonical.clone()).unwrap();
+                LEAF_HASH_CHECKS.set(0);
+                assert_eq!(store.get_one(&key).unwrap(), Some(canonical.clone()));
+                assert_eq!(store.contains(&vec![key.clone()]).unwrap(), vec![true]);
+                assert_eq!(store.scan_page(None, 1).unwrap().rows, vec![(
+                    key.clone(),
+                    canonical.clone()
+                )]);
+                assert_eq!(store.to_map().unwrap(), BTreeMap::from([(key, canonical)]));
+                assert_eq!(LEAF_HASH_CHECKS.get(), 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn conditional_batches_validate_each_input_only_once() {
+    for enabled in [false, true] {
+        let store = codec(enabled);
+        let pairs: Vec<_> = (0..3)
+            .map(|kind| fixture(kind, vec![kind; 8192], true))
+            .collect();
+        LEAF_HASH_CHECKS.set(0);
+        store.put_if_absent(pairs.clone()).unwrap();
+        assert_eq!(LEAF_HASH_CHECKS.get(), 3);
+        LEAF_HASH_CHECKS.set(0);
+        store.put_if_absent(pairs).unwrap();
+        assert_eq!(LEAF_HASH_CHECKS.get(), 3 + usize::from(enabled));
+    }
+}
+
+#[test]
+fn untrusted_writes_reject_wrong_hashes_before_committing() {
+    for enabled in [false, true] {
+        for serialized_key in [false, true] {
+            let store = codec(enabled);
+            let valid = fixture(1, vec![1; 8192], serialized_key);
+            let mut wrong = fixture(2, vec![2; 8192], serialized_key);
+            *wrong.0.last_mut().unwrap() ^= 1;
+            assert!(store.put(vec![valid.clone(), wrong.clone()]).is_err());
+            assert!(!store.non_empty().unwrap());
+            assert!(store.put_if_absent(vec![valid, wrong.clone()]).is_err());
+            assert!(!store.non_empty().unwrap());
+            assert!(store.put_one_if_absent(wrong.0, wrong.1).is_err());
+            assert!(!store.non_empty().unwrap());
+        }
+    }
+}
+
+#[test]
+fn disabled_writes_still_verify_compressed_reads() {
+    let store = codec(false);
+    let (key, canonical) = fixture(2, vec![1; 8192], true);
+    let physical = frame(&canonical);
+    store.inner.put_one(key.clone(), physical.clone()).unwrap();
+    LEAF_HASH_CHECKS.set(0);
+    assert_eq!(store.get_one(&key).unwrap(), Some(canonical.clone()));
+    assert_eq!(LEAF_HASH_CHECKS.get(), 1);
+    let mut damaged = physical.clone();
+    change_header(&mut damaged, |header| header.digest[0] ^= 1);
+    store.inner.put_one(key.clone(), damaged).unwrap();
+    assert!(store.get_one(&key).is_err());
+    assert!(store.contains(&vec![key.clone()]).is_err());
+    assert!(store.put_if_absent(vec![(key.clone(), canonical)]).is_err());
+    let mut wrong_key = key;
+    *wrong_key.last_mut().unwrap() ^= 1;
+    store.inner.put_one(wrong_key.clone(), physical).unwrap();
+    assert!(store.get_one(&wrong_key).is_err());
+}
+
+#[test]
+fn checkpoint_leaves_reuse_generated_hashes() {
+    use shared::rust::store::memory_key_value_store::MemoryEnvironment;
+
+    use crate::rspace::history::history_repository::HistoryRepositoryInstances;
+    use crate::rspace::hot_store_action::{
+        HotStoreAction, InsertAction, InsertContinuations, InsertData, InsertJoins,
+    };
+    use crate::rspace::hot_store_trie_action::{
+        HotStoreTrieAction, TrieInsertAction, TrieInsertBinaryConsume, TrieInsertBinaryJoins,
+        TrieInsertBinaryProduce,
+    };
+    use crate::rspace::internal::{Datum, WaitingContinuation};
+
+    for enabled in [false, true] {
+        let env = Arc::new(MemoryEnvironment::new());
+        let backing = Arc::new(env.create_store());
+        let store = Arc::new(ColdStoreCodec {
+            inner: backing.clone(),
+            compress_writes: enabled,
+            budget: Arc::new(CodecBudget::new(MAX_CODEC_OPERATIONS, MAX_SCRATCH_BYTES)),
+        });
+        let repo = HistoryRepositoryInstances::<String, String, String, String>::lmdb_repository(
+            Arc::new(env.create_store()),
+            Arc::new(env.create_store()),
+            store.clone(),
+        )
+        .unwrap();
+        let actions = vec![
+            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryProduce(
+                TrieInsertBinaryProduce {
+                    hash: Blake2b256Hash::new(b"data"),
+                    data: vec![vec![1; 8192]],
+                },
+            )),
+            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryConsume(
+                TrieInsertBinaryConsume {
+                    hash: Blake2b256Hash::new(b"continuations"),
+                    continuations: vec![vec![2; 8192]],
+                },
+            )),
+            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryJoins(
+                TrieInsertBinaryJoins {
+                    hash: Blake2b256Hash::new(b"joins"),
+                    joins: vec![vec![3; 8192]],
+                },
+            )),
+        ];
+        LEAF_HASH_CHECKS.set(0);
+        let checkpoint = repo.do_checkpoint(actions.clone());
+        assert_eq!(LEAF_HASH_CHECKS.get(), 0);
+        let physical = backing.to_map().unwrap();
+        assert_eq!(physical.len(), 3);
+        assert_eq!(
+            physical
+                .values()
+                .filter(|value| value.starts_with(&MAGIC))
+                .count(),
+            usize::from(enabled)
+        );
+        for (key, canonical) in store.to_map().unwrap() {
+            validate_canonical(&key, &canonical).unwrap();
+        }
+        LEAF_HASH_CHECKS.set(0);
+        assert_eq!(checkpoint.do_checkpoint(actions).root(), checkpoint.root());
+        assert_eq!(LEAF_HASH_CHECKS.get(), usize::from(enabled));
+        assert_eq!(backing.to_map().unwrap(), physical);
+
+        let channel = "native-data".to_string();
+        let channels = vec!["native-continuation".to_string()];
+        let patterns = vec!["pattern".to_string()];
+        let native = vec![
+            HotStoreAction::Insert(InsertAction::InsertData(InsertData {
+                channel: channel.clone(),
+                data: vec![Datum::create(&channel, "datum".into(), false)],
+            })),
+            HotStoreAction::Insert(InsertAction::InsertContinuations(InsertContinuations {
+                channels: channels.clone(),
+                continuations: vec![WaitingContinuation::create(
+                    &channels,
+                    &patterns,
+                    &"body".repeat(4096),
+                    true,
+                    Default::default(),
+                )],
+            })),
+            HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins {
+                channel: channel.clone(),
+                joins: vec![channels],
+            })),
+        ];
+        LEAF_HASH_CHECKS.set(0);
+        let native_checkpoint = checkpoint.checkpoint(native.clone());
+        assert_eq!(LEAF_HASH_CHECKS.get(), 0);
+        let reader = native_checkpoint
+            .get_history_reader(&native_checkpoint.root())
+            .unwrap();
+        assert_eq!(reader.base().get_data(&channel).len(), 1);
+        assert_eq!(reader.base().get_joins(&channel).len(), 1);
+        LEAF_HASH_CHECKS.set(0);
+        assert_eq!(native_checkpoint.checkpoint(native.clone()).root(), native_checkpoint.root());
+        assert_eq!(LEAF_HASH_CHECKS.get(), usize::from(enabled));
+        for (key, canonical) in store.to_map().unwrap() {
+            validate_canonical(&key, &canonical).unwrap();
+        }
+        let (key, canonical) = store
+            .to_map()
+            .unwrap()
+            .into_iter()
+            .find(|(_, value)| {
+                matches!(
+                    bincode::deserialize::<PersistedData>(value).unwrap(),
+                    PersistedData::Continuations(_)
+                ) && value.len() > 12000
+            })
+            .unwrap();
+        let mut damaged = frame(&canonical);
+        change_header(&mut damaged, |header| header.digest[0] ^= 1);
+        backing.put_one(key.clone(), damaged.clone()).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            native_checkpoint.checkpoint(native)
+        }));
+        assert!(result.is_err());
+        assert_eq!(backing.get_one(&key).unwrap(), Some(damaged));
+    }
+}
+
+#[test]
 fn only_sufficiently_large_profitable_continuations_are_compressed() {
     let store = codec(true);
     for kind in 0..3 {
@@ -114,7 +318,11 @@ fn canonical_validation_rejects_wrong_keys_tags_lengths_and_trailing_bytes() {
     let (key, canonical) = fixture(2, vec![3; 4096], false);
     let mut wrong_key = key.clone();
     wrong_key[0] ^= 1;
-    for bad_key in [wrong_key, vec![], vec![1; 31], vec![255; 40]] {
+    assert!(store.encode(&wrong_key, canonical.clone()).is_err());
+    assert!(store.decode(&wrong_key, frame(&canonical)).is_err());
+    assert_eq!(store.decode(&wrong_key, canonical.clone()).unwrap(), canonical);
+    for bad_key in [vec![], vec![1; 31], vec![255; 40], bincode::serialize(&vec![1u8; 31]).unwrap()]
+    {
         assert!(store.encode(&bad_key, canonical.clone()).is_err());
         assert!(store.decode(&bad_key, canonical.clone()).is_err());
     }

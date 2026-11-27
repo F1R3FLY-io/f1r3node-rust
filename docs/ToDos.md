@@ -55,6 +55,7 @@ tasks:
       - "Disposable live validation finalized 100 counter and 100 synthetic lock-record deploys, checked a late observer and write-disabled restart, and reached finalized height 79 without OOM or automatic restarts."
       - "After a diagnostic-tool fix, a second fresh-genesis run passed the complete harness with exit zero, including final state verification at height 68 and stopped-store inspection. The earlier diagnostic failure remains recorded."
       - "Evidence, proof gaps, and release gates are recorded in docs/cbc-evidence/cold-store-compression-2026-11-26.md."
+      - "On 2026-11-27, the user requested removal of redundant hashing on improvement-proposal/storage-only-compression. Raw reads retain structural checks; typed checkpoint leaves reuse their generated hashes. Generic writes and compressed reads retain hash validation."
 ```
 
 - **Maintainer identity ratification (2026-11-13).** Status: implemented locally on `ci/maintainer-identity-ratificatio`, claimed by Codex. The maintainer selected active `ci-maintainers` membership as an additional authority for commit authors. Focused policy, workflow, queue, and release checks passed. The registry proposal was removed. Review, commit, App configuration, and rollout through `master` and `ca-canary` remain pending.

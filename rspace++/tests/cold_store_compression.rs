@@ -24,6 +24,8 @@ use shared::rust::store::memory_key_value_store::MemoryEnvironment;
 
 type Repository = Box<dyn HistoryRepository<String, String, String, String> + Send + Sync>;
 
+static CODEC_BUDGET_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn memory_stores() -> RSpaceStore {
     let env = Arc::new(MemoryEnvironment::new());
     RSpaceStore {
@@ -102,6 +104,7 @@ fn assert_readable(repo: &dyn HistoryRepository<String, String, String, String>)
 
 #[test]
 fn raw_and_compressed_checkpoints_have_identical_roots_and_canonical_exports() {
+    let _budget_guard = CODEC_BUDGET_TEST_LOCK.blocking_lock();
     let raw_stores = memory_stores();
     let compressed_stores = memory_stores();
     let raw = repository(raw_stores.clone(), false).checkpoint(actions());
@@ -128,6 +131,7 @@ fn raw_and_compressed_checkpoints_have_identical_roots_and_canonical_exports() {
 
 #[test]
 fn canonical_state_transfers_in_both_compression_directions() {
+    let _budget_guard = CODEC_BUDGET_TEST_LOCK.blocking_lock();
     for (source_enabled, destination_enabled) in [(false, true), (true, false), (true, true)] {
         let source = repository(memory_stores(), source_enabled).checkpoint(actions());
         let destination_stores = memory_stores();
@@ -194,6 +198,7 @@ fn canonical_state_transfers_in_both_compression_directions() {
 
 #[test]
 fn corrupt_raw_priority_key_never_uses_valid_serialized_fallback() {
+    let _budget_guard = CODEC_BUDGET_TEST_LOCK.blocking_lock();
     let stores = memory_stores();
     let repo = repository(stores.clone(), true).checkpoint(actions());
     let logical = ColdStoreCodec::new(stores.cold.clone(), false);
@@ -236,6 +241,7 @@ fn corrupt_raw_priority_key_never_uses_valid_serialized_fallback() {
 
 #[test]
 fn lmdb_restart_and_aborted_transaction_preserve_mixed_rows_and_retained_roots() {
+    let _budget_guard = CODEC_BUDGET_TEST_LOCK.blocking_lock();
     let dir = tempfile::tempdir().unwrap();
     let root;
     let empty_root;
@@ -292,6 +298,7 @@ impl Match<String, String, String> for Wildcard {
 
 #[tokio::test]
 async fn persisted_multi_channel_peek_replays_to_the_same_root() {
+    let _budget_guard = CODEC_BUDGET_TEST_LOCK.lock().await;
     let mut roots = Vec::new();
     for enabled in [false, true] {
         let stores = memory_stores().with_cold_compression(enabled);

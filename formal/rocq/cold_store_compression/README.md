@@ -11,6 +11,9 @@ It is not a proof of the complete Rust implementation.
 It does not contain or execute an LZ4 byte stream.
 The encoder constructor models the required identity contract of a correct compression library.
 The verified flag abstracts the production header, length, digest, and leaf-key checks.
+`Raw` represents trusted, structurally valid canonical bytes, not a payload whose hash was checked on every read.
+Generic writes validate supplied bytes; checkpoint writes reuse the key computed by their private producer.
+That producer's Rust implementation is a trusted boundary, not a theorem in this model.
 
 The proof therefore depends on a correspondence that the Rust tests exercise but do not prove:
 successful physical decoding must return exactly the represented canonical sequence.

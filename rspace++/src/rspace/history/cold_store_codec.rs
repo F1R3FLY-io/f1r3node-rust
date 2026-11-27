@@ -10,6 +10,8 @@ use shared::rust::ByteBuffer;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError, StorePage};
 use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
 
+use super::history_repository_impl::CheckpointLeaf;
+
 const MAGIC: [u8; 8] = *b"F1CLZ4\0\0";
 const HEADER_LEN: usize = 60;
 pub const MAX_COMPRESSED_RECORD_BYTES: usize = 16 * 1024 * 1024;
@@ -19,6 +21,11 @@ const MIN_SAVING_BYTES: usize = 64;
 const MAX_CODEC_OPERATIONS: usize = 2;
 const MAX_SCRATCH_BYTES: usize = 64 * 1024 * 1024;
 const ENCODER_WORKSPACE_BYTES: usize = 1024 * 1024;
+
+#[cfg(test)]
+std::thread_local! {
+    static LEAF_HASH_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 #[derive(Serialize, Deserialize)]
 struct Header {
@@ -53,18 +60,15 @@ fn limit_exceeded(message: &'static str) -> KvStoreError {
     invalid(message)
 }
 
-fn validate_canonical(key: &[u8], value: &[u8]) -> Result<bool, KvStoreError> {
+fn parse_canonical<'a>(
+    key: &'a [u8],
+    value: &'a [u8],
+) -> Result<(CanonicalLeaf<'a>, &'a [u8]), KvStoreError> {
     let leaf: CanonicalLeaf<'_> = bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .reject_trailing_bytes()
         .deserialize(value)
         .map_err(|_| invalid("invalid canonical leaf"))?;
-    let continuation = matches!(leaf, CanonicalLeaf::Continuations(_));
-    let bytes = match leaf {
-        CanonicalLeaf::Joins(leaf) |
-        CanonicalLeaf::Data(leaf) |
-        CanonicalLeaf::Continuations(leaf) => leaf.bytes,
-    };
     let hash: &[u8] = if key.len() == 32 {
         key
     } else {
@@ -74,6 +78,22 @@ fn validate_canonical(key: &[u8], value: &[u8]) -> Result<bool, KvStoreError> {
             .deserialize(key)
             .map_err(|_| invalid("invalid leaf key"))?
     };
+    if hash.len() != 32 {
+        return Err(invalid("invalid leaf key"));
+    }
+    Ok((leaf, hash))
+}
+
+fn validate_canonical(key: &[u8], value: &[u8]) -> Result<bool, KvStoreError> {
+    let (leaf, hash) = parse_canonical(key, value)?;
+    let continuation = matches!(leaf, CanonicalLeaf::Continuations(_));
+    let bytes = match leaf {
+        CanonicalLeaf::Joins(leaf) |
+        CanonicalLeaf::Data(leaf) |
+        CanonicalLeaf::Continuations(leaf) => leaf.bytes,
+    };
+    #[cfg(test)]
+    LEAF_HASH_CHECKS.with(|checks| checks.set(checks.get() + 1));
     let mut hasher = Blake2b::<U32>::new();
     hasher.update((bytes.len() as u64).to_le_bytes());
     hasher.update(bytes);
@@ -81,6 +101,34 @@ fn validate_canonical(key: &[u8], value: &[u8]) -> Result<bool, KvStoreError> {
         return Err(invalid("leaf hash mismatch"));
     }
     Ok(continuation)
+}
+
+struct ValidatedLeaf {
+    key: ByteBuffer,
+    value: ByteBuffer,
+    continuation: bool,
+}
+
+impl ValidatedLeaf {
+    fn from_untrusted(key: ByteBuffer, value: ByteBuffer) -> Result<Self, KvStoreError> {
+        let continuation = validate_canonical(&key, &value)?;
+        Ok(Self {
+            key,
+            value,
+            continuation,
+        })
+    }
+
+    fn from_checkpoint(leaf: CheckpointLeaf) -> Result<Self, KvStoreError> {
+        let (key, value) = leaf.into_pair();
+        let (leaf, _) = parse_canonical(&key, &value)?;
+        let continuation = matches!(leaf, CanonicalLeaf::Continuations(_));
+        Ok(Self {
+            key,
+            value,
+            continuation,
+        })
+    }
 }
 
 #[derive(Default)]
@@ -205,8 +253,19 @@ impl ColdStoreCodec {
     }
 
     fn encode(&self, key: &[u8], value: ByteBuffer) -> Result<ByteBuffer, KvStoreError> {
+        let continuation = validate_canonical(key, &value).inspect_err(|_| {
+            metrics::counter!("rspace.cold-codec.failures", "operation" => "encode").increment(1);
+        })?;
+        self.encode_validated(value, continuation)
+    }
+
+    fn encode_validated(
+        &self,
+        value: ByteBuffer,
+        continuation: bool,
+    ) -> Result<ByteBuffer, KvStoreError> {
         let start = Instant::now();
-        let result = self.encode_inner(key, value);
+        let result = self.encode_inner(value, continuation);
         metrics::histogram!("rspace.cold-codec.encode.seconds")
             .record(start.elapsed().as_secs_f64());
         if result.is_err() {
@@ -215,8 +274,11 @@ impl ColdStoreCodec {
         result
     }
 
-    fn encode_inner(&self, key: &[u8], value: ByteBuffer) -> Result<ByteBuffer, KvStoreError> {
-        let continuation = validate_canonical(key, &value)?;
+    fn encode_inner(
+        &self,
+        value: ByteBuffer,
+        continuation: bool,
+    ) -> Result<ByteBuffer, KvStoreError> {
         if !self.compress_writes {
             return Ok(Self::raw_fallback(value, "disabled"));
         }
@@ -278,7 +340,7 @@ impl ColdStoreCodec {
 
     fn decode_inner(&self, key: &[u8], value: ByteBuffer) -> Result<ByteBuffer, KvStoreError> {
         if !value.starts_with(&MAGIC) {
-            validate_canonical(key, &value)?;
+            parse_canonical(key, &value)?;
             return Ok(value);
         }
         self.expand(key, &value)
@@ -321,6 +383,35 @@ impl ColdStoreCodec {
         metrics::counter!("rspace.cold-codec.decoded.bytes").increment(length as u64);
         Ok(canonical)
     }
+
+    pub(super) fn put_checkpoint_if_absent(
+        &self,
+        leaves: Vec<CheckpointLeaf>,
+    ) -> Result<(), KvStoreError> {
+        let validated = leaves
+            .into_iter()
+            .map(ValidatedLeaf::from_checkpoint)
+            .collect::<Result<_, _>>()?;
+        self.put_validated_if_absent(validated)
+    }
+
+    fn put_validated_if_absent(&self, leaves: Vec<ValidatedLeaf>) -> Result<(), KvStoreError> {
+        if leaves.is_empty() {
+            return Ok(());
+        }
+        let keys = leaves.iter().map(|leaf| leaf.key.clone()).collect();
+        let present = self.contains(&keys)?;
+        let encoded = leaves
+            .into_iter()
+            .zip(present)
+            .filter_map(|(leaf, present)| (!present).then_some(leaf))
+            .map(|leaf| {
+                self.encode_validated(leaf.value, leaf.continuation)
+                    .map(|value| (leaf.key, value))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.inner.put(encoded)
+    }
 }
 
 impl KeyValueStore for ColdStoreCodec {
@@ -349,18 +440,11 @@ impl KeyValueStore for ColdStoreCodec {
     }
 
     fn put_if_absent(&self, pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
-        for (key, value) in &pairs {
-            validate_canonical(key, value)?;
-        }
-        let keys = pairs.iter().map(|(key, _)| key.clone()).collect();
-        let present = self.contains(&keys)?;
-        self.put(
-            pairs
-                .into_iter()
-                .zip(present)
-                .filter_map(|(pair, present)| (!present).then_some(pair))
-                .collect(),
-        )
+        let validated = pairs
+            .into_iter()
+            .map(|(key, value)| ValidatedLeaf::from_untrusted(key, value))
+            .collect::<Result<_, _>>()?;
+        self.put_validated_if_absent(validated)
     }
 
     fn put_one_if_absent(&self, key: ByteBuffer, value: ByteBuffer) -> Result<bool, KvStoreError> {

@@ -13,7 +13,10 @@ Each worker reserves one to three accounting units against a total limit of four
 
 `Read` records whether corrupt data could be accepted or compressed bytes could escape through an export.
 It does not model error strings, parsing, digest computation, or hash collisions.
-The `valid` flag abstracts the production length, format, digest, and leaf-key checks.
+For compressed rows, `valid` abstracts the production length, format, digest, and leaf-key checks.
+For raw rows, it abstracts the envelope and key-encoding checks only.
+After the 2026-11-27 correction, ordinary raw reads trust stored payloads without recomputing their hash.
+The model does not establish detection of structurally valid raw payload corruption.
 `FinishDelete` abstracts one atomic backend compare-and-delete attempt.
 The model does not establish scheduler fairness, retry termination, decoder progress, or process memory bounds.
 
@@ -22,7 +25,7 @@ The model does not establish scheduler fairness, retry termination, decoder prog
 | Model action or invariant | Production behavior | Executable binding |
 | --- | --- | --- |
 | `Write`, `Read`, `CanonicalExport` | Encode physical rows; return canonical values through reads and iteration | `formal_store_model_agrees_with_operation_traces`; checkpoint and export integration tests |
-| `CorruptionRefused` | Reject invalid headers, lengths, payloads, digests, and leaf keys | Malformed-frame and exact-length codec regressions |
+| `CorruptionRefused` | Reject malformed raw envelopes and compressed records that fail full validation | Malformed-frame and exact-length codec regressions |
 | `BeginDelete`, `FinishDelete`, `ReplacementPreserved` | Decode a snapshot; compare-and-delete that exact physical row; retry replacement races | Deterministic representation-replacement and different-value races |
 | `Acquire`, `Release`, `BudgetBounded`, `BudgetAccounted` | Shared mutex-protected reservations and permit release | `formal_budget_model_agrees_with_reservation_traces`; concurrent-budget tests |
 

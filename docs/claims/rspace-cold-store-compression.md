@@ -6,6 +6,7 @@ artifacts:
   - rspace++/src/rspace/history/cold_store_codec.rs
   - rspace++/src/rspace/history/cold_store_codec/tests.rs
   - rspace++/src/rspace/history/history_repository.rs
+  - rspace++/src/rspace/history/history_repository_impl.rs
   - rspace++/src/rspace/rspace.rs
   - rspace++/tests/cold_store_compression.rs
 status: pending
@@ -16,7 +17,7 @@ evidence: docs/cbc-evidence/cold-store-compression-2026-11-26.md
 
 ## Scope
 
-The user requested implementation of the [compression proposal](../improvement-proposals/storage-only-compression.md) on 2026-11-26.
+The user requested storage-only cold-leaf compression on 2026-11-26 and removal of redundant hashing on 2026-11-27.
 The [implementation record](../improvement-proposals/storage-only-compression-implementation.md) specifies the physical format and experimental limits.
 This claim covers the adapter and its integration, not the existing consensus algorithm or the complete LMDB implementation.
 
@@ -24,7 +25,7 @@ This claim covers the adapter and its integration, not the existing consensus al
 
 1. A successful logical read returns the exact canonical value encoded by a valid physical record.
 2. Physical compression does not change leaf hashes, keys, exported canonical values, or resulting checkpoint roots.
-3. Corrupt recognized records return errors rather than absence, empty state, or lower-priority fallback.
+3. Corrupt compressed records and malformed raw envelopes return errors rather than absence, empty state, or lower-priority fallback.
 4. Active compression and decompression reservations respect the shared operation and accounted scratch limits.
 5. A successful conditional deletion removes only a physical row whose canonical value matches the expected value.
 6. A concurrent representation replacement cannot cause an unconditional deletion of a different value.
@@ -35,8 +36,13 @@ This claim covers the adapter and its integration, not the existing consensus al
 
 The pinned bincode layout, LZ4 implementation, Blake2b-256 integrity properties, and atomic backend operations are trusted dependencies.
 The resource claim covers codec reservations, not all allocations by callers, batch collections, or the backend.
-Raw canonical validation does not acquire a codec permit. Its hashing work is outside this concurrency bound.
-Successful decoding verifies byte identity through lengths, the canonical digest, and the leaf hash.
+Generic write validation does not acquire a codec permit. Its hashing work is outside this concurrency bound.
+Successful compressed decoding verifies byte identity through lengths, the canonical digest, and the leaf hash.
+Raw reads check structure and key encoding without recalculating the content hash.
+They trust the existing raw store; they do not detect a structurally valid payload replacement or an incorrect but well-formed hash key.
+Generic writes still validate their inputs before storage.
+Checkpoint writes accept a private owned value from the same producer that computes its key and serializes its bytes.
+The producer's correspondence between the key and bytes is trusted and covered by regression tests, not a Rust construction proof.
 This does not provide authenticity against an attacker who can rewrite both values and their trusted references.
 
 The adapter does not make batch conditional insertion atomic.
@@ -53,6 +59,9 @@ The [TLA+ model](../../formal/tlaplus/cold_store_compression/README.md) checks c
 Its five deliberate defects must produce the expected counterexamples.
 The [Coq proof](../../formal/rocq/cold_store_compression/README.md) establishes 16 abstract representation, deletion, and budget theorems without admitted results or axioms.
 Two operation-trace tests compare the production adapter with independent logical-store and reservation models.
+Hash-count regressions fail on the original implementation and pass after the 2026-11-27 correction.
+They check raw reads, new and repeated conditional batches, and native and binary checkpoint leaves.
+The earlier source-bound formal and live reports do not certify this changed implementation.
 
 | Property | Refutation and binding | Construction status |
 | --- | --- | --- |
