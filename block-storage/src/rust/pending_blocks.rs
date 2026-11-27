@@ -146,6 +146,8 @@ impl Inner {
 /// area never evicts: block ingest decides what leaves and what is reserved.
 pub struct PendingBlocks {
     inner: Mutex<Inner>,
+    #[cfg(test)]
+    locks: std::sync::atomic::AtomicUsize,
 }
 
 impl PendingBlocks {
@@ -159,10 +161,14 @@ impl PendingBlocks {
                 reservations: HashMap::new(),
                 reserved_bytes: 0,
             }),
+            #[cfg(test)]
+            locks: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        #[cfg(test)]
+        self.locks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -335,6 +341,44 @@ mod tests {
         assert!(area.remove_if(&held.block_hash, &held));
         assert!(area.is_empty());
         assert_eq!(area.bytes(), 0);
+    }
+
+    fn locks_taken_by(
+        area: &PendingBlocks,
+        call: impl FnOnce(&PendingBlocks) -> bool,
+    ) -> (bool, usize) {
+        let before = area.locks.load(std::sync::atomic::Ordering::SeqCst);
+        let removed = call(area);
+        (
+            removed,
+            area.locks.load(std::sync::atomic::Ordering::SeqCst) - before,
+        )
+    }
+
+    #[test]
+    fn remove_if_compares_and_removes_under_one_lock() {
+        let held = block(1, 1);
+        let mut other = held.clone();
+        other.seq_num += 1;
+
+        let area = PendingBlocks::new(PendingBlockLimits::default());
+        insert(&area, &held, PendingClass::Unsolicited);
+        let (removed, locks) = locks_taken_by(&area, |a| a.remove_if(&held.block_hash, &held));
+        assert!(removed && area.is_empty());
+        assert_eq!(
+            locks, 1,
+            "a matching body is compared and removed under one lock"
+        );
+
+        let area = PendingBlocks::new(PendingBlockLimits::default());
+        insert(&area, &held, PendingClass::Unsolicited);
+        let (removed, locks) = locks_taken_by(&area, |a| a.remove_if(&held.block_hash, &other));
+        assert!(!removed);
+        assert_eq!(area.get(&held.block_hash), Some(held.clone()));
+        assert_eq!(
+            locks, 1,
+            "a different body is compared under one lock and stays"
+        );
     }
 
     #[test]

@@ -452,33 +452,27 @@ async fn run_intake(
                 attached.intake.admit(&block, Some(from))
             }
             IntakeJob::Local(hash) => match block_store.get(&hash) {
-                Ok(Some(block)) => match check_off_runtime(block).await {
-                    // A local lookup always gets a report, or its need would
-                    // never reach the network.
-                    LocalCheck::Checked(checked) => {
-                        attached.intake.admit(&checked, None).or_else(|error| {
-                            tracing::warn!(
-                                hash = %PrettyPrinter::build_string_bytes(&hash),
-                                %error,
-                                "intake of a stored block failed; asking the network"
-                            );
-                            Ok(IngestInput::LocalMiss { hash })
-                        })
-                    }
-                    // A bad copy this node stored would shadow the honest
-                    // block: delete it, and ask the network.
-                    LocalCheck::Refused(refused) => {
-                        if let Err(error) = block_store.discard_copy(&refused) {
-                            tracing::warn!(
-                                hash = %PrettyPrinter::build_string_bytes(&hash),
-                                %error,
-                                "could not delete a stored copy that failed the integrity check"
-                            );
+                Ok(Some(block)) => {
+                    match check_and_clean_stored_copy(&block_store, &hash, block, |copy| {
+                        CheckedBlock::check(copy, BLOCK_INGEST_METRICS_SOURCE)
+                    })
+                    .await
+                    {
+                        // A local lookup always gets a report, or its need would
+                        // never reach the network.
+                        StoredCopy::Checked(checked) => {
+                            attached.intake.admit(&checked, None).or_else(|error| {
+                                tracing::warn!(
+                                    hash = %PrettyPrinter::build_string_bytes(&hash),
+                                    %error,
+                                    "intake of a stored block failed; asking the network"
+                                );
+                                Ok(IngestInput::LocalMiss { hash })
+                            })
                         }
-                        Ok(IngestInput::LocalMiss { hash })
+                        StoredCopy::Miss => Ok(IngestInput::LocalMiss { hash }),
                     }
-                    LocalCheck::NotRun => Ok(IngestInput::LocalMiss { hash }),
-                },
+                }
                 Ok(None) => Ok(IngestInput::LocalMiss { hash }),
                 Err(error) => {
                     tracing::warn!(
@@ -521,17 +515,65 @@ fn local_check_outcome(
     }
 }
 
-/// The integrity check of a stored copy, off the async runtime. A check that
-/// cannot run leaves the copy in place, and the block is asked for again.
-async fn check_off_runtime(block: BlockMessage) -> LocalCheck {
-    let joined = tokio::task::spawn_blocking(move || {
-        CheckedBlock::check(block, BLOCK_INGEST_METRICS_SOURCE)
-    })
-    .await;
-    if let Err(error) = &joined {
-        tracing::error!(%error, "integrity check of a stored block failed to run");
+type StoredCopyCheck = Result<CheckedBlock, (Box<BlockMessage>, IntegrityFailure)>;
+
+const LOCAL_CHECK_ATTEMPTS: usize = 3;
+
+async fn check_stored_copy<F>(block: BlockMessage, check: F) -> LocalCheck
+where F: Fn(BlockMessage) -> StoredCopyCheck + Clone + Send + 'static {
+    for _ in 0..LOCAL_CHECK_ATTEMPTS {
+        let copy = block.clone();
+        let check = check.clone();
+        let joined = tokio::task::spawn_blocking(move || check(copy)).await;
+        if let Err(error) = &joined {
+            tracing::error!(%error, "integrity check of a stored block failed to run");
+        }
+        match local_check_outcome(joined) {
+            LocalCheck::NotRun => continue,
+            outcome => return outcome,
+        }
     }
-    local_check_outcome(joined)
+    LocalCheck::NotRun
+}
+
+#[derive(Debug)]
+enum StoredCopy {
+    Checked(CheckedBlock),
+    Miss,
+}
+
+async fn check_and_clean_stored_copy<F>(
+    block_store: &KeyValueBlockStore,
+    hash: &BlockHash,
+    block: BlockMessage,
+    check: F,
+) -> StoredCopy
+where
+    F: Fn(BlockMessage) -> StoredCopyCheck + Clone + Send + 'static,
+{
+    let refused = match check_stored_copy(block, check).await {
+        LocalCheck::Checked(checked) => return StoredCopy::Checked(checked),
+        // A bad copy this node stored would shadow the honest block: delete
+        // it, and ask the network.
+        LocalCheck::Refused(refused) => refused,
+        // No verdict: keep the copy, and ask the network.
+        LocalCheck::NotRun => {
+            tracing::warn!(
+                hash = %PrettyPrinter::build_string_bytes(hash),
+                attempts = LOCAL_CHECK_ATTEMPTS,
+                "integrity check of a stored copy never ran; keeping it and asking the network"
+            );
+            return StoredCopy::Miss;
+        }
+    };
+    if let Err(error) = block_store.discard_copy(&refused) {
+        tracing::warn!(
+            hash = %PrettyPrinter::build_string_bytes(hash),
+            %error,
+            "could not delete a stored copy that failed the integrity check"
+        );
+    }
+    StoredCopy::Miss
 }
 
 async fn run_validation<T: TransportLayer + Send + Sync + 'static>(
@@ -906,5 +948,88 @@ mod tests {
             matches!(local_check_outcome(joined), LocalCheck::NotRun),
             "a check that did not run must not refuse the copy"
         );
+    }
+
+    fn in_mem_block_store() -> KeyValueBlockStore {
+        use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+        KeyValueBlockStore::new(
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_stored_copy_whose_check_never_runs_stays_in_the_store() {
+        let store = in_mem_block_store();
+        let block = models::rust::block_implicits::get_random_block_default();
+        store.put_block_message(&block).unwrap();
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let outcome = check_and_clean_stored_copy(
+            &store,
+            &block.block_hash,
+            block.clone(),
+            counting_check(attempts, usize::MAX),
+        )
+        .await;
+        assert!(matches!(outcome, StoredCopy::Miss));
+        assert!(
+            store.get(&block.block_hash).unwrap() == Some(block),
+            "a check that never ran is no verdict: the copy stays"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stored_copy_that_fails_its_check_is_deleted() {
+        let store = in_mem_block_store();
+        let block = models::rust::block_implicits::get_random_block_default();
+        store.put_block_message(&block).unwrap();
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let outcome = check_and_clean_stored_copy(
+            &store,
+            &block.block_hash,
+            block.clone(),
+            counting_check(attempts, 0),
+        )
+        .await;
+        assert!(matches!(outcome, StoredCopy::Miss));
+        assert!(store.get(&block.block_hash).unwrap().is_none());
+    }
+
+    fn counting_check(
+        attempts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        panics_before_result: usize,
+    ) -> impl Fn(BlockMessage) -> StoredCopyCheck + Clone + Send + 'static {
+        move |block| {
+            let attempt = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if attempt < panics_before_result {
+                panic!("the integrity check did not run");
+            }
+            Err((Box::new(block), IntegrityFailure::Malformed))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stored_copy_is_checked_again_after_its_check_fails_to_run() {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let block = models::rust::block_implicits::get_random_block_default();
+        let outcome = check_stored_copy(block, counting_check(attempts.clone(), 1)).await;
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "the same copy is checked again after the first check fails to run"
+        );
+        assert!(matches!(outcome, LocalCheck::Refused(_)));
+    }
+
+    #[tokio::test]
+    async fn a_check_that_never_runs_stops_after_a_fixed_number_of_attempts() {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let block = models::rust::block_implicits::get_random_block_default();
+        let outcome = check_stored_copy(block, counting_check(attempts.clone(), usize::MAX)).await;
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            LOCAL_CHECK_ATTEMPTS
+        );
+        assert!(matches!(outcome, LocalCheck::NotRun));
     }
 }
