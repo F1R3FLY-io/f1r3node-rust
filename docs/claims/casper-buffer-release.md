@@ -29,7 +29,8 @@ references:
 ## Context
 
 [Issue #1188](https://github.com/F1R3FLY-io/f1r3node-rust/issues/1188) reviews this claim after block ingest replaced the Casper buffer and block retriever.
-C3 specifies the new dispatch rule. The other conditions keep their earlier wording for comparison with block ingest.
+The current conditions describe the owner, dependency tracker, validation workers, and fetch scheduler.
+Issue #1196 covers C1, C2, C4, C5, C6, and C8. Their evidence stays pending for maintainer review.
 The artifact list and historical discharge plan record the scope of the earlier claim.
 
 A received block parks in the casper buffer while one of its dependencies (a parent or a justification) is not validated. Issue #24 measured that under sustained load 56% of received blocks park, for 7.1 s median and 39.6 s p90, while replay takes 0.5 to 1.1 s. Parked blocks stretch the finality rounds, and the finalization tail fails the `test_load` 45 s gate.
@@ -52,9 +53,11 @@ TASK-021-18 (stall-loop item A7) extends the claim with C5 and C6. A code readin
 
 ## Claim statements
 
-**C1. Release liveness.** A buffered block that becomes ready is released within one processing step of the event that made it ready. That event is the validation of its last missing dependency. The release does not wait for a timer, a stale prune, or a restart.
+**C1. Release liveness.** The owner puts a retained waiting block in the ready set when it handles the event that clears the block's last wait. A wait can end when a dependency insert completes, a state root is imported, or a retry becomes due.
 
-**C2. No stale hold.** A released block is processed. The pipeline does not drop it as already processed because of a stale link. A block never keeps a stale link to a dependency after that dependency is validated. This rule also holds when the dependency check of the block races with the validation of the dependency.
+If a worker owns the inserted dependency, the owner completes the insert when it handles the worker's outcome. The owner checks deferred block shape before dispatch and adds any further dependencies it finds. C3 governs selection for a free validation slot.
+
+**C2. No stale dependency wait.** When the owner completes a dependency insert, it removes that dependency from the missing set of each waiter. If a worker reports a missing dependency and a fresh store read finds it satisfied, the owner retries the block without adding a wait. The retry counts toward the validation failure limit. At that limit, the owner stops the attempt sequence and quarantines the block.
 
 **C3. Bounded dispatch wait.** The block ingest dispatcher selects the lowest-height ready entry when no entry is overdue. An entry becomes overdue after `K = READY_AGE_LIMIT_DISPATCHES = 32` dispatches of other entries. The dispatcher selects overdue entries in the order they entered the ready set.
 
@@ -65,19 +68,27 @@ TASK-021-18 (stall-loop item A7) extends the claim with C5 and C6. A code readin
 
 After `K` other dispatches, the entry is overdue. At most `A` entries can still precede it. Later entries cannot take priority over it while it is overdue. This claim counts dispatches from readiness to selection. Worker run time and wall-clock delay are outside this bound.
 
-**C4. Verdict invariance.** The validation verdict of a block, and the resulting DAG, do not depend on the order in which ready blocks are processed. C3 changes only the order and the latency of processing, never a validation result.
+**C4. Verdict invariance for released blocks.** For the same initial DAG and validation inputs, changing the dispatch order of independent released blocks preserves each block's verdict, DAG membership, and latest messages. The comparison includes the default order and the order when an overdue block takes priority under C3. Both schedules start with the blocks waiting on dependencies. For each schedule, the owner releases each block after the dependencies it needs are satisfied.
 
-**C5. Eviction order.** When the buffer is over its node limit, the overflow prune removes dependency-free entries oldest first. Age is the time since the buffer first saw the hash. One prune pass tries at most `max_prune_batch` hashes and tries each hash at most once. An entry that a removal frees in the same pass is a candidate too.
+**C5. Eviction order.** When held disk bodies exceed the limit, the owner takes an eligible victim from the sender with the highest held disk count. Equal sender counts sort by validator key. For both disk and pending storage, entries with active workers retain their bodies.
 
-**C6. Re-fetch rate limit.** A block can wait in the buffer. A duplicate copy of that block does not reset its re-fetch cooldown, its retry counter, or its quarantine. A duplicate copy of a block that is already in the DAG clears all tracking of the block, as before.
+The owner prefers unsolicited victims before solicited victims where both classes are eligible. Another held block waiting on an entry makes that entry solicited for eviction. Within an eligible class, the owner selects untrusted entries first, then higher blocks, then entries held more recently at the same height. C8 defines when the pending policy may select each class.
+
+**C6. Fetch and validation retry pacing.** The fetch scheduler paces unanswered network requests for a need. An announcement may move the next request earlier. The base interval from the last request still applies. A duplicate intake report for a held block leaves the held entry and its validation retry state intact.
+
+A validation failure without a verdict schedules a separate retry. The delay increases up to the configured limit. When the failure count reaches its limit, the owner quarantines the block. A later intake report during quarantine defers its need until quarantine expires. A completed DAG insert clears the need and the validation failure count.
 
 **C7. Integrity before hash-keyed state.** No step reads or changes state keyed by a block hash until the fields, the signature, and the hash of the block are checked against its contents. That state is the in-flight set, the buffer, the pending area, the block store, and the request tracking of the retriever. A message that fails the check from the network changes none of that state for the hash that it claims. A refused body that this node stored is purged and deleted, but only when the stored bytes equal the refused body.
 
-**C8. Fair pending eviction.** The pending area keeps three tiers: unsolicited blocks from an unknown sender, unsolicited blocks from a known sender, and solicited blocks. A known sender has a latest message in the DAG of this node. An insert evicts only entries in its own tier or in a lower tier, oldest entry of the lowest tier first. A flood of blocks from new sender keys therefore never evicts a pending block from a known sender.
+**C8. Pending admission and eviction.** Intake classifies checked blocks as solicited, unsolicited from a known sender, or unsolicited from an unknown sender. A known sender passed the signature check and has a bond at the last finalized block. Class limits on entries and bytes preserve capacity for known senders and solicited blocks. Pending storage counts reservations against the capacity available to other entries.
+
+The owner's proactive passes select unsolicited entries using the class limits and the per-sender low-water mark. To make room for a solicited block that exceeded a global limit, the owner selects unsolicited victims first. It can then select solicited entries only above the refused block's height.
+
+At a sender limit, the owner selects that sender's unsolicited entries first. It can then select solicited entries from that sender that wait on the refused block. When a pass finds enough room, the owner reserves the capacity before it frees the selected entries.
 
 ## Block ingest review
 
-The review uses the block ingest branch from `dev` at `3c6a46d28`. The claim stays pending.
+The review uses block ingest on `dev` at `adbfc74db` and the dispatch policy from PR #1191. The claim stays pending.
 
 ### C3 acceptance
 
@@ -107,29 +118,38 @@ The [tracker](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) now ass
 
 #### C1. Release liveness
 
-The event-driven transition holds for a retained waiter after the owner handles its last required event. If a worker still holds the dependency, the owner waits for the worker outcome. A deferred shape check can add more dependencies. The current rule needs to define release as entry to the ready set and use C3 for dispatch.
+**Pending.** The [owner tests](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs) cover the events that clear waits.
 
-Dependency satisfaction uses DAG membership, including recorded equivocations. A rejection that leaves no DAG entry removes the dependent blocks. The rule also needs to account for state-root import and retry expiration.
+- `a_block_is_dispatched_once_its_parents_are_inserted` and `a_block_is_dispatched_once_its_parent_is_inserted_when_the_outcome_arrives_first` cover the two orders of the insert and worker outcome.
+- `a_deferred_block_cites_the_rest_once_its_main_parent_shows_it_fits` covers dependencies found by the deferred shape check.
+- `a_block_awaiting_a_state_root_is_released_when_it_is_imported` and `a_failed_validation_waits_before_its_retry` cover root import and the retry timer.
+- [`a_child_received_while_its_parent_is_validated_is_validated_without_a_request`](../../node/tests/block_queue_livelock.rs) exercises release through the node.
 
-Tests cover parent arrival and both orders of the insert and outcome events. [Owner events](../../casper/src/rust/blocks/ingest/block_ingest.rs), [insert and outcome handling](../../casper/src/rust/blocks/ingest/ingest_state.rs), [readiness tests](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs).
+#### C2. No stale dependency wait
 
-#### C2. No stale hold
+**Pending.** [`a_block_is_ready_once_its_last_dependency_is_inserted`](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) checks that an insert clears the wait. [`a_validation_that_keeps_naming_a_dependency_in_the_dag_is_bounded`](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs) checks that repeated obsolete results reach the failure limit.
 
-The owner removes tracked waits when it completes the dependency insert. On a successful store read, an obsolete worker result that names an already-satisfied dependency causes a bounded retry. A retry can reach the failure limit and quarantine the block. The current rule needs to describe owner inputs and worker snapshots.
+#### C4. Verdict invariance for released blocks
 
-The stale-snapshot test checks that repeated obsolete results reach the failure limit. [Tracker insert](../../casper/src/rust/blocks/ingest/dependency_tracker.rs), [worker outcomes](../../casper/src/rust/blocks/ingest/ingest_state.rs), [stale-snapshot test](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs).
+**Pending.** [`released_blocks_keep_their_verdicts_and_dag_in_both_dispatch_orders`](../../casper/tests/blocks/release_order_invariance_spec.rs) holds two valid blocks on different parents. The test drives the production dependency tracker, records its selected order, and validates the released blocks in that order. It uses the same blocks and checks their verdicts, DAG membership, and latest messages in both runs.
+
+The second run ages one released block by `READY_AGE_LIMIT_DISPATCHES` dispatches of fixture work. At the next selection, the test asserts that the overdue block takes the slot while a lower entry is ready. The C4 coverage here uses two independent valid blocks and one validation order per schedule.
+
+The test depends on the scheduler and threshold defined by [PR #1191](https://github.com/F1R3FLY-io/f1r3node-rust/pull/1191). Both order-invariance tests passed in the build of that PR at `0f67c82f1`.
+
+The earlier [`ready_blocks_reach_the_same_dag_and_verdicts_in_every_processing_order`](../../casper/tests/blocks/release_order_invariance_spec.rs) remains evidence for three independent blocks that start ready.
 
 #### C5. Eviction order
 
-The earlier oldest-first prune and `max_prune_batch` fail as descriptions of block ingest. A disk eviction starts with the sender that has the most held disk entries and an eligible victim. The pending policy uses solicitation, trust, and height. Working entries stay with their workers.
+**Pending.** [`victims_are_untrusted_first_then_highest_first_and_never_in_work`](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) checks victim order and protects working entries. [`a_held_block_another_held_block_waits_on_counts_as_solicited`](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) checks the solicited class. [`a_sender_flooding_the_disk_bound_cannot_evict_other_senders_blocks`](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs) exercises disk eviction under pressure from one sender.
 
-Tests cover victim order, protection for working entries, and the disk bound under a sender flood. [Victim selection and tests](../../casper/src/rust/blocks/ingest/dependency_tracker.rs), [disk-bound test](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs).
+#### C6. Fetch and validation retry pacing
 
-#### C6. Re-fetch rate limit
+**Pending.** The [fetch scheduler tests](../../casper/src/rust/blocks/ingest/fetch_scheduler.rs) and [owner tests](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs) cover the two types of retry.
 
-A duplicate report for a held block leaves tracking intact. An active quarantine defers its need. A completed insert clears the need and validation failures. The duplicate fast path can skip the body, and quarantine has its own expiration. The current rule needs separate terms for network fetch pacing and validation retries.
-
-Tests cover duplicate receipts, the network request interval, and a local copy during quarantine. [Owner receive tests](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs), [fetch pacing and tests](../../casper/src/rust/blocks/ingest/fetch_scheduler.rs).
+- `a_need_is_not_asked_again_before_its_interval`, `announcements_do_not_ask_for_a_need_faster_than_the_base_interval`, and `retries_slow_to_the_slowest_interval_and_never_end` cover network pacing while a need remains.
+- `a_block_received_twice_is_held_and_dispatched_once` covers duplicate receipt. `a_failed_validation_waits_before_its_retry` and `a_block_that_keeps_failing_is_dropped_and_quarantined` cover validation.
+- `a_quarantined_local_copy_moves_its_need_to_the_network_after_the_quarantine` covers a copy during quarantine. [`an_insert_clears_the_failure_count`](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) checks cleanup after insertion.
 
 #### C7. Integrity before hash-keyed state
 
@@ -139,11 +159,13 @@ The deletion rule for a refused body that this node stored needs a separate revi
 
 Tests cover the known-block fast path and concurrent receipts. [Receipt verification and tests](../../casper/src/rust/blocks/ingest/receipt_verifier.rs).
 
-#### C8. Fair pending eviction
+#### C8. Pending admission and eviction
 
-Admission still protects capacity for known senders and requested blocks. A known sender has a verified signature and a bond at the last finalized block. Pending storage refuses inserts above the class limit. The owner evicts separately and selects higher blocks first within each trust class. At equal heights, it prefers the entry held most recently. The earlier last-message definition and oldest-first eviction rule fail.
+**Pending.** The [pending-store tests](../../block-storage/src/rust/pending_blocks.rs) verify capacity by admission class. The [owner tests](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs) verify selection and reservations.
 
-Tests cover capacity protection from unknown senders and eviction order when a requested block needs room. [Intake classification](../../casper/src/rust/blocks/ingest/intake_worker.rs), [pending limits and tests](../../block-storage/src/rust/pending_blocks.rs), [requested-block eviction tests](../../casper/src/rust/blocks/ingest/ingest_state_tests.rs).
+- `each_class_is_refused_at_its_own_share_of_the_area` and `the_byte_marks_reserve_room_for_known_senders_and_requested_blocks` cover admission limits.
+- `proactive_passes_evict_only_unsolicited_blocks`, `a_refused_requested_block_evicts_unsolicited_before_requested_blocks`, and `a_refused_block_takes_no_room_from_a_lower_requested_block` cover the eviction passes.
+- `a_requested_parent_at_its_sender_quota_makes_room_among_its_own_requested_children` covers the sender limit. `the_room_made_for_a_refused_block_is_reserved_before_it_is_freed` covers reservations.
 
 ## Historical seam premises
 
