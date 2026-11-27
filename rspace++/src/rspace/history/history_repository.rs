@@ -8,6 +8,7 @@ use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
 use crate::rspace::errors::{HistoryError, HistoryRepositoryError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::checkpoint_writer::KvCheckpointWriter;
+use crate::rspace::history::cold_gc::{AuditReport, ColdGc, NoopColdGc, SweepReport};
 use crate::rspace::history::cold_store_codec::ColdStoreCodec;
 use crate::rspace::history::history::{History, HistoryInstances};
 use crate::rspace::history::history_reader::HistoryReader;
@@ -98,6 +99,55 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
         &self,
         retained_roots: &[Blake2b256Hash],
     ) -> Result<HistoryPruneResult, HistoryError>;
+
+    /// Cold-store GC retention-set advance (issue #1181).
+    ///
+    /// Called by the casper GC driver immediately BEFORE
+    /// `prune_history_atomic`. The implementation delegates to its
+    /// `ColdGc`, which diffs `new_retention_set` against its persisted
+    /// record of the previous pass's retention set, invokes `on_expire`
+    /// for each retiring root, and persists the new set atomically.
+    ///
+    /// Returns the retiring root hashes for driver-side observability.
+    /// A `NoopColdGc` implementation returns an empty Vec and performs
+    /// no side effects.
+    ///
+    /// Must run BEFORE `prune_history_atomic` so each retiring root's
+    /// trie nodes are still readable when `on_expire` walks them.
+    fn cold_gc_advance_retention(
+        &self,
+        new_retention_set: &[Blake2b256Hash],
+    ) -> Result<Vec<Blake2b256Hash>, HistoryError>;
+
+    /// Audit the cold-GC refcount invariant (issue #1181, Phase 2).
+    /// Reads the implementation's retention-set record, mark-walks
+    /// every root in it, and compares the resulting leaf counts
+    /// against the refcount store.
+    ///
+    /// Returns an [`AuditReport`][crate::rspace::history::cold_gc::AuditReport]
+    /// with divergence counts and a bounded sample of specific
+    /// divergences for operator debugging. A `NoopColdGc`
+    /// implementation returns an empty report and performs no walks.
+    ///
+    /// Intended as a periodic canary; run frequency is up to the
+    /// casper driver. Can be costly on a large retention window
+    /// because it walks every retained root.
+    fn cold_gc_audit(&self) -> Result<AuditReport, HistoryError>;
+
+    /// Delete every entry in the cold leaf store whose key no
+    /// retained root references (issue #1181, Phase 4). Operates in
+    /// place: LMDB does not shrink the file, but freed pages are
+    /// reused by future writes, so the cold store stops growing
+    /// unboundedly. Returns a [`SweepReport`] for driver-side
+    /// metrics; a `NoopColdGc` implementation returns the default
+    /// (zero) report.
+    ///
+    /// Must be called only when the cold-GC retention state is
+    /// consistent (an `advance_retention` pass with a non-empty
+    /// retention set has run at least once). The implementation
+    /// enforces this: an empty retention store causes a skipped
+    /// report rather than a destructive sweep.
+    fn cold_gc_sweep(&self) -> Result<SweepReport, HistoryError>;
 }
 
 /// Counters for one atomic prune pass.
@@ -149,6 +199,28 @@ where
         Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>,
         HistoryRepositoryError,
     > {
+        Self::lmdb_repository_with_cold_gc(
+            history_key_value_store,
+            roots_key_value_store,
+            cold_key_value_store,
+            Arc::new(NoopColdGc),
+        )
+    }
+
+    /// Construct the repository with an explicit `ColdGc` implementation.
+    /// Callers that opt into cold-store GC bookkeeping (issue #1181)
+    /// pass an `LmdbColdGc` wired to dedicated sub-DBs; everyone else
+    /// uses [`lmdb_repository`][Self::lmdb_repository] which delegates
+    /// here with a `NoopColdGc`.
+    pub fn lmdb_repository_with_cold_gc(
+        history_key_value_store: Arc<dyn KeyValueStore>,
+        roots_key_value_store: Arc<dyn KeyValueStore>,
+        cold_key_value_store: Arc<dyn KeyValueStore>,
+        cold_gc: Arc<dyn ColdGc>,
+    ) -> Result<
+        Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>,
+        HistoryRepositoryError,
+    > {
         let cold_key_value_store = ColdStoreCodec::ensure(cold_key_value_store);
 
         // Roots store
@@ -182,6 +254,18 @@ where
             roots_key_value_store.clone(),
         );
 
+        // Adopt the cold-GC implementation's PruneGuard if it has
+        // one, so `do_checkpoint`'s `enter_write` and the sweep's
+        // `enter_sweep` fence against the SAME lock. Without this,
+        // the sweep would hold a lock the checkpoint writer does
+        // not acquire, letting a fresh `leaf_store.put_if_absent`
+        // race the sweep's delete batch (issue #1181, Phase 4 race
+        // fix). `NoopColdGc` returns `None` and the repository
+        // falls back to a private guard.
+        let prune_guard = cold_gc
+            .prune_guard()
+            .unwrap_or_else(|| Arc::new(PruneGuard::new()));
+
         Ok(Box::new(HistoryRepositoryImpl {
             current_history: Arc::new(Mutex::new(Box::new(history))),
             roots_repository: Arc::new(Mutex::new(roots_repository)),
@@ -193,7 +277,8 @@ where
             history_kv_store: history_key_value_store,
             rspace_exporter: Arc::new(exporter),
             rspace_importer: Arc::new(importer),
-            prune_guard: Arc::new(PruneGuard::new()),
+            prune_guard,
+            cold_gc,
             _marker: PhantomData,
         }))
     }

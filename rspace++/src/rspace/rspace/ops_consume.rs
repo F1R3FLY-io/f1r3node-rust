@@ -15,6 +15,7 @@ use crate::rspace::metrics_constants::{
     CONSUME_COMM_LABEL, LOCKED_CONSUME_SPAN, RSPACE_METRICS_SOURCE,
 };
 use crate::rspace::rspace_interface::{ContResult, MaybeConsumeResult, RSpaceResult};
+use crate::rspace::search_charge::{self, SearchWork};
 use crate::rspace::space_matcher::SpaceMatcher;
 use crate::rspace::trace::event::{COMM, Consume, Produce};
 
@@ -47,6 +48,18 @@ where
         let mut channel_to_indexed_data = self.fetch_channel_to_index_data(channels);
         metrics::counter!("rspace.consume.fetch_data_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t1.elapsed().as_nanos() as u64);
+        let pattern_sizes: Vec<usize> = patterns
+            .iter()
+            .map(|pattern| self.matcher.pattern_size(pattern))
+            .collect();
+        let guard_size = self.matcher.guard_size(continuation);
+        let mut work = SearchWork::default();
+        for (channel, pattern_size) in channels.iter().zip(&pattern_sizes) {
+            let data = &channel_to_indexed_data[channel];
+            let size = data.iter().map(|(datum, _)| datum.size).sum();
+            work += SearchWork::of(data.len(), size, *pattern_size, guard_size, 1);
+        }
+        search_charge::charge(work, self.search_charging_required())?;
 
         let t2 = Instant::now();
         let zipped: Vec<(C, P)> = channels
@@ -67,6 +80,8 @@ where
             persist,
             peeks: peeks.clone(),
             source: consume_ref.clone(),
+            pattern_sizes,
+            guard_size,
         };
 
         let commit_ok = match &options {

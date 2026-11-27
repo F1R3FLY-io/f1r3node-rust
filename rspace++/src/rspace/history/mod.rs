@@ -7,6 +7,8 @@ pub mod instances;
 pub mod radix_tree;
 pub mod roots_store;
 pub mod root_repository;
+pub mod cold_gc;
+pub mod cold_gc_lmdb;
 pub mod cold_store;
 pub mod cold_store_codec;
 pub mod history_repository_impl;

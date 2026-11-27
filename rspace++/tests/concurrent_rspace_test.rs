@@ -24,6 +24,10 @@ struct StringCont;
 struct AlwaysMatch;
 
 impl Match<WildcardPattern, String, StringCont> for AlwaysMatch {
+    fn pattern_size(&self, _: &WildcardPattern) -> usize { 1 }
+
+    fn data_size(&self, a: &String) -> usize { a.len() }
+
     fn get(&self, _p: &WildcardPattern, a: &String) -> Option<String> { Some(a.clone()) }
 }
 

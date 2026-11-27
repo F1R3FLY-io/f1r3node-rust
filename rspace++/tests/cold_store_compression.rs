@@ -1,9 +1,12 @@
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash_from_vec;
+use rspace_plus_plus::rspace::history::cold_gc::ColdGc;
+use rspace_plus_plus::rspace::history::cold_gc_lmdb::LmdbColdGc;
 use rspace_plus_plus::rspace::history::cold_store::PersistedData;
 use rspace_plus_plus::rspace::history::cold_store_codec::ColdStoreCodec;
 use rspace_plus_plus::rspace::history::history_repository::{
@@ -71,8 +74,10 @@ fn actions() -> Vec<HotStoreAction<String, String, String, String>> {
         &"continuation-body".repeat(1024),
         true,
         BTreeSet::from([0]),
+        patterns.iter().map(String::len).collect(),
+        None,
     );
-    let datum = Datum::create(&"data".to_string(), "value".to_string(), false);
+    let datum = Datum::create(&"data".to_string(), "value".to_string(), false, "value".len());
     vec![
         HotStoreAction::Insert(InsertAction::InsertData(InsertData {
             channel: "data".into(),
@@ -100,6 +105,106 @@ fn assert_readable(repo: &dyn HistoryRepository<String, String, String, String>)
     assert_eq!(continuations[0].continuation, "continuation-body".repeat(1024));
     assert_eq!(base.get_data(&"data".to_string()).len(), 2);
     assert_eq!(base.get_joins(&channels()[0]), vec![channels(), channels()]);
+}
+
+fn cold_gc() -> Arc<LmdbColdGc> {
+    let env = Arc::new(MemoryEnvironment::new());
+    Arc::new(LmdbColdGc::new(Arc::new(env.create_store()), Arc::new(env.create_store())))
+}
+
+#[test]
+fn cold_gc_factory_preserves_compression_and_installs_decoder_after_reopen() {
+    let _budget_guard = CODEC_BUDGET_TEST_LOCK.blocking_lock();
+    let dir = tempfile::tempdir().unwrap();
+    let gc = cold_gc();
+    let expected = repository(memory_stores(), false).checkpoint(actions());
+    let root = expected.root();
+    {
+        let physical = lmdb_stores(dir.path());
+        let stores = physical.clone().with_cold_compression(true);
+        let repo: Repository = HistoryRepositoryInstances::lmdb_repository_with_cold_gc(
+            stores.history,
+            stores.roots,
+            stores.cold,
+            gc.clone(),
+        )
+        .unwrap();
+        let next = repo.checkpoint(actions());
+        assert_eq!(next.root(), root);
+        assert_readable(next.as_ref());
+        assert!(
+            physical
+                .cold
+                .to_map()
+                .unwrap()
+                .values()
+                .any(|v| v.starts_with(b"F1CLZ4\0\0"))
+        );
+        assert_eq!(next.cold_gc_audit().unwrap().divergence_total, 0);
+    }
+    let stores = lmdb_stores(dir.path());
+    let repo: Repository = HistoryRepositoryInstances::lmdb_repository_with_cold_gc(
+        stores.history,
+        stores.roots,
+        stores.cold.clone(),
+        gc,
+    )
+    .unwrap();
+    assert_eq!(repo.root(), root);
+    assert_readable(repo.as_ref());
+    let keys = stores
+        .cold
+        .to_map()
+        .unwrap()
+        .keys()
+        .map(|key| bincode::deserialize::<Blake2b256Hash>(key).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        repo.exporter().get_data_items(keys.clone()).unwrap(),
+        expected.exporter().get_data_items(keys).unwrap()
+    );
+    let next = repo.checkpoint(actions());
+    assert_eq!(next.root(), root);
+    assert_readable(next.as_ref());
+    assert_eq!(next.cold_gc_audit().unwrap().divergence_total, 0);
+}
+
+#[test]
+fn cold_gc_sweep_guard_blocks_checkpoint_leaf_publication() {
+    let _budget_guard = CODEC_BUDGET_TEST_LOCK.blocking_lock();
+    for enabled in [false, true] {
+        let physical = memory_stores();
+        let stores = physical.clone().with_cold_compression(enabled);
+        let gc = cold_gc();
+        let guard = gc.prune_guard().unwrap();
+        let repo: Repository = HistoryRepositoryInstances::lmdb_repository_with_cold_gc(
+            stores.history,
+            stores.roots,
+            stores.cold,
+            gc,
+        )
+        .unwrap();
+        let sweep = guard.enter_sweep();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let checkpoint = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            done_tx.send(repo.checkpoint(actions())).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let blocked = matches!(
+            done_rx.recv_timeout(Duration::from_millis(250)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        let unpublished = physical.cold.to_map().unwrap().is_empty();
+        drop(sweep);
+        checkpoint.join().unwrap();
+        assert!(blocked, "checkpoint must wait for the sweep guard");
+        assert!(unpublished, "cold writes must wait for the sweep guard");
+        let next = done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_readable(next.as_ref());
+        assert_eq!(next.cold_gc_audit().unwrap().divergence_total, 0);
+    }
 }
 
 #[test]
@@ -294,6 +399,10 @@ struct Wildcard;
 
 impl Match<String, String, String> for Wildcard {
     fn get(&self, _: &String, datum: &String) -> Option<String> { Some(datum.clone()) }
+
+    fn pattern_size(&self, pattern: &String) -> usize { pattern.len() }
+
+    fn data_size(&self, datum: &String) -> usize { datum.len() }
 }
 
 #[tokio::test]

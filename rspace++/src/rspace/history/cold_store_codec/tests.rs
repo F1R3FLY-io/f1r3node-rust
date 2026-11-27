@@ -228,7 +228,7 @@ fn checkpoint_leaves_reuse_generated_hashes() {
         let native = vec![
             HotStoreAction::Insert(InsertAction::InsertData(InsertData {
                 channel: channel.clone(),
-                data: vec![Datum::create(&channel, "datum".into(), false)],
+                data: vec![Datum::create(&channel, "datum".into(), false, "datum".len())],
             })),
             HotStoreAction::Insert(InsertAction::InsertContinuations(InsertContinuations {
                 channels: channels.clone(),
@@ -238,6 +238,8 @@ fn checkpoint_leaves_reuse_generated_hashes() {
                     &"body".repeat(4096),
                     true,
                     Default::default(),
+                    patterns.iter().map(String::len).collect(),
+                    None,
                 )],
             })),
             HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins {

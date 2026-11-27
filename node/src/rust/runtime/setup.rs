@@ -485,8 +485,40 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             .map_err(|e| CasperError::Other(format!("Failed to get rspace stores: {}", e)))?;
 
         let mergeable_store = RuntimeManager::mergeable_store(&mut rnode_store_manager).await?;
+
+        // Cold-store GC bookkeeping (issue #1181). When the operator
+        // enables `casper.enable-cold-gc-bookkeeping`, open the two
+        // dedicated sub-DBs and wire an `LmdbColdGc`; otherwise use
+        // `NoopColdGc` so the hot path is a cheap virtual call and no
+        // extra files are touched.
+        let cold_gc: std::sync::Arc<dyn rspace_plus_plus::rspace::history::cold_gc::ColdGc> =
+            if conf.casper.enable_cold_gc_bookkeeping {
+                let refcount = rnode_store_manager
+                    .store("rspace-cold-refcount".to_string())
+                    .await
+                    .map_err(|e| {
+                        CasperError::Other(format!("Failed to open rspace-cold-refcount: {}", e))
+                    })?;
+                let retention = rnode_store_manager
+                    .store("rspace-retention-set".to_string())
+                    .await
+                    .map_err(|e| {
+                        CasperError::Other(format!("Failed to open rspace-retention-set: {}", e))
+                    })?;
+                tracing::info!(
+                "[Setup] cold-GC bookkeeping ENABLED (issue #1181); refcount + retention stores opened"
+            );
+                std::sync::Arc::new(
+                    rspace_plus_plus::rspace::history::cold_gc_lmdb::LmdbColdGc::new(
+                        refcount, retention,
+                    ),
+                )
+            } else {
+                std::sync::Arc::new(rspace_plus_plus::rspace::history::cold_gc::NoopColdGc)
+            };
+
         tracing::debug!("[Setup] Creating RuntimeManager with history...");
-        let result = RuntimeManager::create_with_history_config(
+        let result = RuntimeManager::create_with_history_config_with_cold_gc(
             rspace_stores.with_cold_compression(conf.storage.cold_store_compression),
             mergeable_store,
             Genesis::default_mergeable_tags_arc(),
@@ -505,6 +537,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 exploratory
             },
             Arc::new(ReplayLock::with_permits(validation_width + 2)),
+            cold_gc,
         );
         tracing::debug!("[Setup] RuntimeManager created successfully");
         result

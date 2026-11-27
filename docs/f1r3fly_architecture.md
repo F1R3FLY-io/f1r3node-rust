@@ -19,6 +19,27 @@ The system scales seamlessly from development environments to large production n
 **Enhanced Consensus & Execution Flow:**
 Validator nodes propose blocks → CBC Casper mathematical consensus → Parallel RSpace execution → Pattern matching coordination → Deterministic state convergence → Mathematical finality → Block commitment
 
+### Consensus Neutrality and Shard Parameters
+
+The node is designed to be consensus-neutral. Node services, the APIs, the transport, and Rholang execution sit on one side of a replication boundary. One replication medium per shard sits on the other side and decides order, conflicts, finality, and membership. CBC Casper is the only medium today. Cordial Miners, Casanova, and the RGB peer clique are planned media. A shard binds its medium when it starts, and the binding never changes.
+
+```mermaid
+flowchart LR
+  N[Neutral node services<br/>deploy pool, APIs, transport] --> B{{Replication boundary}}
+  X[Execution<br/>Rholang and RSpace++] --- B
+  B --> M[Replication medium<br/>CBC Casper today]
+  P[Shard parameter register<br/>bound and governed values] --- N
+  P --- M
+```
+
+Every validator of a shard must apply the same validation-critical settings. Most of them are on-chain values in the proof-of-stake contract, and each node adopts them at startup. Today a change of these values needs a new genesis. Two node-local settings still change block validity. The design documents state the target:
+
+- [Replication boundary design](designs/replication-boundary.md): the boundary contract, the mechanism comparison, and the coalition rules (draft for review).
+- [Shard parameter governance design](designs/shard-parameter-governance.md): the register of validation-critical settings and the options for a parameter change on a running shard (proposed 2026-11-20).
+- [Consensus-neutral note](artifacts/f1r3fly-consensus-neutral-sm.md): the claim that execution commutes unless names collide, so a medium decides only uniqueness and order.
+
+> Last updated: 2026-11-20
+
 ---
 
 ## Project Structure & Component Analysis
