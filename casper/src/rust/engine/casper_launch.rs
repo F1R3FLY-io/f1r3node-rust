@@ -324,6 +324,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             mergeable_channels_gc_depth_buffer: conf.mergeable_channels_gc_depth_buffer,
             enable_block_store_gc: conf.enable_block_store_gc,
             enable_history_pruning: conf.enable_history_pruning,
+            enable_cold_gc_bookkeeping: conf.enable_cold_gc_bookkeeping,
+            enable_cold_gc_sweep: conf.enable_cold_gc_sweep,
             synchrony_recovery_stall_window: conf.synchrony_recovery_stall_window,
             synchrony_recovery_cooldown: conf.synchrony_recovery_cooldown,
             synchrony_recovery_max_bypasses: conf.synchrony_recovery_max_bypasses,

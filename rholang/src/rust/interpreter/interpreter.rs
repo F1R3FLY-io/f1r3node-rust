@@ -30,6 +30,37 @@ pub struct EvaluateResult {
     pub mergeable: HashMap<Par, MergeType>,
 }
 
+impl EvaluateResult {
+    /// Whether this cost is the work the evaluation did, so its searches add
+    /// to it. A failure reported at its parsing cost or its whole limit
+    /// already reports what play did, and a replay that stopped there may not
+    /// have reached every operation play's log records.
+    pub fn pays_for_search(&self) -> bool {
+        self.errors.iter().all(|error| {
+            matches!(error, InterpreterError::UserAbortError) || charged_for_work_done(error)
+        })
+    }
+
+    /// Adds what a replayed evaluation's searches cost, which play charged as
+    /// it went and replay recomputes from the log. An evaluation the searches
+    /// take past `phlo_limit` is out of phlo at the limit, as play reports it.
+    pub fn charge_search(&mut self, search: Cost, phlo_limit: i64) {
+        if !self.pays_for_search() {
+            return;
+        }
+        match self.cost.value.checked_add(search.value) {
+            Some(total) if total <= phlo_limit => {
+                self.cost = Cost::create(total, self.cost.operation.clone());
+            }
+            _ => {
+                self.cost = Cost::create(phlo_limit, self.cost.operation.clone());
+                self.errors = vec![InterpreterError::OutOfPhlogistonsError];
+                self.mergeable.clear();
+            }
+        }
+    }
+}
+
 #[allow(async_fn_in_trait)]
 pub trait Interpreter {
     async fn inj_attempt(
