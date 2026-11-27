@@ -165,3 +165,47 @@ This record moved from `docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md`
   }
 }
 ```
+
+
+## Claim CLAIM-HEARTBEAT-WAKE-REGISTRATION-001
+
+```json
+{
+  "artifact": {
+    "path": "scripts/ci/check-tla-invariants.sh",
+    "commit": "60853a71900c38021f0315a9f14fae71d6e1553b",
+    "id": "scripts-ci-check-tla-invariants-sh"
+  },
+  "claim": "docs/claims/heartbeat-wake-model-registration.md",
+  "adapter": "manual",
+  "status": "discharged",
+  "scope": "heartbeat-wake-model-registration",
+  "evidence": {
+    "kind": "formal-gate-registration-check",
+    "ref": "formal/tlaplus/heartbeat_wake/README.md",
+    "detail": "The 2026-11-27 review accepted the heartbeat registration claim. The fixture checked all four heartbeat configurations in both tiers. The source-bound pull request tier passed 19 positive configurations and 101 expected negative controls."
+  },
+  "waiver": null,
+  "verified_at": "2026-11-27T13:27:15Z",
+  "claim_id": "CLAIM-HEARTBEAT-WAKE-REGISTRATION-001",
+  "schema": "cbc-claim/v1",
+  "verification_id": "be12f28a-338b-4ccb-9c68-c27817b46f54",
+  "inputs": {
+    "artifact": "scripts/ci/check-tla-invariants.sh",
+    "source_sha256": "54b10f2ba7e4667ab5ebb6f59b017802bd532cfeba2d6239f85c99469a1a3292",
+    "claim": {
+      "path": "docs/claims/heartbeat-wake-model-registration.md",
+      "sha256": "507fe1b40a849f49db935b30e53487e3cfd2452a9374bfc006639a242a882e43"
+    }
+  },
+  "evidence_files": {
+    "formal/tlaplus/heartbeat_wake/README.md": "925efffc5914b988249cfeee7de9b41ca3c05a0d61496a37f0a9ca88816a570a"
+  },
+  "manual_review": {
+    "reviewed_on": "2026-11-27",
+    "revision": "60853a71900c38021f0315a9f14fae71d6e1553b",
+    "technical_review": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/768#issuecomment-7219211333",
+    "approval_ref": "Maintainer approval to proceed with step 7 on 2026-11-27"
+  }
+}
+```

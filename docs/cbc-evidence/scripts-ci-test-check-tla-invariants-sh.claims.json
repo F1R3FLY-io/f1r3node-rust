@@ -1,0 +1,1 @@
+{"artifact":"scripts/ci/test-check-tla-invariants.sh","claim_ids":["CLAIM-CASPER-NODE-OBSERVATION-004","CLAIM-CASPER-NODE-OBSERVATION-005","CLAIM-HEARTBEAT-WAKE-CI-001"],"schema":"cbc-claim-set/v1"}

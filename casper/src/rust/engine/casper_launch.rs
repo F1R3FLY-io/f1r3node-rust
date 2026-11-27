@@ -38,6 +38,13 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::vault_parser::VaultParser;
 use crate::rust::validator_identity::ValidatorIdentity;
 
+pub fn deploy_heartbeat_wake_for_node(
+    autopropose: bool,
+    trigger_propose: &Option<Arc<crate::rust::ProposeFunction>>,
+) -> bool {
+    !autopropose || trigger_propose.is_none()
+}
+
 #[async_trait]
 pub trait CasperLaunch {
     async fn launch(&self) -> Result<(), CasperError>;
@@ -270,6 +277,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         disable_state_exporter: bool,
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
         standalone: bool,
+        deploy_heartbeat_wake: bool,
         fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
         state_items_tx: Option<
             tokio::sync::mpsc::Sender<
@@ -318,7 +326,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             quarantine_length: conf.genesis_block_data.quarantine_length,
             min_phlo_price: conf.min_phlo_price.clone(),
             max_phlo_limit: conf.max_phlo_limit,
-            deploy_heartbeat_wake_enabled: false,
+            deploy_heartbeat_wake_enabled: deploy_heartbeat_wake,
             disable_validator_progress_check: standalone,
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,
             mergeable_channels_gc_depth_buffer: conf.mergeable_channels_gc_depth_buffer,
@@ -800,5 +808,18 @@ mod tests {
         let bootstrap = peer("bootstrap", "shared-host");
         conf.bootstrap = Some(bootstrap.clone());
         assert_eq!(horizon_probe_peer(&conf), Some(&bootstrap));
+    }
+
+    #[test]
+    fn a_node_wakes_the_heartbeat_on_deploys_only_without_autopropose() {
+        let propose: std::sync::Arc<crate::rust::ProposeFunction> = std::sync::Arc::new(|_, _| {
+            Box::pin(async { Ok(crate::rust::blocks::proposer::proposer::ProposerResult::Empty) })
+        });
+        assert!(!super::deploy_heartbeat_wake_for_node(
+            true,
+            &Some(propose.clone())
+        ));
+        assert!(super::deploy_heartbeat_wake_for_node(false, &Some(propose)));
+        assert!(super::deploy_heartbeat_wake_for_node(true, &None));
     }
 }

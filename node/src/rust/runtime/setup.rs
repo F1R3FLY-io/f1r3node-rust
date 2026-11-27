@@ -760,6 +760,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         None
     };
 
+    let propose_f_for_api = trigger_propose_f_opt.clone().filter(|_| conf.autopropose);
+
     // Proposer state ref - created if trigger_propose_f_opt exists
     // Wrapped in Arc for sharing across multiple API instances
     let proposer_state_ref_opt: Option<Arc<RwLock<ProposerState>>> = trigger_propose_f_opt
@@ -806,6 +808,10 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             conf.protocol_server.disable_state_exporter,
             heartbeat_signal_ref.clone(),
             conf.standalone,
+            casper::rust::engine::casper_launch::deploy_heartbeat_wake_for_node(
+                conf.autopropose,
+                &trigger_propose_f_opt,
+            ),
             {
                 // Project the merged FileIoProvisioning into the
                 // bundle format `fs_generator` consumes.  Combines
@@ -868,15 +874,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
     // API Servers - gRPC services for REPL, Deploy, Propose, and LSP
     let is_node_read_only = conf.casper.validator_private_key.is_none();
-
-    // Conditional propose function for autopropose.
-    // In validator nodes this must remain enabled even without deployer private key
-    // so normal deploy flow can trigger propose on-chain in non-dev mode.
-    let propose_f_for_api = if conf.autopropose {
-        trigger_propose_f_opt.clone()
-    } else {
-        None
-    };
 
     let block_report_api_for_return = block_report_api.clone();
 
