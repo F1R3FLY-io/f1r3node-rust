@@ -343,7 +343,9 @@ fn a_canonical_map_rebuilt_keeps_its_order() {
             input.reverse();
         }
         let canonical = emap_of(&SortedParMap::create_from_vec(input).sorted_list);
-        let rebuilt = ParMapTypeMapper::emap_to_par_map(canonical.clone()).ps.sorted_list;
+        let rebuilt = ParMapTypeMapper::emap_to_par_map(canonical.clone())
+            .ps
+            .sorted_list;
         assert_eq!(rebuilt, entries(canonical.kvs), "rotation {rotation}");
     }
 }

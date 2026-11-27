@@ -252,7 +252,9 @@ fn a_canonical_set_rebuilt_keeps_its_order() {
             connective_used: false,
             remainder: None,
         };
-        let rebuilt = ParSetTypeMapper::eset_to_par_set(canonical.clone()).ps.sorted_pars;
+        let rebuilt = ParSetTypeMapper::eset_to_par_set(canonical.clone())
+            .ps
+            .sorted_pars;
         assert_eq!(rebuilt, canonical.ps, "rotation {rotation}");
     }
 }
