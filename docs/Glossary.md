@@ -593,6 +593,321 @@ A task claim records who works on a task in `docs/ToDos.md`. It sets the `claime
 
 **Preferred usage.** Use task claim, or claim a task, for this coordination record. *Distinguish from* [Claim](#claim), which is a correctness property under `docs/claims/`. *Avoid*: bare claim where the CbC sense is possible.
 
+### Replication medium
+
+A replication medium is the state machine replication (SMR) mechanism of a
+shard. It orders commits, decides conflicts, finalizes commits, and keeps the
+[membership view](#membership-view). The `ReplicationMedium` trait in the
+[replication boundary design](designs/replication-boundary.md) is its
+interface.
+
+**Preferred usage.** Use "replication medium" or "medium" for the mechanism
+behind the boundary. The four planned media are CBC Casper, the
+[RGB peer clique](peer-clique/GLOSSARY.md), [Casanova](casanova/GLOSSARY.md),
+and [Cordial Miners](cordial-miners/GLOSSARY.md).
+*Distinguish from* the execution machine (Rholang and RSpace++), which every
+medium shares.
+*Avoid*: "consensus engine" for the boundary, because the RGB peer clique and
+anchoring are not only consensus.
+
+### Mechanism identifier
+
+A mechanism identifier names the replication medium of a shard. It is the
+`consensus.protocol` value and the `ProtocolDescriptor.id`: `cbc-casper`,
+`cordial-miners`, `peer-clique`, `casanova`, or `stub` for tests.
+
+**Preferred usage.** Use in configuration and in the
+[shard replication binding](#shard-replication-binding). Configuration and
+code say "protocol" for the same value.
+
+### Consensus runtime
+
+The consensus runtime is the lifecycle layer between the node process host
+and one [consensus adapter](#consensus-adapter). It admits commands through
+bounded queues, applies command deadlines, reports readiness, supervises
+tasks, and runs drain and cleanup at shutdown. The `consensus/runtime` crate
+of PR #651 implements it.
+
+**Preferred usage.** Use for lifecycle and supervision.
+*Distinguish from* the [replication medium](#replication-medium), which
+states order, finality, and membership.
+
+### Consensus adapter
+
+A consensus adapter is the per-protocol component that the
+[consensus runtime](#consensus-runtime) runs. It owns native startup,
+recovery, workers, storage checks, and protocol API routes. It supplies the
+`ReplicationMedium` contract to the node services.
+
+**Preferred usage.** Use "CBC Casper adapter" or "Cordial Miners adapter"
+for a concrete adapter.
+
+### Shard replication binding
+
+The shard replication binding is the mechanism identifier that a shard
+records in the manifest of its data directory when it starts. The binding never changes for the life of the shard.
+A node refuses to start a shard when its configured mechanism differs from
+the binding.
+
+**Preferred usage.** Use for the fixed mechanism of a shard.
+*Avoid*: "consensus switching" for a running shard. Switching does not exist.
+The RGB term "shard consensus selection" means the choice at shard start.
+
+### Commit
+
+A commit is the unit that a replication medium orders and finalizes. It has a
+pre-state, a set of deploys, a post-state, and evidence that only its medium
+can check. A CBC Casper block, a peer-clique per-transaction commit, a
+Casanova block, and a Cordial Miners block are commits.
+
+**Preferred usage.** Use "commit" at the boundary and the medium term inside
+one medium.
+*Distinguish from* a Git commit. Write "Git commit" when both appear.
+
+### Finality event
+
+A finality event states that a commit is irrevocable under the fault
+assumptions of its medium. It carries the post-state hash and the mechanism
+evidence. Examples of evidence are a clique oracle result, a quorum
+certificate, an FTM-observed set, and a final leader block.
+
+**Preferred usage.** Use at the boundary.
+*Distinguish from* an [anchor port](#anchor-port) result. An anchor
+commitment always follows a finality event.
+
+### Mechanism evidence
+
+Mechanism evidence is the opaque data that proves the order or the finality
+of a commit. Only the medium that produced it decodes it. Justifications and
+bonds, quorum certificates, FTM-observed sets, and blocklace positions are
+mechanism evidence.
+
+**Preferred usage.** Use when node code passes medium data without reading
+it.
+
+### Execution port
+
+The execution port is the only path from a replication medium to Rholang and
+RSpace++. It plays deploys, replays commits, and merges parent post-states for
+media with a DAG.
+
+**Preferred usage.** Use for the medium-to-execution interface.
+*Distinguish from* the replication medium, which never executes deploys
+itself.
+
+### Anchor port
+
+The anchor port publishes an anchor commitment for a finality event to Bitcoin
+layer 1 or to a Lightning channel, and reports its status. Every medium can
+use it. The RGB peer clique requires it.
+
+**Preferred usage.** Use for the anchoring interface.
+*Distinguish from* [Anchor](#anchor), which is a test-net node role.
+
+### Membership view
+
+The membership view is the set of members of a shard that a replication
+medium reports at one epoch. It has the members, optional weights, a fault
+bound, and an optional [coalition structure](#coalition-structure).
+
+**Preferred usage.** Use for the `MembershipView` type and its contents.
+*Avoid*: direct references to bonds or active validators in node code. Those
+are CBC Casper terms.
+
+### Coalition structure
+
+A coalition structure states which sets of members of a shard can act
+together. Formally, it is a
+[semitopology](semitopology/GLOSSARY.md#semitopology) on the members of the
+[membership view](#membership-view). Each medium derives it from its own rule.
+
+**Preferred usage.** Use for the `CoalitionStructure` type that section 16
+of the [replication boundary design](designs/replication-boundary.md)
+proposes. The type uses the
+[witness function](semitopology/GLOSSARY.md#witness-function) form.
+*Distinguish from* the fault bound `f`, which is one number and cannot state
+an engaged subset or stake weights.
+
+### Actionable coalition
+
+An actionable coalition is a set of members that can decide together under
+the rule of its medium. It is an open set of the
+[coalition structure](#coalition-structure).
+
+**Preferred usage.** Use at the boundary for the medium-neutral concept.
+Inside one medium, use the medium term: a CBC clique above the threshold, a
+quorum certificate signer set, an FTM-observed set, or a supermajority.
+*Avoid*: "quorum" at the boundary. See the
+[semitopology glossary](semitopology/GLOSSARY.md#actionable-coalition).
+
+### Intertwined coalition structure
+
+A coalition structure is intertwined when any two of its nonempty actionable
+coalitions intersect. Then the whole member set is a
+[topen](semitopology/GLOSSARY.md#topen), and continuous decisions agree.
+
+**Preferred usage.** Use for the agreement condition that a medium must keep
+inside one shard.
+*Distinguish from* Byzantine fault tolerance. Intersection is necessary for
+safety, but a medium must also show that intersections contain a correct
+member. Semitopology does not model Byzantine faults.
+
+### Consensus neutrality
+
+Consensus neutrality is the property that node services, the APIs, the
+transport, and Rholang execution work with any
+[replication medium](#replication-medium). Only the medium decides order,
+conflicts, finality, and membership. The
+[replication boundary design](designs/replication-boundary.md) states the
+boundary, and the
+[consensus-neutral note](artifacts/f1r3fly-consensus-neutral-sm.md) states
+the claim behind it.
+
+**Preferred usage.** Use "consensus-neutral" for a node service or a
+document that names no medium.
+*Distinguish from* runtime switching. A neutral node binds one medium for
+the life of a shard.
+*Avoid*: "consensus-agnostic" for the same property.
+
+### Shard parameter
+
+A shard parameter is a value that all validators of one shard must apply in
+the same way. Examples are the deploy lifespan, the minimum phlo price, and
+the CBC fault-tolerance threshold.
+
+**Preferred usage.** Use for the value. Name the
+[parameter class](#parameter-class) when the change rules matter.
+*Distinguish from* a node-local setting, which each operator can set.
+*Avoid*: "config value" for a value that the chain holds.
+
+### Validation-critical setting
+
+A validation-critical setting is a shard parameter or a configuration
+setting that a validity rule, the finality decision, or a system contract
+reads. Two validators with different values can reach different verdicts
+for one message. The
+[governance design](designs/shard-parameter-governance.md) section 5 holds
+the register.
+
+**Preferred usage.** Use for every row of the register, whatever its
+source.
+*Distinguish from* a proposer setting, which changes what a validator
+proposes but not how it judges a message.
+
+### Parameter class
+
+A parameter class tells where a validation-critical setting comes from and
+how it can change. The four classes are:
+
+- **Bound.** Part of the identity of the shard. It never changes.
+- **Governed.** An on-chain value that every node adopts. A
+  [parameter change](#parameter-change) replaces it.
+- **Aligned.** A node-local value that a validity rule reads. Every operator
+  must set the same value.
+- **Node-local.** Local policy that no validity rule reads.
+
+**Preferred usage.** Use the class names in lowercase in prose: "a governed
+parameter".
+*Avoid*: "genesis-locked" for the governed class, because the goal is a
+change without a new genesis.
+
+### Parameter alignment
+
+Parameter alignment is the property that all validators of a shard apply
+the same value of each validation-critical setting at each point. An
+aligned-class setting depends on operators for this property. A governed
+setting gets it from the chain.
+
+**Preferred usage.** Use for the property, and "alignment gap" for a
+validity rule that reads a node-local value.
+
+### Parameter change
+
+A parameter change is an authorized replacement of the value of a governed
+parameter on a running shard. It has a
+[governance authorization](#governance-authorization) and an
+[activation point](#activation-point).
+
+**Preferred usage.** Use for one change of one or more governed values.
+*Distinguish from* a protocol version change, which changes rules, and from
+a new genesis, which makes a new shard.
+*Avoid*: "upgrade" for a value change.
+
+### Governance authorization
+
+A governance authorization is the evidence that an
+[actionable coalition](#actionable-coalition) of the shard approved one
+parameter change. The evidence can be a set of signatures or one threshold
+signature.
+
+**Preferred usage.** Use for the evidence. Use
+[multi-signature authorization](#multi-signature-authorization) for the
+form with one signature for each signer.
+*Distinguish from* a deploy signature, which identifies one deployer.
+
+### Multi-signature authorization
+
+A multi-signature authorization carries one signature for each approving
+signer. A checker adds the weight of the valid signers and compares the sum
+with the coalition rule. `MultiSigSystemVault.rho` uses the same pattern
+with a fixed quorum of keys.
+
+**Preferred usage.** Use "multi-signature" in prose and "multisig" only in
+code names.
+*Distinguish from* a threshold signature, which is one aggregated signature
+for a quorum of signers.
+
+### Off-chain governance
+
+Off-chain governance is a change process in which validators agree outside
+the shard and apply the change through a
+[coordinated restart](#coordinated-restart). The chain holds no record of
+the authorization.
+
+**Preferred usage.** Use for agreement through meetings, message boards, or
+operator procedure.
+*Distinguish from* [on-chain governance](#on-chain-governance).
+
+### On-chain governance
+
+On-chain governance is a change process in which the shard checks the
+governance authorization and applies the change. The node can check the
+signatures before Rholang runs, or a contract can check them in Rholang.
+
+**Preferred usage.** Name the checker: "on-chain governance with node
+checks" or "on-chain governance with Rholang checks".
+*Distinguish from* [off-chain governance](#off-chain-governance).
+
+### Coordinated restart
+
+In a coordinated restart, all validators stop at an agreed point. They
+change their values or software, and then they start again from that point.
+
+**Preferred usage.** Use for the off-chain procedure.
+*Avoid*: "soft fork". A soft fork is a backward-compatible rule change that
+old nodes still accept. A coordinated restart changes values that old nodes
+reject.
+
+### Activation point
+
+An activation point is the position in the order of a shard at which a
+parameter change starts to apply. A medium states it as a commit position,
+for example a block height or a finalized commit plus a fixed delay.
+
+**Preferred usage.** Use for the position, not for the time of the vote.
+*Distinguish from* the authorizing commit, which can come earlier.
+
+### Visibility rule
+
+Under the visibility rule, a validator is accountable for a parameter change
+only after the authorization is in the causal past of its message. A message is judged with the values that apply in its causal past.
+A validator that has not seen the change is not slashed for the old value.
+
+**Preferred usage.** Use when a slash, neglect, or validity verdict depends
+on a governed value.
+*Distinguish from* finality of the change. A validator can see a change
+before it is final.
+
 ## Architecture Stack Mapping
 
 - **Formal-verification stack** = Rocq mechanization (`formal/rocq/`), TLA+
@@ -607,6 +922,12 @@ A task claim records who works on a task in `docs/ToDos.md`. It sets the `claime
   TLS 1.3.
 - **Node surface** = the `node` crate: gRPC external/internal APIs, HTTP
   REST, CLI, REPL.
+- **Replication boundary** = the line between the neutral node services and
+  the [replication medium](#replication-medium) of a shard. CBC Casper is the
+  only medium today. The
+  [replication boundary design](designs/replication-boundary.md) states the
+  contract, and its section 17 places each
+  [shard parameter](#shard-parameter) on one side.
 
 Two orthogonal tier taxonomies overlay this stack and must never be
 conflated: [implementation tiers](#implementation-tier)

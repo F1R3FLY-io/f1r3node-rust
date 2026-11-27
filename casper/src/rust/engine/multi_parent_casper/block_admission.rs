@@ -272,6 +272,11 @@ pub(crate) fn add_deploy(
         if let Some(signal) = this.heartbeat_signal_ref.get() {
             tracing::debug!("Triggering heartbeat wake for immediate block proposal");
             signal.trigger_wake();
+            metrics::counter!(
+                crate::rust::metrics_constants::HEARTBEAT_DEPLOY_WAKE_METRIC,
+                "source" => crate::rust::metrics_constants::VALIDATOR_METRICS_SOURCE
+            )
+            .increment(1);
         } else {
             tracing::debug!("No heartbeat signal available (heartbeat may be disabled)");
         }

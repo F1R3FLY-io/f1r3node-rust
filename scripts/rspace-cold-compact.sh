@@ -15,10 +15,23 @@
 # PRECONDITIONS:
 #   * The node process MUST be stopped. The script refuses if
 #     `rspace/cold/lock.mdb` is held by any process.
-#   * `mdb_copy` AND `mdb_stat` must be on PATH (typically
-#     `lmdb-utils` package on Linux, `lmdb` Homebrew formula on
-#     macOS). `mdb_stat` is used to verify the compacted output
-#     before the swap.
+#   * `mdb_copy` AND `mdb_stat` must be on PATH, reporting
+#     **LMDB 0.9.x** — the format heed 0.22.1 / lmdb-master-sys 0.2.6
+#     writes. LMDB 1.0 uses a different on-disk format and cannot
+#     open a 0.9 environment (`MDB_INVALID: File is not an LMDB file`
+#     from `mdb_copy -V == 1.0.x`). The script version-gates both
+#     tools and refuses with a clear message on mismatch.
+#
+#     Linux: current `lmdb-utils` packages still ship 0.9.
+#     macOS Homebrew's `lmdb` stable has moved to 1.0.x; build 0.9
+#     tools from the vendored sources that match the node's build,
+#     e.g. from `lmdb-master-sys` in the Cargo registry:
+#
+#       mdb_src="$(find ~/.cargo/registry/src -type d \
+#             -name 'lmdb-master-sys-*' | head -n1)/mdb/libraries/liblmdb"
+#       make -C "$mdb_src" mdb_copy mdb_stat
+#       # resulting binaries at "$mdb_src/mdb_copy" and "$mdb_src/mdb_stat"
+#
 #   * `lsof` must be on PATH, for the node-running check. Fail-open
 #     here would risk corruption if an operator ran this on a live
 #     node from a container image without lsof installed.
@@ -101,11 +114,40 @@ LOCK_FILE="$COLD_DIR/lock.mdb"
 
 for tool in mdb_copy mdb_stat lsof; do
     if ! command -v "$tool" >/dev/null 2>&1; then
-        echo "error: $tool not found on PATH. Install lmdb-utils (Linux) or lmdb + \
-lsof (brew)." >&2
+        echo "error: $tool not found on PATH. See script header for install guidance." >&2
         exit 1
     fi
 done
+
+# LMDB format compatibility. `rspace/cold` is an LMDB 0.9 env; 1.0
+# tooling (current Homebrew `lmdb`) refuses it with
+# `MDB_INVALID: File is not an LMDB file`. We parse the leading
+# version from `-V`, which both 0.9 and 1.0 print as
+# `LMDB <major>.<minor>.<patch>: (<date>)`. Reject anything but 0.9.
+require_lmdb_09() {
+    local tool="$1"
+    local ver_output ver_prefix
+    if ! ver_output=$("$tool" -V 2>&1); then
+        echo "error: '$tool -V' failed (exit $?); cannot determine LMDB version" >&2
+        exit 1
+    fi
+    ver_prefix=$(printf '%s\n' "$ver_output" |
+        sed -n 's/^LMDB \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n1)
+    if [[ -z "$ver_prefix" ]]; then
+        echo "error: could not parse version from '$tool -V' output:" >&2
+        echo "  $ver_output" >&2
+        exit 1
+    fi
+    if [[ "$ver_prefix" != "0.9" ]]; then
+        echo "error: $tool reports LMDB $ver_prefix, but rspace/cold is an LMDB 0.9 env." >&2
+        echo "       LMDB 1.0 tooling refuses 0.9 envs (MDB_INVALID). See the script" >&2
+        echo "       header for how to build 0.9-compatible tools from the vendored" >&2
+        echo "       lmdb-master-sys sources." >&2
+        exit 1
+    fi
+}
+require_lmdb_09 mdb_copy
+require_lmdb_09 mdb_stat
 
 [[ -d "$COLD_DIR" ]] || { echo "error: $COLD_DIR does not exist" >&2; exit 1; }
 [[ -f "$DATA_FILE" ]] || { echo "error: $DATA_FILE not found" >&2; exit 1; }
