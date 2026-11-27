@@ -79,6 +79,17 @@ After `K` other dispatches, the entry is overdue. At most `A` entries can still 
 
 The review uses the block ingest branch from `dev` at `3c6a46d28`. The claim stays pending.
 
+### C3 acceptance
+
+The maintainer accepted the restated C3 on 2026-11-27 at `c7338aa51d3e38e94a46726894a25d751c2e079b`. The acceptance applies to these source bytes:
+
+```text
+0bbfc2183a1beeaecbf73e2051d0f4aeabca203bcb9b0be8f555e9f1daab60c1  casper/src/rust/blocks/ingest/dependency_tracker.rs
+1a258bd7d0a3efb8bd698c15f51e996e162b9f2aa73550fe95223390b27948fc  casper/src/rust/blocks/ingest/ingest_state_tests.rs
+```
+
+A later change to either file needs a new review of C3. The other conditions stay pending: C1, C2, C5, C6, and C8 under issue #1196, and C7 under issue #1194. The claim status stays `pending` until every condition has a recorded result.
+
 ### C3 evidence
 
 The first regression checks that lower heights take dispatches 1 through 32 and the ready height-5 block takes dispatch 33. The second checks two overdue blocks first held ready. They take dispatches 33 and 34 in ready order even though the second has a lower height. [Issue #1188 test results](https://github.com/F1R3FLY-io/f1r3node-rust/issues/1188#issuecomment-7222005932).
