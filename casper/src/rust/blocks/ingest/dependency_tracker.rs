@@ -87,6 +87,7 @@ struct Held {
     retry_at_ms: Option<u64>,
     seq: u64,
     ready_since: u64,
+    ready_seq: u64,
     vouch: Vouch,
 }
 
@@ -106,7 +107,7 @@ impl Held {
     }
 
     fn age_key(&self) -> (u64, u64, BlockHash) {
-        (self.ready_since, self.seq, self.meta.hash.clone())
+        (self.ready_since, self.ready_seq, self.meta.hash.clone())
     }
 }
 
@@ -151,6 +152,7 @@ pub struct DependencyTracker {
     ready: BTreeSet<(i64, u64, BlockHash)>,
     ready_by_age: BTreeSet<(u64, u64, BlockHash)>,
     dispatches: u64,
+    next_ready_seq: u64,
     cooling: BTreeSet<(u64, BlockHash)>,
     failures: HashMap<BlockHash, u32>,
     quarantined_until: HashMap<BlockHash, u64>,
@@ -170,6 +172,7 @@ impl DependencyTracker {
             ready: BTreeSet::new(),
             ready_by_age: BTreeSet::new(),
             dispatches: 0,
+            next_ready_seq: 0,
             cooling: BTreeSet::new(),
             failures: HashMap::new(),
             quarantined_until: HashMap::new(),
@@ -217,9 +220,11 @@ impl DependencyTracker {
             retry_at_ms: None,
             seq,
             ready_since: self.dispatches,
+            ready_seq: self.next_ready_seq,
             vouch: Vouch::Unvouched,
         };
         if held.stage == Stage::Ready {
+            self.next_ready_seq += 1;
             self.ready.insert(held.ready_key());
             self.ready_by_age.insert(held.age_key());
         }
@@ -650,6 +655,8 @@ impl DependencyTracker {
         if ready {
             held.stage = Stage::Ready;
             held.ready_since = self.dispatches;
+            held.ready_seq = self.next_ready_seq;
+            self.next_ready_seq += 1;
             self.ready.insert(held.ready_key());
             self.ready_by_age.insert(held.age_key());
         }

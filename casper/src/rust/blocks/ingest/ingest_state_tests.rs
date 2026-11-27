@@ -2077,3 +2077,46 @@ fn overdue_blocks_are_dispatched_in_the_order_they_became_ready() {
         "the block that became ready first goes first, though the other one is lower"
     );
 }
+
+#[test]
+fn a_block_held_earlier_but_ready_later_does_not_pass_an_older_ready_block() {
+    let limit = READY_AGE_LIMIT_DISPATCHES as usize;
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
+    s.handle(received(meta(101, 9, &[7])), 0, &dag);
+    s.handle(received(meta(100, 9, &[0])), 0, &dag);
+    dag.blocks.insert(hash(7));
+    s.handle(IngestInput::Inserted { hash: hash(7) }, 0, &dag);
+
+    let mut order = Vec::new();
+    for round in 0..(limit as u32 + 8) {
+        let mut low = meta(1_000 + round, 1, &[0]);
+        low.sender = Bytes::from_static(b"v1");
+        s.handle(received(low), u64::from(round), &dag);
+
+        let (next, _) = s.next_dispatch().expect("a ready block is waiting");
+        if next == hash(100) || next == hash(101) {
+            order.push((next, round as usize + 1));
+            if order.len() == 2 {
+                break;
+            }
+            continue;
+        }
+        s.handle(
+            IngestInput::Outcome {
+                hash: next,
+                outcome: WorkOutcome::Rejected {
+                    invalid_sender: false,
+                },
+            },
+            u64::from(round),
+            &dag,
+        );
+    }
+
+    assert_eq!(
+        order,
+        vec![(hash(100), limit + 1), (hash(101), limit + 2)],
+        "the block that became ready first goes first, though the other one was held first"
+    );
+}
