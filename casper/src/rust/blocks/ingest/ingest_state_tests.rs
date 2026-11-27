@@ -7,7 +7,7 @@ use proptest::prelude::*;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
-use super::dependency_tracker::{BodyAt, HeldMeta, Work};
+use super::dependency_tracker::{BodyAt, HeldMeta, Work, READY_AGE_LIMIT_DISPATCHES};
 use super::fetch_scheduler::FetchAction;
 use super::ingest_state::*;
 use super::ingest_view::IngestView;
@@ -1999,14 +1999,14 @@ proptest! {
 
 #[test]
 fn a_ready_block_is_dispatched_while_one_sender_keeps_sending_lower_heights() {
-    const DISPATCH_BOUND: usize = 16;
-    const ROUNDS: u32 = 64;
+    let bound = READY_AGE_LIMIT_DISPATCHES as usize + 1;
+    let rounds = bound as u32 + 32;
     let (mut s, _) = state();
     let dag = dag_with(&[0]);
     s.handle(received(meta(100, 5, &[0])), 0, &dag);
 
     let mut dispatched_at = None;
-    for round in 0..ROUNDS {
+    for round in 0..rounds {
         let mut low = meta(1_000 + round, 1, &[0]);
         low.sender = Bytes::from_static(b"v1");
         low.pushed_by = Some(peer("sender"));
@@ -2029,9 +2029,10 @@ fn a_ready_block_is_dispatched_while_one_sender_keeps_sending_lower_heights() {
         );
     }
 
-    assert!(
-        dispatched_at.is_some_and(|n| n <= DISPATCH_BOUND),
-        "the height-5 block must be dispatched within {DISPATCH_BOUND} dispatches; \
-         after {ROUNDS} lower-height blocks from one sender it was dispatched at {dispatched_at:?}"
+    assert_eq!(
+        dispatched_at,
+        Some(bound),
+        "lower heights go first for {READY_AGE_LIMIT_DISPATCHES} dispatches; \
+         then the waiting height-5 block takes the next slot"
     );
 }
