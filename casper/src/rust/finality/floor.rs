@@ -1143,22 +1143,71 @@ async fn derive_floor_metered<W: WorkMeter>(
         let score = per_sig.values().copied().max().unwrap_or(0);
         candidate_loss_score.insert(candidate.hash.clone(), score);
     }
-    // Issue #294 (floor-side remedy): rank candidates that are DAG ancestors
-    // of every parent BEFORE candidates that are siblings of any parent.
-    // Under unequal validator weights (sentinel: stakes 1 and 3), a sibling
-    // of a parent can unilaterally meet the finality threshold and the
-    // sort-by-block_number-desc rule pins the floor to that sibling —
+    // Issue #294 (floor-side remedy): under unequal validator weights, a
+    // sibling of a parent can unilaterally meet the finality threshold and
+    // the sort-by-block_number-desc rule pins the floor to that sibling —
     // which drags the merge base to the sibling's chain and the
-    // fairness-promoted main parent is immediately overridden. Preferring
-    // a common ancestor restores the classical multi-parent-merge shape
-    // where both siblings' chains reach scope and merge adjudication
-    // (which already includes loss priority, PR #299) decides. P4 holds
-    // because the "ancestor-of-all" predicate is purely structural over
-    // authenticated DAG metadata; no deploy content is read.
+    // fairness-promoted main parent is immediately overridden. When at
+    // least one parent carries a deploy with a recorded retryable prior
+    // rejection, candidates that are DAG ancestors of EVERY parent sort
+    // ahead of sibling candidates. This restores the classical
+    // multi-parent-merge shape in exactly the key-contention scenario the
+    // sentinel reproduces: both siblings reach scope, and merge
+    // adjudication (including PR #299 loss priority) decides.
+    //
+    // The gate is load-bearing: when no parent carries a retryable prior
+    // rejection, there is no fairness signal to protect and the classical
+    // "highest finalized tip" sort is preserved — a sibling frontier can
+    // legitimately dominate (see `derive_floor_case_b_selects_dominating_finalized_tip`).
+    // P4 holds because the "ancestor-of-all" predicate is purely
+    // structural over authenticated DAG metadata; no deploy content is
+    // read beyond the authenticated rejection records that gate the rule.
     //
     // Determinism: `is_dag_ancestor` reads the DAG structure both proposer
     // and validator share for the same (parents, justifications) snapshot.
-    let is_ancestor_of_all_parents: HashMap<BlockHash, bool> = {
+    let any_parent_carries_retryable_loss = {
+        let mut flagged = false;
+        'parents: for parent in parents {
+            meter.step(WorkKind::Traversal)?;
+            meter.allocate(4, 256)?;
+            let Some(parent_block) = block_store.get(parent)? else {
+                continue;
+            };
+            let sigs: HashSet<Bytes> = parent_block
+                .body
+                .deploys
+                .iter()
+                .map(|pd| pd.deploy.sig.clone())
+                .collect();
+            if sigs.is_empty() {
+                continue;
+            }
+            let mut cursor = parent_block.header.parents_hash_list.first().cloned();
+            let mut walked = 0usize;
+            while let Some(hash) = cursor {
+                if walked >= FLOOR_LOSS_TIEBREAK_WALK_DEPTH {
+                    break;
+                }
+                walked += 1;
+                meter.step(WorkKind::Traversal)?;
+                meter.allocate(4, 256)?;
+                let block = match block_store.get(&hash)? {
+                    Some(b) => b,
+                    None => break,
+                };
+                for r in &block.body.rejected_deploys {
+                    if r.reason.is_retryable() && !r.duplicate && sigs.contains(&r.sig) {
+                        flagged = true;
+                        break 'parents;
+                    }
+                }
+                cursor = block.header.parents_hash_list.first().cloned();
+            }
+        }
+        flagged
+    };
+    let is_ancestor_of_all_parents: HashMap<BlockHash, bool> = if any_parent_carries_retryable_loss
+    {
         let mut map: HashMap<BlockHash, bool> = HashMap::new();
         for candidate in &candidates {
             if map.contains_key(&candidate.hash) {
@@ -1179,6 +1228,8 @@ async fn derive_floor_metered<W: WorkMeter>(
             map.insert(candidate.hash.clone(), ancestor_of_all);
         }
         map
+    } else {
+        HashMap::new()
     };
     sort_by_metered(meter, &mut ordered, |a, b| {
         let a_ancestor = is_ancestor_of_all_parents
@@ -1189,7 +1240,8 @@ async fn derive_floor_metered<W: WorkMeter>(
             .get(&b.hash)
             .copied()
             .unwrap_or(false);
-        // ancestor-of-all first (true > false → sort b first).
+        // ancestor-of-all first (true > false → sort b first), but only
+        // when the gate above fired.
         b_ancestor
             .cmp(&a_ancestor)
             .then_with(|| b.block_number.cmp(&a.block_number))
@@ -1200,11 +1252,13 @@ async fn derive_floor_metered<W: WorkMeter>(
             })
             .then_with(|| b.hash.cmp(&a.hash))
     })?;
-    tracing::info!(
-        target: "f1r3fly.casper.floor.loss_tiebreak",
-        candidates = ?ordered.iter().map(|c| format!("{}#{}:ancestor={}:score={}", hex::encode(&c.hash[..8.min(c.hash.len())]), c.block_number, is_ancestor_of_all_parents.get(&c.hash).copied().unwrap_or(false), candidate_loss_score.get(&c.hash).copied().unwrap_or(0))).collect::<Vec<_>>(),
-        "issue-294 floor ordered candidates (ancestor-of-all first)"
-    );
+    if any_parent_carries_retryable_loss {
+        tracing::debug!(
+            target: "f1r3fly.casper.floor.loss_tiebreak",
+            candidates = ?ordered.iter().map(|c| format!("{}#{}:ancestor={}:score={}", hex::encode(&c.hash[..8.min(c.hash.len())]), c.block_number, is_ancestor_of_all_parents.get(&c.hash).copied().unwrap_or(false), candidate_loss_score.get(&c.hash).copied().unwrap_or(0))).collect::<Vec<_>>(),
+            "issue-294 floor ordered candidates (ancestor-of-all first; gate fired)"
+        );
+    }
 
     let chosen = in_blocking(|| -> Result<Option<Floor>, CasperError> {
         let mut chosen: Option<Floor> = None;
