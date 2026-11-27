@@ -56,6 +56,17 @@ pub const STACK_PK: &str = "c94e647de6876c954ebb7b64c40a220227770f9be003635edfe3
 // one-off generator and the derivation table at the top of TokenMetadata.rhox.
 pub const TOKEN_METADATA_PK: &str =
     "8f9a1c3b2d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a";
+// Private key, timestamp, pubkey, signature, and URI for IdentityRegistry were
+// generated via RegistrySigGen. See the derivation table at the top of
+// IdentityRegistry.rhox.
+pub const IDENTITY_REGISTRY_PK: &str =
+    "b461b0c47b597a5eb9c9e38856533e802954a8e6ed1b6dd3f34e891b4912c8b1";
+// Public key of the docker dev bootstrap key (docker/.env.example). Its private
+// key is published, so this is for defaults and tests only.
+pub const DEV_IDENTITY_REGISTRY_ADMIN_PUBLIC_KEYS: [&str; 1] = [
+    "04ffc016579a68050d655d55df4e09f04605164543e257c8e6df10361e6068a5336588e9b355ea859c5ab4285a5ef0efdf62bc28b80320ce99e26bb1607b3ad93d",
+];
+pub const DEV_IDENTITY_REGISTRY_ADMIN_QUORUM: u32 = 1;
 
 // File I/O FIP fs_generator deploy signing key.  Treat any change as
 // a Genesis hard-fork — alters FS_GENERATOR_PUB_KEY, the FsGenesis
@@ -76,6 +87,7 @@ pub const MULTI_SIG_SYSTEM_VAULT_TIMESTAMP: i64 = 1571408470880;
 pub const POS_GENERATOR_TIMESTAMP: i64 = 1559156420651;
 pub const STACK_TIMESTAMP: i64 = 1751539590099;
 pub const TOKEN_METADATA_TIMESTAMP: i64 = 1737500000000;
+pub const IDENTITY_REGISTRY_TIMESTAMP: i64 = 1794328772185;
 pub const FS_GENERATOR_TIMESTAMP: i64 = 1785600000000;
 
 lazy_static! {
@@ -92,6 +104,7 @@ lazy_static! {
     pub static ref VAULTS_GENERATOR_PUB_KEY: PublicKey = to_public(VAULTS_GENERATOR_PK);
     pub static ref STACK_PUB_KEY: PublicKey = to_public(STACK_PK);
     pub static ref TOKEN_METADATA_PUB_KEY: PublicKey = to_public(TOKEN_METADATA_PK);
+    pub static ref IDENTITY_REGISTRY_PUB_KEY: PublicKey = to_public(IDENTITY_REGISTRY_PK);
     pub static ref FS_GENERATOR_PUB_KEY: PublicKey = to_public(FS_GENERATOR_PK);
 }
 
@@ -110,6 +123,7 @@ pub fn system_public_keys() -> Vec<&'static PublicKey> {
         &VAULTS_GENERATOR_PUB_KEY,
         &STACK_PUB_KEY,
         &TOKEN_METADATA_PUB_KEY,
+        &IDENTITY_REGISTRY_PUB_KEY,
         &FS_GENERATOR_PUB_KEY,
     ]
 }
@@ -291,6 +305,31 @@ pub fn token_metadata(
         ),
         TOKEN_METADATA_PK,
         TOKEN_METADATA_TIMESTAMP,
+        shard_id,
+    )
+}
+
+/// Deploys the identity registry at `rho:system:identityRegistry`. `quorum`
+/// of the hex `admin_public_keys` must sign `admin_relink`.
+pub fn identity_registry(
+    admin_public_keys: &[String],
+    quorum: u32,
+    shard_id: &str,
+) -> Signed<DeployData> {
+    let keys = ProofOfStake::public_keys(admin_public_keys);
+    let quorum = quorum.to_string();
+    to_deploy(
+        CompiledRholangTemplate::new(
+            "IdentityRegistry.rhox",
+            embedded_rho::IDENTITY_REGISTRY,
+            HashMap::new(),
+            &[
+                ("identityRegistryAdminPublicKeys", &keys),
+                ("identityRegistryAdminQuorum", &quorum),
+            ],
+        ),
+        IDENTITY_REGISTRY_PK,
+        IDENTITY_REGISTRY_TIMESTAMP,
         shard_id,
     )
 }

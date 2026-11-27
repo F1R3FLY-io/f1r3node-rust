@@ -158,6 +158,12 @@ pub mod builder {
             .validate_native_token()
             .map_err(|e| eyre::eyre!("native token config invalid: {}", e))?;
 
+        node_conf
+            .casper
+            .genesis_block_data
+            .validate_identity_registry_admin()
+            .map_err(|e| eyre::eyre!("identity registry config invalid: {}", e))?;
+
         // The proposer computes its recovery cap as
         // `max(pending_deploy_max_lag, deploy_recovery_max_lag)`. When
         // deploy_recovery is set below pending_deploy, the recovery knob

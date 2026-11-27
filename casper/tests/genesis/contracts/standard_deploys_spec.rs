@@ -41,6 +41,15 @@ fn versioned_registry_embedded_source_compiles() {
 #[test]
 fn system_vault_embedded_source_compiles() { let _ = standard_deploys::system_vault("root"); }
 
+#[test]
+fn identity_registry_embedded_template_compiles() {
+    let _ = standard_deploys::identity_registry(
+        &standard_deploys::DEV_IDENTITY_REGISTRY_ADMIN_PUBLIC_KEYS.map(String::from),
+        standard_deploys::DEV_IDENTITY_REGISTRY_ADMIN_QUORUM,
+        "root",
+    );
+}
+
 /// Parse/normalize check on the pos_generator embedded template.
 /// Threads through a default-parameters ProofOfStake so the template
 /// substitutions (validators, bonds, epoch_length, …) all land on

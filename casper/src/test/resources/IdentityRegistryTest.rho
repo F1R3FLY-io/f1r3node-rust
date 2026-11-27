@@ -1,0 +1,570 @@
+new
+  rl(`rho:registry:lookup`), RhoSpecCh, irCh,
+  sign(`rho:test:crypto:secp256k1Sign`),
+  setBlockData(`rho:test:block:data:set`),
+  blake2b256(`rho:crypto:blake2b256Hash`),
+  nonceOf, nameOf, signPayload, setHeight, unwrap,
+  register, rotate, adminSig, adminRelink,
+  test_register,
+  test_bad_signature,
+  test_resolve,
+  test_rotate,
+  test_rotation_adds_key,
+  test_double_registration,
+  test_append_only,
+  test_admin_relink,
+  test_admin_relink_below_quorum
+in {
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for (@(_, RhoSpec) <- RhoSpecCh) {
+    @RhoSpec!("testSuite",
+      [
+        ("register mints a name that resolves to the key and the minting height", *test_register),
+        ("a bad signature registers nothing", *test_bad_signature),
+        ("resolve returns the linked key, an unregistered name resolves to nothing", *test_resolve),
+        ("rotate accepts the new key, rejects the old key, keeps the name and the old key", *test_rotate),
+        ("rotation adds a key, not an identity", *test_rotation_adds_key),
+        ("double registration mints one name", *test_double_registration),
+        ("the identity record is append-only", *test_append_only),
+        ("an admin quorum can relink and records the evidence", *test_admin_relink),
+        ("an admin relink below quorum is rejected", *test_admin_relink_below_quorum)
+      ])
+  } |
+
+  contract nonceOf(@label, ret) = {
+    blake2b256!(label.toUtf8Bytes(), *ret)
+  } |
+
+  contract nameOf(@pk, @nonce, ret) = {
+    blake2b256!("01".hexToBytes() ++ pk ++ nonce, *ret)
+  } |
+
+  contract signPayload(@payload, @sk, ret) = {
+    new hashCh in {
+      blake2b256!(payload, *hashCh) |
+      for (@hash <- hashCh) { sign!(hash, sk, *ret) }
+    }
+  } |
+
+  contract setHeight(@height, ret) = {
+    setBlockData!("blockNumber", height, *ret)
+  } |
+
+  contract unwrap(@reply, rhoSpec, @clue, ackCh, ret) = {
+    match reply {
+      ("ok", value) => ret!(value)
+      _             => rhoSpec!("assert", ("ok", "==", reply), clue, *ackCh)
+    }
+  } |
+
+  match [
+    ("1111111111111111111111111111111111111111111111111111111111111111".hexToBytes(),
+     "044f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa385b6b1b8ead809ca67454d9683fcf2ba03456d6fe2c4abe2b07f0fbdbb2f1c1".hexToBytes()),
+    ("1212121212121212121212121212121212121212121212121212121212121212".hexToBytes(),
+     "046360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f7eb1c2784a65901538479361e94c0a2597973adef0836a6a7eddf50b7997c88a3".hexToBytes()),
+    ("1313131313131313131313131313131313131313131313131313131313131313".hexToBytes(),
+     "041d16453b3ab3132acb0a5bc16cc49690d819a585267a15cd5a064e2a0ad40599b6d846ca00fd42d38558d26a5ec4b91ae19bd68c5ab01497e0b57f52a2e0d5ef".hexToBytes()),
+    ("1414141414141414141414141414141414141414141414141414141414141414".hexToBytes(),
+     "04ff8adab52623bcb2717fc71d7edc6f55e98396e6c234dff01f307a12b2af1c9977e5f5c1711e1939e4e144bc1b9610e3c54499c8a90b1d82195c9abe1e5c5c3f".hexToBytes()),
+    ("1515151515151515151515151515151515151515151515151515151515151515".hexToBytes(),
+     "04d793631af7aa0e709439dd47fc001acd0b0727670b6670ea528ac83cb0127f4a7f3d9cdfe06af2e79346b0eca7c168102b352936c29b7a742478ca579ee0e03b".hexToBytes()),
+    ("1616161616161616161616161616161616161616161616161616161616161616".hexToBytes(),
+     "04a8397a935f0dfceba6ba9618f6451ef4d80637abf4e6af2669fbc9de6a8fd2ac2e37326108f029064f27681c6aa3a4f44196016d08a67bb0d975f160f85dd512".hexToBytes()),
+    ("1717171717171717171717171717171717171717171717171717171717171717".hexToBytes(),
+     "0457eb3638f51f4dc5c8d5a7324b47df99e816cfcc5b5eb1245bc8c98029f9e6749b68c7ad0a3fcbce20749f1c43a726943fc4be65e749c2eb59cde2a873b7901a".hexToBytes()),
+    ("1818181818181818181818181818181818181818181818181818181818181818".hexToBytes(),
+     "0429ce758bb2d21def214cea069addbd16896ec77924bf0ec9219e00dcf077605e99b8d629fcdf242b086a6a486d26d688e8b9a75ff119213c243b7203690b1b8f".hexToBytes()),
+    ("1919191919191919191919191919191919191919191919191919191919191919".hexToBytes(),
+     "04e4d24944ed947bc34ed14ea4b2e063aa27ebd8da658577a263f55a631c7f656a0fa8bdb3fb2612c8ef800b47e1f97f98e32322954d2055f5acdb6eaafad95370".hexToBytes()),
+    ("1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a".hexToBytes(),
+     "04dcec806deb8da0774ec5a5d0f5097ffde1f70a9f40d44363bd3dc2dc2590ca5d3ede6bb059f4523ccb02777d385e118c20ae072550b9c3b3cfd91d73de144008".hexToBytes()),
+    ("1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b".hexToBytes(),
+     "0474306da530af516569ccc486261db3dd67a4ee87f11c96c8ac14725dc07f293e2ad2e3ac91a3c833e7b297ad1303e833685849baf810e9695026e8d743d3f299".hexToBytes()),
+    ("1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c".hexToBytes(),
+     "04c1252a71c9e1e3253aca075f230742835deeb50e39c7bf2ca5ca28babc7aa29bc4aaa4c7fa153efdcdba9c815d0dcdbe4e9c6513624ca6a48bace2ede2b533a4".hexToBytes()),
+    ("1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d".hexToBytes(),
+     "0463c24955ff1e53b5f0de3f61507581494b8a843370f228efdee6a887f2c4cf42a13f2b9c5259f6cc46c115e4a7c9d3504684cdc2183a6dc753164bee31bd144e".hexToBytes()),
+    ("1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e".hexToBytes(),
+     "0427a2897a1d182ecb48ddc12278d9816be55ca5a39ed852f271cfaae1fff40406cd32c0d5cd3e371f8f7694cd4b6c4a4b03a5ec37f8a5d8c74f9c70f71b7ef6d0".hexToBytes()),
+    ("5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657".hexToBytes(),
+     "04ffc016579a68050d655d55df4e09f04605164543e257c8e6df10361e6068a5336588e9b355ea859c5ab4285a5ef0efdf62bc28b80320ce99e26bb1607b3ad93d".hexToBytes()),
+    ("357cdc4201a5650830e0bc5a03299a30038d9934ba4c7ab73ec164ad82471ff9".hexToBytes(),
+     "04fa70d7be5eb750e0915c0f6d19e7085d18bb1c22d030feb2a877ca2cd226d04438aa819359c56c720142fbc66e9da03a5ab960a3d8b75363a226b7c800f60420".hexToBytes()),
+    ("2c02138097d019d263c1d5383fcaddb1ba6416a0f4e64e3a617fe3af45b7851d".hexToBytes(),
+     "04837a4cff833e3157e3135d7b40b8e1f33c6e6b5a4342b9fc784230ca4c4f9d356f258debef56ad4984726d6ab3e7709e1632ef079b4bcd653db00b68b2df065f".hexToBytes())
+  ] {
+    [
+      (sk1, pk1), (sk2, pk2), (sk3, pk3), (sk4, pk4), (sk5, pk5), (sk6, pk6), (sk7, pk7),
+      (sk8, pk8), (sk9, pk9), (sk10, pk10), (sk11, pk11), (sk12, pk12), (sk13, pk13), (sk14, pk14),
+      (a0Sk, a0Pk), (a1Sk, a1Pk), (a2Sk, a2Pk)
+    ] => {
+      rl!(`rho:system:identityRegistry`, *irCh) |
+      for (@(_, IR) <- irCh) {
+
+        contract register(@sk, @pk, @nonce, ret) = {
+          new sigCh in {
+            signPayload!("01".hexToBytes() ++ pk ++ nonce, sk, *sigCh) |
+            for (@sig <- sigCh) { @[IR, "register"]!(pk, nonce, sig, *ret) }
+          }
+        } |
+
+        contract rotate(@name, @currentSk, @newSk, @newPk, @seq, ret) = {
+          new sigCh, newSigCh in {
+            match "02".hexToBytes() ++ name ++ newPk ++ seq.toByteArray() {
+              payload => {
+                signPayload!(payload, currentSk, *sigCh) |
+                signPayload!(payload, newSk, *newSigCh) |
+                for (@sig <- sigCh & @newSig <- newSigCh) {
+                  @[IR, "rotate"]!(name, newPk, seq, sig, newSig, *ret)
+                }
+              }
+            }
+          }
+        } |
+
+        contract adminSig(@signerSk, @claimedPk, @name, @newPk, @seq, @evidence, ret) = {
+          new sigCh in {
+            signPayload!(
+              "03".hexToBytes() ++ name ++ newPk ++ seq.toByteArray() ++ evidence,
+              signerSk,
+              *sigCh
+            ) |
+            for (@sig <- sigCh) { ret!((claimedPk, sig)) }
+          }
+        } |
+
+        contract adminRelink(@name, @newSk, @newPk, @seq, @evidence, @adminSigs, ret) = {
+          new newSigCh in {
+            signPayload!(
+              "03".hexToBytes() ++ name ++ newPk ++ seq.toByteArray() ++ evidence,
+              newSk,
+              *newSigCh
+            ) |
+            for (@newSig <- newSigCh) {
+              @[IR, "admin_relink"]!(name, newPk, seq, evidence, adminSigs, newSig, *ret)
+            }
+          }
+        } |
+
+        // REG-AC1. Register. A registration signed by a fresh keypair mints a
+        // name; the name resolves to the registering key and to the height of
+        // the block that minted it, and that height is the deploy's, not a
+        // value the payload carried.
+        //
+        // The resolved height must be exactly the height of the block data, a
+        // value that the payload does not carry.
+        contract test_register(rhoSpec, _, ackCh) = {
+          new hCh, nonceCh, regCh, nameCh, resCh in {
+            setHeight!(11, *hCh) | nonceOf!("ac1", *nonceCh) |
+            for (_ <- hCh & @nonce <- nonceCh) {
+              register!(sk1, pk1, nonce, *regCh) |
+              for (@reply <- regCh) {
+                unwrap!(reply, *rhoSpec, "register with a valid signature", *ackCh, *nameCh) |
+                for (@name <- nameCh) {
+                  @[IR, "resolve_current"]!(name, *resCh) |
+                  for (@resolved <- resCh) {
+                    rhoSpec!("assertMany",
+                      [
+                        ((("ok", {"pk": pk1, "seq": 0, "blockHeight": 11}), "==", resolved),
+                          "the name resolves to the registering key, seq 0 and the minting height")
+                      ], *ackCh)
+                  }
+                }
+              }
+            }
+          }
+        } |
+
+        // REG-AC2. A bad signature registers nothing. A payload signed by a
+        // different key, or altered after signing, mints no name, and the
+        // refusal is distinguishable from whatever the submission's own
+        // finalisation state is.
+        //
+        // This runtime has no finalization. The suite checks that the refusal
+        // is a tagged ("err", "bad_signature") reply.
+        contract test_bad_signature(rhoSpec, _, ackCh) = {
+          new nCh, nSignedCh, nSubmittedCh, sigCh, alteredSigCh, regCh, alteredCh,
+              name1Ch, name2Ch, name3Ch, res1Ch, res2Ch, res3Ch in {
+            nonceOf!("ac2", *nCh) |
+            nonceOf!("ac2-signed", *nSignedCh) |
+            nonceOf!("ac2-submitted", *nSubmittedCh) |
+            for (@nonce <- nCh & @nonceSigned <- nSignedCh & @nonceSubmitted <- nSubmittedCh) {
+              signPayload!("01".hexToBytes() ++ pk2 ++ nonce, sk3, *sigCh) |
+              signPayload!("01".hexToBytes() ++ pk4 ++ nonceSigned, sk4, *alteredSigCh) |
+              for (@sig <- sigCh & @alteredSig <- alteredSigCh) {
+                @[IR, "register"]!(pk2, nonce, sig, *regCh) |
+                @[IR, "register"]!(pk4, nonceSubmitted, alteredSig, *alteredCh) |
+                for (@reg <- regCh & @altered <- alteredCh) {
+                  nameOf!(pk2, nonce, *name1Ch) |
+                  nameOf!(pk4, nonceSigned, *name2Ch) |
+                  nameOf!(pk4, nonceSubmitted, *name3Ch) |
+                  for (@name1 <- name1Ch & @name2 <- name2Ch & @name3 <- name3Ch) {
+                    @[IR, "resolve_current"]!(name1, *res1Ch) |
+                    @[IR, "resolve_current"]!(name2, *res2Ch) |
+                    @[IR, "resolve_current"]!(name3, *res3Ch) |
+                    rhoSpec!("assertMany",
+                      [
+                        ((("err", "bad_signature"), "==", reg),
+                          "a payload signed by a different key is refused with bad_signature"),
+                        ((("err", "bad_signature"), "==", altered),
+                          "a payload altered after signing is refused with bad_signature"),
+                        ((("err", "unknown_name"), "== <-", *res1Ch),
+                          "the payload signed by a different key mints no name"),
+                        ((("err", "unknown_name"), "== <-", *res2Ch),
+                          "the altered payload mints no name for the signed nonce"),
+                        ((("err", "unknown_name"), "== <-", *res3Ch),
+                          "the altered payload mints no name for the submitted nonce")
+                      ], *ackCh)
+                  }
+                }
+              }
+            }
+          }
+        } |
+
+        // REG-AC3. Resolve. A second party resolves the first party's name to
+        // the keys linked to it; an unregistered name resolves to nothing.
+        contract test_resolve(rhoSpec, _, ackCh) = {
+          new hCh, nonceCh, regCh, nameCh, resCh, unknownCh in {
+            setHeight!(31, *hCh) | nonceOf!("ac3", *nonceCh) |
+            for (_ <- hCh & @nonce <- nonceCh) {
+              register!(sk5, pk5, nonce, *regCh) |
+              for (@reply <- regCh) {
+                unwrap!(reply, *rhoSpec, "register", *ackCh, *nameCh) |
+                for (@name <- nameCh) {
+                  @[IR, "resolve_current"]!(name, *resCh) |
+                  @[IR, "resolve_current"]!(
+                    "0000000000000000000000000000000000000000000000000000000000000000".hexToBytes(),
+                    *unknownCh
+                  ) |
+                  rhoSpec!("assertMany",
+                    [
+                      ((("ok", {"pk": pk5, "seq": 0, "blockHeight": 31}), "== <-", *resCh),
+                        "a second party resolves the name to the linked key"),
+                      ((("err", "unknown_name"), "== <-", *unknownCh),
+                        "an unregistered name resolves to nothing")
+                    ], *ackCh)
+                }
+              }
+            }
+          }
+        } |
+
+        // REG-AC4. Rotate. After a rotation signed by the current key, the new
+        // key is accepted for speaking as the identity and the old one is
+        // rejected; the name is the same before and after, and the old key is
+        // still readable as a previous key of that name.
+        //
+        // A rotation signed by the new key proves that the new key is
+        // accepted for speaking as the identity.
+        contract test_rotate(rhoSpec, _, ackCh) = {
+          new h1Ch, h2Ch, nonceCh, regCh, nameCh, rot1Ch, rotOldCh, rotNewCh, resCh, histCh in {
+            setHeight!(41, *h1Ch) | nonceOf!("ac4", *nonceCh) |
+            for (_ <- h1Ch & @nonce <- nonceCh) {
+              register!(sk6, pk6, nonce, *regCh) |
+              for (@reply <- regCh) {
+                unwrap!(reply, *rhoSpec, "register", *ackCh, *nameCh) |
+                for (@name <- nameCh) {
+                  setHeight!(42, *h2Ch) |
+                  for (_ <- h2Ch) {
+                    rotate!(name, sk6, sk7, pk7, 0, *rot1Ch) |
+                    for (@rot1 <- rot1Ch) {
+                      rotate!(name, sk6, sk9, pk9, 1, *rotOldCh) |
+                      for (@rotOld <- rotOldCh) {
+                        rotate!(name, sk7, sk8, pk8, 1, *rotNewCh) |
+                        for (@rotNew <- rotNewCh) {
+                          @[IR, "resolve_current"]!(name, *resCh) |
+                          @[IR, "resolve_history"]!(name, *histCh) |
+                          for (@resolved <- resCh & @histReply <- histCh) {
+                            unwrap!(histReply, *rhoSpec, "resolve_history", *ackCh, *histCh) |
+                            for (@history <- histCh) {
+                              rhoSpec!("assertMany",
+                                [
+                                  ((("ok", 1), "==", rot1), "a rotation signed by the current key succeeds"),
+                                  ((("err", "bad_signature"), "==", rotOld),
+                                    "the old key is rejected after the rotation"),
+                                  ((("ok", 2), "==", rotNew),
+                                    "the new key is accepted for speaking as the identity"),
+                                  ((("ok", {"pk": pk8, "seq": 2, "blockHeight": 41}), "==", resolved),
+                                    "the same name resolves to the latest key and keeps the registration height"),
+                                  ((pk6, "==", history.nth(0).get("pk")),
+                                    "the old key is still readable as a previous key of the name"),
+                                  (("register", "==", history.nth(0).get("op")),
+                                    "the first history entry is the registration"),
+                                  ((pk7, "==", history.nth(1).get("pk")),
+                                    "the rotated-out key is still readable as a previous key of the name")
+                                ], *ackCh)
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } |
+
+        // REG-AC5. Rotation adds a key, not an identity. A rotation leaves the
+        // number of names unchanged while the number of keys linked to the
+        // rotating name increases; a rotation not signed by the current key is
+        // rejected.
+        //
+        // The contract has no operation that counts names. The suite checks
+        // that the rotation mints no name for the new key.
+        contract test_rotation_adds_key(rhoSpec, _, ackCh) = {
+          new hCh, nonceCh, regCh, nameCh, before1Ch, beforeCh, rotCh, strangerCh,
+              after1Ch, afterCh, newKeyNameCh, newKeyResCh, resCh in {
+            setHeight!(51, *hCh) | nonceOf!("ac5", *nonceCh) |
+            for (_ <- hCh & @nonce <- nonceCh) {
+              register!(sk10, pk10, nonce, *regCh) |
+              for (@reply <- regCh) {
+                unwrap!(reply, *rhoSpec, "register", *ackCh, *nameCh) |
+                for (@name <- nameCh) {
+                  @[IR, "resolve_history"]!(name, *before1Ch) |
+                  for (@beforeReply <- before1Ch) {
+                    unwrap!(beforeReply, *rhoSpec, "resolve_history before rotation", *ackCh, *beforeCh) |
+                    for (@before <- beforeCh) {
+                      rotate!(name, sk10, sk11, pk11, 0, *rotCh) |
+                      for (@rot <- rotCh) {
+                        rotate!(name, sk12, sk13, pk13, 1, *strangerCh) |
+                        for (@stranger <- strangerCh) {
+                          @[IR, "resolve_history"]!(name, *after1Ch) |
+                          nameOf!(pk11, nonce, *newKeyNameCh) |
+                          for (@afterReply <- after1Ch & @newKeyName <- newKeyNameCh) {
+                            unwrap!(afterReply, *rhoSpec, "resolve_history after rotation", *ackCh, *afterCh) |
+                            @[IR, "resolve_current"]!(newKeyName, *newKeyResCh) |
+                            @[IR, "resolve_current"]!(name, *resCh) |
+                            for (@after <- afterCh) {
+                              rhoSpec!("assertMany",
+                                [
+                                  ((1, "==", before.length()), "one key is linked before the rotation"),
+                                  ((("ok", 1), "==", rot), "the rotation succeeds"),
+                                  ((("err", "bad_signature"), "==", stranger),
+                                    "a rotation not signed by the current key is rejected"),
+                                  ((2, "==", after.length()),
+                                    "the rotation adds exactly one key to the name"),
+                                  ((("err", "unknown_name"), "== <-", *newKeyResCh),
+                                    "the rotation mints no name for the new key"),
+                                  ((("ok", {"pk": pk11, "seq": 1, "blockHeight": 51}), "== <-", *resCh),
+                                    "the original name resolves to the new key")
+                                ], *ackCh)
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } |
+
+        // REG-AC6. Double registration. Submitting the same registration twice
+        // mints one name.
+        contract test_double_registration(rhoSpec, _, ackCh) = {
+          new hCh, nonceCh, reg1Ch, reg2Ch, nameCh, histCh in {
+            setHeight!(61, *hCh) | nonceOf!("ac6", *nonceCh) |
+            for (_ <- hCh & @nonce <- nonceCh) {
+              register!(sk14, pk14, nonce, *reg1Ch) |
+              for (@reg1 <- reg1Ch) {
+                unwrap!(reg1, *rhoSpec, "the first registration", *ackCh, *nameCh) |
+                for (@name <- nameCh) {
+                  register!(sk14, pk14, nonce, *reg2Ch) |
+                  for (@reg2 <- reg2Ch) {
+                    @[IR, "resolve_history"]!(name, *histCh) |
+                    rhoSpec!("assertMany",
+                      [
+                        ((("ok", name), "==", reg2), "the second registration returns the same name"),
+                        ((("ok", [{"pk": pk14, "op": "register", "seq": 0, "blockHeight": 61}]), "== <-", *histCh),
+                          "the name has exactly one history entry")
+                      ], *ackCh)
+                  }
+                }
+              }
+            }
+          }
+        } |
+
+        // REG-AC8. The identity record is append-only. No operation removes a
+        // name or a key, and a claim signed under a superseded or compromised
+        // key stays readable and attributed to that key.
+        //
+        // The sequence uses every operation that writes a record: register,
+        // rotate (superseded key) and admin_relink (compromised key).
+        contract test_append_only(rhoSpec, _, ackCh) = {
+          new h1Ch, h2Ch, h3Ch, nonceCh, regCh, nameCh, rotCh, sig0Ch, sig1Ch, relinkCh, histCh in {
+            setHeight!(81, *h1Ch) | nonceOf!("ac8", *nonceCh) |
+            for (_ <- h1Ch & @nonce <- nonceCh) {
+              register!(sk1, pk1, nonce, *regCh) |
+              for (@reply <- regCh) {
+                unwrap!(reply, *rhoSpec, "register", *ackCh, *nameCh) |
+                for (@name <- nameCh) {
+                  setHeight!(82, *h2Ch) |
+                  for (_ <- h2Ch) {
+                    rotate!(name, sk1, sk2, pk2, 0, *rotCh) |
+                    for (@rot <- rotCh) {
+                      setHeight!(83, *h3Ch) |
+                      adminSig!(a0Sk, a0Pk, name, pk3, 1, "ac8-evidence".toUtf8Bytes(), *sig0Ch) |
+                      adminSig!(a1Sk, a1Pk, name, pk3, 1, "ac8-evidence".toUtf8Bytes(), *sig1Ch) |
+                      for (_ <- h3Ch & @sig0 <- sig0Ch & @sig1 <- sig1Ch) {
+                        adminRelink!(name, sk3, pk3, 1, "ac8-evidence".toUtf8Bytes(), [sig0, sig1], *relinkCh) |
+                        for (@relink <- relinkCh) {
+                          @[IR, "resolve_history"]!(name, *histCh) |
+                          for (@histReply <- histCh) {
+                            unwrap!(histReply, *rhoSpec, "resolve_history", *ackCh, *histCh) |
+                            for (@history <- histCh) {
+                              rhoSpec!("assertMany",
+                                [
+                                  ((("ok", 1), "==", rot), "the rotation succeeds"),
+                                  ((("ok", 2), "==", relink), "the admin relink succeeds"),
+                                  ((3, "==", history.length()), "no operation removes a key"),
+                                  (((pk1, "register", 0, 81), "==",
+                                    (history.nth(0).get("pk"), history.nth(0).get("op"),
+                                     history.nth(0).get("seq"), history.nth(0).get("blockHeight"))),
+                                    "the superseded key stays readable and attributed to its registration"),
+                                  (((pk2, "rotate", 1, 82), "==",
+                                    (history.nth(1).get("pk"), history.nth(1).get("op"),
+                                     history.nth(1).get("seq"), history.nth(1).get("blockHeight"))),
+                                    "the compromised key stays readable and attributed to its rotation"),
+                                  (((pk3, "admin_relink", 2, 83), "==",
+                                    (history.nth(2).get("pk"), history.nth(2).get("op"),
+                                     history.nth(2).get("seq"), history.nth(2).get("blockHeight"))),
+                                    "the relinked key is appended with the height that recorded it")
+                                ], *ackCh)
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } |
+
+        // REG-AC9. The governance stub works and is bounded. The administrator
+        // key can link a new key to an identity whose current key cannot sign,
+        // recording the evidence offered; the same operation signed by any
+        // other key is rejected.
+        //
+        // The genesis admin set is A0, A1, A2 with quorum 2.
+        contract test_admin_relink(rhoSpec, _, ackCh) = {
+          new hCh, nonceCh, regCh, nameCh,
+              s0Ch, s1Ch, relink1Ch, t1Ch, t2Ch, relink2Ch,
+              u0Ch, strangerCh, forgedCh, currentCh,
+              bad1Ch, bad2Ch, bad3Ch, bad4Ch, resCh, histCh in {
+            setHeight!(91, *hCh) | nonceOf!("ac9", *nonceCh) |
+            for (_ <- hCh & @nonce <- nonceCh) {
+              register!(sk4, pk4, nonce, *regCh) |
+              for (@reply <- regCh) {
+                unwrap!(reply, *rhoSpec, "register", *ackCh, *nameCh) |
+                for (@name <- nameCh) {
+                  adminSig!(a0Sk, a0Pk, name, pk5, 0, "out_of_band_proof".toUtf8Bytes(), *s0Ch) |
+                  adminSig!(a1Sk, a1Pk, name, pk5, 0, "out_of_band_proof".toUtf8Bytes(), *s1Ch) |
+                  for (@s0 <- s0Ch & @s1 <- s1Ch) {
+                    adminRelink!(name, sk5, pk5, 0, "out_of_band_proof".toUtf8Bytes(), [s0, s1], *relink1Ch) |
+                    for (@relink1 <- relink1Ch) {
+                      adminSig!(a1Sk, a1Pk, name, pk6, 1, "evidence2".toUtf8Bytes(), *t1Ch) |
+                      adminSig!(a2Sk, a2Pk, name, pk6, 1, "evidence2".toUtf8Bytes(), *t2Ch) |
+                      for (@t1 <- t1Ch & @t2 <- t2Ch) {
+                        adminRelink!(name, sk6, pk6, 1, "evidence2".toUtf8Bytes(), [t1, t2], *relink2Ch) |
+                        for (@relink2 <- relink2Ch) {
+                          adminSig!(a0Sk, a0Pk, name, pk7, 2, "evidence3".toUtf8Bytes(), *u0Ch) |
+                          adminSig!(sk8, pk8, name, pk7, 2, "evidence3".toUtf8Bytes(), *strangerCh) |
+                          adminSig!(sk8, a1Pk, name, pk7, 2, "evidence3".toUtf8Bytes(), *forgedCh) |
+                          adminSig!(sk6, pk6, name, pk7, 2, "evidence3".toUtf8Bytes(), *currentCh) |
+                          for (@u0 <- u0Ch & @stranger <- strangerCh & @forged <- forgedCh & @current <- currentCh) {
+                            adminRelink!(name, sk7, pk7, 2, "evidence3".toUtf8Bytes(), [u0, stranger], *bad1Ch) |
+                            adminRelink!(name, sk7, pk7, 2, "evidence3".toUtf8Bytes(), [u0, forged], *bad2Ch) |
+                            adminRelink!(name, sk7, pk7, 2, "evidence3".toUtf8Bytes(), [current], *bad3Ch) |
+                            adminRelink!(name, sk7, pk7, 2, "evidence3".toUtf8Bytes(), [u0, current], *bad4Ch) |
+                            for (@bad1 <- bad1Ch & @bad2 <- bad2Ch & @bad3 <- bad3Ch & @bad4 <- bad4Ch) {
+                              @[IR, "resolve_current"]!(name, *resCh) |
+                              @[IR, "resolve_history"]!(name, *histCh) |
+                              for (@histReply <- histCh) {
+                                unwrap!(histReply, *rhoSpec, "resolve_history", *ackCh, *histCh) |
+                                for (@history <- histCh) {
+                                  rhoSpec!("assertMany",
+                                    [
+                                      ((("ok", 1), "==", relink1),
+                                        "two admins relink an identity whose current key did not sign"),
+                                      (("admin_relink", "==", history.nth(1).get("op")),
+                                        "the history records the admin relink"),
+                                      ((pk5, "==", history.nth(1).get("pk")),
+                                        "the history records the relinked key"),
+                                      (("out_of_band_proof".toUtf8Bytes(), "==", history.nth(1).get("admin_evidence")),
+                                        "the history records the offered evidence verbatim"),
+                                      ((Set(a0Pk, a1Pk), "==", history.nth(1).get("admin_signers").toSet()),
+                                        "the history records the admin signers"),
+                                      ((("ok", 2), "==", relink2),
+                                        "a different pair of admins also meets the quorum"),
+                                      ((("err", "bad_signature"), "==", bad1),
+                                        "an admin and a stranger key do not meet the quorum"),
+                                      ((("err", "bad_signature"), "==", bad2),
+                                        "a stranger signature under an admin key does not count"),
+                                      ((("err", "bad_signature"), "==", bad3),
+                                        "the current key of the identity alone cannot relink"),
+                                      ((("err", "bad_signature"), "==", bad4),
+                                        "an admin and the current key do not meet the quorum"),
+                                      ((("ok", {"pk": pk6, "seq": 2, "blockHeight": 91}), "== <-", *resCh),
+                                        "the rejected relinks change nothing"),
+                                      ((3, "==", history.length()),
+                                        "the rejected relinks add no history entry")
+                                    ], *ackCh)
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } |
+
+        // REG-AC9. The governance stub works and is bounded. The administrator
+        // key can link a new key to an identity whose current key cannot sign,
+        // recording the evidence offered; the same operation signed by any
+        // other key is rejected.
+        //
+        // Fewer than quorum distinct admins relink nothing. A repeated admin
+        // counts once.
+        contract test_admin_relink_below_quorum(rhoSpec, _, ackCh) = {
+          new hCh, nonceCh, regCh, nameCh, s0Ch, oneCh, twiceCh, resCh in {
+            setHeight!(92, *hCh) | nonceOf!("ac9-below-quorum", *nonceCh) |
+            for (_ <- hCh & @nonce <- nonceCh) {
+              register!(sk9, pk9, nonce, *regCh) |
+              for (@reply <- regCh) {
+                unwrap!(reply, *rhoSpec, "register", *ackCh, *nameCh) |
+                for (@name <- nameCh) {
+                  adminSig!(a0Sk, a0Pk, name, pk10, 0, "evidence".toUtf8Bytes(), *s0Ch) |
+                  for (@s0 <- s0Ch) {
+                    adminRelink!(name, sk10, pk10, 0, "evidence".toUtf8Bytes(), [s0], *oneCh) |
+                    adminRelink!(name, sk10, pk10, 0, "evidence".toUtf8Bytes(), [s0, s0], *twiceCh) |
+                    for (@one <- oneCh & @twice <- twiceCh) {
+                      @[IR, "resolve_current"]!(name, *resCh) |
+                      rhoSpec!("assertMany",
+                        [
+                          ((("err", "bad_signature"), "==", one), "one admin is below the quorum"),
+                          ((("err", "bad_signature"), "==", twice), "one admin twice is below the quorum"),
+                          ((("ok", {"pk": pk9, "seq": 0, "blockHeight": 92}), "== <-", *resCh),
+                            "the identity keeps its key")
+                        ], *ackCh)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

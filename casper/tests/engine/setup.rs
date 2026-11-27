@@ -400,6 +400,8 @@ impl TestFixture {
             genesis_params.native_token_name.clone(),
             genesis_params.native_token_symbol.clone(),
             genesis_params.native_token_decimals,
+            genesis_params.identity_registry_admin_public_keys.clone(),
+            genesis_params.identity_registry_admin_quorum,
             // Default-no-provisioning posture: matches
             // GenesisBuilder's default genesis params, which build
             // their own genesis block with an empty bundle.
