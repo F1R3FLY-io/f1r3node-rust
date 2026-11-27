@@ -1996,3 +1996,42 @@ proptest! {
         prop_assert!(sim.converged(), "not converged a minute after the ancestor was served");
     }
 }
+
+#[test]
+fn a_ready_block_is_dispatched_while_one_sender_keeps_sending_lower_heights() {
+    const DISPATCH_BOUND: usize = 16;
+    const ROUNDS: u32 = 64;
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(received(meta(100, 5, &[0])), 0, &dag);
+
+    let mut dispatched_at = None;
+    for round in 0..ROUNDS {
+        let mut low = meta(1_000 + round, 1, &[0]);
+        low.sender = Bytes::from_static(b"v1");
+        low.pushed_by = Some(peer("sender"));
+        s.handle(received(low), u64::from(round), &dag);
+
+        let (next, _) = s.next_dispatch().expect("a ready block is waiting");
+        if next == hash(100) {
+            dispatched_at = Some(round as usize + 1);
+            break;
+        }
+        s.handle(
+            IngestInput::Outcome {
+                hash: next,
+                outcome: WorkOutcome::Rejected {
+                    invalid_sender: false,
+                },
+            },
+            u64::from(round),
+            &dag,
+        );
+    }
+
+    assert!(
+        dispatched_at.is_some_and(|n| n <= DISPATCH_BOUND),
+        "the height-5 block must be dispatched within {DISPATCH_BOUND} dispatches; \
+         after {ROUNDS} lower-height blocks from one sender it was dispatched at {dispatched_at:?}"
+    );
+}
