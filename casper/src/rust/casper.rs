@@ -142,6 +142,14 @@ pub trait Casper {
 
     fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError>;
 
+    fn awaiting_own_history(
+        &self,
+        _snapshot: &CasperSnapshot,
+        _validator: &Validator,
+    ) -> Result<bool, CasperError> {
+        Ok(false)
+    }
+
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError>;
 
     /// Current effective anchor height: blocks at or below this height are

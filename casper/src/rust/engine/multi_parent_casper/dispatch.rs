@@ -52,6 +52,14 @@ impl Casper for MultiParentCasperImpl {
         super::block_admission::admit_get_approved_block(self)
     }
 
+    fn awaiting_own_history(
+        &self,
+        snapshot: &CasperSnapshot,
+        validator: &Validator,
+    ) -> Result<bool, CasperError> {
+        MultiParentCasperImpl::awaiting_own_history(self, snapshot, validator)
+    }
+
     fn effective_anchor_number(&self) -> i64 { self.effective_anchor.load(Ordering::Acquire) }
 
     fn effective_anchor_handle(&self) -> Arc<AtomicI64> { self.effective_anchor.clone() }

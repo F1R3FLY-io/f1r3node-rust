@@ -11,4 +11,5 @@ mod registry_key_merge;
 mod search_charge_merge;
 mod foreign_genesis_rejection;
 mod store_items_flood_resilience;
+mod restored_validator_spec;
 mod twin_arrival_order_spec;

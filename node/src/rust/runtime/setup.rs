@@ -347,7 +347,9 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     let block_store = {
         use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 
-        KeyValueBlockStore::create_from_kvm(&mut rnode_store_manager).await?
+        KeyValueBlockStore::create_from_kvm(&mut rnode_store_manager)
+            .await?
+            .with_validator_recovery_dir(data_dir_for_bundle_staging.clone())
     };
 
     // Block DAG storage

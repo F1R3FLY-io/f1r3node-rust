@@ -36,6 +36,7 @@ pub(crate) mod block_admission;
 pub(crate) mod bond_cache;
 pub(crate) mod events;
 pub(crate) mod finalization_runner;
+pub(crate) mod own_history_gate;
 pub use finalization_runner::{DivergenceMonitor, FinalizationContext, Finalizer};
 pub(crate) mod snapshot;
 pub(crate) mod dispatch;

@@ -222,7 +222,17 @@ where
     ) -> Result<(ProposeResult, Option<BlockMessage>), CasperError> {
         // check if node is allowed to propose a block
         let step_start = std::time::Instant::now();
-        let constraint_check = self.check_propose_constraints(casper_snapshot).await?;
+        let constraint_check = match self.check_propose_constraints(casper_snapshot).await? {
+            CheckProposeConstraintsResult::Failure(CheckProposeConstraintsFailure::NotBonded) => {
+                CheckProposeConstraintsResult::not_bonded()
+            }
+            _ if casper
+                .awaiting_own_history(casper_snapshot, &self.validator.public_key.bytes)? =>
+            {
+                CheckProposeConstraintsResult::history_incomplete()
+            }
+            checked => checked,
+        };
         let constraints_ms = step_start.elapsed().as_millis();
 
         // The height constraint must not gate the recovery lane it exists to
