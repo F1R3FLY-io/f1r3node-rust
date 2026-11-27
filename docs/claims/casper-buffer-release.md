@@ -88,7 +88,7 @@ The maintainer accepted the restated C3 on 2026-11-27 at `c7338aa51d3e38e94a4672
 1a258bd7d0a3efb8bd698c15f51e996e162b9f2aa73550fe95223390b27948fc  casper/src/rust/blocks/ingest/ingest_state_tests.rs
 ```
 
-A later change to either file needs a new review of C3. The other conditions stay pending: C1, C2, C5, C6, and C8 under issue #1196, and C7 under issue #1194. The claim status stays `pending` until every condition has a recorded result.
+A later change to either file needs a new review of C3. The other conditions stay pending: C1, C2, C4, C5, C6, and C8 under issue #1196, and C7 under issue #1194. C4 stays open because the age bound changes the order of released blocks, and the existing test covers only independent ready blocks. The claim status stays `pending` until every condition has a recorded result.
 
 ### C3 evidence
 
