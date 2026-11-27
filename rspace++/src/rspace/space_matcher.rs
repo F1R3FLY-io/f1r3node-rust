@@ -62,6 +62,7 @@ where
                     a: mat,
                     persist: datum.persist,
                     source: datum.source.clone(),
+                    size: datum.size,
                 },
                 removed_datum: datum.a.clone(),
                 datum_index: *data_index,
@@ -223,6 +224,10 @@ mod tests {
     struct PatternMatch;
 
     impl Match<Pattern, String, String> for PatternMatch {
+        fn pattern_size(&self, _: &Pattern) -> usize { 1 }
+
+        fn data_size(&self, a: &String) -> usize { a.len() }
+
         fn get(&self, pattern: &Pattern, a: &String) -> Option<String> {
             match pattern {
                 Pattern::Any => Some(a.clone()),
@@ -239,6 +244,8 @@ mod tests {
         let body = body.to_string();
         Arc::new(WaitingContinuation {
             source: Consume::create(&channels.to_vec(), &patterns, &body, false),
+            pattern_sizes: vec![1; patterns.len()],
+            guard_size: None,
             patterns,
             continuation: body,
             persist: false,
@@ -247,7 +254,7 @@ mod tests {
     }
 
     fn datum(channel: &str, value: &str) -> Arc<Datum<String>> {
-        Arc::new(Datum::create(&channel.to_string(), value.to_string(), false))
+        Arc::new(Datum::create(&channel.to_string(), value.to_string(), false, value.len()))
     }
 
     #[tokio::test]

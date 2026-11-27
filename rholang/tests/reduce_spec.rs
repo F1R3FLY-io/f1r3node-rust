@@ -31,11 +31,12 @@ use rholang::rust::interpreter::accounting::cost_accounting::CostAccounting;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::matcher::r#match::Matcher;
+use rholang::rust::interpreter::matcher::r#match::{data_size, Matcher};
 use rholang::rust::interpreter::reduce::DebruijnInterpreter;
 use rholang::rust::interpreter::rho_runtime::RhoISpace;
 use rholang::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
+use rspace_plus_plus::rspace::r#match::Match as SpaceMatch;
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -48,6 +49,11 @@ struct DataMapEntry {
     rand: Blake2b512Random,
 }
 
+fn stored_datum(channel: &Par, data: ListParWithRandom) -> Datum<ListParWithRandom> {
+    let size = data_size(&data);
+    Datum::create(channel, data, false, size)
+}
+
 fn map_data(
     elements: HashMap<Par, (Vec<Par>, Blake2b512Random)>,
 ) -> HashMap<Vec<Par>, Row<BindPattern, ListParWithRandom, TaggedContinuation>> {
@@ -55,14 +61,10 @@ fn map_data(
         let entry = DataMapEntry { data, rand };
 
         let row = Row {
-            data: vec![Datum::create(
-                &channel,
-                ListParWithRandom {
-                    pars: entry.data.clone(),
-                    random_state: entry.rand.to_bytes(),
-                },
-                false,
-            )],
+            data: vec![stored_datum(&channel, ListParWithRandom {
+                pars: entry.data.clone(),
+                random_state: entry.rand.to_bytes(),
+            })],
             wks: vec![],
         };
 
@@ -90,6 +92,11 @@ fn check_continuation(
             },
             false,
             BTreeSet::new(),
+            bind_patterns
+                .iter()
+                .map(|pattern| Matcher.pattern_size(pattern))
+                .collect(),
+            None,
         )],
     });
 
@@ -1696,32 +1703,24 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
 
     let mut expected_result = HashMap::new();
     expected_result.insert(vec![channel0.clone()], Row {
-        data: vec![Datum::create(
-            &channel0,
-            ListParWithRandom {
-                pars: vec![Par::default().with_unforgeables(vec![GUnforgeable {
-                    unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![42] })),
-                }])],
-                random_state: result0_rand.to_bytes(),
-            },
-            false,
-        )],
+        data: vec![stored_datum(&channel0, ListParWithRandom {
+            pars: vec![Par::default().with_unforgeables(vec![GUnforgeable {
+                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![42] })),
+            }])],
+            random_state: result0_rand.to_bytes(),
+        })],
         wks: vec![],
     });
 
     expected_result.insert(vec![channel1.clone()], Row {
-        data: vec![Datum::create(
-            &channel1,
-            ListParWithRandom {
-                pars: vec![Par::default().with_unforgeables(vec![GUnforgeable {
-                    unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                        id: chosen_name.iter().map(|&x| x as u8).collect::<Vec<u8>>(),
-                    })),
-                }])],
-                random_state: result1_rand.to_bytes(),
-            },
-            false,
-        )],
+        data: vec![stored_datum(&channel1, ListParWithRandom {
+            pars: vec![Par::default().with_unforgeables(vec![GUnforgeable {
+                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
+                    id: chosen_name.iter().map(|&x| x as u8).collect::<Vec<u8>>(),
+                })),
+            }])],
+            random_state: result1_rand.to_bytes(),
+        })],
         wks: vec![],
     });
 
