@@ -7,7 +7,7 @@ use proptest::prelude::*;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
-use super::dependency_tracker::{BodyAt, HeldMeta, Work};
+use super::dependency_tracker::{BodyAt, HeldMeta, Work, READY_AGE_LIMIT_DISPATCHES};
 use super::fetch_scheduler::FetchAction;
 use super::ingest_state::*;
 use super::ingest_view::IngestView;
@@ -1995,4 +1995,128 @@ proptest! {
         }
         prop_assert!(sim.converged(), "not converged a minute after the ancestor was served");
     }
+}
+
+#[test]
+fn a_ready_block_is_dispatched_while_one_sender_keeps_sending_lower_heights() {
+    let bound = READY_AGE_LIMIT_DISPATCHES as usize + 1;
+    let rounds = bound as u32 + 32;
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(received(meta(100, 5, &[0])), 0, &dag);
+
+    let mut dispatched_at = None;
+    for round in 0..rounds {
+        let mut low = meta(1_000 + round, 1, &[0]);
+        low.sender = Bytes::from_static(b"v1");
+        low.pushed_by = Some(peer("sender"));
+        s.handle(received(low), u64::from(round), &dag);
+
+        let (next, _) = s.next_dispatch().expect("a ready block is waiting");
+        if next == hash(100) {
+            dispatched_at = Some(round as usize + 1);
+            break;
+        }
+        s.handle(
+            IngestInput::Outcome {
+                hash: next,
+                outcome: WorkOutcome::Rejected {
+                    invalid_sender: false,
+                },
+            },
+            u64::from(round),
+            &dag,
+        );
+    }
+
+    assert_eq!(
+        dispatched_at,
+        Some(bound),
+        "lower heights go first for {READY_AGE_LIMIT_DISPATCHES} dispatches; \
+         then the waiting height-5 block takes the next slot"
+    );
+}
+
+#[test]
+fn overdue_blocks_are_dispatched_in_the_order_they_became_ready() {
+    let limit = READY_AGE_LIMIT_DISPATCHES as usize;
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(received(meta(100, 9, &[0])), 0, &dag);
+    s.handle(received(meta(101, 5, &[0])), 0, &dag);
+
+    let mut order = Vec::new();
+    for round in 0..(limit as u32 + 8) {
+        let mut low = meta(1_000 + round, 1, &[0]);
+        low.sender = Bytes::from_static(b"v1");
+        s.handle(received(low), u64::from(round), &dag);
+
+        let (next, _) = s.next_dispatch().expect("a ready block is waiting");
+        if next == hash(100) || next == hash(101) {
+            order.push((next, round as usize + 1));
+            if order.len() == 2 {
+                break;
+            }
+            continue;
+        }
+        s.handle(
+            IngestInput::Outcome {
+                hash: next,
+                outcome: WorkOutcome::Rejected {
+                    invalid_sender: false,
+                },
+            },
+            u64::from(round),
+            &dag,
+        );
+    }
+
+    assert_eq!(
+        order,
+        vec![(hash(100), limit + 1), (hash(101), limit + 2)],
+        "the block that became ready first goes first, though the other one is lower"
+    );
+}
+
+#[test]
+fn a_block_held_earlier_but_ready_later_does_not_pass_an_older_ready_block() {
+    let limit = READY_AGE_LIMIT_DISPATCHES as usize;
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
+    s.handle(received(meta(101, 9, &[7])), 0, &dag);
+    s.handle(received(meta(100, 9, &[0])), 0, &dag);
+    dag.blocks.insert(hash(7));
+    s.handle(IngestInput::Inserted { hash: hash(7) }, 0, &dag);
+
+    let mut order = Vec::new();
+    for round in 0..(limit as u32 + 8) {
+        let mut low = meta(1_000 + round, 1, &[0]);
+        low.sender = Bytes::from_static(b"v1");
+        s.handle(received(low), u64::from(round), &dag);
+
+        let (next, _) = s.next_dispatch().expect("a ready block is waiting");
+        if next == hash(100) || next == hash(101) {
+            order.push((next, round as usize + 1));
+            if order.len() == 2 {
+                break;
+            }
+            continue;
+        }
+        s.handle(
+            IngestInput::Outcome {
+                hash: next,
+                outcome: WorkOutcome::Rejected {
+                    invalid_sender: false,
+                },
+            },
+            u64::from(round),
+            &dag,
+        );
+    }
+
+    assert_eq!(
+        order,
+        vec![(hash(100), limit + 1), (hash(101), limit + 2)],
+        "the block that became ready first goes first, though the other one was held first"
+    );
 }
