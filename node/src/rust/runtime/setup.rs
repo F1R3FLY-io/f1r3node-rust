@@ -1378,16 +1378,40 @@ mod report_event_tests {
     }
 
     #[tokio::test]
-    async fn a_single_request_retries_until_recovery_succeeds() {
+    async fn recovery_runs_one_pass_at_startup() {
         let (request, requested) = watch::channel(());
         let (attempt, mut attempts) = mpsc::unbounded_channel();
-        request.send_replace(());
         let worker = tokio::spawn(async move {
             let mut count = 0;
             super::run_report_recovery(requested, || {
                 count += 1;
                 attempt.send(count).unwrap();
-                std::future::ready(if count < 3 {
+                std::future::ready(Ok(()))
+            })
+            .await;
+        });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), attempts.recv())
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        assert!(attempts.try_recv().is_err());
+        drop(request);
+        worker.await.unwrap();
+        assert!(attempts.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_single_request_retries_until_recovery_succeeds() {
+        let (request, requested) = watch::channel(());
+        let (attempt, mut attempts) = mpsc::unbounded_channel();
+        let worker = tokio::spawn(async move {
+            let mut count = 0;
+            super::run_report_recovery(requested, || {
+                count += 1;
+                attempt.send(count).unwrap();
+                std::future::ready(if (2..4).contains(&count) {
                     Err(eyre::eyre!("temporary storage error"))
                 } else {
                     Ok(())
@@ -1395,7 +1419,14 @@ mod report_event_tests {
             })
             .await;
         });
-        for count in 1..=3 {
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), attempts.recv())
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        request.send_replace(());
+        for count in 2..=4 {
             assert_eq!(
                 tokio::time::timeout(Duration::from_secs(5), attempts.recv())
                     .await
@@ -1870,7 +1901,7 @@ async fn run_report_recovery<F: Future<Output = eyre::Result<()>>>(
 ) {
     use std::time::Duration;
 
-    while requested.changed().await.is_ok() {
+    loop {
         let mut delay = Duration::from_secs(1);
         while let Err(error) = recover().await {
             tracing::warn!(%error, ?delay, "Block report recovery incomplete; retrying");
@@ -1878,8 +1909,10 @@ async fn run_report_recovery<F: Future<Output = eyre::Result<()>>>(
             if requested.has_changed().is_err() {
                 return;
             }
-            requested.borrow_and_update();
             delay = (delay * 2).min(Duration::from_secs(60));
+        }
+        if requested.changed().await.is_err() {
+            return;
         }
     }
 }
@@ -1892,6 +1925,9 @@ async fn recover_block_reports(
     reported: &parking_lot::Mutex<RecentBlockReports>,
     startup_history: &StartupReportHistory,
 ) -> eyre::Result<()> {
+    if storage.last_finalized_height().is_none() {
+        return Ok(());
+    }
     let dag = storage.get_representation_after_finalization().await?;
     report_api
         .recover_finalized_reports(

@@ -487,7 +487,7 @@ async fn report_recovery_fills_missing_cache_entries_across_pages() {
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     let store = report_store();
-    let (api, chain, replays) = api_over_a_finalized_chain(34, 32, store.clone()).await;
+    let (api, chain, replays) = api_over_a_finalized_chain(34, 32, false, store.clone()).await;
     let storage = BlockDagKeyValueStorage::new(&mut InMemoryStoreManager::new())
         .await
         .unwrap();
@@ -543,7 +543,7 @@ async fn live_prewarm_can_complete_before_the_recovery_scan_finishes() {
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     let store = report_store();
-    let (api, chain, replays) = api_over_a_finalized_chain(34, 32, store.clone()).await;
+    let (api, chain, replays) = api_over_a_finalized_chain(34, 32, false, store.clone()).await;
     let storage = BlockDagKeyValueStorage::new(&mut InMemoryStoreManager::new())
         .await
         .unwrap();
