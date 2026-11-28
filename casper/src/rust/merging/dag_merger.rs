@@ -2220,6 +2220,7 @@ mod tests {
     use crypto::rust::hash::blake2b512_random::Blake2b512Random;
     use dashmap::DashMap;
     use models::rhoapi::ListParWithRandom;
+    use rholang::rust::interpreter::matcher::r#match::data_size;
     use rholang::rust::interpreter::rho_type::RhoNumber;
     use rspace_plus_plus::rspace::hashing::stable_hash_provider;
     use rspace_plus_plus::rspace::internal::Datum;
@@ -2391,6 +2392,7 @@ mod tests {
             failed: false,
         };
         serializers::encode_datum(&Datum {
+            size: data_size(&par_with_rnd),
             a: par_with_rnd,
             persist: false,
             source: produce,

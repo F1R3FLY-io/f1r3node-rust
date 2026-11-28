@@ -11,10 +11,8 @@ use models::rust::rholang::sorter::sortable::Sortable;
 use regex::Regex;
 
 use super::normalize::normalize_ann_proc;
-use super::process_depth::process_depth;
 use crate::rust::interpreter::compiler::exports::ProcVisitInputs;
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::nesting::MAX_NESTING_DEPTH;
 
 lazy_static! {
     static ref FLOAT_RE: Regex = Regex::new(
@@ -106,11 +104,6 @@ impl Compiler {
             validated::Validated::Good(procs) => {
                 if procs.len() == 1 {
                     let proc = procs.into_iter().next().unwrap();
-                    if process_depth(&proc) > MAX_NESTING_DEPTH {
-                        return Err(InterpreterError::NestingLimitExceeded {
-                            limit: MAX_NESTING_DEPTH,
-                        });
-                    }
                     let proc = if super::normalizer::cost_accounting::elaborate::current()
                         .is_some_and(|e| e.pass)
                     {

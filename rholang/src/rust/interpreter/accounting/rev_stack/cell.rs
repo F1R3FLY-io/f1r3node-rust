@@ -23,10 +23,12 @@ pub fn make_cell(
         seal: None,
     };
     let source = Produce::create(channel, &a, false);
+    let size = crate::rust::interpreter::matcher::r#match::data_size(&a);
     Ok(Datum {
         a,
         persist: false,
         source,
+        size,
     })
 }
 

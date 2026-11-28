@@ -173,7 +173,7 @@ impl DeployRuntime {
     ) {
         Self::graceful_exit(async {
             let term = native::balance_term(address).map_err(|e| vec![e])?;
-            let data = svc
+            let (data, _) = svc
                 .exploratory_deploy(ExploratoryDeployQuery {
                     term,
                     block_hash: block_hash.unwrap_or_default(),
@@ -181,6 +181,7 @@ impl DeployRuntime {
                 })
                 .await?;
             let result = data
+                .post_block_data
                 .first()
                 .ok_or_else(|| vec![format!("no balance returned for {address}")])?;
             let balance = native::parse_balance(result).map_err(|e| vec![e])?;

@@ -427,6 +427,16 @@ where
         self.replay_rspace.check_replay_data().await
     }
 
+    fn require_search_charging(&self) {}
+
+    async fn search_work(
+        &self,
+        pre_state: &SoftCheckpoint<C, P, A, K>,
+        term_log: std::ops::Range<usize>,
+    ) -> Result<Vec<crate::rspace::search_charge::SearchWork>, RSpaceError> {
+        self.replay_rspace.search_work(pre_state, term_log).await
+    }
+
     async fn is_replay(&self) -> bool { self.replay_rspace.is_replay().await }
 
     async fn update_produce(&self, produce: Produce) -> () {

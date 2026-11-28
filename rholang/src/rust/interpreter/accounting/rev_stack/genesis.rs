@@ -244,10 +244,12 @@ fn make_supply_datum(channel: &Par, amount: RevAmount) -> Datum<ListParWithRando
         seal: None,
     };
     let source = Produce::create(channel, &a, false);
+    let size = crate::rust::interpreter::matcher::r#match::data_size(&a);
     Datum {
         a,
         persist: false,
         source,
+        size,
     }
 }
 

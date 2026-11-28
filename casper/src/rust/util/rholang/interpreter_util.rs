@@ -733,6 +733,11 @@ fn handle_errors(
                 Ok(Either::Right(None))
             }
 
+            ReplayFailure::SearchMismatch { msg } => {
+                tracing::warn!("Found replay search mismatch: {}", msg);
+                Ok(Either::Right(None))
+            }
+
             ReplayFailure::ReplayCostMismatch {
                 initial_cost,
                 replay_cost,

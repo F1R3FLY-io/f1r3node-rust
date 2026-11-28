@@ -1266,6 +1266,7 @@ mod merkle_block_hash_tests {
             deploy: signed,
             cost: PCost { cost: 0 },
             deploy_log: vec![],
+            user_log: 0..0,
             is_failed: false,
             system_deploy_error: None,
         }

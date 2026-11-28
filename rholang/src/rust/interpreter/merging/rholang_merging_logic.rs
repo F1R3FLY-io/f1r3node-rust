@@ -23,6 +23,7 @@ use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use rspace_plus_plus::rspace::serializers::serializers;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
+use crate::rust::interpreter::matcher::r#match::data_size;
 use crate::rust::interpreter::rho_type::{RhoBigInt, RhoNumber};
 
 pub struct RholangMergingLogic;
@@ -289,6 +290,7 @@ impl RholangMergingLogic {
 
         // Create datum
         let datum = Datum {
+            size: data_size(&par_with_rnd),
             a: par_with_rnd,
             persist: false,
             source: produce,
@@ -360,7 +362,10 @@ mod tests {
             random_state: vec![0u8; 32],
             seal: None,
         };
-        Datum::create(&"chan".to_string(), lpwr, false)
+        {
+            let size = data_size(&lpwr);
+            Datum::create(&"chan".to_string(), lpwr, false, size)
+        }
     }
 
     fn non_numeric_datum() -> Datum<ListParWithRandom> {
@@ -370,7 +375,10 @@ mod tests {
             random_state: vec![0u8; 32],
             seal: None,
         };
-        Datum::create(&"chan".to_string(), lpwr, false)
+        {
+            let size = data_size(&lpwr);
+            Datum::create(&"chan".to_string(), lpwr, false, size)
+        }
     }
 
     fn change(added: Vec<Vec<u8>>, removed: Vec<Vec<u8>>) -> ChannelChange<Vec<u8>> {

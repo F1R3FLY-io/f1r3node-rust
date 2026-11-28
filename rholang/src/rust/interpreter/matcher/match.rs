@@ -6,10 +6,17 @@ use models::rust::utils::{new_elist_expr, to_vec};
 use prost::Message;
 use rho_pure_eval::Env as PureEnv;
 use rspace_plus_plus::rspace::r#match::Match;
+use rspace_plus_plus::rspace::search_charge::GuardSize;
 
 use super::exports::*;
 use super::fold_match::FoldMatch;
 use super::spatial_matcher::SpatialMatcherContext;
+
+/// The size of a datum as a search is priced: its terms only, since matching
+/// never walks its random state.
+pub fn data_size(data: &ListParWithRandom) -> usize {
+    data.pars.iter().map(|par| par.encoded_len()).sum()
+}
 
 #[derive(Clone, Default)]
 pub struct Matcher;
@@ -65,6 +72,18 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
             }
             None => None,
         }
+    }
+
+    fn pattern_size(&self, pattern: &BindPattern) -> usize { pattern.encoded_len() }
+
+    fn data_size(&self, data: &ListParWithRandom) -> usize { data_size(data) }
+
+    fn guard_size(&self, k: &TaggedContinuation) -> Option<GuardSize> {
+        let guard = k.guard.as_ref().filter(|guard| !is_empty_par(guard))?;
+        Some(GuardSize {
+            size: guard.encoded_len(),
+            references: rho_pure_eval::variable_references(guard),
+        })
     }
 
     /// Cross-channel `where`-clause guard. Called by the matcher

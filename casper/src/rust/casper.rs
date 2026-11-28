@@ -737,6 +737,17 @@ pub struct CasperShardConf {
     /// by default. File does not shrink after sweeping (LMDB holds freed
     /// pages for reuse).
     pub enable_history_pruning: bool,
+    /// Issue #1181. Maintain per-leaf refcounts on the cold-store leaf
+    /// store at every checkpoint commit and retention-window slide.
+    /// Default off; see `CasperConf::enable_cold_gc_bookkeeping` for
+    /// the full rationale and `rspace/history/cold_gc_lmdb.rs` for
+    /// the implementation.
+    pub enable_cold_gc_bookkeeping: bool,
+    /// Issue #1181, Phase 4. Run the cold-store GC worker on every
+    /// history-pruning pass. Requires `enable_cold_gc_bookkeeping`.
+    /// Default off; see `CasperConf::enable_cold_gc_sweep` for the
+    /// rollout rationale.
+    pub enable_cold_gc_sweep: bool,
     pub synchrony_recovery_stall_window: Duration,
     pub synchrony_recovery_cooldown: Duration,
     pub synchrony_recovery_max_bypasses: u32,
@@ -801,6 +812,8 @@ impl CasperShardConf {
             mergeable_channels_gc_depth_buffer: 10,
             enable_block_store_gc: false,
             enable_history_pruning: false,
+            enable_cold_gc_bookkeeping: false,
+            enable_cold_gc_sweep: false,
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),
             synchrony_recovery_max_bypasses: 2,
@@ -822,6 +835,47 @@ impl CasperShardConf {
             deploy_pool_blocks_of_backlog: DEPLOY_POOL_BLOCKS_OF_BACKLOG_DEFAULT,
             proposal_pacing_floor_distance: PROPOSAL_PACING_FLOOR_DISTANCE_DEFAULT,
         }
+    }
+
+    /// Rspace-history retention floor for an anchor at `anchor_block_number`.
+    ///
+    /// When history pruning is enabled, GC retains the floor height and
+    /// newer blocks. Older states can be swept. Archive readers do not
+    /// apply this calculated floor. See
+    /// [`crate::rust::util::rspace_history_horizon::state_retention_floor`].
+    pub fn state_retention_floor(&self, anchor_block_number: i64) -> i64 {
+        crate::rust::util::rspace_history_horizon::state_retention_floor(
+            anchor_block_number,
+            self.max_parent_depth,
+            self.mergeable_channels_gc_depth_buffer,
+        )
+    }
+}
+
+#[cfg(test)]
+mod retention_floor_tests {
+    use super::*;
+
+    /// Issue #1157: the floor a reader checks must come from the shard-governed
+    /// parameters, not a per-node heuristic. Two configs differing only in
+    /// `max_parent_depth` must give different floors at the same anchor.
+    #[test]
+    fn state_retention_floor_tracks_conf_fields() {
+        let mut conf = CasperShardConf::new();
+        conf.max_parent_depth = 100;
+        conf.mergeable_channels_gc_depth_buffer = 10;
+        assert_eq!(conf.state_retention_floor(200), 90);
+
+        conf.max_parent_depth = 50;
+        assert_eq!(conf.state_retention_floor(200), 140);
+
+        // Below genesis clamps to zero.
+        conf.max_parent_depth = 300;
+        assert_eq!(conf.state_retention_floor(100), 0);
+
+        // Sentinel disables the window — floor at genesis.
+        conf.max_parent_depth = i32::MAX;
+        assert_eq!(conf.state_retention_floor(1_000_000), 0);
     }
 }
 

@@ -146,6 +146,7 @@ pub fn basic_processed_deploy(
         deploy,
         cost: PCost { cost: 0 },
         deploy_log: Vec::new(),
+        user_log: 0..0,
         is_failed: false,
         system_deploy_error: None,
     })

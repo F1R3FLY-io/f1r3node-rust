@@ -14,7 +14,7 @@ use casper::rust::api::block_api::{
     BlockNotFoundError, BlockPrunedError, BlockUnavailableError, DeployExpiredError,
     DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
     ExploratoryDeployRejection, InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError,
-    NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError,
+    NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError, PrunedStateError,
     ValidatorNotBondedError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
@@ -103,6 +103,15 @@ pub struct ApiErrorResponse {
     /// retention sweep has advanced past its height, so the body has
     /// been deleted. Permanent on this node; consult an archive.
     ///
+    /// `pruned_state` — a state-reading endpoint
+    /// (`/explore-deploy`, `/explore-deploy-by-block-hash`,
+    /// `/data-at-name-by-block-hash`) was asked to resolve the state at
+    /// a target whose rspace history has been swept past this node's
+    /// retention floor. The response body is a [`PrunedStateErrorResponse`]
+    /// carrying `target_block_hash`, `target_block_height`, and
+    /// `retention_floor` — the same fields the gRPC `pruned` oneof arm
+    /// carries. Permanent on this node; consult an archive.
+    ///
     /// **413 Payload Too Large:**
     /// `deploy_too_large`
     ///
@@ -139,6 +148,28 @@ pub struct ApiErrorResponse {
     pub message: String,
 }
 
+/// 410 Gone body for the state-reader endpoints when the target block's
+/// rspace history has been swept past this node's retention floor. The
+/// `target_block_hash`, `target_block_height`, and `retention_floor`
+/// fields mirror the gRPC `PrunedStateInfo` oneof arm so a client
+/// walking both surfaces can parse the same shape. `error` is always
+/// `pruned_state`; `message` is the human-readable summary.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PrunedStateErrorResponse {
+    /// Machine-readable error kind; always `pruned_state` for this body.
+    pub error: String,
+    /// Human-readable description of the pruning.
+    pub message: String,
+    /// Hex-encoded hash of the block whose state the reader was asked
+    /// for. Matches the hex encoding used elsewhere in the web API.
+    pub target_block_hash: String,
+    /// Height of the target block when it was retained; sourced from the
+    /// DAG metadata index, which is not swept.
+    pub target_block_height: i64,
+    /// The node's current rspace-history retention floor. The target
+    /// block's height is strictly less than this value.
+    pub retention_floor: i64,
+}
 const DEPLOY_POOL_FULL_RETRY_AFTER_SECS: u64 = 5;
 
 pub struct AppError(pub eyre::Error);
@@ -146,6 +177,17 @@ pub struct AppError(pub eyre::Error);
 // Tell axum how to convert `AppError` into a response.
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        // Issue #1165: a `PrunedStateError` carries three typed fields
+        // (target hash, target height, retention floor) that the generic
+        // `{error, message}` envelope would flatten into prose. The gRPC
+        // path routes the same case to a `PrunedStateInfo` oneof arm;
+        // the HTTP path emits 410 Gone with a body carrying the same
+        // fields so a client walking either surface can reuse one parser.
+        if let Some(response) = render_pruned_state(&self.0) {
+            tracing::debug!("API error: {:#}", self.0);
+            return response;
+        }
+
         let (status, error_kind, message) = classify_error(&self.0);
 
         if status.is_server_error() {
@@ -173,6 +215,25 @@ impl IntoResponse for AppError {
 
         response
     }
+}
+
+/// Walk the error chain for a [`PrunedStateError`] and build its typed
+/// 410 Gone body. Returns `None` for every other error so the generic
+/// classifier keeps responsibility for the remaining HTTP mapping.
+/// Mirrors `classify_pruned_state` in the gRPC service so both surfaces
+/// pull from the same chain position.
+fn render_pruned_state(err: &eyre::Error) -> Option<Response> {
+    let pruned = err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<PrunedStateError>())?;
+    let body = PrunedStateErrorResponse {
+        error: "pruned_state".to_string(),
+        message: err.to_string(),
+        target_block_hash: hex::encode(&pruned.target_block_hash),
+        target_block_height: pruned.target_block_height,
+        retention_floor: pruned.retention_floor,
+    };
+    Some((StatusCode::GONE, Json(body)).into_response())
 }
 
 /// `Retry-After` hint for the rejections that carry one. Read from the error
@@ -723,6 +784,7 @@ pub async fn offered_receipt_handler(
     responses(
         (status = 200, description = "Exploratory deploy executed; returns channel data", body = RhoDataResponse),
         (status = 400, description = "Malformed request body, invalid Rholang term, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `readonly_node_required`)", body = ApiErrorResponse),
+        (status = 410, description = "Target state swept past this node's rspace-history retention floor (`pruned_state`); consult an archive", body = PrunedStateErrorResponse),
         (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
         (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
@@ -755,6 +817,7 @@ pub async fn explore_deploy_handler(
         (status = 200, description = "Exploratory deploy executed against the specified block; returns channel data", body = RhoDataResponse),
         (status = 400, description = "Malformed request body, invalid Rholang term, invalid block hash, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
+        (status = 410, description = "Target state swept past this node's rspace-history retention floor (`pruned_state`); consult an archive", body = PrunedStateErrorResponse),
         (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
         (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
@@ -933,6 +996,81 @@ mod tests {
 
         assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(kind, "exploratory_timeout");
+    }
+
+    mod pruned_state {
+        use axum::body::to_bytes;
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+        use casper::rust::api::block_api::PrunedStateError;
+
+        use super::super::{render_pruned_state, AppError};
+
+        fn fixture() -> PrunedStateError {
+            PrunedStateError {
+                target_block_hash: prost::bytes::Bytes::from_static(&[0xab, 0xcd, 0xef]),
+                target_block_height: 42,
+                retention_floor: 100,
+            }
+        }
+
+        // Issue #1165: when the chain carries a `PrunedStateError`, the
+        // web response must be 410 Gone with a typed body that mirrors
+        // the gRPC `PrunedStateInfo` oneof arm. A JSON client must be
+        // able to read `target_block_hash`, `target_block_height`, and
+        // `retention_floor` as separate fields rather than parsing
+        // prose.
+        #[tokio::test]
+        async fn pruned_state_is_410_with_typed_body() {
+            let response = AppError(eyre::Report::new(fixture())).into_response();
+
+            assert_eq!(response.status(), StatusCode::GONE);
+
+            let bytes = to_bytes(response.into_body(), 1024).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["error"], "pruned_state");
+            assert_eq!(body["target_block_hash"], "abcdef");
+            assert_eq!(body["target_block_height"], 42);
+            assert_eq!(body["retention_floor"], 100);
+            assert!(
+                body["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("retention floor"),
+                "message should quote the retention floor: {}",
+                body["message"]
+            );
+        }
+
+        // The error surfaces from BlockAPI wrapped in an eyre chain
+        // (`?` from `BlockAPI::exploratory_deploy` and friends). The
+        // detection must walk `err.chain()`, not just look at the
+        // outermost cause — otherwise the fix would only apply to
+        // bare `PrunedStateError` instances and miss the real path.
+        #[tokio::test]
+        async fn pruned_state_detected_through_eyre_wrap() {
+            let wrapped = eyre::Report::new(fixture())
+                .wrap_err("replay failed")
+                .wrap_err("exploratory deploy failed");
+
+            let response = AppError(wrapped).into_response();
+            assert_eq!(response.status(), StatusCode::GONE);
+
+            let bytes = to_bytes(response.into_body(), 1024).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["error"], "pruned_state");
+            assert_eq!(body["target_block_height"], 42);
+            assert_eq!(body["retention_floor"], 100);
+        }
+
+        // Unrelated errors must not hijack the pruned-state short-circuit;
+        // they have to fall through to the generic `classify_error`
+        // path so the existing error-kind routing still applies.
+        #[test]
+        fn render_pruned_state_returns_none_for_unrelated_errors() {
+            let err = eyre::eyre!("some unrelated failure");
+            assert!(render_pruned_state(&err).is_none());
+        }
     }
 
     mod classification {

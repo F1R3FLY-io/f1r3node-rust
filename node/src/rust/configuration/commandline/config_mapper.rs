@@ -888,6 +888,8 @@ mod tests {
                 mergeable_channels_gc_depth_buffer: 10,
                 enable_block_store_gc: false,
                 enable_history_pruning: false,
+                enable_cold_gc_bookkeeping: false,
+                enable_cold_gc_sweep: false,
                 rejection_search_cap_from_height: None,
                 rejection_search_group_branch_cap:
                     casper::rust::casper_conf::default_rejection_search_group_branch_cap(),

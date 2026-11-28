@@ -336,6 +336,7 @@ mod tests {
             deploy: signed.clone(),
             cost: PCost { cost: 17 },
             deploy_log: Vec::new(),
+            user_log: 0..0,
             is_failed: false,
             system_deploy_error: None,
         };

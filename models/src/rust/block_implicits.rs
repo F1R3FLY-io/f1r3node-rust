@@ -91,6 +91,7 @@ pub fn processed_deploy_gen() -> impl Strategy<Value = ProcessedDeploy> {
         deploy: deploy_data,
         cost: PCost { cost: 0 },
         deploy_log: Vec::new(),
+        user_log: 0..0,
         is_failed: false,
         system_deploy_error: None,
     })

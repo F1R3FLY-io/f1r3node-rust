@@ -1230,6 +1230,7 @@ impl ExecutionBackend for BlockExecutor {
                         cost: entry.compute_phlo,
                     },
                     deploy_log: entry.user_log.clone(),
+                    user_log: 0..entry.user_log.len(),
                     is_failed: matches!(
                         entry.outcome,
                         EnvelopeOutcome::UserFailure | EnvelopeOutcome::Exhausted
