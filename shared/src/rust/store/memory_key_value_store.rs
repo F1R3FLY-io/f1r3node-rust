@@ -95,6 +95,14 @@ impl KeyValueStore for MemoryKeyValueStore {
         Ok(())
     }
 
+    fn contains(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<bool>, KvStoreError> {
+        Ok(self.with_rows(|rows| {
+            keys.iter()
+                .map(|key| rows.contains_key(&encode_length_prefixed(key)))
+                .collect()
+        }))
+    }
+
     fn put_one_if_absent(&self, key: ByteBuffer, value: ByteBuffer) -> Result<bool, KvStoreError> {
         self.with_rows_mut(|rows| match rows.entry(encode_length_prefixed(&key)) {
             std::collections::btree_map::Entry::Vacant(entry) => {

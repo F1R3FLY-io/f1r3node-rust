@@ -235,6 +235,30 @@ fn canonical_set_operations_match_a_rebuilt_set() {
     assert_eq!(ParSetTypeMapper::diff(set.clone(), &[]), set);
 }
 
+// The matcher matches a set in its stored order, which must be the order
+// rebuilding it would give.
+#[test]
+fn a_canonical_set_rebuilt_keeps_its_order() {
+    let pars = create_pars();
+    for rotation in 0..pars.len() {
+        let mut input = pars.clone();
+        input.rotate_left(rotation);
+        if rotation % 2 == 1 {
+            input.reverse();
+        }
+        let canonical = ESet {
+            ps: SortedParHashSet::create_from_vec(input).sorted_pars,
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        };
+        let rebuilt = ParSetTypeMapper::eset_to_par_set(canonical.clone())
+            .ps
+            .sorted_pars;
+        assert_eq!(rebuilt, canonical.ps, "rotation {rotation}");
+    }
+}
+
 fn inserted(set: &SortedParHashSet, elem: &Par) -> Vec<Par> { inserted_ps(&set.sorted_pars, elem) }
 
 fn removed(set: &SortedParHashSet, elem: &Par) -> Vec<Par> { removed_ps(&set.sorted_pars, elem) }

@@ -2350,6 +2350,56 @@ async fn record_directly_finalized_rejects_unknown_hashes_and_propagates_effect_
     assert_eq!(dag.last_finalized_block(), b1.block_hash);
 }
 
+#[tokio::test]
+async fn recovery_snapshot_waits_for_in_flight_finalization() {
+    use std::future::{poll_fn, Future};
+    use std::task::Poll;
+
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    use tokio::sync::oneshot;
+
+    let genesis = genesis_block();
+    let storage = create_dag_storage(&genesis).await;
+    let block = chain_block(1, vec![genesis.block_hash]);
+    storage.insert(&block, InsertMode::Normal).unwrap();
+
+    let (published, observed) = oneshot::channel();
+    let (finish, resume) = oneshot::channel();
+    let mut pause_effect = Some((published, resume));
+    let writer = storage.clone();
+    let hash = block.block_hash.clone();
+    let finalization = tokio::spawn(async move {
+        writer
+            .record_directly_finalized(hash, 1.0, |_| {
+                let pause = pause_effect.take();
+                async move {
+                    if let Some((published, resume)) = pause {
+                        published.send(()).unwrap();
+                        resume.await.unwrap();
+                    }
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+    });
+
+    observed.await.unwrap();
+    assert!(!storage
+        .get_representation()
+        .unwrap()
+        .is_finalized(&block.block_hash)
+        .unwrap());
+    let snapshot = storage.get_representation_after_finalization();
+    tokio::pin!(snapshot);
+    assert!(poll_fn(|cx| Poll::Ready(snapshot.as_mut().poll(cx).is_pending())).await);
+    finish.send(()).unwrap();
+
+    let snapshot = snapshot.await.unwrap();
+    assert!(snapshot.is_finalized(&block.block_hash).unwrap());
+    finalization.await.unwrap();
+}
+
 /// Genesis can reach the DAG as an ordinary block before the approved-block
 /// handshake completes. The approved insert is the only thing that marks it
 /// finalized, and it returns early on a block already stored, so the mark is

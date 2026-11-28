@@ -110,7 +110,10 @@ in {
             nodeGet!((map, nybList.slice(0, n)), *valCh) |
             for (@val <- valCh) {
               if (n == len) {
-                ret!(val.get(suffix))
+                match val {
+                  0 => ret!(Nil)
+                  _ => ret!(val.get(suffix))
+                }
               } else {
                 // Otherwise check if the rest of the path exists.
                 // Bit k set means node k exists.

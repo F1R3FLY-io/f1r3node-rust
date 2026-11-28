@@ -26,7 +26,9 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 
 ## Active Coordination
 
+- **Heartbeat H1 coordination (2026-10-19).** `pi-session-heartbeat-h1-cbc` owns H1 implementation and TASK-021-28 after the runtime handoff. `claude-session-f1r3node-rust-71` runs the outside-sandbox checks. F1/F2 are the baseline at `ed9b3c996`. The [design](designs/deploy-heartbeat-wake.md) records the H1 prototype. Local coordination uses `docs/handoffs/channel-deploy-heartbeat-wake-2026-10-18.md`, not a published reference.
 - **Maintainer identity ratification (2026-11-13).** Status: implemented locally on `ci/maintainer-identity-ratificatio`, claimed by Codex. The maintainer selected active `ci-maintainers` membership as an additional authority for commit authors. Focused policy, workflow, queue, and release checks passed. The registry proposal was removed. Review, commit, App configuration, and rollout through `master` and `ca-canary` remain pending.
+- **Consensus boundary track (2026-10-12).** EPIC-025 tracks the design PR #627 and the implementation by Nama21yo: issue #624 with PR #651, and issue #625. Decision D7 layers the PR #651 lifecycle runtime under the ReplicationMedium contract. Our role on PR #651 and issue #625 is reviewer feedback only.
 
 ### TASK-031-2: Correct HTTP deploy validation errors
 
@@ -278,6 +280,197 @@ tasks:
       - "Tests reject foreign sources, edited merge trees, single-parent additions, forks, and invalid metadata."
       - "A pull_request_target workflow runs only base code and posts CA Daily Provenance on the event head SHA."
       - "The ca-daily queue requires CA Daily Provenance, and the existing workflow invariant checks pass."
+```
+
+---
+
+### EPIC-025: Pluggable State Machine Replication Boundary
+
+```yaml
+---
+epic_id: EPIC-025
+title: "Pluggable State Machine Replication Boundary"
+renumbered: "EPIC-022 until 2026-10-11. Renumbered to EPIC-025, with TASK-022-n to TASK-025-n, because dev uses EPIC-022 for OCI CI Spend Alerting and Runner Cleanup. Its story moved from US-010 to US-011, because ci/testnet-deployment uses US-010 for the test net."
+status: in_progress
+priority: p1
+user_story: US-011
+blocked_by: []
+created_at: 2026-10-05
+updated_at: 2026-11-20
+claimed_by: claude-session-aa467dea
+claimed_at: 2026-10-05T14:00:00Z
+branch: docs/shard-parameter-governance
+pr_base_branch: dev
+consolidated: "2026-10-12. This epic is the single epic for the design (PR #627) and the implementation track: issue #624 with PR #651 (TASK-025-2), and issue #625 (TASK-025-7). Nama21yo writes #624, #625, and PR #651."
+related_prs:
+  - "#627: design documents, draft, branch feature/consensus-neutral-boundary. Merged into docs/shard-parameter-governance on 2026-11-20, which supersedes it."
+  - "#651: lifecycle runtime and CBC Casper adapter, branch feature/consensus-runtime-cordial"
+related_issues: ["#624", "#625"]
+origin: "Four replication mechanisms are planned for F1R3FLY shards: CBC Casper (implemented), Cordial Miners, Casanova, and the RGB peer-clique sidecar with Bitcoin single-use-seal anchoring. Today node services reach CBC Casper directly. RGB SoW2 workstream WS5 requires a shard consensus selection framework."
+related_docs:
+  - docs/artifacts/f1r3fly-consensus-neutral-sm.md
+  - docs/casper/CONSENSUS_PROTOCOL.md
+related_external: "Rholang-RGB docs/sow-2.md (WS5) and docs/design/architecture.md"
+execution_contract:
+  base_branch: dev
+  base_revision: b5cbb51d1
+  scope: "Define one replication boundary that all four mechanisms can implement, move node services onto it, and keep CBC Casper behavior unchanged."
+  design_policy: "No code change before maintainer approval of the TASK-025-1 design document. PR #651 started before this policy and is outside it. Its review aligns it with D7."
+  git_policy: "Commits require /quick-commit consent. The user runs push, merge, and PR operations."
+coupling_survey:
+  date: 2026-10-05
+  consumers: "Only the node and fuzz crates depend on casper. comm PacketHandler and runtime_manager are already neutral."
+  leaks:
+    - "node/src/rust/runtime/setup.rs constructs Estimator and CliqueOracleImpl and calls update_fork_choice_tips_if_stuck."
+    - "node/src/rust/instances/heartbeat_proposer.rs contains latest-message, bonds, justification, and finalization-lag logic."
+    - "The gRPC and HTTP APIs serialize justifications, bonds, and faultTolerance."
+    - "casper util/rholang/interpreter_util.rs takes CasperSnapshot and the finality floor types."
+    - "block-storage KeyValueDagRepresentation, a CBC DAG type, is part of the Casper trait signatures."
+    - "The PoS contract stores the neutral shard parameters (deploy lifespan, minimum phlo price) beside the Casper parameters, and hash_set_casper adopts all of them into CasperShardConf (added 2026-11-20)."
+tasks:
+  - id: TASK-025-1
+    title: "Write the replication boundary design document"
+    status: in_progress
+    claimed_by: claude-session-aa467dea
+    claimed_at: 2026-10-05T14:00:00Z
+    blocked_by: []
+    acceptance:
+      - "The document extends docs/artifacts/f1r3fly-consensus-neutral-sm.md and maps the needs of CBC Casper, Cordial Miners, Casanova, and the RGB peer-clique sidecar."
+      - "The document resolves the OrderingMedium question of section 12 of the note."
+      - "The document assigns each coupling-survey leak to a task and states the migration order."
+      - "Each supported mechanism has a glossary in the form of docs/casper/GLOSSARY.md, and docs/Glossary.md defines the shared boundary terms."
+      - "The document adds the lifecycle layer of PR #651 (decision D7). Sections 5, 7, 12, and 13 use the PR #651 names for lifecycle and configuration, and section 13 uses the task numbers of 2026-10-12."
+      - "A maintainer approves the document before code changes start."
+    decisions_2026_10_05:
+      - "D1: the core trait is ReplicationMedium."
+      - "D2: a shard binds one mechanism at start. The binding never changes, and no runtime switching exists."
+      - "D3: the deploy pool and the rejected-deploy buffer are generic node services. A medium has no deploy submission method."
+      - "D4: anchoring is available to every mechanism. RGB anchors to Bitcoin layer 1 and to Lightning state channels."
+      - "D5: each mechanism has its own glossary."
+      - "D6: the boundary states the coalition rule of each medium in the vocabulary of semitopology (Gabbay, arXiv:2402.03253). MembershipView gets an optional CoalitionStructure field, a proposal for maintainer review."
+    decisions_2026_10_12:
+      - "D7: two layers. ConsensusRuntime, ConsensusAdapter, and consensus.protocol from PR #651 are the lifecycle layer: admission, deadlines, readiness, supervision, and shutdown. ReplicationMedium is the semantic contract that an adapter supplies: commits, finality, membership, and capabilities. The design changes to match the code where the names differ."
+    deliverables:
+      - docs/designs/replication-boundary.md
+      - docs/peer-clique/GLOSSARY.md
+      - docs/casanova/GLOSSARY.md
+      - docs/cordial-miners/GLOSSARY.md
+      - "docs/Glossary.md (nine boundary terms)"
+      - "docs/casper/GLOSSARY.md (boundary mapping)"
+      - "docs/artifacts/f1r3fly-consensus-neutral-sm.md (RGB and Casanova corrections, section 12 resolved)"
+      - "docs/semitopology/GLOSSARY.md and README.md (D6)"
+      - "docs/Glossary.md (four coalition terms: membership view, coalition structure, actionable coalition, intertwined coalition structure)"
+      - "docs/designs/replication-boundary.md section 16 (coalition structure) and open questions 5 to 7"
+      - "Coalition structure mappings in the CBC Casper, peer-clique, Casanova, and Cordial Miners glossaries"
+    work_log: docs/work-logs/task-025-1-2026-10-05.md
+    review_status: "Draft complete. The D7 update is complete (2026-10-12). Maintainer approval is pending."
+  - id: TASK-025-2
+    title: "Add the shared lifecycle runtime and the CBC Casper adapter (issue #624, PR #651)"
+    status: review
+    claimed_by: "Nama21yo (external contributor)"
+    blocked_by: ["PR #651"]
+    rescoped: "2026-10-12. Before, this task was the interface crate and the CBC Casper adapter. PR #651 delivers the lifecycle part, and the semantic types moved to TASK-025-3. This task also takes the parts of the former TASK-025-3 (factory and binding) and TASK-025-4 (heartbeat move) that PR #651 delivers."
+    our_role: "Reviewer feedback only. No commits to the PR branch."
+    delivered_in_pr_651:
+      - "consensus/api and consensus/runtime: bounded admission, command deadlines, readiness phases, TaskScope supervision, and drain and cleanup budgets."
+      - "The CBC Casper adapter in node/src/rust/consensus/casper owns startup, recovery, workers, native decoding, store identity checks, and the existing APIs."
+      - "node/src/rust/consensus/factory.rs and the cbc-casper Cargo feature select the compiled protocol. consensus.protocol = \"cbc-casper\" is the default."
+      - "node/src/rust/consensus/manifest.rs binds the data directory to the protocol and the chain before readiness."
+      - "setup.rs and node_runtime.rs no longer construct Casper lifecycle types. heartbeat_proposer.rs moved into the Casper adapter."
+    review_history:
+      - "2026-10-06: multi-agent review on c60ef99fc confirmed three major findings and one minor finding."
+      - "2026-10-12: commits 65df8298e, 1a32c8f38, 7334a090a, and 0cde12068 fix the four findings, each with tests."
+    acceptance:
+      - "The acceptance criteria of issue #624 pass."
+      - "A ci-heavy run on the current head passes, and the PR passes the dev merge queue."
+      - "The Casper network acceptance suite passes, or maintainers accept a documented host limitation."
+      - "The interface names agree with D7, or maintainers approve the documented differences."
+  - id: TASK-025-3
+    title: "Add the semantic boundary types and the binding-mismatch test"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-025-1, TASK-025-2]
+    rescoped: "2026-10-12. Before, this task was the factory and the shard binding, which PR #651 delivers (TASK-025-2)."
+    acceptance:
+      - "consensus/api defines CommitRecord, FinalityEvent, MembershipView, and the ReplicationMedium contract, with no DAG parent, justification, bond, or equivocation types."
+      - "The CBC Casper adapter supplies these types with no behavior change."
+      - "A test starts a node with one protocol and restarts it with another. The node refuses the restart (design section 14)."
+  - id: TASK-025-4
+    title: "Move proposal timing behind the medium"
+    status: pending
+    priority: p3
+    claimed_by: null
+    blocked_by: [TASK-025-3]
+    rescoped: "2026-10-12. PR #651 moves heartbeat_proposer.rs into the Casper adapter, so the host no longer starts it. This task keeps only the change to medium-driven timing."
+    acceptance:
+      - "The adapter drives proposal timing through the medium tick of design section 7. The latest-message, bonds, and finalization-lag logic stays inside the CBC implementation."
+  - id: TASK-025-5
+    title: "Add the neutral API endpoints and typed not-supported errors"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-025-3]
+    rescoped: "2026-10-12. PR #651 gives the Casper adapter all existing APIs. This task adds the neutral endpoints of design section 11."
+    acceptance:
+      - "The node serves deploy status, commit lookup, last finalized commit, finality stream, state queries, and the membership view through neutral endpoints."
+      - "The gRPC and HTTP APIs carry justifications, bonds, and faultTolerance only through a CBC-scoped extension. Existing CBC clients keep wire compatibility."
+      - "A Casper-only query on another protocol returns a typed error: gRPC Unimplemented or HTTP 501. Issue #625 uses the same errors."
+  - id: TASK-025-6
+    title: "Separate the execution glue from CBC snapshot and finality types"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-025-3]
+    acceptance:
+      - "interpreter_util.rs takes boundary types instead of CasperSnapshot and the finality floor types."
+  - id: TASK-025-7
+    title: "Integrate Cordial Miners through its own adapter (issue #625)"
+    status: pending
+    claimed_by: "Nama21yo (external contributor)"
+    blocked_by: [TASK-025-2]
+    added: "2026-10-12. PR #651 removed its Cordial commits (cbb058d28). The adapter comes in a separate PR."
+    our_role: "Reviewer feedback only."
+    acceptance:
+      - "The acceptance criteria of issue #625 pass."
+      - "The adapter uses the TASK-025-3 types when they exist, and the TASK-025-5 not-supported errors."
+  - id: TASK-025-8
+    title: "Prove the boundary with a test-only second mechanism and a soak"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-025-3, TASK-025-4, TASK-025-5, TASK-025-6]
+    renumbered: "TASK-025-7 until 2026-10-12."
+    acceptance:
+      - "A test-only second mechanism runs the node wiring tests without CBC code. PR #651 already runs the host tests with --no-default-features."
+      - "The full test suite passes and a soak on the merged change gives the same consensus results as before the change."
+  - id: TASK-025-9
+    title: "Design shard parameter governance and complete the consensus-neutral boundary specification"
+    status: in_progress
+    claimed_by: claude-session-d376e13c
+    claimed_at: 2026-11-20T21:22:44Z
+    branch: docs/shard-parameter-governance
+    pr_base_branch: dev
+    blocked_by: []
+    origin: "Maintainer standup of 2026-11-20 (metaweta, spreston8, jeffrey-l-turner). A running shard cannot change a validation-critical parameter without a new genesis. This does not block the test net. It blocks the production launch."
+    acceptance:
+      - "docs/designs/shard-parameter-governance.md classifies every validation-critical parameter and setting as bound, governed, aligned, or node-local, with its source and its side of the boundary."
+      - "The design compares off-chain governance, on-chain governance with node checks, and on-chain governance with Rholang checks, and the two activation approaches. It selects none."
+      - "The design states the visibility rule for slash and neglect verdicts."
+      - "docs/designs/replication-boundary.md section 17 places shard parameters at the boundary."
+      - "docs/Glossary.md and docs/casper/GLOSSARY.md define the governance terms."
+      - "The architecture documents (f1r3fly_architecture.md, CONSENSUS_PROTOCOL.md, CONSENSUS_PHILOSOPHY.md, and docs/casper/README.md) point to the design and state the current facts."
+      - "The design records the D-01 protocol-version conflict for the versioning follow-up on ca-canary and ca-release, and does not resolve it."
+      - "metaweta and spreston8 review the pull request. The maintainers select options in a later review."
+      - "The designs separate neutral and CBC Casper parameters in storage, adoption, and authorization (governance design section 6.1, boundary design sections 13 and 17)."
+  - id: TASK-025-10
+    title: "Move the neutral shard parameters to a neutral store and a neutral adoption service"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-025-9]
+    origin: "Leak added 2026-11-20. The PoS contract stores the neutral shard parameters, and hash_set_casper adopts them into CasperShardConf."
+    acceptance:
+      - "A neutral store holds the neutral shard parameters. The PoS contract keeps only the CBC Casper namespace."
+      - "A neutral node service adopts the neutral values. The CBC Casper adapter adopts only its namespace, and no neutral service reads CasperShardConf."
+      - "A shard that started before the move keeps its genesis values with no behavior change."
+      - "The test-only stub mechanism gets the neutral values and passes the deploy validity tests."
+---
 ```
 
 ---
@@ -1336,6 +1529,8 @@ tasks:
       - "Each fix behavior has a test that fails before its change and passes after it."
       - "Two consecutive integration preflights pass test_load with 0 unfinalized deploys in every phase."
       - "A 24-hour soak shows a test_load failure rate lower than soak 37640235959 on the same base."
+    notes:
+      - "2026-10-25: the empty-heartbeat candidate is PR #768 (F1, F2, and H1, TASK-021-28). H1 removed the failing high phases but failed its finalization p95 threshold (design section 5.2), so it needs a revision. Issue #24 measures this task's gate on dev first (issue #764)."
     candidate_fix_empty_heartbeat_blocks: "If the soak shows that the heartbeat lane builds many empty blocks in the failing phases, suppress empty heartbeat blocks while user deploys are pending or finality advances. This changes proposer behavior and the liveness mechanism that the discharged heartbeat proposal amplification bound claim covers, so it needs its own pending claim, a TDD plan, and evidence that finality still advances without deploys."
     candidate_fix_api_lfb: "If the measurement implicates the API path, bond_status and exploratory_deploy read the stored LFB (dag.last_finalized_block) instead of computing it. This changes cbc=mandatory casper code, so it needs a pending claim and a TDD cycle first, with a test that two overlapping LFB requests apply the finalization effect once for each block."
   - id: TASK-021-14
@@ -1513,6 +1708,35 @@ tasks:
       - "An evidence-copy test with a stale session directory that is still written copies only the files of the failed session."
       - "A maintainer accepts the review package for both CbC-mandatory files."
       - "A daily soak after the merge has .subprocess-data near 1 MB after each segment, and residual-writers.txt names why the owner match missed."
+  - id: TASK-021-28
+    title: "Revise and verify the H1 heartbeat amplification claim"
+    status: in_progress
+    claimed_by: pi-session-heartbeat-h1-cbc
+    claimed_at: 2026-10-18T21:32:01Z
+    branch: fix/issue-24-deploy-heartbeat-wake
+    pr_base_branch: dev
+    blocked_by: []
+    scope: "H1 implementation, claim revision, and source-bound verification. The runtime owner transferred H1 on 2026-10-18 after F1/F2 landed at ed9b3c996."
+    design: docs/designs/deploy-heartbeat-wake.md
+    stage: "H1 acceptance at 0a4acca7a is recorded from the maintainer handoff with its stated limits. Performance and separate display-projection acceptance remain open. External policy/read-back audit is requested."
+    notes:
+      - "H1 claim: 9a7294eafa86da423339f522ec6742c28b763bc3:docs/claims/heartbeat-proposal-amplification-bound.md. Verification record: 9a7294eafa86da423339f522ec6742c28b763bc3:docs/casper/validation/heartbeat-h1-verification-2026-10-19.md."
+      - "Renumbered from TASK-021-26 on 2026-10-25. The ID collided with the soak disk task that dev merged first. The claim spec and the validation records of 2026-10-19 keep TASK-021-26, because evidence ledgers pin them."
+      - "2026-10-21 comparison (issue #24 comment 6319658249, design section 5.2): H1 failed the finalization p95 threshold of design section 5.1. H1 had 26.8 s, and F1/F2 had 24.7 s. The slow share and the block rate passed."
+      - "2026-10-23 standup plan (issue #764, design section 7): H1 goes into dev and, through ca-sync, into the release train. It merges only after it meets all three thresholds. The revision continues on this branch, or on a new fix/ branch that is promoted to master for a weekend soak."
+      - "2026-11-26 plan (user): PR #768 stays in draft. F1 and F2 go forward separately on current dev. F1 wakes the heartbeat when a deploy arrives and autopropose is off. F2 rechecks at the end of the cooldown. Both keep the cooldown. H1 adds an exception to the cooldown and has not qualified yet."
+      - "2026-11-26 evidence state: no paired H1 result is newer than the 2026-10-21 comparison. The cost-accounting changes on ca-canary and ca-release removed the quadratic active-set work from the PoS epoch close and rewrote withdrawal scheduling. A-LIN stops the accounting protocol from adopting a finalized block that does not extend the main chain of the previous finalized block. None of these changes shows the H1 latency on dev or master, which use legacy PoS."
+      - "2026-11-26 CA port blocker: the accounting proposer can build a block that carries execution records and no new deploys. Block creation marks those records cited. The H1 rejection after the build can then discard the block, and later proposals skip the records. Keep H1 off on the accounting path until the deploy-only check runs before those updates. A test must show that the ordinary heartbeat still publishes record-only blocks."
+      - "2026-11-26 step 1 (dev): run new CI and a timing comparison for F1 and F2 on current dev. Compare a revised H1 with that F1 and F2 baseline over at least 20 matched high phases. H1 must meet all three recorded thresholds. Renew the correctness evidence for the updated code. The proposer.rs record is older than the dev merge ce70d8ee1."
+      - "2026-11-26 merge requirement: qualify the same F1/F2 change on dev and ca-canary before merging it into dev. Apply the same requirement to a future H1 candidate."
+      - "2026-11-26 step 2 (master and ca-canary): after the change merges to dev, run Promote and Back-merge from master with operation=promote, then with operation=ca-sync. The sync takes the current dev tip. Mergify merges the sync after its review and CI. The sync needs no soak before the merge."
+      - "2026-11-26 step 3 (ca-release): before a canary revision with H1 on is promoted, verify that order and execution both advance under load and that A-LIN records zero holds. The promoted ca-release commit needs its own successful 60-hour soak before the tag."
+    acceptance:
+      - "The revised claim is pending before H1 code begins, and the prior evidence remains unchanged in history."
+      - "The implementation satisfies the routine-block bound, the request-credit bound, and the nonempty exemption under the configured cooldown."
+      - "Tests cover mode expiry, re-entry, failed requests, actual block classification, and recovery timing after exempt blocks."
+      - "Source-bound evidence covers heartbeat_proposer.rs and the proposer.rs nonempty-request enforcement. No historical discharge is reused for H1."
+      - "Required verification and maintainer acceptance complete before this task is marked complete."
 ---
 ```
 

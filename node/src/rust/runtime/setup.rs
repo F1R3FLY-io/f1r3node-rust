@@ -1,10 +1,13 @@
 // See node/src/main/scala/coop/rchain/node/runtime/Setup.scala
 // Imports needed for function signature and return type
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::blocks::ingest::block_ingest::{self, IngestSetup};
 use casper::rust::blocks::proposer::proposer::{ProductionProposer, ProposerResult};
 use casper::rust::casper::{Casper, MultiParentCasper};
@@ -19,9 +22,13 @@ use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::p2p::packet_handler::PacketHandler;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::transport::transport_layer::TransportLayer;
+use futures::StreamExt;
+use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::ApprovedBlock;
-use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use shared::rust::shared::f1r3fly_event::{BlockFinalised, F1r3flyEvent};
+use shared::rust::shared::f1r3fly_events::{EventStream, F1r3flyEvents};
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{mpsc, oneshot, watch, RwLock};
 use tokio::task::JoinSet;
 use tracing::{debug, info, trace, warn};
 
@@ -485,8 +492,40 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             .map_err(|e| CasperError::Other(format!("Failed to get rspace stores: {}", e)))?;
 
         let mergeable_store = RuntimeManager::mergeable_store(&mut rnode_store_manager).await?;
+
+        // Cold-store GC bookkeeping (issue #1181). When the operator
+        // enables `casper.enable-cold-gc-bookkeeping`, open the two
+        // dedicated sub-DBs and wire an `LmdbColdGc`; otherwise use
+        // `NoopColdGc` so the hot path is a cheap virtual call and no
+        // extra files are touched.
+        let cold_gc: std::sync::Arc<dyn rspace_plus_plus::rspace::history::cold_gc::ColdGc> =
+            if conf.casper.enable_cold_gc_bookkeeping {
+                let refcount = rnode_store_manager
+                    .store("rspace-cold-refcount".to_string())
+                    .await
+                    .map_err(|e| {
+                        CasperError::Other(format!("Failed to open rspace-cold-refcount: {}", e))
+                    })?;
+                let retention = rnode_store_manager
+                    .store("rspace-retention-set".to_string())
+                    .await
+                    .map_err(|e| {
+                        CasperError::Other(format!("Failed to open rspace-retention-set: {}", e))
+                    })?;
+                tracing::info!(
+                "[Setup] cold-GC bookkeeping ENABLED (issue #1181); refcount + retention stores opened"
+            );
+                std::sync::Arc::new(
+                    rspace_plus_plus::rspace::history::cold_gc_lmdb::LmdbColdGc::new(
+                        refcount, retention,
+                    ),
+                )
+            } else {
+                std::sync::Arc::new(rspace_plus_plus::rspace::history::cold_gc::NoopColdGc)
+            };
+
         tracing::debug!("[Setup] Creating RuntimeManager with history...");
-        let result = RuntimeManager::create_with_history_config(
+        let result = RuntimeManager::create_with_history_config_with_cold_gc(
             rspace_stores,
             mergeable_store,
             Genesis::default_mergeable_tags_arc(),
@@ -505,6 +544,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 exploratory
             },
             Arc::new(ReplayLock::with_permits(validation_width + 2)),
+            cold_gc,
         );
         tracing::debug!("[Setup] RuntimeManager created successfully");
         result
@@ -727,6 +767,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         None
     };
 
+    let propose_f_for_api = trigger_propose_f_opt.clone().filter(|_| conf.autopropose);
+
     // Proposer state ref - created if trigger_propose_f_opt exists
     // Wrapped in Arc for sharing across multiple API instances
     let proposer_state_ref_opt: Option<Arc<RwLock<ProposerState>>> = trigger_propose_f_opt
@@ -773,6 +815,10 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             conf.protocol_server.disable_state_exporter,
             heartbeat_signal_ref.clone(),
             conf.standalone,
+            casper::rust::engine::casper_launch::deploy_heartbeat_wake_for_node(
+                conf.autopropose,
+                &trigger_propose_f_opt,
+            ),
             {
                 // Project the merged FileIoProvisioning into the
                 // bundle format `fs_generator` consumes.  Combines
@@ -836,15 +882,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     // API Servers - gRPC services for REPL, Deploy, Propose, and LSP
     let is_node_read_only = conf.casper.validator_private_key.is_none();
 
-    // Conditional propose function for autopropose.
-    // In validator nodes this must remain enabled even without deployer private key
-    // so normal deploy flow can trigger propose on-chain in non-dev mode.
-    let propose_f_for_api = if conf.autopropose {
-        trigger_propose_f_opt.clone()
-    } else {
-        None
-    };
-
     let block_report_api_for_return = block_report_api.clone();
 
     // Transfer unforgeable channel — used for transfer extraction from block reports
@@ -855,84 +892,72 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
     // Shared is_ready flag — set to true when engine enters Running state.
     // Used by both HTTP and gRPC status endpoints.
-    let is_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let is_ready = Arc::new(AtomicBool::new(false));
 
-    // Event-driven background tasks: transfer extraction + readiness tracking.
-    // Listens on the broadcast event stream and handles:
-    // - BlockFinalised: pre-warm ReportStore cache, extract transfers, emit TransfersAvailable
-    // - EnteredRunningState: flip is_ready flag for status endpoints
-    {
-        use futures::StreamExt;
-        use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
-
-        let is_ready_flag = is_ready.clone();
-        let mut event_stream = event_publisher.consume();
+    let event_stream = event_publisher.consume();
+    let reports = if block_report_prewarm_enabled(is_node_read_only, conf.dev_mode) {
         const PREWARM_QUEUE_CAPACITY: usize = 64;
-        let (report_tx, mut report_rx) = tokio::sync::mpsc::channel::<
-            shared::rust::shared::f1r3fly_event::BlockFinalised,
-        >(PREWARM_QUEUE_CAPACITY);
+        let (report_tx, mut report_rx) = mpsc::channel::<BlockFinalised>(PREWARM_QUEUE_CAPACITY);
         let report_api = block_report_api.clone();
         let transfer_unforgeable_for_reports = transfer_unforgeable.clone();
         let event_pub_for_reports = event_publisher.clone();
-        let prewarm_enabled = block_report_prewarm_enabled(is_node_read_only, conf.dev_mode);
+        let report_dag = block_dag_storage.clone();
+        let (recover, recovery_requested) = watch::channel(());
+        let reported = Arc::new(parking_lot::Mutex::new(RecentBlockReports::default()));
+        let live_reported = reported.clone();
+        let live_report_api = report_api.clone();
+        let live_transfer = transfer_unforgeable_for_reports.clone();
+        let live_events = event_pub_for_reports.clone();
+
+        let startup_height = report_dag.last_finalized_height().unwrap_or(0);
+        let startup_history = load_startup_report_history(startup_height, || {
+            let history_dag = report_dag.clone();
+            let history_api = report_api.clone();
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    startup_finalized_report_hashes(&history_dag, &history_api)
+                })
+                .await?
+            }
+        })
+        .await;
 
         tokio::spawn(async move {
             while let Some(finalized) = report_rx.recv().await {
                 metrics::gauge!("block_report.prewarm_queue_depth", "source" => "node")
                     .set(report_rx.len() as f64);
                 handle_block_finalized(
-                    report_api.clone(),
-                    transfer_unforgeable_for_reports.clone(),
-                    event_pub_for_reports.clone(),
-                    finalized.block_hash,
-                    finalized.block_number,
+                    &live_report_api,
+                    &live_transfer,
+                    &live_events,
+                    finalized,
+                    &live_reported,
                 )
                 .await;
             }
         });
-
         tokio::spawn(async move {
-            while let Some(item) = event_stream.next().await {
-                let event = match item {
-                    Ok(event) => event,
-                    Err(lagged) => {
-                        metrics::counter!(
-                            "node.event_consumer.lagged_events",
-                            "source" => "node"
-                        )
-                        .increment(lagged.0);
-                        tracing::warn!(
-                            skipped = lagged.0,
-                            "Node event consumer lagged; the skipped events are lost to \
-                             report prewarm and readiness tracking"
-                        );
-                        continue;
-                    }
-                };
-                match &event {
-                    F1r3flyEvent::BlockFinalised(finalized) if prewarm_enabled => {
-                        if report_tx.send(finalized.clone()).await.is_err() {
-                            metrics::counter!(
-                                "block_report.prewarm_skipped",
-                                "source" => "node",
-                                "reason" => "queue_closed"
-                            )
-                            .increment(1);
-                            tracing::warn!(
-                                block_hash = %finalized.block_hash,
-                                "Block report prewarm queue closed"
-                            );
-                        }
-                    }
-                    F1r3flyEvent::EnteredRunningState(_) => {
-                        is_ready_flag.store(true, std::sync::atomic::Ordering::Release);
-                        tracing::info!("Node is ready (EnteredRunningState received)");
-                    }
-                    _ => {}
-                }
-            }
+            let recover_once = || {
+                recover_block_reports(
+                    &report_dag,
+                    &report_api,
+                    &transfer_unforgeable_for_reports,
+                    &event_pub_for_reports,
+                    &reported,
+                    &startup_history,
+                )
+            };
+            run_report_recovery(recovery_requested, recover_once).await;
         });
-    }
+        Some((report_tx, recover))
+    } else {
+        None
+    };
+    tokio::spawn(consume_runtime_events(
+        event_stream,
+        is_ready.clone(),
+        reports,
+    ));
 
     // Clone trigger_propose_f_opt before passing to api_servers since we'll use it later for web_api, admin_web_api, and return value
     let trigger_propose_f_opt_for_web_api = trigger_propose_f_opt.clone();
@@ -1286,6 +1311,482 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     ))
 }
 
+async fn consume_runtime_events(
+    mut stream: EventStream,
+    is_ready: Arc<AtomicBool>,
+    reports: Option<(mpsc::Sender<BlockFinalised>, watch::Sender<()>)>,
+) {
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(F1r3flyEvent::BlockFinalised(finalized)) => {
+                if let Some((sender, recover)) = &reports {
+                    let reason = match sender.try_send(finalized) {
+                        Ok(()) => continue,
+                        Err(TrySendError::Full(_)) => {
+                            recover.send_replace(());
+                            "queue_full"
+                        }
+                        Err(TrySendError::Closed(finalized)) => {
+                            tracing::warn!(block_hash = %finalized.block_hash, "Block report prewarm queue closed");
+                            "queue_closed"
+                        }
+                    };
+                    metrics::counter!(
+                        "block_report.prewarm_skipped", "source" => "node", "reason" => reason
+                    )
+                    .increment(1);
+                }
+            }
+            Ok(F1r3flyEvent::EnteredRunningState(_)) => {
+                is_ready.store(true, Ordering::Release);
+                tracing::info!("Node is ready (EnteredRunningState received)");
+            }
+            Err(lagged) => {
+                metrics::counter!("node.event_consumer.lagged_events", "source" => "node")
+                    .increment(lagged.0);
+                tracing::warn!(skipped = lagged.0, "Node event consumer lagged");
+                if let Some((_, recover)) = &reports {
+                    recover.send_replace(());
+                }
+            }
+            Ok(_) => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod report_event_tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
+    use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+    use tokio::sync::{mpsc, watch};
+
+    fn finalized(height: i64) -> F1r3flyEvent {
+        F1r3flyEvent::block_finalised(
+            format!("{height:064x}"),
+            height,
+            0,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            String::new(),
+            0,
+        )
+    }
+
+    #[tokio::test]
+    async fn recovery_runs_one_pass_at_startup() {
+        let (request, requested) = watch::channel(());
+        let (attempt, mut attempts) = mpsc::unbounded_channel();
+        let worker = tokio::spawn(async move {
+            let mut count = 0;
+            super::run_report_recovery(requested, || {
+                count += 1;
+                attempt.send(count).unwrap();
+                std::future::ready(Ok(()))
+            })
+            .await;
+        });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), attempts.recv())
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        assert!(attempts.try_recv().is_err());
+        drop(request);
+        worker.await.unwrap();
+        assert!(attempts.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_single_request_retries_until_recovery_succeeds() {
+        let (request, requested) = watch::channel(());
+        let (attempt, mut attempts) = mpsc::unbounded_channel();
+        let worker = tokio::spawn(async move {
+            let mut count = 0;
+            super::run_report_recovery(requested, || {
+                count += 1;
+                attempt.send(count).unwrap();
+                std::future::ready(if (2..4).contains(&count) {
+                    Err(eyre::eyre!("temporary storage error"))
+                } else {
+                    Ok(())
+                })
+            })
+            .await;
+        });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), attempts.recv())
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        request.send_replace(());
+        for count in 2..=4 {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(5), attempts.recv())
+                    .await
+                    .unwrap(),
+                Some(count)
+            );
+        }
+        drop(request);
+        worker.await.unwrap();
+        assert!(attempts.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_full_report_queue_requests_recovery_without_blocking_readiness() {
+        let events = F1r3flyEvents::new();
+        let stream = events.consume();
+        let (reports, mut queued) = mpsc::channel(1);
+        let (recover, mut recovery_requested) = watch::channel(());
+        let ready = Arc::new(AtomicBool::new(false));
+        events.publish(finalized(1)).unwrap();
+        events.publish(finalized(2)).unwrap();
+        events
+            .publish(F1r3flyEvent::entered_running_state(String::new()))
+            .unwrap();
+
+        let task = tokio::spawn(super::consume_runtime_events(
+            stream,
+            ready.clone(),
+            Some((reports, recover)),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(1), recovery_requested.changed())
+            .await
+            .expect("the dropped finalization must request recovery")
+            .unwrap();
+        assert!(ready.load(Ordering::Acquire));
+        assert_eq!(queued.try_recv().unwrap().block_number, 1);
+        assert!(queued.try_recv().is_err());
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_gap_in_the_event_stream_requests_recovery_without_a_later_finalization() {
+        let events = F1r3flyEvents::new();
+        events.seal_startup();
+        let stream = events.consume();
+        let (reports, mut queued) = mpsc::channel(1);
+        let (recover, mut recovery_requested) = watch::channel(());
+        events.publish(finalized(1)).unwrap();
+        for _ in 0..256 {
+            events
+                .publish(F1r3flyEvent::node_started(String::new()))
+                .unwrap();
+        }
+
+        let task = tokio::spawn(super::consume_runtime_events(
+            stream,
+            Arc::new(AtomicBool::new(false)),
+            Some((reports, recover)),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(1), recovery_requested.changed())
+            .await
+            .expect("a broadcast gap must request recovery")
+            .unwrap();
+        assert!(queued.try_recv().is_err());
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_report_dropped_by_a_full_queue_publishes_transfers_once() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+        use casper::rust::api::block_report_api::BlockReportError;
+        use casper::rust::engine::engine_cell::EngineCell;
+        use casper::rust::report_store::ReportStore;
+        use casper::rust::safety_oracle::CliqueOracleImpl;
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        use futures::{FutureExt, StreamExt};
+        use models::casper::{
+            report_proto, BlockEventInfo, DeployInfo, DeployInfoWithEventData, ReportCommProto,
+            ReportConsumeProto, ReportPhase, ReportProduceProto, ReportProto, SingleReport,
+        };
+        use models::rhoapi::{ListParWithRandom, Par};
+        use models::rust::block_implicits::get_random_block;
+        use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoString};
+        use rholang::rust::interpreter::util::vault_address::VaultAddress;
+        use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+        use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+
+        let storage = BlockDagKeyValueStorage::new(&mut InMemoryStoreManager::new())
+            .await
+            .unwrap();
+        let genesis = get_random_block(
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![]),
+            None,
+            None,
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        storage.insert(&genesis, InsertMode::Approved).unwrap();
+        let ancestor = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        storage
+            .insert(&ancestor, InsertMode::Equivocation {
+                sibling: vec![0xee; 32].into(),
+            })
+            .unwrap();
+        let block = get_random_block(
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![ancestor.block_hash.clone()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        storage.insert(&block, InsertMode::Normal).unwrap();
+
+        let transfer_channel = crate::rust::web::transaction::transfer_unforgeable();
+        let (_, public_key) = Secp256k1.new_key_pair();
+        let sender = VaultAddress::from_public_key(&public_key)
+            .unwrap()
+            .to_base58();
+        let report = BlockEventInfo {
+            deploys: vec![DeployInfoWithEventData {
+                deploy_info: Some(DeployInfo {
+                    sig: "deploy".into(),
+                    deployer: hex::encode(public_key.bytes),
+                    ..Default::default()
+                })
+                .into(),
+                report: vec![SingleReport {
+                    phase: ReportPhase::User as i32,
+                    events: vec![ReportProto {
+                        report: Some(report_proto::Report::Comm(ReportCommProto {
+                            consume: Some(ReportConsumeProto {
+                                channels: vec![transfer_channel.clone()],
+                                ..Default::default()
+                            }),
+                            produces: vec![ReportProduceProto {
+                                channel: Some(transfer_channel.clone()),
+                                data: Some(ListParWithRandom {
+                                    pars: vec![
+                                        RhoString::create_par(sender),
+                                        Par::default(),
+                                        RhoString::create_par("recipient".into()),
+                                        RhoBigInt::create_par(&7.into()),
+                                        Par::default(),
+                                        transfer_channel.clone(),
+                                    ],
+                                    random_state: vec![],
+                                }),
+                            }],
+                        })),
+                    }],
+                }],
+            }],
+            ..Default::default()
+        };
+        let reports = ReportStore::new(Arc::new(InMemoryKeyValueStore::new()));
+        reports
+            .put(vec![(block.block_hash.to_vec(), report.clone())])
+            .unwrap();
+        let api = super::BlockReportAPI::new(
+            casper::rust::reporting_casper::noop(),
+            reports.clone(),
+            EngineCell::init(),
+            KeyValueBlockStore::new(
+                Arc::new(InMemoryKeyValueStore::new()),
+                Arc::new(InMemoryKeyValueStore::new()),
+            ),
+            CliqueOracleImpl,
+            false,
+        );
+
+        let startup_height = storage.last_finalized_height().unwrap();
+        let mut startup_reads = 0;
+        let startup = super::load_startup_report_history(startup_height, || {
+            startup_reads += 1;
+            std::future::ready(if startup_reads == 1 {
+                Err(eyre::eyre!("temporary startup read failure"))
+            } else {
+                super::startup_finalized_report_hashes(&storage, &api)
+            })
+        })
+        .await;
+        assert_eq!(startup_reads, 2);
+        assert!(matches!(
+            &startup,
+            super::StartupReportHistory::FinalizedHashes(_)
+        ));
+
+        storage
+            .record_directly_finalized(block.block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        let events = F1r3flyEvents::new();
+        let stream = events.consume();
+        let (sender, mut queued) = mpsc::channel(1);
+        let (recover, mut recovery_requested) = watch::channel(());
+        let F1r3flyEvent::BlockFinalised(mut lost) = finalized(2) else {
+            unreachable!()
+        };
+        lost.block_hash = hex::encode(&block.block_hash);
+        events.publish(finalized(0)).unwrap();
+        events
+            .publish(F1r3flyEvent::BlockFinalised(lost.clone()))
+            .unwrap();
+        let task = tokio::spawn(super::consume_runtime_events(
+            stream,
+            Arc::new(AtomicBool::new(false)),
+            Some((sender, recover)),
+        ));
+        tokio::time::timeout(Duration::from_secs(1), recovery_requested.changed())
+            .await
+            .expect("the dropped finalization must request recovery")
+            .unwrap();
+        assert_eq!(queued.try_recv().unwrap().block_number, 0);
+        assert!(queued.try_recv().is_err());
+
+        let mut outcomes = events.consume();
+        let reported = parking_lot::Mutex::new(super::RecentBlockReports::default());
+        let error = super::recover_block_reports(
+            &storage,
+            &api,
+            &transfer_channel,
+            &events,
+            &reported,
+            &startup,
+        )
+        .await
+        .expect_err("the finalized equivocation still needs a report");
+        assert!(matches!(
+            error.downcast_ref::<BlockReportError>(),
+            Some(BlockReportError::CasperNotInitialized)
+        ));
+        assert!(reported.lock().hashes.contains_key(&block.block_hash));
+        reports
+            .put(vec![(
+                ancestor.block_hash.to_vec(),
+                BlockEventInfo::default(),
+            )])
+            .unwrap();
+        super::handle_block_finalized(&api, &transfer_channel, &events, lost, &reported).await;
+        reported.lock().publish(
+            &events,
+            &transfer_channel,
+            block.block_hash.clone(),
+            2,
+            1,
+            &report,
+        );
+        super::recover_block_reports(
+            &storage,
+            &api,
+            &transfer_channel,
+            &events,
+            &reported,
+            &startup,
+        )
+        .await
+        .unwrap();
+
+        assert!(reported.lock().hashes.contains_key(&ancestor.block_hash));
+        let Some(Ok(F1r3flyEvent::TransfersAvailable(event))) =
+            outcomes.next().now_or_never().flatten()
+        else {
+            panic!("recovery must publish the transfer event");
+        };
+        assert_eq!(event.block_hash, hex::encode(&block.block_hash));
+        assert_eq!(event.deploys[0].transfers[0].amount, "7");
+        assert!(outcomes.next().now_or_never().is_none());
+
+        let startup = super::StartupReportHistory::FinalizedHashes(
+            super::startup_finalized_report_hashes(&storage, &api).unwrap(),
+        );
+        assert!(startup.should_suppress_publication(&block.block_hash, 2));
+        assert!(startup.should_suppress_publication(&ancestor.block_hash, 1));
+        let restarted = parking_lot::Mutex::new(super::RecentBlockReports::default());
+        super::recover_block_reports(
+            &storage,
+            &api,
+            &transfer_channel,
+            &events,
+            &restarted,
+            &startup,
+        )
+        .await
+        .unwrap();
+        assert!(
+            outcomes.next().now_or_never().is_none(),
+            "startup history is not republished"
+        );
+
+        let mut startup_reads = 0;
+        let fallback = super::load_startup_report_history(startup_height, || {
+            startup_reads += 1;
+            std::future::ready(Err(eyre::eyre!("startup history unavailable")))
+        })
+        .await;
+        assert_eq!(startup_reads, 2);
+        assert!(fallback.should_suppress_publication(&block.block_hash, startup_height));
+        let restarted = parking_lot::Mutex::new(super::RecentBlockReports::default());
+        super::recover_block_reports(
+            &storage,
+            &api,
+            &transfer_channel,
+            &events,
+            &restarted,
+            &fallback,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(
+                outcomes.next().now_or_never().flatten(),
+                Some(Ok(F1r3flyEvent::TransfersAvailable(event)))
+                    if event.block_hash == hex::encode(&block.block_hash)
+            ),
+            "a new block still publishes transfers after a startup history read error"
+        );
+        task.abort();
+    }
+}
+
 /// Pre-warm the ReportStore cache for a finalized block, then extract transfers
 /// and publish a `TransfersAvailable` event so WebSocket clients can receive
 /// transfer data without polling the REST API.
@@ -1293,17 +1794,18 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 /// Runs as a fire-and-forget task — errors (e.g. on validators where block
 /// reports are unavailable) are logged at debug level and silently ignored.
 async fn handle_block_finalized(
-    report_api: casper::rust::api::block_report_api::BlockReportAPI,
-    transfer_unforgeable: models::rhoapi::Par,
-    event_publisher: shared::rust::shared::f1r3fly_events::F1r3flyEvents,
-    block_hash: String,
-    block_number: i64,
+    report_api: &BlockReportAPI,
+    transfer_unforgeable: &models::rhoapi::Par,
+    event_publisher: &F1r3flyEvents,
+    finalized: BlockFinalised,
+    reported: &parking_lot::Mutex<RecentBlockReports>,
 ) {
-    use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
-
-    use crate::rust::web::block_info_enricher::extract_transfers_from_report;
-
-    let block_hash_bytes: prost::bytes::Bytes = match hex::decode(&block_hash) {
+    let BlockFinalised {
+        block_hash,
+        block_number,
+        ..
+    } = finalized;
+    let block_hash_bytes: BlockHash = match hex::decode(&block_hash) {
         Ok(bytes) => bytes.into(),
         Err(e) => {
             tracing::warn!(
@@ -1314,38 +1816,207 @@ async fn handle_block_finalized(
             return;
         }
     };
-    match report_api.prewarm_block_report(block_hash_bytes).await {
-        Ok(report) => {
-            let transfers_by_deploy = extract_transfers_from_report(&report, &transfer_unforgeable);
-
-            let deploy_transfers = build_deploy_transfers(transfers_by_deploy);
-
-            if !deploy_transfers.is_empty() {
-                if let Err(e) = event_publisher.publish(F1r3flyEvent::transfers_available(
-                    block_hash.clone(),
-                    block_number,
-                    deploy_transfers,
-                )) {
-                    tracing::warn!(
-                        %block_hash,
-                        error = %e,
-                        "Failed to publish TransfersAvailable event"
-                    );
-                }
-            }
-        }
+    if reported.lock().hashes.contains_key(&block_hash_bytes) {
+        return;
+    }
+    match report_api
+        .prewarm_block_report(block_hash_bytes.clone())
+        .await
+    {
+        Ok(report) => reported.lock().publish(
+            event_publisher,
+            transfer_unforgeable,
+            block_hash_bytes,
+            block_number,
+            report_api.recovery_window_start(block_number),
+            &report,
+        ),
         Err(e) => {
-            // Nothing retries a pre-cache: the event has been consumed and no
-            // path revisits finalized blocks, so this block's transfers stay
-            // unavailable until something traces it by hand.
             tracing::warn!(
                 target: "f1r3fly.node.transaction",
                 %block_hash,
                 error = %e,
-                "Block report pre-cache failed; transfers for this block will be unavailable"
+                "Block report pre-cache failed"
             );
         }
     }
+}
+
+fn startup_finalized_report_hashes(
+    storage: &BlockDagKeyValueStorage,
+    report_api: &BlockReportAPI,
+) -> eyre::Result<HashSet<BlockHash>> {
+    if storage.last_finalized_block().is_none() {
+        return Ok(HashSet::new());
+    }
+    storage.with_representation(|dag| {
+        let mut finalized = HashSet::new();
+        for page in report_api.finalized_report_pages(dag)? {
+            finalized.extend(page?.into_iter().map(|(hash, _)| hash));
+        }
+        Ok(finalized)
+    })
+}
+
+enum StartupReportHistory {
+    FinalizedHashes(HashSet<BlockHash>),
+    HeightFallback(i64),
+}
+
+impl StartupReportHistory {
+    fn should_suppress_publication(&self, hash: &BlockHash, height: i64) -> bool {
+        match self {
+            Self::FinalizedHashes(hashes) => hashes.contains(hash),
+            Self::HeightFallback(startup_height) => height <= *startup_height,
+        }
+    }
+}
+
+async fn load_startup_report_history<F>(
+    startup_height: i64,
+    mut load: impl FnMut() -> F,
+) -> StartupReportHistory
+where
+    F: Future<Output = eyre::Result<HashSet<BlockHash>>>,
+{
+    match load().await {
+        Ok(hashes) => return StartupReportHistory::FinalizedHashes(hashes),
+        Err(error) => {
+            tracing::warn!(%error, "Could not read finalized report history at startup; retrying")
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    match load().await {
+        Ok(hashes) => StartupReportHistory::FinalizedHashes(hashes),
+        Err(error) => {
+            tracing::warn!(%error, startup_height, "Could not read finalized report history after retry; limiting recovered transfer notifications to blocks above the startup LFB");
+            StartupReportHistory::HeightFallback(startup_height)
+        }
+    }
+}
+
+async fn run_report_recovery<F: Future<Output = eyre::Result<()>>>(
+    mut requested: watch::Receiver<()>,
+    mut recover: impl FnMut() -> F,
+) {
+    use std::time::Duration;
+
+    loop {
+        let mut delay = Duration::from_secs(1);
+        while let Err(error) = recover().await {
+            tracing::warn!(%error, ?delay, "Block report recovery incomplete; retrying");
+            tokio::time::sleep(delay).await;
+            if requested.has_changed().is_err() {
+                return;
+            }
+            delay = (delay * 2).min(Duration::from_secs(60));
+        }
+        if requested.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+async fn recover_block_reports(
+    storage: &BlockDagKeyValueStorage,
+    report_api: &BlockReportAPI,
+    transfer_unforgeable: &models::rhoapi::Par,
+    event_publisher: &F1r3flyEvents,
+    reported: &parking_lot::Mutex<RecentBlockReports>,
+    startup_history: &StartupReportHistory,
+) -> eyre::Result<()> {
+    if storage.last_finalized_height().is_none() {
+        return Ok(());
+    }
+    let dag = storage.get_representation_after_finalization().await?;
+    report_api
+        .recover_finalized_reports(
+            &dag,
+            |hash| !reported.lock().hashes.contains_key(hash),
+            |hash, height, report| {
+                let mut reported = reported.lock();
+                let start = report_api.recovery_window_start(height);
+                if startup_history.should_suppress_publication(&hash, height) {
+                    reported.record(hash, height, start);
+                } else {
+                    reported.publish(
+                        event_publisher,
+                        transfer_unforgeable,
+                        hash,
+                        height,
+                        start,
+                        &report,
+                    );
+                }
+            },
+        )
+        .await?;
+    Ok(())
+}
+
+#[derive(Default)]
+struct RecentBlockReports {
+    hashes: HashMap<BlockHash, i64>,
+    start: i64,
+}
+
+impl RecentBlockReports {
+    fn publish(
+        &mut self,
+        events: &F1r3flyEvents,
+        transfer_unforgeable: &models::rhoapi::Par,
+        hash: BlockHash,
+        height: i64,
+        start: i64,
+        report: &models::casper::BlockEventInfo,
+    ) {
+        if !self.hashes.contains_key(&hash)
+            && publish_report_transfers(
+                events,
+                transfer_unforgeable,
+                hex::encode(&hash),
+                height,
+                report,
+            )
+        {
+            self.record(hash, height, start);
+        }
+    }
+
+    fn record(&mut self, hash: BlockHash, height: i64, start: i64) {
+        if start > self.start {
+            self.start = start;
+            self.hashes.retain(|_, height| *height >= start);
+        }
+        if height >= self.start {
+            self.hashes.insert(hash, height);
+        }
+    }
+}
+
+fn publish_report_transfers(
+    events: &F1r3flyEvents,
+    transfer_unforgeable: &models::rhoapi::Par,
+    hash: String,
+    height: i64,
+    report: &models::casper::BlockEventInfo,
+) -> bool {
+    use crate::rust::web::block_info_enricher::extract_transfers_from_report;
+
+    let transfers =
+        build_deploy_transfers(extract_transfers_from_report(report, transfer_unforgeable));
+    if transfers.is_empty() {
+        return true;
+    }
+    if let Err(error) = events.publish(F1r3flyEvent::transfers_available(
+        hash.clone(),
+        height,
+        transfers,
+    )) {
+        tracing::warn!(block_hash = %hash, %error, "Failed to publish TransfersAvailable event");
+        return false;
+    }
+    true
 }
 
 fn build_deploy_transfers(

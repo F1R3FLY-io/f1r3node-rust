@@ -7,6 +7,7 @@ use models::rhoapi::{
 };
 use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash;
+use rspace_plus_plus::rspace::search_charge::SearchWork;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/Costs.scala
 #[derive(Debug, Clone, PartialEq, Default, Eq, Hash)]
@@ -108,6 +109,29 @@ pub fn comparison_cost() -> Cost { Cost::create(3, "comparison") }
 
 // A match step is a pattern level or an element a split reads or copies.
 pub fn match_steps_cost(steps: usize) -> Cost { Cost::create(steps as i64, "match steps") }
+
+// Trying a candidate costs about three phlo of evaluation, and rejecting it
+// late about one phlo per three bytes of its datum and pattern.
+const SEARCH_CANDIDATE_COST: u64 = 3;
+const SEARCH_BYTES_PER_PHLO: u64 = 3;
+
+// A send's or receive's search for its match, by the work it could do.
+pub fn search_cost(work: SearchWork) -> Cost {
+    let phlo = work
+        .candidates
+        .saturating_mul(SEARCH_CANDIDATE_COST)
+        .saturating_add(work.bytes.div_ceil(SEARCH_BYTES_PER_PHLO));
+    // Saturates: a charge past i64::MAX is past every phlo limit.
+    Cost::create(i64::try_from(phlo).unwrap_or(i64::MAX), "search")
+}
+
+// Every search a replayed term's log records, each priced as play charged it.
+pub fn searches_cost(work: &[SearchWork]) -> Cost {
+    let phlo = work.iter().fold(0i64, |total, search| {
+        total.saturating_add(search_cost(*search).value)
+    });
+    Cost::create(phlo, "search")
+}
 
 // Strings compare byte by byte up to the shorter one's length.
 pub fn string_comparison_cost(left_len: usize, right_len: usize) -> Cost {

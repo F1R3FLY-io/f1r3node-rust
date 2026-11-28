@@ -21,7 +21,9 @@ new
   _newVault,
   _create,
   _systemVault,
-  _transferTemplate
+  _transferTemplate,
+  _createVaultIfMissing,
+  _createAuthKeyIfMissing
 in {
   rl!(`rho:system:makeMint`, *MakeMintCh) |
   rl!(`rho:system:authKey`, *AuthKeyCh) |
@@ -32,10 +34,16 @@ in {
        @(_, Either)   <- EitherCh &
        TreeHashMap    <- TreeHashMapCh) {
     // Each invocation of the SystemVault contract uses a different mint.
-    new mintCh, vaultMapStore, initVault in {
-      // Initializes the vaultMapStore.
+    new mintCh, vaultMapStore, authKeyMapStore, initVault in {
+      // Initializes the vaultMapStore and the authKeyMapStore. The
+      // authKeyMap caches one AuthKey per vault address, so that
+      // repeated `deployerAuthKey` / `unforgeableAuthKey` calls for
+      // the same address reuse the cached bundle instead of installing
+      // a new persistent `authKey("challenge", ...)` continuation each
+      // time (see issue #1156).
       TreeHashMap!("init", 2, *vaultMapStore) |
-      for (@vaultMap <- vaultMapStore) {
+      TreeHashMap!("init", 2, *authKeyMapStore) |
+      for (@vaultMap <- vaultMapStore & @authKeyMap <- authKeyMapStore) {
         // Called from VaultsGenerator:
         //   SystemVault!("init", *ret)
         new initContinue in {
@@ -51,11 +59,18 @@ in {
         } |
         @MakeMint!(*mintCh) |
         for (mint <- mintCh) {
-          // Initializes a vault with given name, address, and purse containing the amount.
+          // Initializes a vault with given name, address, and purse
+          // containing the amount, and pre-populates the authKeyMap
+          // for this vault address. The pre-population keeps the
+          // exploratory-deploy cost in sync with the real-deploy cost:
+          // real deploys warm the cache during pre-charge, exploratory
+          // deploys skip pre-charge; a cache entry seeded at genesis
+          // means the user term sees a hit either way.
           contract initVault(name, @address, @initialAmount) = {
-            new purseCh in {
+            new purseCh, authKeyPrewarmCh in {
               mint!("makePurse", initialAmount, *purseCh) |
-              for (purse <- purseCh) {
+              _createAuthKeyIfMissing!(address, *authKeyPrewarmCh) |
+              for (purse <- purseCh; _ <- authKeyPrewarmCh) {
                 _newVault!(*name, address, *purse)
               }
             }
@@ -69,7 +84,7 @@ in {
               for (@deployerPubKeyBytes <- deployerPubKeyBytesCh) {
                 VaultAddress!("fromPublicKey", deployerPubKeyBytes, *vaultAddrCh) |
                 for (@deployerVaultAddress <- vaultAddrCh) {
-                  @AuthKey!("make", (*_systemVault, deployerVaultAddress), *ret)
+                  _createAuthKeyIfMissing!(deployerVaultAddress, *ret)
                 }
               }
             }
@@ -79,17 +94,55 @@ in {
             new VaultAddress(`rho:vault:address`), vaultAddrCh in {
               VaultAddress!("fromUnforgeable", *unf, *vaultAddrCh) |
               for (@unfVaultAddress <- vaultAddrCh) {
-                @AuthKey!("make", (*_systemVault, unfVaultAddress), *ret)
+                _createAuthKeyIfMissing!(unfVaultAddress, *ret)
               }
             }
           } |
-          // Either retrieves or creates corresponding System vault either.
-          // Uses `TreeHashMap.getOrCreate`, whose per-leaf lock serializes
-          // two parallel calls on the same fresh address: the first caller
-          // runs the factory and installs the vault; the second sees the
-          // installed value and returns it unchanged. No globally-shared
-          // channel is consumed+produced, so two blocks that each register
-          // a different fresh address merge cleanly.
+          // Returns the cached AuthKey bundle for `vaultAddress`, creating
+          // one on the first call. The AuthKey's shape is constant for a
+          // given vault address, so a single bundle serves every call —
+          // the per-deploy `AuthKey!("make", ...)` is only run on a miss
+          // instead of on every call.
+          //
+          // The one-shot `factory` receive is consumed either by
+          // `TreeHashMap.getOrCreate` (on a miss) or by the fallback
+          // `factory!(Nil)` send (on a hit), so no persistent factory
+          // continuation stays in the tuple space. The pattern mirrors
+          // `_createVaultIfMissing` for vault factories.
+          contract _createAuthKeyIfMissing(@vaultAddress, retCh) = {
+            new factory, factoryUsed, factoryClosed, authKeyCh in {
+              factoryUsed!(false) |
+              for (reply <- factory) {
+                match *reply {
+                  Nil => factoryClosed!(Nil)
+                  _ => {
+                    for (_ <- factoryUsed) {
+                      new authKeyMakeCh in {
+                        @AuthKey!("make", (*_systemVault, vaultAddress), *authKeyMakeCh) |
+                        for (@authKey <- authKeyMakeCh) {
+                          factoryUsed!(true) |
+                          reply!(authKey)
+                        }
+                      }
+                    }
+                  }
+                }
+              } |
+              TreeHashMap!("getOrCreate", authKeyMap, vaultAddress, *factory, *authKeyCh) |
+              for (@authKey <- authKeyCh) {
+                for (@used <- factoryUsed) {
+                  if (used) {
+                    factoryClosed!(Nil)
+                  } else {
+                    factory!(Nil)
+                  }
+                } |
+                for (_ <- factoryClosed) {
+                  retCh!(authKey)
+                }
+              }
+            }
+          } |
           contract SystemVault(@"findOrCreate", @vaultAddress, retCh) = {
             new vaultAddressValidCh, vaultAddressValidEitherCh in {
               // Validate Vault address first.
@@ -101,31 +154,57 @@ in {
                     retCh!(vaultAddressEither)
                   }
                   _ => {
-                    new factory, gocCh in {
-                      // The factory creates a fresh vault and sends the
-                      // `bundle+{*systemVault}` on the provided channel. It
-                      // runs under the leaf lock, so it fires at most once
-                      // per address per deploy.
-                      contract factory(ret) = {
-                        new vaultResCh in {
-                          _makeVault!(vaultAddress, 0, *vaultResCh) |
-                          for (@eitherVault <- vaultResCh) {
-                            match eitherVault {
-                              (true, vault) => ret!(vault)
-                              _ => ret!(Nil)
-                            }
-                          }
-                        }
-                      } |
-                      TreeHashMap!("getOrCreate", vaultMap, vaultAddress, *factory, *gocCh) |
-                      for (@vault <- gocCh) {
+                    new vaultCh in {
+                      TreeHashMap!("get", vaultMap, vaultAddress, *vaultCh) |
+                      for (@vault <- vaultCh) {
                         if (vault == Nil) {
-                          retCh!((false, "Couldn't create vault"))
+                          _createVaultIfMissing!(vaultAddress, *retCh)
                         } else {
                           retCh!((true, vault))
                         }
                       }
                     }
+                  }
+                }
+              }
+            }
+          } |
+          contract _createVaultIfMissing(@vaultAddress, retCh) = {
+            new factory, factoryUsed, factoryClosed, vaultCh in {
+              factoryUsed!(false) |
+              for (reply <- factory) {
+                match *reply {
+                  Nil => factoryClosed!(Nil)
+                  _ => {
+                    for (_ <- factoryUsed) {
+                      new vaultResCh in {
+                        _makeVault!(vaultAddress, 0, *vaultResCh) |
+                        for (@eitherVault <- vaultResCh) {
+                          factoryUsed!(true) |
+                          match eitherVault {
+                            (true, vault) => reply!(vault)
+                            _ => reply!(Nil)
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              } |
+              TreeHashMap!("getOrCreate", vaultMap, vaultAddress, *factory, *vaultCh) |
+              for (@vault <- vaultCh) {
+                for (@used <- factoryUsed) {
+                  if (used) {
+                    factoryClosed!(Nil)
+                  } else {
+                    factory!(Nil)
+                  }
+                } |
+                for (_ <- factoryClosed) {
+                  if (vault == Nil) {
+                    retCh!((false, "Couldn't create vault"))
+                  } else {
+                    retCh!((true, vault))
                   }
                 }
               }

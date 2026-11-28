@@ -53,6 +53,8 @@ for metric in \
     block_creator_empty_block_skipped \
     block_creator_empty_block_built \
     heartbeat_proposals \
+    heartbeat_deploy_wake \
+    heartbeat_cooldown_recheck \
     dag_merge_rejection_selection_time \
     dag_merge_apply_trie_actions_time \
     block_replay_phase_user_deploys_work \

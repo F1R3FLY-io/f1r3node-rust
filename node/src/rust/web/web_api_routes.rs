@@ -14,6 +14,7 @@ use crate::rust::api::web_api::{
 };
 use crate::rust::web::shared_handlers::{
     self, offload, ApiErrorResponse, AppError, AppJson, AppPath, AppQuery, AppState,
+    PrunedStateErrorResponse,
 };
 
 #[derive(Debug, Deserialize)]
@@ -155,9 +156,10 @@ pub async fn prepare_deploy_post_handler(
     responses(
         (status = 200, description = "Channel data at the given name in the specified block", body = RhoDataResponse),
         (status = 400, description = "Malformed request body or invalid block hash (`invalid_request_body`, `invalid_hash`)", body = ApiErrorResponse),
+        (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
+        (status = 410, description = "Target state swept past this node's rspace-history retention floor (`pruned_state`); consult an archive", body = PrunedStateErrorResponse),
         (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
         (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`)", body = ApiErrorResponse),
-        (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"
