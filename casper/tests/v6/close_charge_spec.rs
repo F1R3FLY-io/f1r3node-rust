@@ -1,0 +1,765 @@
+use std::sync::Arc;
+
+use casper::rust::genesis::contracts::vault::Vault;
+use casper::rust::genesis::genesis::Genesis;
+use casper::rust::util::construct_deploy;
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::v6::backend::ExecutionBackend;
+use casper::rust::v6::block_record::{BlockRecord, EnvelopeOutcome};
+use casper::rust::v6::executor::BlockExecutor;
+use casper::rust::v6::genesis_wallets::read_wallet_balance;
+use casper::rust::v6::record::{ExecutionRecord, VoidReason};
+use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use models::rust::block::state_hash::StateHash;
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, Body, F1r3flyState, Header, ProcessedDeploy,
+};
+use prost::bytes::Bytes;
+use rholang::rust::interpreter::accounting::rev_stack::compute::compute_wallet_owner;
+use rholang::rust::interpreter::accounting::rev_stack::WalletOwner;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
+
+use crate::util::genesis_builder::GenesisBuilder;
+use crate::util::rholang::resources::mk_runtime_manager;
+
+const FUNDS: u64 = 20_000_000;
+
+struct Party {
+    sk: PrivateKey,
+    pk: PublicKey,
+    owner: WalletOwner,
+}
+
+fn party() -> Party {
+    let (sk, pk) = Secp256k1.new_key_pair();
+    let owner = WalletOwner::from_public_key(&pk).unwrap();
+    Party { sk, pk, owner }
+}
+
+async fn shard(funded: &[&Party]) -> (Arc<RuntimeManager>, StateHash) {
+    shard_at_floor(funded, 1).await
+}
+
+async fn shard_at_floor(funded: &[&Party], floor: i64) -> (Arc<RuntimeManager>, StateHash) {
+    let rm = mk_runtime_manager(
+        "v6-close-charge",
+        Some(Genesis::default_mergeable_tags_arc()),
+    )
+    .await;
+    let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    genesis.version = PROTOCOL_V6;
+    genesis.proof_of_stake.epoch_length = 1;
+    genesis.proof_of_stake.quarantine_length = 10;
+    genesis.proof_of_stake.min_phlo_price =
+        shared::rust::token_amount::TokenAmount::new((floor).into()).unwrap();
+    genesis.vaults = funded
+        .iter()
+        .map(|p| Vault {
+            vault_address: VaultAddress::from_public_key(&p.pk).unwrap(),
+            initial_balance: shared::rust::token_amount::TokenAmount::new((FUNDS as u128).into())
+                .unwrap(),
+        })
+        .collect();
+    let block = Genesis::create_genesis_block_with_policy(
+        &rm,
+        &genesis,
+        Some(&ShardResourcePolicy::default()),
+    )
+    .await
+    .unwrap();
+    (Arc::new(rm), block.body.state.post_state_hash.clone())
+}
+
+fn envelope(term: &str, ts: i64, who: &Party) -> ProcessedDeploy {
+    envelope_limited(term, ts, who, 200_000)
+}
+
+fn envelope_limited(term: &str, ts: i64, who: &Party, limit: i64) -> ProcessedDeploy {
+    ProcessedDeploy::empty(
+        construct_deploy::source_deploy(
+            term.to_string(),
+            ts,
+            Some(limit),
+            Some(1.into()),
+            Some(who.sk.clone()),
+            None,
+            Some("root".to_string()),
+        )
+        .unwrap(),
+    )
+}
+
+fn block(number: i64, deploys: Vec<ProcessedDeploy>, proposer: &Party) -> BlockMessage {
+    BlockMessage {
+        block_hash: Bytes::from(format!("v6-close-charge-{number}").into_bytes()),
+        header: Header {
+            parents_hash_list: vec![],
+            timestamp: number,
+            version: 1,
+            extra_bytes: Bytes::new(),
+            chain_id: Bytes::new(),
+        },
+        body: Body {
+            state: F1r3flyState {
+                pre_state_hash: Bytes::new(),
+                post_state_hash: Bytes::new(),
+                bonds: vec![],
+                block_number: number,
+            },
+            deploys,
+            rejected_deploys: vec![],
+            system_deploys: vec![],
+            extra_bytes: Bytes::new(),
+            applied_from_scope: vec![],
+            merge_base: Bytes::new(),
+            v6: None,
+        },
+        justifications: vec![],
+        sender: proposer.pk.bytes.clone(),
+        seq_num: number as i32,
+        sig: Bytes::new(),
+        sig_algorithm: String::new(),
+        shard_id: "root".to_string(),
+        extra_bytes: Bytes::new(),
+    }
+}
+
+async fn run_record(
+    executor: &BlockExecutor,
+    root: &StateHash,
+    block: &BlockMessage,
+) -> BlockRecord {
+    let record = executor
+        .execute(root, block)
+        .await
+        .expect("the block executes");
+    for entry in record.executed() {
+        assert_eq!(entry.outcome, EnvelopeOutcome::Completed);
+    }
+    let replayed = executor
+        .replay(&record, block)
+        .await
+        .expect("the block replays");
+    assert_eq!(&replayed, record.post_root());
+    record
+}
+
+async fn balance(rm: &RuntimeManager, root: &StateHash, owner: &WalletOwner) -> u64 {
+    read_wallet_balance(rm, root, owner).await.unwrap()
+}
+
+struct Close {
+    proposer: u64,
+    compute: u64,
+}
+
+async fn close(
+    rm: &RuntimeManager,
+    pre: &StateHash,
+    record: &BlockRecord,
+    proposer: &Party,
+) -> Close {
+    let settlement = record.settlement().unwrap();
+    let post = record.post_root();
+    let proposer_after_settlement =
+        balance(rm, pre, &proposer.owner).await + settlement.proposer_credit;
+    let compute_after_settlement =
+        balance(rm, pre, &compute_wallet_owner()).await + settlement.compute_credit;
+    Close {
+        proposer: proposer_after_settlement - balance(rm, post, &proposer.owner).await,
+        compute: balance(rm, post, &compute_wallet_owner()).await - compute_after_settlement,
+    }
+}
+
+fn bond_term(continuation: &str) -> String {
+    format!(
+        r#"new rb(`rho:rev:bond`), deployerId(`rho:system:deployerId`), rl(`rho:registry:lookup`), posCh,
+               bonded, registered, handleCh in {{
+             rl!(`rho:system:pos`, *posCh) |
+             for (@(_, PoS) <- posCh) {{
+               rb!("bond", (*deployerId, 1000), *bonded) |
+               for (@(true, receipt) <- bonded) {{ @PoS!("bond", receipt, 1000, *registered, *handleCh) }} |
+               for (@r <- registered) {{ @"registered"!(r) }} |
+               for (@h <- handleCh) {{ @"handle"!(h) | {continuation} }}
+             }}
+           }}"#
+    )
+}
+
+fn charging(rm: &Arc<RuntimeManager>, _root: &StateHash) -> BlockExecutor {
+    BlockExecutor::new(rm.clone(), 2)
+}
+
+#[tokio::test]
+async fn the_close_cost_is_recorded_and_nobody_is_charged_for_it() {
+    let (alice, proposer, other) = (party(), party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer, &other]).await;
+    let executor = charging(&rm, &genesis);
+
+    let record = run_record(&executor, &genesis, &block(1, vec![], &proposer)).await;
+    let charged = close(&rm, &genesis, &record, &proposer).await;
+    assert!(record.close_phlo() > 0, "the close's PoS code is metered");
+    assert_eq!(charged.proposer, 0, "the proposer is not charged");
+    assert_eq!(
+        charged.compute, 0,
+        "the compute wallet gets nothing from the close"
+    );
+
+    let by_other = run_record(&executor, &genesis, &block(1, vec![], &other)).await;
+    assert_eq!(by_other.close_phlo(), record.close_phlo());
+    assert_eq!(close(&rm, &genesis, &by_other, &other).await.proposer, 0);
+}
+
+#[tokio::test]
+async fn the_close_cost_is_phlo_and_does_not_follow_the_shard_floor() {
+    let proposer = party();
+    let (rm1, genesis1) = shard_at_floor(&[&proposer], 1).await;
+    let (rm3, genesis3) = shard_at_floor(&[&proposer], 3).await;
+    let at1 = run_record(
+        &charging(&rm1, &genesis1),
+        &genesis1,
+        &block(1, vec![], &proposer),
+    )
+    .await;
+    let at3 = run_record(
+        &charging(&rm3, &genesis3),
+        &genesis3,
+        &block(1, vec![], &proposer),
+    )
+    .await;
+    assert_eq!(at1.close_phlo(), at3.close_phlo());
+    assert_eq!(close(&rm3, &genesis3, &at3, &proposer).await.proposer, 0);
+}
+
+#[tokio::test]
+async fn a_record_with_another_close_cost_does_not_replay() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = charging(&rm, &genesis);
+    let b = block(
+        1,
+        vec![envelope("new x in { x!(1) }", 1, &alice)],
+        &proposer,
+    );
+    let record = run_record(&executor, &genesis, &b).await;
+    for kappa in [0, record.close_phlo() - 1, record.close_phlo() + 1] {
+        let forged = BlockRecord::decode(&record.encode())
+            .unwrap()
+            .with_close_phlo(kappa);
+        let refused = executor.replay(&forged, &b).await.unwrap_err().to_string();
+        assert!(refused.contains("the close's cost"), "{refused}");
+    }
+}
+
+#[tokio::test]
+async fn a_continuation_fired_in_the_close_charges_its_installer() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = charging(&rm, &genesis);
+    let heavy = "new y in { y!(1) | for (_ <- y) { new z in { z!(2) | for (_ <- z) { Nil } } } }";
+
+    let light = run_record(
+        &executor,
+        &genesis,
+        &block(1, vec![envelope(&bond_term("Nil"), 1, &alice)], &proposer),
+    )
+    .await;
+    let loaded = run_record(
+        &executor,
+        &genesis,
+        &block(1, vec![envelope(&bond_term(heavy), 1, &alice)], &proposer),
+    )
+    .await;
+
+    let light_close = close(&rm, &genesis, &light, &proposer).await;
+    let loaded_close = close(&rm, &genesis, &loaded, &proposer).await;
+    assert_eq!((light_close.proposer, loaded_close.proposer), (0, 0));
+    let installer_pays = |close: &Close| close.compute - close.proposer;
+    assert!(installer_pays(&loaded_close) > installer_pays(&light_close));
+    let light_left = balance(&rm, light.post_root(), &alice.owner).await;
+    let loaded_left = balance(&rm, loaded.post_root(), &alice.owner).await;
+    assert!(
+        loaded_left < light_left,
+        "the installer pays more for the heavier continuation"
+    );
+}
+
+#[tokio::test]
+async fn genesis_charges_nobody() {
+    let (alice, bob) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &bob]).await;
+    assert_eq!(balance(&rm, &genesis, &compute_wallet_owner()).await, 0);
+    assert_eq!(balance(&rm, &genesis, &alice.owner).await, FUNDS);
+    assert_eq!(balance(&rm, &genesis, &bob.owner).await, FUNDS);
+}
+
+#[tokio::test]
+async fn no_deployment_makes_the_close_fail() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, genesis) = shard(&[&alice, &bob, &proposer]).await;
+    let executor = charging(&rm, &genesis);
+    let endless = r#"contract @"spin"(@n) = { @"spin"!(n + 1) } | @"spin"!(0)"#;
+    let junk = r#"new rl(`rho:registry:lookup`), posCh, ret in {
+        rl!(`rho:system:pos`, *posCh) |
+        for (@(_, PoS) <- posCh) {
+          @PoS!("bond", "junk", -5, *ret, *ret) |
+          @PoS!("withdraw", Nil, *ret) |
+          @PoS!("closeBlock", Nil, *ret) |
+          @PoS!("slash", Nil, Nil, *ret) |
+          @PoS!("noSuchMethod")
+        }
+      }"#;
+    let b = block(
+        1,
+        vec![
+            envelope_limited(&bond_term(endless), 1, &alice, (FUNDS - 120_000) as i64),
+            envelope(junk, 2, &bob),
+        ],
+        &proposer,
+    );
+    let record = executor
+        .execute(&genesis, &b)
+        .await
+        .expect("the close runs to completion");
+    assert!(!record.system_deploys().is_empty());
+    let replayed = executor
+        .replay(&record, &b)
+        .await
+        .expect("the block replays");
+    assert_eq!(&replayed, record.post_root());
+    let left = balance(&rm, record.post_root(), &alice.owner).await;
+    assert!(
+        left < FUNDS,
+        "the installer pays for the work that the close fired"
+    );
+}
+
+#[tokio::test]
+async fn substitution_into_a_continuation_fired_in_the_close_is_not_charged_to_the_proposer() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = charging(&rm, &genesis);
+    let wide =
+        r#"@"wide"!([h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h])"#;
+    let thin = r#"@"wide"!(Nil)"#;
+    let mut closes = Vec::new();
+    for continuation in [thin, wide] {
+        let term = bond_term(continuation);
+        let record = run_record(
+            &executor,
+            &genesis,
+            &block(1, vec![envelope(&term, 1, &alice)], &proposer),
+        )
+        .await;
+        closes.push(close(&rm, &genesis, &record, &proposer).await);
+    }
+    let installer = |c: &Close| c.compute - c.proposer;
+    assert!(
+        installer(&closes[1]) > installer(&closes[0]),
+        "the installer pays for the wider body"
+    );
+    assert_eq!(
+        (closes[0].proposer, closes[1].proposer),
+        (0, 0),
+        "the proposer is not charged for the close"
+    );
+}
+
+struct OneSlash;
+
+impl casper::rust::v6::slash::SlashSource for OneSlash {
+    fn slashes(
+        &self,
+        _block: &BlockMessage,
+    ) -> Result<Vec<casper::rust::v6::slash::SlashRecord>, casper::rust::errors::CasperError> {
+        Ok(vec![casper::rust::v6::slash::SlashRecord {
+            evidence: [7; 32],
+            offender: Bytes::from_static(b"V2"),
+        }])
+    }
+}
+
+async fn void_replays(
+    executor: &BlockExecutor,
+    pre: &StateHash,
+    b: &BlockMessage,
+    reason: VoidReason,
+) -> BlockRecord {
+    let record = executor
+        .execute(pre, b)
+        .await
+        .expect("a void block executes");
+    assert_eq!(record.void_reason(), Some(reason));
+    assert_eq!(record.post_root(), pre);
+    if reason != VoidReason::CloseFailed {
+        for entry in record.executed() {
+            assert_eq!(entry.outcome, EnvelopeOutcome::Voided);
+        }
+    }
+    let replayed = executor
+        .replay(&record, b)
+        .await
+        .expect("the void record replays");
+    assert_eq!(&replayed, pre);
+    record
+}
+
+#[tokio::test]
+async fn a_proposer_with_no_funds_closes_its_block_and_reason_a_stays_reserved() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice]).await;
+    let executor = charging(&rm, &genesis);
+    let b = block(1, vec![envelope(&bond_term("Nil"), 1, &alice)], &proposer);
+    let record = run_record(&executor, &genesis, &b).await;
+    assert_eq!(record.void_reason(), None);
+    assert!(record.close_phlo() > 0);
+    assert_eq!(
+        balance(&rm, record.post_root(), &proposer.owner).await,
+        record.settlement().unwrap().proposer_credit
+    );
+    assert!(VoidReason::from_tag(casper::rust::v6::record::RESERVED_CLOSE_UNCOVERED).is_err());
+}
+
+#[tokio::test]
+async fn a_block_with_slash_records_is_void_for_reason_b() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = charging(&rm, &genesis).with_slash_source(Arc::new(OneSlash));
+    let b = block(1, vec![envelope(&bond_term("Nil"), 1, &alice)], &proposer);
+    void_replays(&executor, &genesis, &b, VoidReason::SlashRecords).await;
+}
+
+#[tokio::test]
+async fn a_block_with_terms_the_gate_cannot_read_is_void_for_reason_c() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = charging(&rm, &genesis);
+    let mut unreadable = envelope("Nil", 2, &alice);
+    unreadable.deploy.pk = PublicKey::from_bytes(&[1, 2, 3]);
+    let b = block(
+        1,
+        vec![envelope(&bond_term("Nil"), 1, &alice), unreadable],
+        &proposer,
+    );
+    void_replays(&executor, &genesis, &b, VoidReason::UnreadableTerms).await;
+}
+
+#[tokio::test]
+async fn a_block_whose_close_fails_is_void_for_reason_d_and_replay_runs_the_close() {
+    let proposer = party();
+    let (rm, _) = shard(&[&proposer]).await;
+    let empty = RuntimeManager::empty_state_hash_fixed();
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let b = block(1, vec![], &proposer);
+    let record = void_replays(&executor, &empty, &b, VoidReason::CloseFailed).await;
+    assert_eq!(record.system_deploys().len(), 1);
+}
+
+#[tokio::test]
+async fn a_valid_block_with_a_void_record_is_rejected() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = charging(&rm, &genesis);
+    let b = block(1, vec![envelope(&bond_term("Nil"), 1, &alice)], &proposer);
+    let normal = run_record(&executor, &genesis, &b).await;
+    for reason in [VoidReason::SlashRecords, VoidReason::UnreadableTerms] {
+        let forged = BlockRecord::voided(
+            b.block_hash.clone(),
+            genesis.clone(),
+            normal.envelope_ids(),
+            reason,
+        );
+        assert!(
+            executor.replay(&forged, &b).await.is_err(),
+            "reason ({})",
+            reason.label()
+        );
+    }
+    let forged = BlockRecord::decode(&normal.encode())
+        .unwrap()
+        .with_failed_close();
+    let refused = executor.replay(&forged, &b).await.unwrap_err().to_string();
+    assert!(refused.contains("the close runs"), "{refused}");
+}
+
+#[tokio::test]
+async fn an_envelope_with_a_prior_status_is_refused_at_no_charge_and_replay_needs_the_same_prior() {
+    use casper::rust::v6::gate::{Refusal, Verdict};
+    use casper::rust::v6::record::{Prior, PriorStatus};
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let first = envelope(&bond_term("Nil"), 1, &alice);
+    let second = envelope("Nil", 2, &alice);
+    for (status, refusal) in [
+        (PriorStatus::Included, Refusal::AlreadyIncluded),
+        (PriorStatus::Discarded, Refusal::Discarded),
+    ] {
+        let b = block(2, vec![first.clone(), second.clone()], &proposer);
+        let prior = Prior::from([(first.deploy.sig.clone(), status)]);
+        let record = executor.execute_after(&genesis, &b, &prior).await.unwrap();
+        assert_eq!(record.gate()[0].verdict, Verdict::Refused(refusal));
+        assert_eq!(record.gate()[0].delta, 0);
+        assert_eq!(record.executed()[0].outcome, EnvelopeOutcome::NotRun);
+        assert!(record.gate()[1].admitted());
+        assert_eq!(
+            executor.replay_after(&record, &b, &prior).await.unwrap(),
+            *record.post_root()
+        );
+        assert!(executor
+            .replay_after(&record, &b, &Prior::new())
+            .await
+            .is_err());
+    }
+}
+
+#[tokio::test]
+async fn a_failed_close_is_part_of_the_trace_and_replay_checks_it() {
+    use models::rust::casper::protocol::casper_message::ProcessedSystemDeploy;
+    let proposer = party();
+    let (rm, _) = shard(&[&proposer]).await;
+    let empty = RuntimeManager::empty_state_hash_fixed();
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let b = block(1, vec![], &proposer);
+    let record = executor.execute(&empty, &b).await.unwrap();
+    assert_eq!(record.void_reason(), Some(VoidReason::CloseFailed));
+    let [ProcessedSystemDeploy::Failed {
+        event_list,
+        error_msg,
+    }] = record.system_deploys()
+    else {
+        panic!("a (d) record carries its failed close");
+    };
+    assert!(error_msg.starts_with("close failed: "), "{error_msg}");
+    assert!(BlockRecord::decode(&record.encode()).is_ok());
+    let forged = |failed: ProcessedSystemDeploy| {
+        let mut proto = record.clone();
+        proto = BlockRecord::new(
+            proto.target().clone(),
+            proto.pre_root().clone(),
+            proto.mid_root().clone(),
+            proto.pre_root().clone(),
+            proto.entries().to_vec(),
+            vec![failed],
+        )
+        .unwrap()
+        .with_gate(proto.gate().to_vec())
+        .unwrap()
+        .with_settlement(record.settlement().cloned().unwrap())
+        .with_failed_close();
+        proto
+    };
+    assert_eq!(
+        executor
+            .replay(&forged(record.system_deploys()[0].clone()), &b)
+            .await
+            .unwrap(),
+        empty,
+        "the unaltered trace replays"
+    );
+    let other_failure = forged(ProcessedSystemDeploy::Failed {
+        event_list: event_list.clone(),
+        error_msg: "close failed: something else".to_string(),
+    });
+    assert!(executor.replay(&other_failure, &b).await.is_err());
+}
+
+#[tokio::test]
+async fn a_deployment_twice_in_one_block_runs_only_its_first_copy() {
+    use casper::rust::v6::gate::{Refusal, Verdict};
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let once = envelope("Nil", 1, &alice);
+    let b = block(
+        1,
+        vec![once.clone(), envelope("Nil", 2, &alice), once],
+        &proposer,
+    );
+    let record = executor.execute(&genesis, &b).await.unwrap();
+    assert!(record.gate()[0].admitted());
+    assert!(record.gate()[1].admitted());
+    assert_eq!(
+        record.gate()[2].verdict,
+        Verdict::Refused(Refusal::AlreadyIncluded)
+    );
+    assert_eq!(record.executed()[2].outcome, EnvelopeOutcome::NotRun);
+    assert_eq!(
+        executor.replay(&record, &b).await.unwrap(),
+        *record.post_root()
+    );
+}
+
+#[tokio::test]
+async fn a_d_record_whose_traced_close_succeeds_is_rejected() {
+    use models::rust::casper::protocol::casper_message::ProcessedSystemDeploy;
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let b = block(1, vec![envelope("Nil", 1, &alice)], &proposer);
+    let normal = run_record(&executor, &genesis, &b).await;
+    let [ProcessedSystemDeploy::Succeeded { event_list, .. }] = normal.system_deploys() else {
+        panic!("a normal record carries its close");
+    };
+    let forged = BlockRecord::new(
+        normal.target().clone(),
+        normal.pre_root().clone(),
+        normal.mid_root().clone(),
+        normal.pre_root().clone(),
+        normal.entries().to_vec(),
+        vec![ProcessedSystemDeploy::Failed {
+            event_list: event_list.clone(),
+            error_msg: "close failed: Unable to consume results of system deploy".to_string(),
+        }],
+    )
+    .unwrap()
+    .with_gate(normal.gate().to_vec())
+    .unwrap()
+    .with_settlement(normal.settlement().cloned().unwrap())
+    .with_failed_close();
+    assert!(BlockRecord::decode(&forged.encode()).is_ok());
+    assert!(executor.replay(&forged, &b).await.is_err());
+}
+
+#[tokio::test]
+async fn an_honest_d_record_replays_under_one_two_and_four_workers() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, _) = shard(&[&alice, &bob, &proposer]).await;
+    let empty = RuntimeManager::empty_state_hash_fixed();
+    let b = block(
+        1,
+        vec![
+            envelope("Nil", 1, &alice),
+            envelope("Nil", 2, &bob),
+            envelope("Nil", 3, &alice),
+        ],
+        &proposer,
+    );
+    let mut records = Vec::new();
+    for workers in [1, 2, 4] {
+        let record = BlockExecutor::new(rm.clone(), workers)
+            .execute(&empty, &b)
+            .await
+            .unwrap();
+        assert_eq!(
+            record.void_reason(),
+            Some(VoidReason::CloseFailed),
+            "{workers} workers"
+        );
+        records.push(record);
+    }
+    for record in &records {
+        assert_eq!(
+            record, &records[0],
+            "the record does not depend on the workers"
+        );
+        for workers in [1, 2, 4] {
+            let replayed = BlockExecutor::new(rm.clone(), workers)
+                .replay(record, &b)
+                .await;
+            assert_eq!(replayed.unwrap(), empty, "{workers} workers");
+        }
+    }
+}
+
+#[tokio::test]
+async fn replay_recomputes_the_cost_of_each_firing_and_rejects_a_changed_one() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, genesis) = shard(&[&alice, &bob, &proposer]).await;
+    let executor = charging(&rm, &genesis);
+    let service = r#"contract @"svc"(@x) = { @"out"!(x) }"#;
+    let installed = run_record(
+        &executor,
+        &genesis,
+        &block(
+            1,
+            vec![envelope_limited(service, 1, &alice, 1_500)],
+            &proposer,
+        ),
+    )
+    .await;
+    let call = |bytes: usize, ts: i64| {
+        let data = format!("{:?}", vec![7u8; bytes]).replace(' ', "");
+        envelope_limited(&format!(r#"@"svc"!({data})"#), ts, &bob, 50_000)
+    };
+    for (number, bytes) in [(2, 8), (3, 2_000)] {
+        let b = block(number, vec![call(bytes, number)], &proposer);
+        let record = executor
+            .execute(installed.post_root(), &b)
+            .await
+            .expect("the block executes");
+        let over = bytes > 1_000;
+        assert_eq!(
+            record.executed()[0].outcome != EnvelopeOutcome::Completed,
+            over,
+            "block {number}: only the firing over its bound fails its run"
+        );
+        let settlement = record.settlement().unwrap().clone();
+        let firing = settlement
+            .surface_charges
+            .iter()
+            .position(|sc| sc.purse == alice.owner)
+            .expect("the installer pays for the firing");
+        for delta in [-1i64, 1] {
+            let mut changed = settlement.clone();
+            let sc = &mut changed.surface_charges[firing];
+            sc.compute = sc.compute.checked_add_signed(delta).unwrap();
+            sc.owed = sc
+                .owed
+                .checked_add_signed(delta * sc.phlo_price as i64)
+                .unwrap();
+            sc.drawn = sc
+                .drawn
+                .checked_add_signed(delta * sc.phlo_price as i64)
+                .unwrap();
+            let forged = record.clone().with_settlement(changed);
+            assert!(
+                executor.replay(&forged, &b).await.is_err(),
+                "block {number}: a firing cost changed by {delta} is rejected"
+            );
+        }
+        assert_eq!(
+            &executor.replay(&record, &b).await.unwrap(),
+            record.post_root()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_firing_set_off_by_the_close_over_its_bound_fails_the_close_and_the_void_record_replays()
+{
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = charging(&rm, &genesis);
+    let mut doubling = r#"@"w"!(s18)"#.to_string();
+    for i in (0..18).rev() {
+        doubling = format!("match s{i} ++ s{i} {{ s{} => {{ {doubling} }} }}", i + 1);
+    }
+    let doubling = format!(r#"match "aaaaaaaa" {{ s0 => {{ {doubling} }} }}"#);
+    let b = block(
+        1,
+        vec![envelope_limited(&bond_term(&doubling), 1, &alice, 200_000)],
+        &proposer,
+    );
+    let record = void_replays(&executor, &genesis, &b, VoidReason::CloseFailed).await;
+    assert_eq!(record.executed()[0].outcome, EnvelopeOutcome::Completed);
+    assert_eq!(record.close_phlo(), 0);
+    let failure = match record.system_deploys() {
+        [models::rust::casper::protocol::casper_message::ProcessedSystemDeploy::Failed {
+            error_msg,
+            ..
+        }] => error_msg.clone(),
+        other => panic!("one failed close is traced: {other:?}"),
+    };
+    assert!(failure.contains("FiringExhausted"), "{failure}");
+    for workers in [1, 2, 4] {
+        let replayed = BlockExecutor::new(rm.clone(), workers)
+            .replay(&record, &b)
+            .await;
+        assert_eq!(replayed.unwrap(), genesis, "{workers} workers");
+    }
+}

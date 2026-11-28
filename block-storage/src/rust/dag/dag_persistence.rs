@@ -18,6 +18,8 @@ const EQUIVOCATIONS: usize = 2;
 const GENESIS: usize = 3;
 const STATE: usize = 7;
 const SEQUENCES: usize = 9;
+pub(crate) const FINALIZATION_MARKERS: usize = SEQUENCES + 1;
+pub(crate) const FINALIZATION_POINTER: usize = FINALIZATION_MARKERS + 1;
 const PROGRESS: &[u8] = b"dag.progress";
 const GC_SLOTS: DagGcSlots = DagGcSlots {
     metadata: METADATA,
@@ -278,6 +280,16 @@ impl DagPersistence {
         indirectly: &std::collections::HashSet<BlockHash>,
         ft: f32,
     ) -> Result<DagProgress, KvStoreError> {
+        self.finalize_with(directly, indirectly, ft, |_| Ok(()))
+    }
+
+    pub fn finalize_with(
+        &self,
+        directly: &BlockHash,
+        indirectly: &std::collections::HashSet<BlockHash>,
+        ft: f32,
+        write: impl FnOnce(&mut AtomicTransaction<'_>) -> Result<(), KvStoreError>,
+    ) -> Result<DagProgress, KvStoreError> {
         self.group.transaction(|tx| {
             let mut progress = Self::progress_in(tx)?;
             for hash in indirectly.iter().chain(std::iter::once(directly)) {
@@ -313,6 +325,7 @@ impl DagPersistence {
                 tx.put(METADATA, key, encode(&metadata)?)?;
             }
             tx.put(STATE, PROGRESS.to_vec(), encode(&progress)?)?;
+            write(tx)?;
             Ok(progress)
         })
     }

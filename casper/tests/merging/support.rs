@@ -265,6 +265,7 @@ pub fn merge_blocks(
         &HashSet::new(),
         &HashMap::new(),
         &name_seeds,
+        casper::rust::merging::conflict_set_merger::RejectionSearch::EXHAUSTIVE,
     )
     .expect("merge");
     let rejected: HashSet<Bytes> = rejected.iter().map(|r| r.sig.clone()).collect();

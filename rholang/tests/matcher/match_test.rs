@@ -832,6 +832,7 @@ fn matching_a_receive_with_a_free_variable_in_the_channel_and_a_free_variable_in
                 source: Some(new_gint_par(7, Vec::new(), false)),
                 remainder: None,
                 free_count: 0,
+                cost_signature: None,
             },
             ReceiveBind {
                 patterns: vec![
@@ -841,6 +842,7 @@ fn matching_a_receive_with_a_free_variable_in_the_channel_and_a_free_variable_in
                 source: Some(new_gint_par(8, Vec::new(), false)),
                 remainder: None,
                 free_count: 0,
+                cost_signature: None,
             },
         ],
         new_send_par(
@@ -878,6 +880,7 @@ fn matching_a_receive_with_a_free_variable_in_the_channel_and_a_free_variable_in
                 source: Some(new_gint_par(7, Vec::new(), false)),
                 remainder: None,
                 free_count: 0,
+                cost_signature: None,
             },
             ReceiveBind {
                 patterns: vec![
@@ -887,6 +890,7 @@ fn matching_a_receive_with_a_free_variable_in_the_channel_and_a_free_variable_in
                 source: Some(new_freevar_par(0, Vec::new())),
                 remainder: None,
                 free_count: 0,
+                cost_signature: None,
             },
         ],
         new_freevar_par(1, Vec::new()),
@@ -2039,6 +2043,7 @@ fn matching_a_target_with_var_ref_and_a_pattern_with_a_var_ref_should_ignore_loc
                 source: Some(vector_par(Vec::new(), false)),
                 remainder: None,
                 free_count: 0,
+                cost_signature: None,
             }],
             vector_par(Vec::new(), false),
             false,
@@ -2070,6 +2075,7 @@ fn matching_a_target_with_var_ref_and_a_pattern_with_a_var_ref_should_ignore_loc
                 source: Some(vector_par(Vec::new(), false)),
                 remainder: None,
                 free_count: 0,
+                cost_signature: None,
             }],
             vector_par(Vec::new(), false),
             false,

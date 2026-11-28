@@ -361,6 +361,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     let block_dag_storage = {
         use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 
+        BlockDagKeyValueStorage::ensure_metadata_schema(&mut rnode_store_manager).await?;
         BlockDagKeyValueStorage::new_with_hot_window(
             &mut rnode_store_manager,
             conf.casper.dag_hot_window_depth,
@@ -406,6 +407,10 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 
         let deploy_storage = KeyValueDeployStorage::new(&mut rnode_store_manager).await?;
+        deploy_storage.set_rejection_log_bounds(
+            conf.casper.offer_rejection_log_capacity,
+            conf.casper.offer_rejection_reason_bytes,
+        );
         let deploy_storage_arc = Arc::new(deploy_storage.clone());
         (deploy_storage, deploy_storage_arc)
     };
@@ -1613,6 +1618,7 @@ mod report_event_tests {
                                         transfer_channel.clone(),
                                     ],
                                     random_state: vec![],
+                                    seal: None,
                                 }),
                             }],
                         })),

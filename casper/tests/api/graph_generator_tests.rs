@@ -40,6 +40,7 @@ fn create_mock_block_store() -> KeyValueBlockStore {
             extra_bytes: Bytes::new(),
             applied_from_scope: vec![],
             merge_base: Bytes::new(),
+            v6: None,
         },
         justifications: vec![],
         sender: Bytes::from("alice"),
@@ -72,6 +73,7 @@ fn create_mock_block_store() -> KeyValueBlockStore {
             extra_bytes: Bytes::new(),
             applied_from_scope: vec![],
             merge_base: Bytes::new(),
+            v6: None,
         },
         justifications: vec![],
         sender: Bytes::from("bob"),
@@ -104,6 +106,7 @@ fn create_mock_block_store() -> KeyValueBlockStore {
             extra_bytes: Bytes::new(),
             applied_from_scope: vec![],
             merge_base: Bytes::new(),
+            v6: None,
         },
         justifications: vec![Justification {
             validator: Bytes::from("validator1"),

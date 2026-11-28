@@ -262,6 +262,21 @@ impl Default for ReplayLock {
     fn default() -> Self { Self::new() }
 }
 
+#[derive(Clone, Default)]
+pub struct SystemGate {
+    pub funding: Option<Arc<rholang::rust::interpreter::accounting::membrane::MembraneMeter>>,
+    pub close_phlo: Arc<parking_lot::Mutex<Option<u64>>>,
+}
+
+impl SystemGate {
+    fn apply(&self, runtime_ops: &mut RuntimeOps) {
+        runtime_ops.runtime.set_seal_records(true);
+        runtime_ops.runtime.set_funding(self.funding.clone());
+        runtime_ops.close_phlo = Some(self.close_phlo.clone());
+        runtime_ops.trace_close_failure = true;
+    }
+}
+
 #[derive(Clone)]
 pub struct RuntimeManager {
     pub space: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
@@ -739,9 +754,32 @@ impl RuntimeManager {
         block_data: BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
     ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
+        self.compute_state_gated(
+            start_hash,
+            terms,
+            system_deploys,
+            block_data,
+            invalid_blocks,
+            None,
+        )
+        .await
+    }
+
+    pub async fn compute_state_gated(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<Signed<DeployData>>,
+        system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+        block_data: BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        gate: Option<SystemGate>,
+    ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
+        if let Some(gate) = &gate {
+            gate.apply(&mut runtime_ops);
+        }
 
         // Block data used for mergeable key
         let sender = block_data.sender.clone();
@@ -1001,6 +1039,28 @@ impl RuntimeManager {
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
         is_genesis: bool, // FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
     ) -> Result<StateHash, CasperError> {
+        self.replay_compute_state_gated(
+            start_hash,
+            terms,
+            system_deploys,
+            block_data,
+            invalid_blocks,
+            is_genesis,
+            None,
+        )
+        .await
+    }
+
+    pub async fn replay_compute_state_gated(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<ProcessedDeploy>,
+        system_deploys: Vec<ProcessedSystemDeploy>,
+        block_data: &BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        is_genesis: bool,
+        gate: Option<SystemGate>,
+    ) -> Result<StateHash, CasperError> {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
         let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis);
@@ -1012,7 +1072,7 @@ impl RuntimeManager {
             seq_num as i64,
             replay_payload_hash,
         );
-        if let Some(ref cache) = self.replay_cache {
+        if let (Some(ref cache), None) = (&self.replay_cache, &gate) {
             if let Some(entry) = cache.get(&replay_cache_key) {
                 // A replay that returns Ok must leave the mergeable entry for its
                 // post-state persisted — `ensure_mergeable_entry` exists precisely
@@ -1063,7 +1123,10 @@ impl RuntimeManager {
             .map_err(|error| CasperError::Other(format!("Replay semaphore closed: {}", error)))?;
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let replay_runtime = self.spawn_replay_runtime().await?;
-        let runtime_ops = RuntimeOps::new(replay_runtime);
+        let mut runtime_ops = RuntimeOps::new(replay_runtime);
+        if let Some(gate) = &gate {
+            gate.apply(&mut runtime_ops);
+        }
         let mut replay_runtime_ops = ReplayRuntimeOps::new(runtime_ops);
 
         let execute_start = std::time::Instant::now();

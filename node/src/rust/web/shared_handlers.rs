@@ -33,7 +33,8 @@ use utoipa::ToSchema;
 use crate::rust::api::admin_web_api::AdminWebApi;
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::web_api::{
-    ExploreDeployRequest, RhoDataResponse, SimpleExploreDeployRequest, ViewMode, WebApi,
+    ExploreDeployRequest, OfferedReceiptResponse, RhoDataResponse, SimpleExploreDeployRequest,
+    ViewMode, WebApi,
 };
 use crate::rust::api::{DeployIngressBusy, DeployRequestLimiter, DeployRequestPermit};
 
@@ -133,7 +134,7 @@ pub struct ApiErrorResponse {
     /// `comm_error`, `external_service_error`
     ///
     /// **503 Service Unavailable:**
-    /// `observer_busy` — carries `Retry-After`; `deploy_pool_busy`,
+    /// `observer_busy`, `deploy_pool_full` — carry `Retry-After`; `deploy_pool_busy`,
     /// `deploy_admission_busy`, `validator_not_bonded`,
     /// `block_unavailable` — the DAG knows the hash but the body is
     /// not in the store and the retention sweep has not advanced past
@@ -169,6 +170,7 @@ pub struct PrunedStateErrorResponse {
     /// block's height is strictly less than this value.
     pub retention_floor: i64,
 }
+const DEPLOY_POOL_FULL_RETRY_AFTER_SECS: u64 = 5;
 
 pub struct AppError(pub eyre::Error);
 
@@ -238,6 +240,14 @@ fn render_pruned_state(err: &eyre::Error) -> Option<Response> {
 /// variant rather than recomputed from the rendered message, so the header and
 /// the body cannot disagree.
 fn retry_after_secs(err: &eyre::Error) -> Option<u64> {
+    if err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<DeployError>(),
+            Some(DeployError::PoolFull { .. })
+        )
+    }) {
+        return Some(DEPLOY_POOL_FULL_RETRY_AFTER_SECS);
+    }
     match ExploratoryDeployRejection::classify(err) {
         Some(ExploratoryDeployRejection::Busy { retry_after_secs }) => Some(retry_after_secs),
         Some(ExploratoryDeployRejection::Timeout { .. }) | None => None,
@@ -423,6 +433,13 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "deploy_admission_busy",
+                cause.to_string(),
+            );
+        }
+        if let Some(DeployError::PoolFull { .. }) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "deploy_pool_full",
                 cause.to_string(),
             );
         }
@@ -621,6 +638,7 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
             "host_work_rejected",
             ie.to_string(),
         ),
+        FiringExhausted => (S::UNPROCESSABLE_ENTITY, "firing_exhausted", ie.to_string()),
         UserAbortError => (S::UNPROCESSABLE_ENTITY, "user_abort", ie.to_string()),
 
         ReduceError(_)
@@ -729,6 +747,30 @@ pub async fn deploy_handler(
     })
     .await
     {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => AppError(e).into_response(),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/deploy/offered/{deploy_id}/receipt",
+    params(
+        ("deploy_id" = String, Path, description = "Hex-encoded deploy ID (the deploy signature)"),
+    ),
+    responses(
+        (status = 200, description = "Offer status: `unknown`, `pending`, `rejected` (with the reason, pre-state root and block number), `ordered`, `notRetained`, or `executed` (with the receipt from the block record)", body = OfferedReceiptResponse),
+        (status = 400, description = "Deploy ID is empty or not hex (`invalid_hash`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure", body = ApiErrorResponse),
+    ),
+    tag = "Deployment"
+)]
+pub async fn offered_receipt_handler(
+    State(app_state): State<AppState>,
+    AppPath(deploy_id): AppPath<String>,
+) -> Response {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.offered_receipt(deploy_id).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -922,6 +964,18 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("15")
         );
+    }
+
+    #[test]
+    fn a_full_deploy_pool_is_service_unavailable_with_retry_after() {
+        let error = eyre::Report::new(casper::rust::casper::DeployError::pool_full(8192, 8192));
+        let (status, kind, _) = classify_error(&error);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(kind, "deploy_pool_full");
+
+        let response = AppError(error).into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(response.headers().get(header::RETRY_AFTER).is_some());
     }
 
     #[test]
