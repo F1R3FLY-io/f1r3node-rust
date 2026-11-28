@@ -78,7 +78,11 @@ The owner prefers unsolicited victims before solicited victims where both classe
 
 A validation failure without a verdict schedules a separate retry. The delay increases up to the configured limit. When the failure count reaches its limit, the owner quarantines the block. A later intake report during quarantine defers its need until quarantine expires. A completed DAG insert clears the need and the validation failure count.
 
-**C7. Integrity before hash-keyed state.** No step reads or changes state keyed by a block hash until the fields, the signature, and the hash of the block are checked against its contents. That state is the in-flight set, the buffer, the pending area, the block store, and the request tracking of the retriever. A message that fails the check from the network changes none of that state for the hash that it claims. A refused body that this node stored is purged and deleted, but only when the stored bytes equal the refused body.
+**C7. Integrity before intake and conditional stored-copy cleanup.** A network block enters intake only after its fields, hash, and signature pass the receipt check. Receipt may first look up known blocks and coordinate concurrent copies by hash.
+
+Local integrity cleanup attempts to remove a stored copy only after the check returns a refusal. If the bounded attempts yield no verdict, the copy stays and the lookup reports a local miss. In pending storage, comparison and removal occur under one lock. On disk, the decoded block must match the refused copy and the bytes must still match at deletion.
+
+After `discard_copy` removes a disk body, previously cached deploy identities remain available for the lifetime of the cache entry. While the body is absent, the store returns no retained rejection signatures for it. `remove_if_matches` removes the cache entry together with the body.
 
 **C8. Pending admission and eviction.** Intake classifies checked blocks as solicited, unsolicited from a known sender, or unsolicited from an unknown sender. A known sender passed the signature check and has a bond at the last finalized block. Class limits on entries and bytes preserve capacity for known senders and solicited blocks. Pending storage counts reservations against the capacity available to other entries.
 
@@ -99,7 +103,7 @@ The maintainer accepted the restated C3 on 2026-11-27 at `c7338aa51d3e38e94a4672
 1a258bd7d0a3efb8bd698c15f51e996e162b9f2aa73550fe95223390b27948fc  casper/src/rust/blocks/ingest/ingest_state_tests.rs
 ```
 
-A later change to either file needs a new review of C3. The claim status stays `pending` while C7 waits for PR #1197.
+A later change to either file needs a new review of C3. The claim status stays `pending` until the maintainer reviews C7 and the changes after acceptance below.
 
 ### C3 evidence
 
@@ -141,7 +145,24 @@ d6a7203c7a3fd9cc652a6df716496c3a367ec15d3903b8509a4dcc6129488425  casper/tests/h
 d2be8703bf1e83e78be381991129f53f4bee3de978dfcd2ce23c14839a4ac3d1  node/tests/block_queue_livelock.rs
 ```
 
-A later change to any file listed above needs a new review of the affected conditions. The claim stays `pending` while C7 waits for PR #1197.
+A later change to any file listed above needs a new review of the affected conditions. The claim stays `pending` until the maintainer reviews C7 and the changes after acceptance below.
+
+### Changes after acceptance
+
+The review uses `dev` at `11b33c277`. Four files changed after their acceptance. The maintainer reviews the affected conditions before the recorded hashes are refreshed. The claim stays `pending`.
+
+| File | Recorded for | Change | Conditions to review |
+| --- | --- | --- | --- |
+| `casper/src/rust/blocks/ingest/dependency_tracker.rs` | C3 | Test only: PR #1200 added `a_block_being_validated_is_never_an_eviction_victim` | C3 |
+| `block-storage/src/rust/pending_blocks.rs` | C1, C2, C4, C5, C6, and C8 | Production and tests: PR #1197 added `PendingBlocks::remove_if`, which compares and removes under one lock, with `remove_if_keeps_a_different_body_held_under_the_same_hash` and `remove_if_compares_and_removes_under_one_lock` | C5, C7, and C8 |
+| `casper/src/rust/blocks/ingest/block_ingest.rs` | C1, C2, C4, C5, C6, and C8 | Production: PR #1197 checks a stored copy again and keeps a copy without a verdict | C1, C6, and C7 |
+| `block-storage/src/rust/key_value_block_store.rs` | C1, C2, C4, C5, C6, and C8 | Production: PR #1197 removes a pending copy through `remove_if`, and PR #1178 caches deploy identities and rejections | C4, C5, C7, and C8 |
+
+C4 is in the last row because validation reads the deploy identities of ancestor blocks through `deploy_identities` (`casper/src/rust/validate.rs`), and PR #1178 changed that lookup.
+
+PR #1178 did not change the comparison or the delete in `discard_copy` and `remove_if_matches`. In `remove_if_matches`, it replaced the earlier cache removal with `forget_deploy_sigs`. It also added `forget_deploy_sigs` to `put`. The other 15 files of the C1, C2, C4, C5, C6, and C8 record still match their hashes. That record lists 19 files. It is a different set from the 13 artifacts in the claim header, which record the scope of the earlier claim.
+
+The tests of C1, C2, C3, C5, C6, and C8 in `blocks::ingest::` and the storage tests passed on `dev` at `11b33c277`. Both order-invariance tests of C4 also passed there.
 
 ### Other conditions
 
@@ -180,13 +201,31 @@ The earlier [`ready_blocks_reach_the_same_dag_and_verdicts_in_every_processing_o
 - `a_block_received_twice_is_held_and_dispatched_once` covers duplicate receipt. `a_failed_validation_waits_before_its_retry` and `a_block_that_keeps_failing_is_dropped_and_quarantined` cover validation.
 - `a_quarantined_local_copy_moves_its_need_to_the_network_after_the_quarantine` covers a copy during quarantine. [`an_insert_clears_the_failure_count`](../../casper/src/rust/blocks/ingest/dependency_tracker.rs) checks cleanup after insertion.
 
-#### C7. Integrity before hash-keyed state
+#### C7. Integrity before intake and conditional stored-copy cleanup
 
-The ban on all hash-keyed reads fails. Receipt verification uses a temporary hash slot and reads known-block state before checking integrity. A refused network body does not enter intake.
+**Pending maintainer review.** The earlier statement banned every hash-keyed read before the integrity check. Receipt verification does not meet that ban: it reads known-block state and holds a temporary slot for each hash before the check. The restated C7 describes that behavior. PR #1197 implemented the stored-copy cleanup rule of issue #1194.
 
-The deletion rule for a refused body that this node stored needs a separate review before C7 is restated.
+[Receipt verification and tests](../../casper/src/rust/blocks/ingest/receipt_verifier.rs) cover intake after the check:
 
-Tests cover the known-block fast path and concurrent receipts. [Receipt verification and tests](../../casper/src/rust/blocks/ingest/receipt_verifier.rs).
+- `a_known_block_is_not_checked` covers the known-block lookup.
+- `concurrent_copies_share_verification_but_a_forged_first_copy_does_not_claim_the_hash` covers concurrent copies of one hash.
+- `receipt_verification_stays_bounded_under_a_flood_of_invalid_blocks`, `a_cancelled_caller_keeps_its_verification_slot_until_the_check_ends`, and `the_last_verification_ticket_removes_its_peer_entry` cover the temporary slots.
+
+The [block ingest tests](../../casper/src/rust/blocks/ingest/block_ingest.rs) cover local cleanup:
+
+- `a_stored_copy_that_fails_its_check_is_deleted` covers a refusal.
+- `a_check_that_fails_to_run_does_not_refuse_the_stored_copy` and `a_stored_copy_whose_check_never_runs_stays_in_the_store` cover a check without a verdict.
+- `a_stored_copy_is_checked_again_after_its_check_fails_to_run` and `a_check_that_never_runs_stops_after_a_fixed_number_of_attempts` cover the bounded attempts.
+
+The storage tests cover the comparison before removal:
+
+- [`remove_if_keeps_a_different_body_held_under_the_same_hash`](../../block-storage/src/rust/pending_blocks.rs) and [`remove_if_compares_and_removes_under_one_lock`](../../block-storage/src/rust/pending_blocks.rs) cover pending storage.
+- [`discard_copy_removes_only_the_matching_body`](../../block-storage/src/rust/key_value_block_store.rs) covers disk storage and a matching pending copy.
+- [`scope_preserves_known_identities_when_gc_or_discard_removes_the_body`](../../block-storage/src/rust/key_value_block_store.rs) from PR #1178 covers the cache. It fills the cache, calls `discard_copy`, and checks that the identities stay and that no rejection signatures are returned. The [deploy-scope claim](deploy-scope-cache.md) states the full cache contract.
+
+**Open review item.** C7 states the cache behavior of `discard_copy`, which local cleanup uses for a refused stored copy: the cached deploy identities stay. `remove_if_matches` removes them. The maintainer decides whether C7 accepts the `discard_copy` behavior as stated or needs a change in a separate pull request.
+
+All the tests above passed on `dev` at `11b33c277`: 53 in `block-storage` (`pending_blocks::` and `key_value_block_store::`) and 116 in `casper` (`blocks::ingest::`).
 
 #### C8. Pending admission and eviction
 
