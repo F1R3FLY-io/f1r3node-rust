@@ -13,7 +13,7 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::rho_type::RhoByteArray;
 use rholang::rust::interpreter::system_processes::BodyRefs;
-use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+use rholang::rust::interpreter::test_utils::resources::{create_runtimes, replay_charged};
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -40,11 +40,17 @@ async fn execute_and_replay_with_errors(
             .await
             .unwrap();
         assert_eq!(played.errors, expected_errors[step], "play step {step}");
-        replay.rig(runtime.take_event_log().await).await.unwrap();
-        let replayed = replay
-            .evaluate(term, Cost::unsafe_max(), HashMap::new(), rand)
-            .await
-            .unwrap();
+        let log = runtime.take_event_log().await;
+        let replayed = replay_charged(
+            &mut replay,
+            log,
+            term,
+            Cost::unsafe_max(),
+            HashMap::new(),
+            rand,
+        )
+        .await
+        .unwrap();
         assert_eq!(replayed.errors, played.errors, "replay step {step}");
         replay.check_replay_data().await.unwrap();
         replay.take_event_log().await;
@@ -227,11 +233,16 @@ async fn non_deterministic_outputs_survive_normal_and_peek_reply_dispatch() {
                     ]);
                 }
             }
-            replay.rig(log).await.unwrap();
-            let replayed = replay
-                .evaluate(term, Cost::unsafe_max(), HashMap::new(), rand)
-                .await
-                .unwrap();
+            let replayed = replay_charged(
+                &mut replay,
+                log,
+                term,
+                Cost::unsafe_max(),
+                HashMap::new(),
+                rand,
+            )
+            .await
+            .unwrap();
             assert_eq!(replayed.errors, played.errors);
             assert_eq!(played.cost, replayed.cost);
             replay.check_replay_data().await.unwrap();
@@ -299,11 +310,16 @@ async fn reply_body_error_does_not_fail_the_non_deterministic_call() {
                 ]);
             }
         }
-        replay.rig(log).await.unwrap();
-        let replayed = replay
-            .evaluate(term, Cost::unsafe_max(), HashMap::new(), rand)
-            .await
-            .unwrap();
+        let replayed = replay_charged(
+            &mut replay,
+            log,
+            term,
+            Cost::unsafe_max(),
+            HashMap::new(),
+            rand,
+        )
+        .await
+        .unwrap();
         assert_eq!(replayed.errors, played.errors, "replay step {step}");
         assert_eq!(played.cost, replayed.cost);
         replay.check_replay_data().await.unwrap();

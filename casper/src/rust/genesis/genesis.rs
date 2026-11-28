@@ -264,23 +264,14 @@ impl Genesis {
 
         assert!(failed_deploys.is_empty(), "Failed deploys found");
 
-        let sorted_deploys = processed_deploys
+        let deploys = processed_deploys
             .into_iter()
             .filter(|deploy| !deploy.is_failed)
-            .map(|mut deploy| {
-                use prost::Message;
-                deploy.deploy_log.sort_by(|a, b| {
-                    let a_bytes = a.to_proto().encode_to_vec();
-                    let b_bytes = b.to_proto().encode_to_vec();
-                    a_bytes.cmp(&b_bytes)
-                });
-                deploy
-            })
             .collect();
 
         let body = Body {
             state,
-            deploys: sorted_deploys,
+            deploys,
             rejected_deploys: Vec::new(),
             system_deploys: Vec::new(),
             extra_bytes: Bytes::new(),

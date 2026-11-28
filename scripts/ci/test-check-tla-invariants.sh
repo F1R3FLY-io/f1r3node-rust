@@ -36,7 +36,7 @@ fail() {
 
 # <subdir>/<config>:<invariant> entries of the gate's NEGATIVE_CONTROLS array.
 mapfile -t CONTROLS < <(sed -n '/^NEGATIVE_CONTROLS=(/,/^)/p' "$GATE" |
-    grep -oE '[A-Za-z0-9_]+/MC_[A-Za-z0-9_]+:[A-Za-z0-9_]+')
+    grep -oE '[A-Za-z0-9_]+/[A-Za-z0-9_]+:[A-Za-z0-9_]+')
 ((${#CONTROLS[@]})) || fail 'The gate registers no negative controls.'
 for check in "${CONTROLS[@]}"; do
     printf '%s.cfg\t%s\n' "${check%%:*}" "${check#*:}" | sed 's#^[^/]*/##'
@@ -238,7 +238,8 @@ checked >"$WORK/full"
 run_gate gate-pr || fail 'The PR-tier gate failed with the fixture.'
 checked >"$WORK/pr"
 for config in "$ROOT"/formal/tlaplus/casper_soak/MC_CasperSoakHarness*.cfg \
-    "$ROOT"/formal/tlaplus/node_observation/MC_*.cfg; do
+    "$ROOT"/formal/tlaplus/node_observation/MC_*.cfg \
+    "$ROOT"/formal/tlaplus/heartbeat_wake/*.cfg; do
     entry="$(basename "$(dirname "$config")")/$(basename "$config" .cfg)"
     for tier in full pr; do
         grep -Fxq "$entry" "$WORK/$tier" || fail "The $tier tier omits $entry."

@@ -32,6 +32,10 @@ enum Pattern {
 struct StringMatch;
 
 impl Match<Pattern, String, StringsCaptor> for StringMatch {
+    fn pattern_size(&self, _: &Pattern) -> usize { 1 }
+
+    fn data_size(&self, a: &String) -> usize { a.len() }
+
     fn get(&self, p: &Pattern, a: &String) -> Option<String> {
         match p {
             Pattern::Wildcard => Some(a.clone()),
@@ -138,7 +142,7 @@ async fn produce_should_persist_data_in_store() {
         .produce(key[0].clone(), "datum".to_string(), false)
         .await;
     let data = rspace.get_store().get_data(&channel);
-    assert_eq!(data, vec![Datum::create(&channel, "datum".to_string(), false)]);
+    assert_eq!(data, vec![Datum::create(&channel, "datum".to_string(), false, 5)]);
 
     let cont = rspace.get_store().get_continuations(&key);
     assert_eq!(cont.len(), 0);
@@ -172,7 +176,7 @@ async fn producing_twice_on_same_channel_should_persist_two_pieces_of_data_in_st
         .produce(key[0].clone(), "datum1".to_string(), false)
         .await;
     let d1 = rspace.get_store().get_data(&channel);
-    assert_eq!(d1, vec![Datum::create(&channel, "datum1".to_string(), false)]);
+    assert_eq!(d1, vec![Datum::create(&channel, "datum1".to_string(), false, 6)]);
 
     let wc1 = rspace.get_store().get_continuations(&key.clone());
     assert_eq!(wc1.len(), 0);
@@ -183,8 +187,8 @@ async fn producing_twice_on_same_channel_should_persist_two_pieces_of_data_in_st
         .await;
     let d2 = rspace.get_store().get_data(&channel);
     assert!(check_same_elements(d2, vec![
-        Datum::create(&channel, "datum1".to_string(), false),
-        Datum::create(&channel, "datum2".to_string(), false)
+        Datum::create(&channel, "datum1".to_string(), false, 6),
+        Datum::create(&channel, "datum2".to_string(), false, 6)
     ]));
 
     let wc2 = rspace.get_store().get_continuations(&key.clone());
@@ -283,7 +287,7 @@ async fn producing_then_consuming_on_same_channel_should_return_continuation_and
         .produce(channel.clone(), "datum".to_string(), false)
         .await;
     let d1 = rspace.get_store().get_data(&channel);
-    assert_eq!(d1, vec![Datum::create(&channel, "datum".to_string(), false)]);
+    assert_eq!(d1, vec![Datum::create(&channel, "datum".to_string(), false, 5)]);
 
     let c1 = rspace.get_store().get_continuations(&key.clone());
     assert_eq!(c1.len(), 0);
@@ -330,7 +334,7 @@ async fn producing_then_consuming_on_same_channel_with_peek_should_return_contin
         .produce(channel.clone(), "datum".to_string(), false)
         .await;
     let d1 = rspace.get_store().get_data(&channel);
-    assert_eq!(d1, vec![Datum::create(&channel, "datum".to_string(), false)]);
+    assert_eq!(d1, vec![Datum::create(&channel, "datum".to_string(), false, 5)]);
 
     let c1 = rspace.get_store().get_continuations(&key.clone());
     assert_eq!(c1.len(), 0);
@@ -547,7 +551,7 @@ async fn producing_on_channel_then_consuming_on_that_channel_and_another_then_pr
         .produce(produce_key_1[0].clone(), "datum1".to_string(), false)
         .await;
     let d1 = rspace.get_store().get_data(&produce_key_1[0]);
-    assert_eq!(d1, vec![Datum::create(&produce_key_1[0], "datum1".to_string(), false)]);
+    assert_eq!(d1, vec![Datum::create(&produce_key_1[0], "datum1".to_string(), false, 6)]);
 
     let c1 = rspace.get_store().get_continuations(&produce_key_1.clone());
     assert!(c1.is_empty());
@@ -563,7 +567,7 @@ async fn producing_on_channel_then_consuming_on_that_channel_and_another_then_pr
         )
         .await;
     let d2 = rspace.get_store().get_data(&produce_key_1[0]);
-    assert_eq!(d2, vec![Datum::create(&produce_key_1[0], "datum1".to_string(), false)]);
+    assert_eq!(d2, vec![Datum::create(&produce_key_1[0], "datum1".to_string(), false, 6)]);
 
     let c2 = rspace.get_store().get_continuations(&produce_key_1.clone());
     let d3 = rspace.get_store().get_data(&produce_key_2[0]);
@@ -614,7 +618,7 @@ async fn producing_on_three_channels_then_consuming_once_should_return_cont_and_
         .produce(produce_key_1[0].clone(), "datum1".to_string(), false)
         .await;
     let d1 = rspace.get_store().get_data(&produce_key_1[0]);
-    assert_eq!(d1, vec![Datum::create(&produce_key_1[0], "datum1".to_string(), false)]);
+    assert_eq!(d1, vec![Datum::create(&produce_key_1[0], "datum1".to_string(), false, 6)]);
 
     let c1 = rspace.get_store().get_continuations(&produce_key_1);
     assert!(c1.is_empty());
@@ -624,7 +628,7 @@ async fn producing_on_three_channels_then_consuming_once_should_return_cont_and_
         .produce(produce_key_2[0].clone(), "datum2".to_string(), false)
         .await;
     let d2 = rspace.get_store().get_data(&produce_key_2[0]);
-    assert_eq!(d2, vec![Datum::create(&produce_key_2[0], "datum2".to_string(), false)]);
+    assert_eq!(d2, vec![Datum::create(&produce_key_2[0], "datum2".to_string(), false, 6)]);
 
     let c2 = rspace.get_store().get_continuations(&produce_key_2);
     assert!(c2.is_empty());
@@ -634,7 +638,7 @@ async fn producing_on_three_channels_then_consuming_once_should_return_cont_and_
         .produce(produce_key_3[0].clone(), "datum3".to_string(), false)
         .await;
     let d3 = rspace.get_store().get_data(&produce_key_3[0]);
-    assert_eq!(d3, vec![Datum::create(&produce_key_3[0], "datum3".to_string(), false)]);
+    assert_eq!(d3, vec![Datum::create(&produce_key_3[0], "datum3".to_string(), false, 6)]);
 
     let c3 = rspace.get_store().get_continuations(&produce_key_3);
     assert!(c3.is_empty());
@@ -1047,7 +1051,7 @@ async fn consuming_and_producing_with_non_trivial_matches_should_work() {
     let d1 = rspace.get_store().get_data(&"ch2".to_string());
     assert!(d1.is_empty());
     let d2 = rspace.get_store().get_data(&"ch1".to_string());
-    assert_eq!(d2, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), false)]);
+    assert_eq!(d2, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), false, 6)]);
 
     let c1 = rspace
         .get_store()
@@ -1161,7 +1165,7 @@ async fn consuming_on_two_channels_then_consuming_on_one_then_producing_on_both_
     let d1 = rspace.get_store().get_data(&"ch1".to_string());
     assert!(d1.is_empty());
     let d2 = rspace.get_store().get_data(&"ch2".to_string());
-    assert_eq!(d2, vec![Datum::create(&"ch2".to_string(), "datum2".to_string(), false)]);
+    assert_eq!(d2, vec![Datum::create(&"ch2".to_string(), "datum2".to_string(), false, 6)]);
 
     assert!(r3.clone().unwrap().is_some());
     assert!(r4.unwrap().is_none());
@@ -1194,7 +1198,7 @@ async fn producing_then_persistent_consume_on_same_channel_should_return_cont_an
         .produce(key[0].clone(), "datum".to_string(), false)
         .await;
     let d1 = rspace.get_store().get_data(&key[0]);
-    assert_eq!(d1, vec![Datum::create(&key[0], "datum".to_string(), false)]);
+    assert_eq!(d1, vec![Datum::create(&key[0], "datum".to_string(), false, 5)]);
     let c1 = rspace.get_store().get_continuations(&key.clone());
     assert!(c1.is_empty());
     assert!(r1.unwrap().is_none());
@@ -1248,7 +1252,7 @@ async fn producing_then_persistent_consume_then_producing_again_on_same_channel_
         .produce(key[0].clone(), "datum1".to_string(), false)
         .await;
     let d1 = rspace.get_store().get_data(&key[0]);
-    assert_eq!(d1, vec![Datum::create(&key[0], "datum1".to_string(), false)]);
+    assert_eq!(d1, vec![Datum::create(&key[0], "datum1".to_string(), false, 6)]);
     let c1 = rspace.get_store().get_continuations(&key.clone());
     assert!(c1.is_empty());
     assert!(r1.unwrap().is_none());
@@ -1396,7 +1400,7 @@ async fn consuming_and_doing_persistent_produce_should_work() {
         .await;
     assert!(r3.unwrap().is_none());
     let d1 = rspace.get_store().get_data(&"ch1".to_string());
-    assert_eq!(d1, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true)]);
+    assert_eq!(d1, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true, 6)]);
     let c1 = rspace.get_store().get_continuations(&["ch1".to_string()]);
     assert!(c1.is_empty());
 }
@@ -1437,7 +1441,7 @@ async fn consuming_then_persistent_produce_then_consuming_should_work() {
         .await;
     assert!(r3.unwrap().is_none());
     let d1 = rspace.get_store().get_data(&"ch1".to_string());
-    assert_eq!(d1, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true)]);
+    assert_eq!(d1, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true, 6)]);
     let c1 = rspace.get_store().get_continuations(&["ch1".to_string()]);
     assert!(c1.is_empty());
 
@@ -1452,7 +1456,7 @@ async fn consuming_then_persistent_produce_then_consuming_should_work() {
         .await;
     assert!(r4.clone().unwrap().is_some());
     let d2 = rspace.get_store().get_data(&"ch1".to_string());
-    assert_eq!(d2, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true)]);
+    assert_eq!(d2, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true, 6)]);
     let c2 = rspace.get_store().get_continuations(&["ch1".to_string()]);
     assert!(c2.is_empty());
     assert!(check_same_elements(run_k(r4.unwrap()), vec![vec!["datum1".to_string()]]))
@@ -1466,7 +1470,7 @@ async fn doing_persistent_produce_and_consuming_twice_should_work() {
         .produce("ch1".to_string(), "datum1".to_string(), true)
         .await;
     let d1 = rspace.get_store().get_data(&"ch1".to_string());
-    assert_eq!(d1, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true)]);
+    assert_eq!(d1, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true, 6)]);
     let c1 = rspace.get_store().get_continuations(&["ch1".to_string()]);
     assert!(c1.is_empty());
     assert!(r1.unwrap().is_none());
@@ -1481,7 +1485,7 @@ async fn doing_persistent_produce_and_consuming_twice_should_work() {
         )
         .await;
     let d2 = rspace.get_store().get_data(&"ch1".to_string());
-    assert_eq!(d2, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true)]);
+    assert_eq!(d2, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true, 6)]);
     let c2 = rspace.get_store().get_continuations(&["ch1".to_string()]);
     assert!(c2.is_empty());
     assert!(r2.clone().unwrap().is_some());
@@ -1497,7 +1501,7 @@ async fn doing_persistent_produce_and_consuming_twice_should_work() {
         )
         .await;
     let d3 = rspace.get_store().get_data(&"ch1".to_string());
-    assert_eq!(d3, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true)]);
+    assert_eq!(d3, vec![Datum::create(&"ch1".to_string(), "datum1".to_string(), true, 6)]);
     let c3 = rspace.get_store().get_continuations(&["ch1".to_string()]);
     assert!(c3.is_empty());
     assert!(r3.clone().unwrap().is_some());
@@ -1508,9 +1512,9 @@ async fn doing_persistent_produce_and_consuming_twice_should_work() {
 async fn producing_three_times_then_doing_persistent_consume_should_work() {
     let rspace = create_rspace().await;
     let expected_data = [
-        Datum::create(&"ch1".to_string(), "datum1".to_string(), false),
-        Datum::create(&"ch1".to_string(), "datum2".to_string(), false),
-        Datum::create(&"ch1".to_string(), "datum3".to_string(), false),
+        Datum::create(&"ch1".to_string(), "datum1".to_string(), false, 6),
+        Datum::create(&"ch1".to_string(), "datum2".to_string(), false, 6),
+        Datum::create(&"ch1".to_string(), "datum3".to_string(), false, 6),
     ];
     let expected_conts =
         [vec!["datum1".to_string()], vec!["datum2".to_string()], vec!["datum3".to_string()]];
@@ -1854,6 +1858,8 @@ async fn create_soft_checkpoint_should_capture_the_current_state_of_the_store() 
         persist: false,
         peeks: BTreeSet::default(),
         source: Consume::create(&channels, &patterns, &continuation, false),
+        pattern_sizes: vec![1],
+        guard_size: None,
     }];
 
     // do an operation
@@ -1909,6 +1915,8 @@ async fn create_soft_checkpoint_should_create_checkpoints_which_have_separate_st
         persist: false,
         peeks: BTreeSet::default(),
         source: Consume::create(&channels, &patterns, &continuation, false),
+        pattern_sizes: vec![1],
+        guard_size: None,
     }];
 
     // do an operation

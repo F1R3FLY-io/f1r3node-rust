@@ -640,6 +640,17 @@ pub struct CasperShardConf {
     /// by default. File does not shrink after sweeping (LMDB holds freed
     /// pages for reuse).
     pub enable_history_pruning: bool,
+    /// Issue #1181. Maintain per-leaf refcounts on the cold-store leaf
+    /// store at every checkpoint commit and retention-window slide.
+    /// Default off; see `CasperConf::enable_cold_gc_bookkeeping` for
+    /// the full rationale and `rspace/history/cold_gc_lmdb.rs` for
+    /// the implementation.
+    pub enable_cold_gc_bookkeeping: bool,
+    /// Issue #1181, Phase 4. Run the cold-store GC worker on every
+    /// history-pruning pass. Requires `enable_cold_gc_bookkeeping`.
+    /// Default off; see `CasperConf::enable_cold_gc_sweep` for the
+    /// rollout rationale.
+    pub enable_cold_gc_sweep: bool,
     pub synchrony_recovery_stall_window: Duration,
     pub synchrony_recovery_cooldown: Duration,
     pub synchrony_recovery_max_bypasses: u32,
@@ -689,6 +700,8 @@ impl CasperShardConf {
             mergeable_channels_gc_depth_buffer: 10,
             enable_block_store_gc: false,
             enable_history_pruning: false,
+            enable_cold_gc_bookkeeping: false,
+            enable_cold_gc_sweep: false,
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),
             synchrony_recovery_max_bypasses: 2,
@@ -705,11 +718,9 @@ impl CasperShardConf {
 
     /// Rspace-history retention floor for an anchor at `anchor_block_number`.
     ///
-    /// Issue #1157: readers that query state by root compare the target
-    /// block's height against this floor. A block at or below the floor
-    /// has had its state nodes swept by the `enable_history_pruning`
-    /// pass, and the correct answer is an explicit "pruned" response —
-    /// not `MissingNode`, and not a partial walk. See
+    /// When history pruning is enabled, GC retains the floor height and
+    /// newer blocks. Older states can be swept. Archive readers do not
+    /// apply this calculated floor. See
     /// [`crate::rust::util::rspace_history_horizon::state_retention_floor`].
     pub fn state_retention_floor(&self, anchor_block_number: i64) -> i64 {
         crate::rust::util::rspace_history_horizon::state_retention_floor(
