@@ -58,7 +58,8 @@ use super::dag_gc_store::DagGcStore;
 use super::dag_history_index::{DagHistoryIndex, HistoryPage};
 use super::dag_persistence::DagPersistence;
 use super::deploy_lifecycle_types::{
-    DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents, TerminalRecord,
+    AppendTiming, DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents,
+    TerminalRecord,
 };
 
 pub type DeployId = shared::rust::ByteString;
@@ -611,7 +612,7 @@ impl KeyValueDagRepresentation {
 
     /// Lifecycle: the write-once terminal record for a sig, if determined.
     pub fn deploy_terminal(&self, sig: &[u8]) -> Result<Option<TerminalRecord>, KvStoreError> {
-        self.lifecycle.read().get_terminal(sig)
+        lifecycle_read(&self.lifecycle, "deploy_terminal").get_terminal(sig)
     }
 
     /// Lifecycle: the open event row for a sig (pruned once terminal).
@@ -619,7 +620,7 @@ impl KeyValueDagRepresentation {
         &self,
         sig: &[u8],
     ) -> Result<Option<LifecycleEvents>, KvStoreError> {
-        self.lifecycle.read().get_events(sig)
+        lifecycle_read(&self.lifecycle, "deploy_lifecycle_events").get_events(sig)
     }
 
     /// Lifecycle: WRITE-ONCE terminal write (prunes the event row on a
@@ -629,12 +630,13 @@ impl KeyValueDagRepresentation {
         sig: &[u8],
         record: TerminalRecord,
     ) -> Result<TerminalRecord, KvStoreError> {
-        self.lifecycle.write().put_terminal_if_absent(sig, record)
+        lifecycle_write(&self.lifecycle, "put_deploy_terminal_if_absent")
+            .put_terminal_if_absent(sig, record)
     }
 
     /// Lifecycle: every open event row — the work list of a settle pass.
     pub fn open_lifecycle_rows(&self) -> Result<Vec<(DeployId, LifecycleEvents)>, KvStoreError> {
-        self.lifecycle.read().open_rows()
+        lifecycle_read(&self.lifecycle, "open_lifecycle_rows").open_rows()
     }
 
     /// Lifecycle: drop an open row if `discardable` still holds for its
@@ -645,7 +647,8 @@ impl KeyValueDagRepresentation {
         sig: &[u8],
         discardable: impl Fn(&LifecycleEvents) -> bool,
     ) -> Result<bool, KvStoreError> {
-        self.lifecycle.write().discard_events_if(sig, discardable)
+        lifecycle_write(&self.lifecycle, "discard_lifecycle_events_if")
+            .discard_events_if(sig, discardable)
     }
 
     /// Repeat-deploy carrier index: the height since which every insert
@@ -1393,35 +1396,78 @@ pub struct BlockDagKeyValueStorage {
     insert_observer: Arc<OnceLock<mpsc::UnboundedSender<BlockHash>>>,
 }
 
-const LONG_GLOBAL_LOCK: std::time::Duration = std::time::Duration::from_millis(500);
+const LONG_LOCK: std::time::Duration = std::time::Duration::from_millis(500);
 const SLOW_INSERT: std::time::Duration = std::time::Duration::from_secs(1);
 
-struct GlobalLockTiming {
+struct LockTiming {
+    lock: &'static str,
     site: &'static str,
     exclusive: bool,
     waited: std::time::Duration,
     acquired: std::time::Instant,
 }
 
-impl Drop for GlobalLockTiming {
+impl Drop for LockTiming {
     fn drop(&mut self) {
         let held = self.acquired.elapsed();
-        if held >= LONG_GLOBAL_LOCK || self.waited >= LONG_GLOBAL_LOCK {
+        if held >= LONG_LOCK || self.waited >= LONG_LOCK {
             tracing::warn!(
                 target: "f1r3fly.block-dag.lock",
+                lock = self.lock,
                 site = self.site,
                 exclusive = self.exclusive,
                 wait_ms = self.waited.as_millis() as u64,
                 hold_ms = held.as_millis() as u64,
-                "DAG global lock waited or held long"
+                "DAG storage lock waited or held long"
             );
         }
     }
 }
 
-struct TimedGlobalLock<G> {
-    timing: GlobalLockTiming,
-    _guard: G,
+struct TimedLock<G> {
+    timing: LockTiming,
+    guard: G,
+}
+
+impl<G: std::ops::Deref> std::ops::Deref for TimedLock<G> {
+    type Target = G::Target;
+
+    fn deref(&self) -> &G::Target { &self.guard }
+}
+
+fn timed_lock<G>(
+    lock: &'static str,
+    site: &'static str,
+    exclusive: bool,
+    acquire: impl FnOnce() -> G,
+) -> TimedLock<G> {
+    let started = std::time::Instant::now();
+    let guard = acquire();
+    let acquired = std::time::Instant::now();
+    TimedLock {
+        timing: LockTiming {
+            lock,
+            site,
+            exclusive,
+            waited: acquired - started,
+            acquired,
+        },
+        guard,
+    }
+}
+
+fn lifecycle_write<'a>(
+    lifecycle: &'a PlRwLock<DeployLifecycleTables>,
+    site: &'static str,
+) -> TimedLock<parking_lot::RwLockWriteGuard<'a, DeployLifecycleTables>> {
+    timed_lock("lifecycle", site, true, || lifecycle.write())
+}
+
+fn lifecycle_read<'a>(
+    lifecycle: &'a PlRwLock<DeployLifecycleTables>,
+    site: &'static str,
+) -> TimedLock<parking_lot::RwLockReadGuard<'a, DeployLifecycleTables>> {
+    timed_lock("lifecycle", site, false, || lifecycle.read())
 }
 
 #[derive(Default)]
@@ -1429,6 +1475,9 @@ struct InsertSteps {
     sibling: std::time::Duration,
     carrier: std::time::Duration,
     events: std::time::Duration,
+    events_lock: std::time::Duration,
+    events_reads: std::time::Duration,
+    events_put: std::time::Duration,
     latest: std::time::Duration,
     publish: std::time::Duration,
     committed: std::time::Duration,
@@ -1443,40 +1492,12 @@ fn timed_step<R>(slot: &mut std::time::Duration, step: impl FnOnce() -> R) -> R 
 }
 
 impl BlockDagKeyValueStorage {
-    fn timed_write(
-        &self,
-        site: &'static str,
-    ) -> TimedGlobalLock<parking_lot::RwLockWriteGuard<'_, ()>> {
-        let started = std::time::Instant::now();
-        let guard = self.global_lock.write();
-        let acquired = std::time::Instant::now();
-        TimedGlobalLock {
-            timing: GlobalLockTiming {
-                site,
-                exclusive: true,
-                waited: acquired - started,
-                acquired,
-            },
-            _guard: guard,
-        }
+    fn timed_write(&self, site: &'static str) -> TimedLock<parking_lot::RwLockWriteGuard<'_, ()>> {
+        timed_lock("global", site, true, || self.global_lock.write())
     }
 
-    fn timed_read(
-        &self,
-        site: &'static str,
-    ) -> TimedGlobalLock<parking_lot::RwLockReadGuard<'_, ()>> {
-        let started = std::time::Instant::now();
-        let guard = self.global_lock.read();
-        let acquired = std::time::Instant::now();
-        TimedGlobalLock {
-            timing: GlobalLockTiming {
-                site,
-                exclusive: false,
-                waited: acquired - started,
-                acquired,
-            },
-            _guard: guard,
-        }
+    fn timed_read(&self, site: &'static str) -> TimedLock<parking_lot::RwLockReadGuard<'_, ()>> {
+        timed_lock("global", site, false, || self.global_lock.read())
     }
 
     /// Report every block inserted from now on to `observer`. A storage has
@@ -2041,6 +2062,9 @@ impl BlockDagKeyValueStorage {
                 sibling_ms = steps.sibling.as_millis() as u64,
                 carrier_ms = steps.carrier.as_millis() as u64,
                 events_ms = steps.events.as_millis() as u64,
+                events_lock_ms = steps.events_lock.as_millis() as u64,
+                events_reads_ms = steps.events_reads.as_millis() as u64,
+                events_put_ms = steps.events_put.as_millis() as u64,
                 latest_ms = steps.latest.as_millis() as u64,
                 publish_ms = steps.publish.as_millis() as u64,
                 committed_ms = steps.committed.as_millis() as u64,
@@ -2089,6 +2113,14 @@ impl BlockDagKeyValueStorage {
     /// lifecycle rows. Each append is deduplicated per block and kind, so a
     /// repeat writes nothing.
     pub fn record_deploy_events(&self, block: &BlockMessage) -> Result<(), KvStoreError> {
+        self.record_deploy_events_steps(block, &mut InsertSteps::default())
+    }
+
+    fn record_deploy_events_steps(
+        &self,
+        block: &BlockMessage,
+        steps: &mut InsertSteps,
+    ) -> Result<(), KvStoreError> {
         let block_number = block.body.state.block_number;
         let included = block.body.deploys.iter().map(|pd| {
             (
@@ -2112,9 +2144,15 @@ impl BlockDagKeyValueStorage {
                 },
             })
         });
-        self.lifecycle
-            .write()
-            .append_events_once_batch(included.chain(rejected).collect())
+        let items = included.chain(rejected).collect();
+        let tables = timed_step(&mut steps.events_lock, || {
+            lifecycle_write(&self.lifecycle, "record_deploy_events")
+        });
+        let mut timing = AppendTiming::default();
+        let result = tables.append_events_once_batch_timed(items, &mut timing);
+        steps.events_reads += timing.reads;
+        steps.events_put += timing.put;
+        result
     }
 
     /// Internal method to insert without acquiring lock.
@@ -2346,7 +2384,10 @@ impl BlockDagKeyValueStorage {
             // contents nobody has judged, so its events wait for
             // `record_deploy_events` after a judgement finds them valid.
             if !matches!(mode, InsertMode::Equivocation { .. }) {
-                timed_step(&mut steps.events, || self.record_deploy_events(block))?;
+                let events_started = std::time::Instant::now();
+                let recorded = self.record_deploy_events_steps(block, steps);
+                steps.events += events_started.elapsed();
+                recorded?;
             }
 
             let block_metadata = BlockMetadata::from_block(block, equivocates, None, None);
