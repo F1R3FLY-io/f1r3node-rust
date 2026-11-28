@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, FromRequest, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
@@ -51,6 +51,7 @@ pub fn router(state: HttpState) -> Router {
             "/api/deploy-finalization-status/{deploy_sig_hex}",
             get(deploy_status_handler),
         )
+        .route("/api/deploy-finalization-status", post(reconcile_handler))
         .route("/ws/deploys", get(watch_handler))
         .route("/ws/events", get(events_proxy_handler))
         .route("/queue/status", get(queue_status_handler))
@@ -147,6 +148,32 @@ async fn deploy_status_handler(
             None,
         );
     };
+    status_or_proxy(&state, sig, request).await
+}
+
+async fn reconcile_handler(State(state): State<HttpState>, request: Request) -> Response {
+    let (parts, body) = request.into_parts();
+    let bytes = match Bytes::from_request(Request::from_parts(parts.clone(), body), &()).await {
+        Ok(bytes) => bytes,
+        Err(e) => return error_response(e.status(), "invalid_request_body", e.body_text(), None),
+    };
+    let copy = Request::from_parts(parts.clone(), Body::from(bytes.clone()));
+    let deploy = match Json::<DeployRequest>::from_request(copy, &()).await {
+        Ok(Json(request)) => match request.to_signed() {
+            Ok(deploy) => deploy,
+            Err(e) => return intake_error_response(IntakeError::IllegalArgument(e.to_string())),
+        },
+        Err(e) => return error_response(e.status(), "invalid_request_body", e.body_text(), None),
+    };
+    status_or_proxy(
+        &state,
+        deploy.sig.to_vec(),
+        Request::from_parts(parts, Body::from(bytes)),
+    )
+    .await
+}
+
+async fn status_or_proxy(state: &HttpState, sig: Sig, request: Request) -> Response {
     match state.engine.status(sig).await {
         Ok(Some(view)) => Json(QueueDeployStatus::from(view)).into_response(),
         Ok(None) => proxy(&state.node, request).await,

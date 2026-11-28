@@ -188,9 +188,7 @@ fn checked_block_membership(
 /// 1. A terminal record answers directly with its frozen fields
 ///    (Finalized / Expired / Failed can never flip — write-once).
 /// 2. An open event row answers Pending with its display fields.
-/// 3. Neither: the sig was never in any canonical body this node holds
-///    (the register ingests every insert path from genesis). A
-///    caller-provided block hash supplies a checked Pending answer, with
+/// 3. A caller-provided block hash supplies a checked Pending answer, with
 ///    the indexed-but-missing corruption sentinel preserved; otherwise
 ///    `pending_unknown`.
 ///
@@ -202,7 +200,12 @@ pub fn resolve(
     sig: &[u8],
     known_block_hash: Option<&BlockHash>,
 ) -> ApiErr<DeployFinalizationStatus> {
-    let status = resolve_lookup(dag, block_store, sig, known_block_hash)?;
+    let status = match (lookup_register(dag, sig)?, known_block_hash) {
+        (Some(status), _) => status,
+        (None, Some(hash)) => checked_block_membership(block_store, sig, hash)?
+            .unwrap_or_else(DeployFinalizationStatus::pending_unknown),
+        (None, None) => DeployFinalizationStatus::pending_unknown(),
+    };
     tracing::info!(
         target: "f1r3fly.casper.deploy_lifecycle",
         event = "status_resolved",
@@ -215,14 +218,13 @@ pub fn resolve(
     Ok(status)
 }
 
-fn resolve_lookup(
+pub(crate) fn lookup_register(
     dag: &KeyValueDagRepresentation,
-    block_store: &KeyValueBlockStore,
     sig: &[u8],
-    known_block_hash: Option<&BlockHash>,
-) -> ApiErr<DeployFinalizationStatus> {
-    if let Some(record) = dag
-        .deploy_terminal(sig)
+) -> ApiErr<Option<DeployFinalizationStatus>> {
+    let register = dag.lifecycle.read();
+    if let Some(record) = register
+        .get_terminal(sig)
         .map_err(|e| eyre::eyre!("deploy lifecycle terminal lookup failed: {}", e))?
     {
         let latest_block_hash = if record.latest_block_hash.is_empty() {
@@ -230,32 +232,18 @@ fn resolve_lookup(
         } else {
             Some(Bytes::from(record.latest_block_hash))
         };
-        return Ok(DeployFinalizationStatus {
+        return Ok(Some(DeployFinalizationStatus {
             state: terminal_state(record.state),
             rejection_count: record.rejection_count,
             latest_block_hash,
-        });
+        }));
     }
 
-    if let Some(row) = dag
-        .deploy_lifecycle_events(sig)
+    Ok(register
+        .get_events(sig)
         .map_err(|e| eyre::eyre!("deploy lifecycle events lookup failed: {}", e))?
-    {
-        return Ok(pending_from_row(&row));
-    }
-
-    // The register ingests every insert path from genesis, so a sig with
-    // neither a terminal record nor an open row was never in any canonical
-    // body this node holds. A caller-provided block hash still gets a
-    // checked Pending answer (with the indexed-but-missing corruption
-    // sentinel preserved for the consistency case).
-    match known_block_hash {
-        Some(block_hash) => match checked_block_membership(block_store, sig, block_hash)? {
-            Some(status) => Ok(status),
-            None => Ok(DeployFinalizationStatus::pending_unknown()),
-        },
-        None => Ok(DeployFinalizationStatus::pending_unknown()),
-    }
+        .as_ref()
+        .map(pending_from_row))
 }
 
 #[cfg(test)]

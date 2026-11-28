@@ -253,7 +253,7 @@ where E: Into<eyre::Error>
 /// Json extractor that returns rejection errors as JSON instead of plain text
 pub struct AppJson<T>(pub T);
 
-pub struct DeployJson(pub DeployRequest, DeployRequestPermit);
+pub struct DeployJson(pub DeployRequest, pub(crate) DeployRequestPermit);
 
 impl FromRequest<AppState> for DeployJson {
     type Rejection = Response;

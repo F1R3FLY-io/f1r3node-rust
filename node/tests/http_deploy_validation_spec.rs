@@ -174,11 +174,20 @@ mod http_deploy_validation {
     }
 
     async fn response(router: Router, body: String, content_type: &str) -> (StatusCode, Value) {
+        post_response(router, "/deploy", body, content_type).await
+    }
+
+    async fn post_response(
+        router: Router,
+        path: &str,
+        body: String,
+        content_type: &str,
+    ) -> (StatusCode, Value) {
         let response = router
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/deploy")
+                    .uri(path)
                     .header("content-type", content_type)
                     .body(Body::from(body))
                     .unwrap(),
@@ -188,6 +197,23 @@ mod http_deploy_validation {
         let status = response.status();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn reconciliation_verifies_the_signed_validity_window_before_lookup() {
+        let (router, calls) = router().await;
+        let mut request = signed_request();
+        request.data.valid_after_block_number += 1;
+        let (status, body) = post_response(
+            router,
+            "/deploy-finalization-status",
+            serde_json::to_string(&request).unwrap(),
+            "application/json",
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "illegal_argument");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -340,6 +366,7 @@ mod http_deploy_validation {
                 "/explore-deploy",
                 "/explore-deploy-by-block-hash",
                 "/api/prepare-deploy",
+                "/api/deploy-finalization-status",
                 "/api/data-at-name-by-block-hash",
                 "/api/estimate-cost",
             ] {

@@ -144,6 +144,15 @@ pub trait WebApi {
         deploy_sig_hex: String,
     ) -> Result<DeployFinalizationStatusJson>;
 
+    /// Reconcile a never-observed deploy (#1103): the caller POSTs the same
+    /// saved signed deploy JSON it submitted, and a sig the register has
+    /// never observed is judged against the floor of the adopted last
+    /// finalized block. The response carries that verdict basis.
+    async fn deploy_finalization_status_reconciled(
+        &self,
+        request: DeployRequest,
+    ) -> Result<DeployFinalizationStatusJson>;
+
     /// Bulk snapshot of pending deploys (deploy_storage + rejected-recovery
     /// buffer), optionally filtered by deployer public key (hex-encoded).
     async fn get_pending_deploys(&self, deployer: Option<String>) -> Result<PendingDeploysJson>;
@@ -203,6 +212,12 @@ pub struct DeployFinalizationStatusJson {
     /// Hex-encoded block hash. Absent (`null`) when the deploy has never
     /// been included in any block.
     pub latest_block_hash: Option<String>,
+    /// Verdict basis (#1103): hex-encoded hash and height of the floor of
+    /// the adopted last finalized block a reconciled never-observed verdict
+    /// was judged against. Absent (`null`) on pure register lookups and
+    /// when this node could not resolve a floor.
+    pub basis_block_hash: Option<String>,
+    pub basis_block_height: Option<i64>,
 }
 
 /// JSON-serializable view of a single pending deploy.
@@ -814,6 +829,34 @@ impl WebApi for WebApiImpl {
             state: deploy_state_json_label(status.state).to_string(),
             rejection_count: status.rejection_count,
             latest_block_hash: status.latest_block_hash.map(|h| hex::encode(&h)),
+            basis_block_hash: None,
+            basis_block_height: None,
+        })
+    }
+
+    async fn deploy_finalization_status_reconciled(
+        &self,
+        request: DeployRequest,
+    ) -> Result<DeployFinalizationStatusJson> {
+        let signed_deploy = request.to_signed().map_err(|error| {
+            eyre::Report::new(DeployValidationError {
+                message: error.to_string(),
+            })
+        })?;
+        let sig = signed_deploy.sig.clone();
+        let reconciled = BlockAPI::deploy_finalization_status_reconciled(
+            &self.engine_cell,
+            &sig,
+            Some(&signed_deploy),
+            &self.shard_id,
+        )
+        .await?;
+        Ok(DeployFinalizationStatusJson {
+            state: deploy_state_json_label(reconciled.status.state).to_string(),
+            rejection_count: reconciled.status.rejection_count,
+            latest_block_hash: reconciled.status.latest_block_hash.map(|h| hex::encode(&h)),
+            basis_block_hash: reconciled.basis.as_ref().map(|f| hex::encode(&f.hash)),
+            basis_block_height: reconciled.basis.as_ref().map(|f| f.block_number),
         })
     }
 

@@ -720,6 +720,35 @@
         "deprecated": false
       }
     },
+    "/deploy-finalization-status": {
+      "post": {
+        "description": "Check a saved signed deploy against finalized chain history. The node returns the basis hash and height when it can resolve the floor for an unknown deploy.",
+        "consumes": ["application/json"],
+        "produces": ["application/json"],
+        "parameters": [{"in": "body", "name": "deploy", "required": true, "schema": {"$ref": "#/definitions/DeployRequest"}}],
+        "responses": {
+          "200": {"description": "Deploy status", "schema": {"$ref": "#/definitions/DeployFinalizationStatus"}},
+          "400": {"description": "Malformed JSON, invalid deploy, or shard mismatch", "schema": {"$ref": "#/definitions/ApiErrorResponse"}},
+          "413": {"description": "Request body exceeds the size limit", "schema": {"$ref": "#/definitions/ApiErrorResponse"}},
+          "415": {"description": "Unsupported content type (invalid_request_body)", "schema": {"$ref": "#/definitions/ApiErrorResponse"}},
+          "422": {"description": "Invalid JSON field type or value (invalid_request_body)", "schema": {"$ref": "#/definitions/ApiErrorResponse"}},
+          "500": {"description": "Internal node failure", "schema": {"$ref": "#/definitions/ApiErrorResponse"}},
+          "503": {"description": "All signed deploy request slots are in use", "schema": {"$ref": "#/definitions/ApiErrorResponse"}}
+        }
+      }
+    },
+    "/deploy-finalization-status/{sig}": {
+      "get": {
+        "description": "Read the deploy lifecycle record by signature.",
+        "produces": ["application/json"],
+        "parameters": [{"in": "path", "name": "sig", "required": true, "type": "string"}],
+        "responses": {
+          "200": {"description": "Deploy status", "schema": {"$ref": "#/definitions/DeployFinalizationStatus"}},
+          "400": {"description": "Invalid hex signature", "schema": {"$ref": "#/definitions/ApiErrorResponse"}},
+          "500": {"description": "Internal node failure", "schema": {"$ref": "#/definitions/ApiErrorResponse"}}
+        }
+      }
+    },
     "/estimate-cost": {
       "post": {
         "consumes": ["application/json"],
@@ -1410,6 +1439,17 @@
         }
       },
       "description": "JustificationInfo"
+    },
+    "DeployFinalizationStatus": {
+      "type": "object",
+      "required": ["state", "rejection_count"],
+      "properties": {
+        "state": {"type": "string", "enum": ["Pending", "Finalized", "Failed", "Expired"]},
+        "rejection_count": {"type": "integer", "minimum": 0},
+        "latest_block_hash": {"type": "string", "x-nullable": true},
+        "basis_block_hash": {"type": "string", "x-nullable": true},
+        "basis_block_height": {"type": "integer", "format": "int64", "x-nullable": true}
+      }
     },
     "DeployRequest": {
       "type": "object",

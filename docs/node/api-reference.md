@@ -486,12 +486,67 @@ answers `Rejected`.
 | `state` | string | Deploy finalization state |
 | `rejection_count` | int | Number of times the deploy was rejected during finalization |
 | `latest_block_hash` | string/null | Hex block hash where the deploy was last seen; `null` if never included |
+| `basis_block_hash` | string/null | Verdict basis hash. This endpoint returns `null`. |
+| `basis_block_height` | int/null | Verdict basis height. This endpoint returns `null`. |
 
 | Status | Condition |
 |--------|-----------|
 | `200` | Status determined |
 | `400` | Signature is not valid hex (`invalid_hash`) |
 | `500` | Node-side failure |
+
+#### `POST /api/deploy-finalization-status`
+
+Send the saved signed JSON used for [deploy submission](#post-apideploy).
+The HTTP and gRPC endpoints validate the deploy amounts, parameters, signature, and shard.
+If the lifecycle register has a record for the signature, the node returns that status.
+Otherwise, the node uses the floor of its adopted last finalized block as the verdict basis.
+
+An unknown deploy can return `Expired` when the floor height exceeds
+`validAfterBlockNumber + deployLifespan + maxParentDepth + 256`. The additional 256 blocks
+allow for floor lag on the merge path. The carrier index must also cover the first possible carrier height.
+It must show that the signature is absent at every indexed height. An indexed carrier awaiting validation keeps the status `Pending`.
+
+The status stays `Pending` at or below the bound and when contestability is unlimited.
+An unresolved floor, a restore gap, or incomplete carrier index coverage also keeps the status `Pending`.
+Admission and block validation use `expirationTimestamp`. Reconciliation uses finalized block heights.
+
+The finalizer retains carrier-index rows down to the reconciliation horizon plus two deploy lifespans.
+This covers a basis lag of up to one deploy lifespan.
+After the basis passes the bound, the rows remain provable for about one more lifespan.
+If the basis lags farther, or the query arrives after the rows are pruned, the answer stays `Pending`
+because absence is no longer provable.
+Use the `basis_block_height` from an earlier `Pending` response to query as soon as the basis passes the bound.
+
+```bash
+curl -X POST http://localhost:40403/api/deploy-finalization-status \
+  -H 'Content-Type: application/json' \
+  --data-binary @signed-deploy.json
+```
+
+```json
+{"state": "Expired", "rejection_count": 0, "latest_block_hash": null, "basis_block_hash": "3bfdf56f...", "basis_block_height": 1234}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `basis_block_hash` | string/null | Hex hash of the basis block. Register answers and queries with an unresolved floor return `null`. |
+| `basis_block_height` | int/null | Height of that basis block |
+
+The gRPC `deployFinalizationStatus` method shares the node's pre-decode request limit with `doDeploy`.
+When all slots are in use, the response carries the service error `deploy_admission_busy`.
+
+For `Pending`, keep the reservation. A register verdict of `Finalized` means the deploy already took effect.
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Status determined |
+| `400` | Malformed JSON (`invalid_request_body`); invalid amounts, keys, signature, or a deploy of a foreign shard (`illegal_argument`) |
+| `413` | Request body exceeds the size limit |
+| `415` | Unsupported content type |
+| `422` | Invalid JSON field type or missing required field |
+| `500` | Node-side failure |
+| `503` | All signed deploy request slots are in use (`deploy_admission_busy`) |
 
 #### `GET /api/pending-deploys`
 
@@ -1024,6 +1079,7 @@ curl -X POST http://localhost:40405/api/propose
 | `lastFinalizedBlock` | `LastFinalizedBlockQuery` | `LastFinalizedBlockResponse` | Get the last finalized block. Returns full `BlockInfo` with deploys |
 | `isFinalized` | `IsFinalizedQuery` | `IsFinalizedResponse` | Check if a block is finalized. Returns bool |
 | `findDeploy` | `FindDeployQuery` | `FindDeployResponse` | Find block containing a deploy. Retries up to 80x with 100ms intervals while deploy propagates through DAG |
+| `deployFinalizationStatus` | `DeployFinalizationStatusQuery` | `DeployFinalizationStatusResponse` | Query the canonical-state finalization status of a deploy by its signature. Prefer this over `isFinalized` — a block can finalize while some of its deploys' effects are dropped during merge. The query optionally carries the saved signed `deploy` ([#1103](https://github.com/F1R3FLY-io/f1r3node-rust/issues/1103)): a sig the node has never observed is then reconciled against the floor of the adopted last finalized block, and the response names that basis (`basisBlockHash` / `basisBlockHeight`). `Expired` answers only when the deploy is proven unable to execute. HTTP: `GET /api/deploy-finalization-status/{sig}`, `POST /api/deploy-finalization-status` |
 | `getDataAtName` | `DataAtNameByBlockQuery` | `RhoDataResponse` | Query data at a Rholang name in a specific block's post-state. Takes `Par` + block hash + `usePreStateHash` |
 | `listenForContinuationAtName` | `ContinuationAtNameQuery` | `ContinuationAtNameResponse` | Find processes waiting to receive on given channel names. Returns matching patterns and continuation bodies |
 | `exploratoryDeploy` | `ExploratoryDeployQuery` | `ExploratoryDeployResponse` | Execute Rholang read-only. No block created, no phlo consumed. Returns result `Par`s, block context, and cost. Readonly only |

@@ -1,6 +1,7 @@
 pub mod block_api;
 pub mod block_report_api;
 pub mod deploy_finalization_status;
+pub mod deploy_reconciliation;
 pub mod graph_generator;
 pub mod machine_verifiable_dag;
 pub mod pending_deploys;

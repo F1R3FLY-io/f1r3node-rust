@@ -1,30 +1,46 @@
 # CbC Evidence: casper/src/rust/finality/deploy_lifecycle.rs
 
-- **Status:** discharged
-- **Adapter:** agentic
-- **Commit:** c9aff7732 (landed; review-remediation refinements follow on the same branch)
-- **Verified:** 2026-08-27T23:01:30Z
+- **Status:** pending
+- **Adapter:** rust-regression
+- **Commit:** 3adb6942037fa14ef624c97791770db3cea4cf43
+- **Verified:** 2026-11-27T10:24:57Z
 
 Claim:
 
-> CLAIM-FINALITY-001 (docs/claims/settled-effect-probe-equivalence.md): the batched settled-effect walk (`settled_sigs_of_lineage`) is extensionally equal to the per-sig reference walk (`effect_in_state_of`) on complete lineage segments, and refuses (typed `BlockNotHeld`) rather than answers on incomplete ones.
+> The expiry bound saturates on overflow. The reconciliation horizon adds the merge floor-distance allowance.
 
 ```json
 {
   "artifact": {
     "path": "casper/src/rust/finality/deploy_lifecycle.rs",
-    "commit": "c9aff7732",
-    "id": "casper-src-rust-finality-deploy-lifecycle-rs"
+    "commit": "3adb6942037fa14ef624c97791770db3cea4cf43",
+    "commit_is_base": true,
+    "working_tree": true
   },
-  "claim": "CLAIM-FINALITY-001: settled_sigs_of_lineage is extensionally equal to the effect_in_state_of reference walk on complete segments; incomplete segments refuse with typed BlockNotHeld (fail-closed availability strengthening).",
-  "adapter": "agentic",
-  "status": "discharged",
+  "claim": "The expiry bound saturates on overflow. The reconciliation horizon adds the merge floor-distance allowance.",
+  "adapter": "rust-regression",
+  "status": "pending",
   "evidence": {
-    "kind": "test+mechanization",
-    "ref": "casper::rust::finality::deploy_lifecycle::tests::{batched_walk_matches_the_reference_walk_on_generated_lineages, batched_walk_is_fail_closed_on_a_gapped_segment, floor_probe_matches_the_reference_floor_loop, floor_probe_short_circuit_skips_unavailable_later_floors}; formal/rocq/finalized_floor/theories/SettledEffectProbe.v (walk_collect_equiv, walk_segment_composition, walk_memo_false_stable, walk_true_stable; gate scripts/check-finalized-floor-ALL.sh, 18/18 axiom-free)",
-    "counterexample": null,
-    "detail": "The reference walk is kept untouched as the specification oracle (discharge plan item 1). The generative test compares batched membership against the reference on 12 seeded lineages covering fresh sigs (failed and non-failed), applied_from_scope sigs, decoy sigs on non-base parents, absent sigs, and low/mid/above-tip bounds, with a second pass through the block-facts cache (item 2). The per-block BlockFacts cache (finality/block_facts.rs) stores content-addressed per-block facts only, never answers, and every hit is revalidated against the caller's store with a raw key-existence check, so the walk stays a function of the supplied store; the documented within-segment fail-closed divergence is pinned by its own test, and FloorSettledProbe preserves the reference loop's per-floor short-circuit (its two tests pin equivalence and gap behavior)."
+    "kind": "rust-binding-tests",
+    "ref": "docs/cbc-evidence/deploy-reconciliation-pr-1180.md"
   },
-  "verified_at": "2026-08-27T23:01:30Z"
+  "tiers": {
+    "refutation": "pending",
+    "construction": "pending",
+    "binding": "recorded"
+  },
+  "verified_at": "2026-11-27T10:24:57Z",
+  "verification_id": "b05c5d86-9cf4-4630-99cb-540d6b3b3f8f",
+  "inputs": {
+    "artifact": "casper/src/rust/finality/deploy_lifecycle.rs",
+    "source_sha256": "97b8a6c0709b4570843d3e8c36ad5637f051e456f6724ef3b56f3b0becb39d6b",
+    "claim": {
+      "path": "docs/claims/deploy-reconciliation.md",
+      "sha256": "aaade0deafda4545fce67f39e78ef49f6faea6aeeb4012de3035ebdce9b949d6"
+    }
+  },
+  "evidence_files": {
+    "docs/cbc-evidence/deploy-reconciliation-pr-1180.md": "82412589ad822423bbcfea8cd3e5eb81c5712d830dd8bbb843a8118661634482"
+  }
 }
 ```

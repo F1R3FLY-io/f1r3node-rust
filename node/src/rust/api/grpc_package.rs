@@ -40,12 +40,16 @@ where
     }
 
     fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
-        if request.uri().path() != "/casper.v1.DeployService/doDeploy" {
-            return Box::pin(self.inner.call(request));
-        }
+        let status_query = match request.uri().path() {
+            "/casper.v1.DeployService/doDeploy" => false,
+            "/casper.v1.DeployService/deployFinalizationStatus" => true,
+            _ => return Box::pin(self.inner.call(request)),
+        };
         let permit = match self.limiter.try_acquire() {
             Ok(permit) => permit,
-            Err(error) => return Box::pin(async move { Ok(deploy_busy_response(error)) }),
+            Err(error) => {
+                return Box::pin(async move { Ok(deploy_busy_response(error, status_query)) })
+            }
         };
         request.extensions_mut().insert(permit.clone());
         let response = self.inner.call(request);
@@ -56,20 +60,37 @@ where
     }
 }
 
-fn deploy_busy_response(error: DeployIngressBusy) -> http::Response<tonic::body::Body> {
-    use models::casper::v1::{deploy_response, DeployResponse};
+fn deploy_busy_response(
+    error: DeployIngressBusy,
+    status_query: bool,
+) -> http::Response<tonic::body::Body> {
+    use models::casper::v1::{
+        deploy_finalization_status_response, deploy_response, DeployFinalizationStatusResponse,
+        DeployResponse,
+    };
     use models::servicemodelapi::ServiceError;
 
-    let response = DeployResponse {
-        message: Some(deploy_response::Message::Error(ServiceError {
-            messages: vec![error.to_string()],
-        })),
+    let error = ServiceError {
+        messages: vec![error.to_string()],
     };
-    let mut codec =
-        tonic_prost::ProstCodec::<DeployResponse, models::casper::DeployDataProto>::default();
+    if status_query {
+        encode_grpc_response(DeployFinalizationStatusResponse {
+            message: Some(deploy_finalization_status_response::Message::Error(error)),
+        })
+    } else {
+        encode_grpc_response(DeployResponse {
+            message: Some(deploy_response::Message::Error(error)),
+        })
+    }
+}
+
+fn encode_grpc_response<M: prost::Message + Send + 'static>(
+    message: M,
+) -> http::Response<tonic::body::Body> {
+    let mut codec = tonic_prost::ProstCodec::<M, ()>::default();
     let body = tonic::codec::EncodeBody::new_server(
         codec.encoder(),
-        tokio_stream::once(Ok(response)),
+        tokio_stream::once(Ok(message)),
         None,
         Default::default(),
         None,

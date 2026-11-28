@@ -60,6 +60,11 @@ service DeployService {
   // Query the canonical-state finalization status of a deploy by its signature.
   // Prefer this over isFinalized for deploy tracking — isFinalized can return
   // true for a block whose deploy effects were dropped by merge rejection.
+  // For a sig this node has never observed, callers holding the saved signed
+  // deploy can set `deploy` on the query (#1103): after signature verification,
+  // the never-observed sig is reconciled against the floor of the adopted last
+  // finalized block, and a deploy proven unable to execute answers Expired
+  // with that basis named in the response.
   rpc deployFinalizationStatus(DeployFinalizationStatusQuery) returns (DeployFinalizationStatusResponse) {}
   // Check if a given validator is bonded.
   // Returns on success BondStatusResponse

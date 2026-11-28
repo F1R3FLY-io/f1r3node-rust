@@ -112,6 +112,39 @@ async fn http_intake_reports_the_queue_state_beside_the_node_status() {
     assert_eq!(status["state"], "Pending");
     assert_eq!(status["queue_state"], "submitted");
 
+    let reconcile = |data: String| {
+        reqwest::Client::new()
+            .post(format!("{}/api/deploy-finalization-status", served.http))
+            .header("content-type", "application/json")
+            .body(data)
+            .send()
+    };
+    let queued: Value = reconcile(request_body(&held))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(queued["queue_state"], "submitted");
+    let mut tampered = DeployRequest::from_signed(&held);
+    tampered.data.valid_after_block_number += 1;
+    assert_eq!(
+        reconcile(serde_json::to_string(&tampered).unwrap())
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+    let expected = json!({"state":"Expired","basis_block_hash":"ab","basis_block_height":9});
+    let unknown = deploy(0, "root", 3);
+    let forwarded: Value = reconcile(request_body(&unknown))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(forwarded, expected);
+
     let (code, snapshot) = get_json(format!("{}/queue/status", served.http)).await;
     assert_eq!(code, 200);
     assert_eq!(snapshot["connected"], true);
@@ -354,6 +387,7 @@ async fn grpc_intake_answers_as_the_node_does() {
     let status = client
         .deploy_finalization_status(DeployFinalizationStatusQuery {
             deploy_sig: held.sig.clone(),
+            deploy: None,
         })
         .await
         .unwrap()
@@ -365,6 +399,22 @@ async fn grpc_intake_answers_as_the_node_does() {
         info.state,
         DeployFinalizationStateProto::DeployStatePending as i32
     );
+    let mut tampered = DeployData::to_proto_ref(&held);
+    tampered.valid_after_block_number += 1;
+    for invalid in [tampered, DeployData::to_proto_ref(&deploy(95, "root", 9))] {
+        let response = client
+            .deploy_finalization_status(DeployFinalizationStatusQuery {
+                deploy_sig: held.sig.clone(),
+                deploy: Some(invalid),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(matches!(
+            response.message,
+            Some(deploy_finalization_status_response::Message::Error(_))
+        ));
+    }
     queue.stop();
 }
 
