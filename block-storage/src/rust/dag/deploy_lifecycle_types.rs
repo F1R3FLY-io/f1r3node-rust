@@ -18,6 +18,7 @@
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use serde::{Deserialize, Serialize};
@@ -63,6 +64,12 @@ pub struct TerminalRecord {
     pub rejection_count: u32,
     pub latest_height: i64,
     pub latest_block_hash: ByteString,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AppendTiming {
+    pub reads: Duration,
+    pub put: Duration,
 }
 
 /// The two lifecycle tables, bundled so the storage and every
@@ -196,13 +203,23 @@ impl DeployLifecycleTables {
         &self,
         items: Vec<(ByteString, Option<i64>, LifecycleEvent)>,
     ) -> Result<(), KvStoreError> {
+        self.append_events_once_batch_timed(items, &mut AppendTiming::default())
+    }
+
+    pub fn append_events_once_batch_timed(
+        &self,
+        items: Vec<(ByteString, Option<i64>, LifecycleEvent)>,
+        timing: &mut AppendTiming,
+    ) -> Result<(), KvStoreError> {
         let mut rows: BTreeMap<ByteString, (Option<LifecycleEvents>, bool, bool)> = BTreeMap::new();
         for (sig, valid_after, event) in items {
             let (row, terminal, dirty) = match rows.entry(sig) {
                 Entry::Occupied(entry) => entry.into_mut(),
                 Entry::Vacant(entry) => {
+                    let started = Instant::now();
                     let row = self.get_events(entry.key())?;
                     let terminal = self.get_terminal(entry.key())?.is_some();
+                    timing.reads += started.elapsed();
                     entry.insert((row, terminal, false))
                 }
             };
@@ -238,7 +255,10 @@ impl DeployLifecycleTables {
         if writes.is_empty() {
             return Ok(());
         }
-        self.events.put(writes)
+        let started = Instant::now();
+        let result = self.events.put(writes);
+        timing.put += started.elapsed();
+        result
     }
 
     pub fn get_terminal(&self, sig: &[u8]) -> Result<Option<TerminalRecord>, KvStoreError> {

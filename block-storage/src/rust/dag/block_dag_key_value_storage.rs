@@ -58,7 +58,8 @@ use super::dag_gc_store::DagGcStore;
 use super::dag_history_index::{DagHistoryIndex, HistoryPage};
 use super::dag_persistence::DagPersistence;
 use super::deploy_lifecycle_types::{
-    DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents, TerminalRecord,
+    AppendTiming, DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents,
+    TerminalRecord,
 };
 
 pub type DeployId = shared::rust::ByteString;
@@ -611,7 +612,7 @@ impl KeyValueDagRepresentation {
 
     /// Lifecycle: the write-once terminal record for a sig, if determined.
     pub fn deploy_terminal(&self, sig: &[u8]) -> Result<Option<TerminalRecord>, KvStoreError> {
-        self.lifecycle.read().get_terminal(sig)
+        lifecycle_read(&self.lifecycle, "deploy_terminal").get_terminal(sig)
     }
 
     /// Lifecycle: the open event row for a sig (pruned once terminal).
@@ -619,7 +620,7 @@ impl KeyValueDagRepresentation {
         &self,
         sig: &[u8],
     ) -> Result<Option<LifecycleEvents>, KvStoreError> {
-        self.lifecycle.read().get_events(sig)
+        lifecycle_read(&self.lifecycle, "deploy_lifecycle_events").get_events(sig)
     }
 
     /// Lifecycle: WRITE-ONCE terminal write (prunes the event row on a
@@ -629,12 +630,13 @@ impl KeyValueDagRepresentation {
         sig: &[u8],
         record: TerminalRecord,
     ) -> Result<TerminalRecord, KvStoreError> {
-        self.lifecycle.write().put_terminal_if_absent(sig, record)
+        lifecycle_write(&self.lifecycle, "put_deploy_terminal_if_absent")
+            .put_terminal_if_absent(sig, record)
     }
 
     /// Lifecycle: every open event row — the work list of a settle pass.
     pub fn open_lifecycle_rows(&self) -> Result<Vec<(DeployId, LifecycleEvents)>, KvStoreError> {
-        self.lifecycle.read().open_rows()
+        lifecycle_read(&self.lifecycle, "open_lifecycle_rows").open_rows()
     }
 
     /// Lifecycle: drop an open row if `discardable` still holds for its
@@ -645,7 +647,8 @@ impl KeyValueDagRepresentation {
         sig: &[u8],
         discardable: impl Fn(&LifecycleEvents) -> bool,
     ) -> Result<bool, KvStoreError> {
-        self.lifecycle.write().discard_events_if(sig, discardable)
+        lifecycle_write(&self.lifecycle, "discard_lifecycle_events_if")
+            .discard_events_if(sig, discardable)
     }
 
     /// Repeat-deploy carrier index: the height since which every insert
@@ -1393,7 +1396,110 @@ pub struct BlockDagKeyValueStorage {
     insert_observer: Arc<OnceLock<mpsc::UnboundedSender<BlockHash>>>,
 }
 
+const LONG_LOCK: std::time::Duration = std::time::Duration::from_millis(500);
+const SLOW_INSERT: std::time::Duration = std::time::Duration::from_secs(1);
+
+struct LockTiming {
+    lock: &'static str,
+    site: &'static str,
+    exclusive: bool,
+    waited: std::time::Duration,
+    acquired: std::time::Instant,
+}
+
+impl Drop for LockTiming {
+    fn drop(&mut self) {
+        let held = self.acquired.elapsed();
+        if held >= LONG_LOCK || self.waited >= LONG_LOCK {
+            tracing::warn!(
+                target: "f1r3fly.block-dag.lock",
+                lock = self.lock,
+                site = self.site,
+                exclusive = self.exclusive,
+                wait_ms = self.waited.as_millis() as u64,
+                hold_ms = held.as_millis() as u64,
+                "DAG storage lock waited or held long"
+            );
+        }
+    }
+}
+
+struct TimedLock<G> {
+    timing: LockTiming,
+    guard: G,
+}
+
+impl<G: std::ops::Deref> std::ops::Deref for TimedLock<G> {
+    type Target = G::Target;
+
+    fn deref(&self) -> &G::Target { &self.guard }
+}
+
+fn timed_lock<G>(
+    lock: &'static str,
+    site: &'static str,
+    exclusive: bool,
+    acquire: impl FnOnce() -> G,
+) -> TimedLock<G> {
+    let started = std::time::Instant::now();
+    let guard = acquire();
+    let acquired = std::time::Instant::now();
+    TimedLock {
+        timing: LockTiming {
+            lock,
+            site,
+            exclusive,
+            waited: acquired - started,
+            acquired,
+        },
+        guard,
+    }
+}
+
+fn lifecycle_write<'a>(
+    lifecycle: &'a PlRwLock<DeployLifecycleTables>,
+    site: &'static str,
+) -> TimedLock<parking_lot::RwLockWriteGuard<'a, DeployLifecycleTables>> {
+    timed_lock("lifecycle", site, true, || lifecycle.write())
+}
+
+fn lifecycle_read<'a>(
+    lifecycle: &'a PlRwLock<DeployLifecycleTables>,
+    site: &'static str,
+) -> TimedLock<parking_lot::RwLockReadGuard<'a, DeployLifecycleTables>> {
+    timed_lock("lifecycle", site, false, || lifecycle.read())
+}
+
+#[derive(Default)]
+struct InsertSteps {
+    sibling: std::time::Duration,
+    carrier: std::time::Duration,
+    events: std::time::Duration,
+    events_lock: std::time::Duration,
+    events_reads: std::time::Duration,
+    events_put: std::time::Duration,
+    latest: std::time::Duration,
+    publish: std::time::Duration,
+    committed: std::time::Duration,
+    capture: std::time::Duration,
+}
+
+fn timed_step<R>(slot: &mut std::time::Duration, step: impl FnOnce() -> R) -> R {
+    let started = std::time::Instant::now();
+    let result = step();
+    *slot += started.elapsed();
+    result
+}
+
 impl BlockDagKeyValueStorage {
+    fn timed_write(&self, site: &'static str) -> TimedLock<parking_lot::RwLockWriteGuard<'_, ()>> {
+        timed_lock("global", site, true, || self.global_lock.write())
+    }
+
+    fn timed_read(&self, site: &'static str) -> TimedLock<parking_lot::RwLockReadGuard<'_, ()>> {
+        timed_lock("global", site, false, || self.global_lock.read())
+    }
+
     /// Report every block inserted from now on to `observer`. A storage has
     /// one observer for its lifetime.
     pub fn set_insert_observer(
@@ -1513,7 +1619,7 @@ impl BlockDagKeyValueStorage {
     /// downloads. [`Self::record_carrier_coverage_from`] writes it once that is
     /// known. Until then the fast path stays disabled, which is merely slower.
     pub fn ensure_carrier_watermark(&self) -> Result<Option<i64>, KvStoreError> {
-        let _lock_guard = self.global_lock.write();
+        let _lock_guard = self.timed_write("ensure_carrier_watermark");
         let next_height = {
             let metadata_guard = self.block_metadata_index.read();
             let dag_state_guard = metadata_guard.dag_state().read();
@@ -1538,7 +1644,7 @@ impl BlockDagKeyValueStorage {
     /// node, the lowest height the restore actually indexed for an LFS joiner.
     /// Write-once, so a restart cannot lower it.
     pub fn record_carrier_coverage_from(&self, lowest_held: i64) -> Result<i64, KvStoreError> {
-        let _lock_guard = self.global_lock.write();
+        let _lock_guard = self.timed_write("record_carrier_coverage_from");
         self.carrier_index
             .read()
             .set_watermark_if_absent(lowest_held)
@@ -1662,7 +1768,7 @@ impl BlockDagKeyValueStorage {
     /// anchor via the GC store, so the cutoff survives restart and is
     /// re-applied by `open_windowed`.
     pub fn advance_pruning_cutoff(&self, cutoff: i64) -> Result<(), KvStoreError> {
-        let _lock_guard = self.global_lock.write();
+        let _lock_guard = self.timed_write("advance_pruning_cutoff");
         self.block_metadata_index
             .write()
             .advance_pruning_cutoff(cutoff)?;
@@ -1675,7 +1781,7 @@ impl BlockDagKeyValueStorage {
     /// genesis identities on one node is a bootstrap-integrity violation,
     /// never something to silently overwrite.
     pub fn record_genesis_hash(&self, hash: BlockHash) -> Result<(), KvStoreError> {
-        let _lock_guard = self.global_lock.write();
+        let _lock_guard = self.timed_write("record_genesis_hash");
         let key = Self::GENESIS_HASH_KEY.to_string();
         if let Some(BlockHashSerde(existing)) = self.genesis_hash_index.get_one(&key)? {
             if existing == hash {
@@ -1828,7 +1934,7 @@ impl BlockDagKeyValueStorage {
     pub fn get_representation(&self) -> Result<KeyValueDagRepresentation, KvStoreError> {
         // P2-12: pure-read path; acquire shared lock so concurrent snapshot
         // readers do not serialize on each other. Mutators take `.write()`.
-        let _lock_guard = self.global_lock.read();
+        let _lock_guard = self.timed_read("get_representation");
         self.get_representation_internal()
     }
 
@@ -1848,7 +1954,7 @@ impl BlockDagKeyValueStorage {
     where
         E: From<KvStoreError>,
     {
-        let _lock_guard = self.global_lock.read();
+        let _lock_guard = self.timed_read("with_representation");
         f(&self.get_representation_internal()?)
     }
 
@@ -1938,10 +2044,34 @@ impl BlockDagKeyValueStorage {
         // wait time queuing for the lock (which is captured by the LMDB
         // dashboard's lock-contention metric).
         let __insert_start = std::time::Instant::now();
-        let _lock_guard = self.global_lock.write();
-        let result = self.insert_internal(block, mode);
+        let lock_guard = self.timed_write("insert");
+        let mut steps = InsertSteps::default();
+        let result = self.insert_internal_steps(block, mode, &mut steps);
+        let total = __insert_start.elapsed();
         metrics::histogram!("dag.insert.time", "source" => "f1r3fly.casper.block-dag")
-            .record(__insert_start.elapsed().as_secs_f64());
+            .record(total.as_secs_f64());
+        if total >= SLOW_INSERT {
+            let waited = lock_guard.timing.waited;
+            tracing::warn!(
+                target: "f1r3fly.block-dag.lock",
+                block_number = block.body.state.block_number,
+                deploys = block.body.deploys.len(),
+                total_ms = total.as_millis() as u64,
+                wait_ms = waited.as_millis() as u64,
+                hold_ms = total.saturating_sub(waited).as_millis() as u64,
+                sibling_ms = steps.sibling.as_millis() as u64,
+                carrier_ms = steps.carrier.as_millis() as u64,
+                events_ms = steps.events.as_millis() as u64,
+                events_lock_ms = steps.events_lock.as_millis() as u64,
+                events_reads_ms = steps.events_reads.as_millis() as u64,
+                events_put_ms = steps.events_put.as_millis() as u64,
+                latest_ms = steps.latest.as_millis() as u64,
+                publish_ms = steps.publish.as_millis() as u64,
+                committed_ms = steps.committed.as_millis() as u64,
+                capture_ms = steps.capture.as_millis() as u64,
+                "DAG insert steps"
+            );
+        }
         result
     }
 
@@ -1983,6 +2113,14 @@ impl BlockDagKeyValueStorage {
     /// lifecycle rows. Each append is deduplicated per block and kind, so a
     /// repeat writes nothing.
     pub fn record_deploy_events(&self, block: &BlockMessage) -> Result<(), KvStoreError> {
+        self.record_deploy_events_steps(block, &mut InsertSteps::default())
+    }
+
+    fn record_deploy_events_steps(
+        &self,
+        block: &BlockMessage,
+        steps: &mut InsertSteps,
+    ) -> Result<(), KvStoreError> {
         let block_number = block.body.state.block_number;
         let included = block.body.deploys.iter().map(|pd| {
             (
@@ -2006,9 +2144,15 @@ impl BlockDagKeyValueStorage {
                 },
             })
         });
-        self.lifecycle
-            .write()
-            .append_events_once_batch(included.chain(rejected).collect())
+        let items = included.chain(rejected).collect();
+        let tables = timed_step(&mut steps.events_lock, || {
+            lifecycle_write(&self.lifecycle, "record_deploy_events")
+        });
+        let mut timing = AppendTiming::default();
+        let result = tables.append_events_once_batch_timed(items, &mut timing);
+        steps.events_reads += timing.reads;
+        steps.events_put += timing.put;
+        result
     }
 
     /// Internal method to insert without acquiring lock.
@@ -2019,13 +2163,24 @@ impl BlockDagKeyValueStorage {
         block: &BlockMessage,
         mode: InsertMode,
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
+        self.insert_internal_steps(block, mode, &mut InsertSteps::default())
+    }
+
+    fn insert_internal_steps(
+        &self,
+        block: &BlockMessage,
+        mode: InsertMode,
+        steps: &mut InsertSteps,
+    ) -> Result<KeyValueDagRepresentation, KvStoreError> {
         // Phase 8 (A-6): derive the per-branch booleans directly from the
         // enum via `matches!`. The previous `mode.flags()` projection
         // shim survived a Phase-4 transition; it is no longer needed.
         let equivocates = match &mode {
             InsertMode::Equivocation { sibling } => Some(sibling.clone()),
             InsertMode::Approved => None,
-            InsertMode::Normal | InsertMode::SettledHistory => self.held_sibling(block)?,
+            InsertMode::Normal | InsertMode::SettledHistory => {
+                timed_step(&mut steps.sibling, || self.held_sibling(block))?
+            }
         };
         let invalid = equivocates.is_some();
         let approved = matches!(mode, InsertMode::Approved);
@@ -2214,11 +2369,13 @@ impl BlockDagKeyValueStorage {
                         )
                     })
                     .collect();
-                self.carrier_index.write().record_block(
-                    block.body.state.block_number,
-                    &block.block_hash.to_vec(),
-                    &deploys,
-                )?;
+                timed_step(&mut steps.carrier, || {
+                    self.carrier_index.write().record_block(
+                        block.body.state.block_number,
+                        &block.block_hash.to_vec(),
+                        &deploys,
+                    )
+                })?;
             }
 
             // Lifecycle event ingest, before the block is DAG-visible: a
@@ -2227,11 +2384,15 @@ impl BlockDagKeyValueStorage {
             // contents nobody has judged, so its events wait for
             // `record_deploy_events` after a judgement finds them valid.
             if !matches!(mode, InsertMode::Equivocation { .. }) {
-                self.record_deploy_events(block)?;
+                let events_started = std::time::Instant::now();
+                let recorded = self.record_deploy_events_steps(block, steps);
+                steps.events += events_started.elapsed();
+                recorded?;
             }
 
             let block_metadata = BlockMetadata::from_block(block, equivocates, None, None);
             let mut latest_to_publish = HashMap::new();
+            let latest_started = std::time::Instant::now();
 
             // Settled-history blocks never touch latest messages: neither the
             // sender advance below, nor the newly-bonded seeding above —
@@ -2293,23 +2454,31 @@ impl BlockDagKeyValueStorage {
                 new_latest_to_add.extend(new_latest_from_sender);
                 latest_to_publish = new_latest_to_add;
             }
+            steps.latest += latest_started.elapsed();
             if let Some(persistence) = &self.persistence {
-                let (metadata, progress, _) =
-                    persistence.publish(&block_metadata, &latest_to_publish, approved)?;
+                let (metadata, progress, _) = timed_step(&mut steps.publish, || {
+                    persistence.publish(&block_metadata, &latest_to_publish, approved)
+                })?;
                 self.dag_generation.fetch_add(1, Ordering::Relaxed);
-                self.block_metadata_index
-                    .write()
-                    .publish_committed(&metadata, &progress)?;
+                timed_step(&mut steps.committed, || {
+                    self.block_metadata_index
+                        .write()
+                        .publish_committed(&metadata, &progress)
+                })?;
             } else {
-                self.block_metadata_index
-                    .write()
-                    .add(block_metadata.clone())?;
-                self.latest_messages_index.put(
-                    latest_to_publish
-                        .into_iter()
-                        .map(|(k, v)| (k.into(), v.into()))
-                        .collect(),
-                )?;
+                timed_step(&mut steps.committed, || {
+                    self.block_metadata_index
+                        .write()
+                        .add(block_metadata.clone())
+                })?;
+                timed_step(&mut steps.publish, || {
+                    self.latest_messages_index.put(
+                        latest_to_publish
+                            .into_iter()
+                            .map(|(k, v)| (k.into(), v.into()))
+                            .collect(),
+                    )
+                })?;
             }
             if self.persistence.is_none() {
                 self.dag_generation.fetch_add(1, Ordering::Relaxed);
@@ -2330,7 +2499,7 @@ impl BlockDagKeyValueStorage {
             block_metadata_guard.record_finalized(block.block_hash.clone(), HashSet::new(), 1.0)?;
         }
 
-        self.capture_representation(true)
+        timed_step(&mut steps.capture, || self.capture_representation(true))
     }
 
     /** Record that some hash is directly finalized (detected by finalizer and becomes LFB). */
@@ -2373,7 +2542,7 @@ impl BlockDagKeyValueStorage {
 
             in_blocking(|| {
                 // P2-12: record_finalized mutates block metadata; exclusive lock.
-                let _lock_guard = self.global_lock.write();
+                let _lock_guard = self.timed_write("record_finalized");
 
                 // These blocks enter at `ft_value`, possibly below what earlier
                 // rounds propagated — the bound has to follow them down. Lowered
@@ -2406,7 +2575,7 @@ impl BlockDagKeyValueStorage {
         for _attempt in 0..MAX_FINALIZATION_RECONCILE_LOOPS {
             let pending_effect: HashSet<BlockHash> = {
                 // P2-12: snapshot read; shared lock allows concurrent readers.
-                let _lock_guard = self.global_lock.read();
+                let _lock_guard = self.timed_read("finalization_snapshot");
 
                 let dag = self.get_representation_internal()?;
                 if !dag.contains(&directly_finalized_hash)? {
