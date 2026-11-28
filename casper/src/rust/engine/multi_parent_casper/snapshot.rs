@@ -20,7 +20,7 @@ use prost::bytes::Bytes;
 use shared::rust::blocking::in_blocking;
 use shared::rust::store::key_value_store::KvStoreError;
 
-use super::types::MultiParentCasperImpl;
+use super::types::{CommitteeExitProof, MultiParentCasperImpl};
 use crate::rust::casper::{CasperSnapshot, OnChainCasperState};
 use crate::rust::errors::CasperError;
 use crate::rust::finality::floor::{active_latest_messages, Floor};
@@ -146,12 +146,16 @@ async fn exclude_missing_retired_parents(
     missing: &[&BlockMetadata],
     candidates: &mut HashMap<Validator, BlockHash>,
 ) -> Result<(), CasperError> {
-    let Some(first) = missing.first() else {
+    if missing.is_empty() {
         return Ok(());
-    };
-    let hash = dag
-        .get_cached_floor(&dag.last_finalized_block())?
-        .ok_or_else(|| missing_parent(first))?;
+    }
+    let lfb = dag.last_finalized_block();
+    let hash = dag.get_cached_floor(&lfb)?.ok_or_else(|| {
+        CasperError::RuntimeError(format!(
+            "snapshot parent filter: finalized floor cache missing for LFB {}",
+            hex::encode(&lfb)
+        ))
+    })?;
     let floor = Floor {
         block_number: dag.block_number_unsafe(&hash)?,
         hash,
@@ -163,12 +167,58 @@ async fn exclude_missing_retired_parents(
         return Err(missing_parent(meta).into());
     }
 
+    // Reuse a proof for an unchanged latest message before recomputing the
+    // active committee. Finality is monotone: a floor that proved the exit
+    // remains finalized while later floors descend from it. If that invariant
+    // is ever lost, `is_finalized` rejects the proof and the history walk
+    // re-derives it from the current floor.
+    let mut unresolved: Vec<&BlockMetadata> = Vec::with_capacity(missing.len());
+    for meta in missing {
+        if let Some(proof) = this
+            .committee_exit_proofs
+            .get(&meta.sender)
+            .map(|proof| proof.clone())
+        {
+            if committee_exit_proof_matches(&proof, meta, &floor)
+                && dag.is_finalized(&proof.floor_hash)?
+            {
+                candidates.remove(&meta.sender);
+                tracing::debug!(
+                    target: "f1r3fly.casper.snapshot",
+                    validator = %hex::encode(&meta.sender),
+                    height = meta.block_number,
+                    reason = "left_and_returned",
+                    cached = true,
+                    "Skipping missing retired parent body"
+                );
+                metrics::counter!(
+                    SNAPSHOT_RETIRED_PARENT_SKIPPED_METRIC,
+                    "source" => CASPER_METRICS_SOURCE,
+                    "reason" => "left_and_returned"
+                )
+                .increment(1);
+                continue;
+            }
+            this.committee_exit_proofs.remove(&meta.sender);
+        }
+        unresolved.push(*meta);
+    }
+    if unresolved.is_empty() {
+        return Ok(());
+    }
+
     let active =
         active_latest_messages(dag, &this.block_store, &this.runtime_manager, &floor).await?;
-    for meta in missing {
+    for meta in unresolved {
         let reason = if !active.contains_key(&meta.sender) {
             "retired"
         } else if left_committee_after(dag, &floor.hash, meta)? {
+            this.committee_exit_proofs
+                .insert(meta.sender.clone(), CommitteeExitProof {
+                    latest_hash: meta.block_hash.clone(),
+                    floor_hash: floor.hash.clone(),
+                    floor_number: floor.block_number,
+                });
             "left_and_returned"
         } else {
             return Err(missing_parent(meta).into());
@@ -179,11 +229,20 @@ async fn exclude_missing_retired_parents(
             validator = %hex::encode(&meta.sender),
             height = meta.block_number,
             reason,
+            cached = false,
             "Skipping missing retired parent body"
         );
         metrics::counter!(SNAPSHOT_RETIRED_PARENT_SKIPPED_METRIC, "source" => CASPER_METRICS_SOURCE, "reason" => reason).increment(1);
     }
     Ok(())
+}
+
+fn committee_exit_proof_matches(
+    proof: &CommitteeExitProof,
+    latest: &BlockMetadata,
+    floor: &Floor,
+) -> bool {
+    proof.latest_hash == latest.block_hash && proof.floor_number <= floor.block_number
 }
 
 fn left_committee_after(
@@ -833,7 +892,10 @@ mod tests {
     use models::rust::block_implicits;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
-    use super::{deploy_scope_cache_key_matches, prune_dag_covered_parents};
+    use super::{
+        committee_exit_proof_matches, deploy_scope_cache_key_matches, prune_dag_covered_parents,
+        CommitteeExitProof,
+    };
 
     #[test]
     fn deploy_scope_cache_key_includes_selected_parents() {
@@ -886,6 +948,31 @@ mod tests {
         assert!(is_retirable_candidate(&meta, &floor));
         meta.finalized = false;
         assert!(!is_retirable_candidate(&meta, &floor));
+    }
+
+    #[test]
+    fn cached_committee_exit_proof_requires_same_latest_and_a_floor_at_or_above_proof() {
+        use super::{BlockMetadata, Floor};
+
+        let block = block_implicits::get_random_block_default();
+        let meta = BlockMetadata::from_block(&block, None, None, Some(true));
+        let floor = Floor {
+            hash: block.block_hash.clone(),
+            block_number: 10,
+        };
+        let mut proof = CommitteeExitProof {
+            latest_hash: meta.block_hash.clone(),
+            floor_hash: block.block_hash.clone(),
+            floor_number: 9,
+        };
+        assert!(committee_exit_proof_matches(&proof, &meta, &floor));
+        proof.floor_number = 10;
+        assert!(committee_exit_proof_matches(&proof, &meta, &floor));
+        proof.floor_number = 11;
+        assert!(!committee_exit_proof_matches(&proof, &meta, &floor));
+        proof.floor_number = 9;
+        proof.latest_hash = prost::bytes::Bytes::from_static(b"other");
+        assert!(!committee_exit_proof_matches(&proof, &meta, &floor));
     }
 
     #[tokio::test]
