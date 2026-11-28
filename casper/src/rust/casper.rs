@@ -474,6 +474,7 @@ pub async fn hash_set_casper(
         judged_twins: Arc::new(crate::rust::util::bounded_cache::BoundedCache::new(
             MultiParentCasperImpl::MAX_JUDGED_TWINS,
         )),
+        committee_exit_proofs: Arc::new(dashmap::DashMap::new()),
     })
 }
 

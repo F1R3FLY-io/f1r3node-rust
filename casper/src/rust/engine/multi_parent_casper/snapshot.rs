@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
@@ -19,13 +20,15 @@ use prost::bytes::Bytes;
 use shared::rust::blocking::in_blocking;
 use shared::rust::store::key_value_store::KvStoreError;
 
-use super::types::MultiParentCasperImpl;
+use super::types::{CommitteeExitProof, MultiParentCasperImpl};
 use crate::rust::casper::{CasperSnapshot, OnChainCasperState};
 use crate::rust::errors::CasperError;
+use crate::rust::finality::floor::{active_latest_messages, Floor};
 use crate::rust::metrics_constants::{
     ACTIVE_VALIDATORS_CACHE_SIZE_METRIC, CASPER_METRICS_SOURCE, DAG_BLOCKS_SIZE_METRIC,
     DAG_CHILDREN_INDEX_SIZE_METRIC, DAG_FINALIZED_BLOCKS_SIZE_METRIC, DAG_HEIGHTS_SIZE_METRIC,
     DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC, DEPLOYS_IN_SCOPE_SIZE_METRIC,
+    SNAPSHOT_RETIRED_PARENT_SKIPPED_METRIC,
 };
 use crate::rust::util::proto_util;
 
@@ -111,6 +114,162 @@ pub(crate) fn record_dag_cardinality_metrics(dag: &KeyValueDagRepresentation) {
         .set(dag.resident_counts().finalized as f64);
 }
 
+fn load_parent_bodies<'a>(
+    store: &KeyValueBlockStore,
+    latest: &'a HashMap<Validator, BlockMetadata>,
+) -> Result<(Vec<BlockMessage>, Vec<&'a BlockMetadata>), KvStoreError> {
+    let mut parents = Vec::with_capacity(latest.len());
+    let mut missing = Vec::new();
+    for meta in latest.values() {
+        match store.get(&meta.block_hash)? {
+            Some(block) => parents.push(block),
+            None => missing.push(meta),
+        }
+    }
+    Ok((parents, missing))
+}
+
+fn missing_parent(meta: &BlockMetadata) -> KvStoreError {
+    KvStoreError::KeyNotFound(format!(
+        "parent block referenced by latest_messages missing from block_store: {}",
+        hex::encode(&meta.block_hash)
+    ))
+}
+
+fn is_retirable_candidate(meta: &BlockMetadata, floor: &Floor) -> bool {
+    meta.finalized && meta.block_number < floor.block_number
+}
+
+async fn exclude_missing_retired_parents(
+    this: &MultiParentCasperImpl,
+    dag: &KeyValueDagRepresentation,
+    missing: &[&BlockMetadata],
+    candidates: &mut HashMap<Validator, BlockHash>,
+) -> Result<(), CasperError> {
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let lfb = dag.last_finalized_block();
+    let hash = dag.get_cached_floor(&lfb)?.ok_or_else(|| {
+        CasperError::RuntimeError(format!(
+            "snapshot parent filter: finalized floor cache missing for LFB {}",
+            hex::encode(&lfb)
+        ))
+    })?;
+    let floor = Floor {
+        block_number: dag.block_number_unsafe(&hash)?,
+        hash,
+    };
+    if let Some(meta) = missing
+        .iter()
+        .find(|meta| !is_retirable_candidate(meta, &floor))
+    {
+        return Err(missing_parent(meta).into());
+    }
+
+    // Reuse a proof for an unchanged latest message before recomputing the
+    // active committee. Finality is monotone: a floor that proved the exit
+    // remains finalized while later floors descend from it. If that invariant
+    // is ever lost, `is_finalized` rejects the proof and the history walk
+    // re-derives it from the current floor.
+    let mut unresolved: Vec<&BlockMetadata> = Vec::with_capacity(missing.len());
+    for meta in missing {
+        if let Some(proof) = this
+            .committee_exit_proofs
+            .get(&meta.sender)
+            .map(|proof| proof.clone())
+        {
+            if committee_exit_proof_matches(&proof, meta, &floor)
+                && dag.is_finalized(&proof.floor_hash)?
+            {
+                candidates.remove(&meta.sender);
+                tracing::debug!(
+                    target: "f1r3fly.casper.snapshot",
+                    validator = %hex::encode(&meta.sender),
+                    height = meta.block_number,
+                    reason = "left_and_returned",
+                    cached = true,
+                    "Skipping missing retired parent body"
+                );
+                metrics::counter!(
+                    SNAPSHOT_RETIRED_PARENT_SKIPPED_METRIC,
+                    "source" => CASPER_METRICS_SOURCE,
+                    "reason" => "left_and_returned"
+                )
+                .increment(1);
+                continue;
+            }
+            this.committee_exit_proofs.remove(&meta.sender);
+        }
+        unresolved.push(*meta);
+    }
+    if unresolved.is_empty() {
+        return Ok(());
+    }
+
+    let active =
+        active_latest_messages(dag, &this.block_store, &this.runtime_manager, &floor).await?;
+    for meta in unresolved {
+        let reason = if !active.contains_key(&meta.sender) {
+            "retired"
+        } else if left_committee_after(dag, &floor.hash, meta)? {
+            this.committee_exit_proofs
+                .insert(meta.sender.clone(), CommitteeExitProof {
+                    latest_hash: meta.block_hash.clone(),
+                    floor_hash: floor.hash.clone(),
+                    floor_number: floor.block_number,
+                });
+            "left_and_returned"
+        } else {
+            return Err(missing_parent(meta).into());
+        };
+        candidates.remove(&meta.sender);
+        tracing::debug!(
+            target: "f1r3fly.casper.snapshot",
+            validator = %hex::encode(&meta.sender),
+            height = meta.block_number,
+            reason,
+            cached = false,
+            "Skipping missing retired parent body"
+        );
+        metrics::counter!(SNAPSHOT_RETIRED_PARENT_SKIPPED_METRIC, "source" => CASPER_METRICS_SOURCE, "reason" => reason).increment(1);
+    }
+    Ok(())
+}
+
+fn committee_exit_proof_matches(
+    proof: &CommitteeExitProof,
+    latest: &BlockMetadata,
+    floor: &Floor,
+) -> bool {
+    proof.latest_hash == latest.block_hash && proof.floor_number <= floor.block_number
+}
+
+fn left_committee_after(
+    dag: &KeyValueDagRepresentation,
+    finalized_floor: &BlockHash,
+    latest: &BlockMetadata,
+) -> Result<bool, KvStoreError> {
+    let mut cursor = Some(finalized_floor.clone());
+    while let Some(hash) = cursor {
+        let Some(block) = dag.lookup(&hash)? else {
+            break;
+        };
+        if block.block_number <= latest.block_number {
+            break;
+        }
+        if !block.weight_map.contains_key(&latest.sender) {
+            if let Some(floor) = dag.get_cached_floor(&hash)? {
+                if dag.block_number_unsafe(&floor)? > latest.block_number {
+                    return Ok(true);
+                }
+            }
+        }
+        cursor = block.parents.first().cloned();
+    }
+    Ok(false)
+}
+
 pub(crate) async fn compute_snapshot(
     this: &MultiParentCasperImpl,
 ) -> Result<CasperSnapshot, CasperError> {
@@ -161,25 +320,8 @@ pub(crate) async fn compute_snapshot(
     for validator in unheld_validators {
         valid_latest_msgs.remove(&validator);
     }
-    let mut unique_parent_hashes: HashSet<BlockHash> =
-        HashSet::with_capacity(valid_latest_msgs.len());
-    for hash in valid_latest_msgs.values() {
-        unique_parent_hashes.insert(hash.clone());
-    }
-    let mut parent_blocks_list: Vec<BlockMessage> = Vec::with_capacity(unique_parent_hashes.len());
-    for hash in unique_parent_hashes.iter() {
-        // Missing parent block here is a real consensus invariant
-        // violation (validator pointed at by latest_messages_map but
-        // not in block_store) — surface as KvStoreError::KeyNotFound
-        // rather than silently dropping the parent.
-        let block = this.block_store.get(hash)?.ok_or_else(|| {
-            shared::rust::store::key_value_store::KvStoreError::KeyNotFound(format!(
-                "parent block referenced by latest_messages missing from block_store: {}",
-                hex::encode(hash)
-            ))
-        })?;
-        parent_blocks_list.push(block);
-    }
+    let (parent_blocks_list, missing) = load_parent_bodies(&this.block_store, &valid_latest_metas)?;
+    exclude_missing_retired_parents(this, &dag, &missing, &mut valid_latest_msgs).await?;
 
     // Sealed-floor: LMD-GHOST main-parent selection. Compute the ghost
     // main-parent from the fork-choice tips over this block's justification
@@ -748,7 +890,10 @@ mod tests {
     use models::rust::block_implicits;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
-    use super::{deploy_scope_cache_key_matches, prune_dag_covered_parents};
+    use super::{
+        committee_exit_proof_matches, deploy_scope_cache_key_matches, prune_dag_covered_parents,
+        CommitteeExitProof,
+    };
 
     #[test]
     fn deploy_scope_cache_key_includes_selected_parents() {
@@ -780,6 +925,106 @@ mod tests {
             &lfb,
             &[parent_b, parent_a]
         ));
+    }
+
+    #[test]
+    fn snapshot_parent_candidates_only_retire_finalized_blocks_below_the_floor() {
+        use super::{is_retirable_candidate, BlockMetadata, Floor};
+        let block = block_implicits::get_random_block_default();
+        let mut meta = BlockMetadata::from_block(&block, None, None, Some(true));
+        let floor = Floor {
+            hash: block.block_hash.clone(),
+            block_number: 10,
+        };
+        meta.block_number = 10;
+        assert!(!is_retirable_candidate(&meta, &floor));
+        meta.block_hash = prost::bytes::Bytes::from_static(b"sibling");
+        assert!(!is_retirable_candidate(&meta, &floor));
+        meta.block_number = 11;
+        assert!(!is_retirable_candidate(&meta, &floor));
+        meta.block_number = 9;
+        assert!(is_retirable_candidate(&meta, &floor));
+        meta.finalized = false;
+        assert!(!is_retirable_candidate(&meta, &floor));
+    }
+
+    #[test]
+    fn cached_committee_exit_proof_requires_same_latest_and_a_floor_at_or_above_proof() {
+        use super::{BlockMetadata, Floor};
+
+        let block = block_implicits::get_random_block_default();
+        let meta = BlockMetadata::from_block(&block, None, None, Some(true));
+        let floor = Floor {
+            hash: block.block_hash.clone(),
+            block_number: 10,
+        };
+        let mut proof = CommitteeExitProof {
+            latest_hash: meta.block_hash.clone(),
+            floor_hash: block.block_hash.clone(),
+            floor_number: 9,
+        };
+        assert!(committee_exit_proof_matches(&proof, &meta, &floor));
+        proof.floor_number = 10;
+        assert!(committee_exit_proof_matches(&proof, &meta, &floor));
+        proof.floor_number = 11;
+        assert!(!committee_exit_proof_matches(&proof, &meta, &floor));
+        proof.floor_number = 9;
+        proof.latest_hash = prost::bytes::Bytes::from_static(b"other");
+        assert!(!committee_exit_proof_matches(&proof, &meta, &floor));
+    }
+
+    #[tokio::test]
+    async fn snapshot_parent_candidates_require_exit_evidence_when_history_is_missing() {
+        let mut kvm = InMemoryStoreManager::new();
+        let storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        let mut genesis = block_implicits::get_random_block_default();
+        genesis.body.state.block_number = 0;
+        genesis.header.parents_hash_list.clear();
+        storage.insert(&genesis, InsertMode::Approved).unwrap();
+        let dag = storage.get_representation().unwrap();
+        let latest = super::BlockMetadata::from_block(&genesis, None, None, Some(true));
+        let missing = prost::bytes::Bytes::from_static(b"missing history");
+        assert!(dag.lookup(&missing).unwrap().is_none());
+        assert!(!super::left_committee_after(&dag, &missing, &latest).unwrap());
+    }
+
+    #[tokio::test]
+    async fn snapshot_parent_candidates_keep_a_finalized_body_until_it_is_missing() {
+        use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+        use models::rust::block_metadata::BlockMetadata;
+
+        let mut kvm = InMemoryStoreManager::new();
+        let store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+        let block = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            None,
+        );
+        let meta = BlockMetadata::from_block(&block, None, None, Some(true));
+        let latest = [(meta.sender.clone(), meta)].into_iter().collect();
+        store.put_block_message(&block).unwrap();
+
+        let (parents, missing) = super::load_parent_bodies(&store, &latest).unwrap();
+        assert_eq!(parents.len(), 1);
+        assert_eq!(parents[0].block_hash, block.block_hash);
+        assert!(missing.is_empty());
+
+        assert!(store.discard_stored(&block.block_hash).unwrap());
+        let (parents, missing) = super::load_parent_bodies(&store, &latest).unwrap();
+        assert!(parents.is_empty());
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].block_hash, block.block_hash);
     }
 
     #[tokio::test]

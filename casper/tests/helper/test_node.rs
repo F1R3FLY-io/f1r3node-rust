@@ -1157,6 +1157,7 @@ impl TestNode {
                     MultiParentCasperImpl::MAX_JUDGED_TWINS,
                 ),
             ),
+            committee_exit_proofs: std::sync::Arc::new(dashmap::DashMap::new()),
         };
 
         let casper = Arc::new(casper_impl);

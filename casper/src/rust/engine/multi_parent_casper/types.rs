@@ -49,6 +49,16 @@ use crate::rust::validator_identity::ValidatorIdentity;
 // hardcoded predicate. The caller in `block_admission::add_deploy`
 // reads `this.casper_shard_conf.deploy_heartbeat_wake_enabled`.
 
+/// Proof that a validator left the committee after signing an unchanged
+/// latest message and later returned. Reused across snapshots until the
+/// validator publishes a new block or the cached floor is no longer finalized.
+#[derive(Clone, Debug)]
+pub struct CommitteeExitProof {
+    pub latest_hash: BlockHash,
+    pub floor_hash: BlockHash,
+    pub floor_number: i64,
+}
+
 pub struct MultiParentCasperImpl {
     pub observer: Arc<std::sync::OnceLock<crate::rust::soak_observer::ObserverBinding>>,
     pub ingest: IngestHandle,
@@ -120,6 +130,10 @@ pub struct MultiParentCasperImpl {
     pub active_validators_cache: Arc<tokio::sync::Mutex<HashMap<Vec<u8>, Vec<Validator>>>>,
     /// Final verdicts on the contents of equivocations held as parents.
     pub judged_twins: Arc<BoundedCache<BlockHash, Result<(), InvalidBlock>>>,
+    /// Committee-exit proofs keyed by validator. A proof is keyed to the
+    /// validator's latest-message hash and is reused until that message
+    /// changes or the proof floor is no longer finalized.
+    pub committee_exit_proofs: Arc<dashmap::DashMap<Validator, CommitteeExitProof>>,
 }
 
 impl MultiParentCasperImpl {

@@ -17,6 +17,7 @@ pub const GET_BLOCK_API_METRICS_SOURCE: &str = "f1r3fly.block-api.get-block";
 pub const REPORTING_RUNTIME_METRICS_SOURCE: &str = "f1r3fly.rholang.reportingRuntime";
 
 // Casper counter metrics
+pub const SNAPSHOT_RETIRED_PARENT_SKIPPED_METRIC: &str = "snapshot.retired_parent.skipped";
 pub const BLOCK_HASH_RECEIVED_METRIC: &str = "block.hash.received";
 pub const BLOCK_REQUEST_RECEIVED_METRIC: &str = "block.request.received";
 pub const BLOCK_REQUESTS_TOTAL_METRIC: &str = "block.requests.total";
