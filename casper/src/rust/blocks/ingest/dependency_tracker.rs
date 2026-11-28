@@ -919,6 +919,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_block_being_validated_is_never_an_eviction_victim() {
+        let mut t = tracker();
+        let untrusted = |i: u32, height: i64| {
+            let mut m = meta(i, height, &[]);
+            m.trusted = false;
+            m
+        };
+        t.hold(untrusted(1, 9), Work::Validate, vec![]);
+        assert_eq!(t.next_ready(), Some((hash(1), Work::Validate)));
+        t.hold(untrusted(2, 1), Work::Validate, vec![]);
+        let order: Vec<BlockHash> = t
+            .victims(BodyAt::Disk, VictimClass::Unsolicited, None)
+            .into_iter()
+            .map(|(h, _)| h)
+            .collect();
+        assert_eq!(order, vec![hash(2)], "the working block is not a candidate");
+        assert_eq!(t.disk_victim(), Some(hash(2)));
+    }
+
+    #[test]
     fn victims_are_untrusted_first_then_highest_first_and_never_in_work() {
         let mut t = tracker();
         let mut entry = |i: u32, height: i64, trusted: bool| {
