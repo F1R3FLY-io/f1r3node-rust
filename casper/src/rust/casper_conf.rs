@@ -175,6 +175,44 @@ pub struct CasperConf {
         default = "default_enable_history_pruning"
     )]
     pub enable_history_pruning: bool,
+
+    /// Maintain per-leaf refcounts for the `rspace/cold` leaf store
+    /// (issue #1181). When on, every checkpoint commit walks the new
+    /// root's tree and increments refcounts, and every retention-window
+    /// slide walks each retiring root and decrements. Zero-valued
+    /// entries are physically removed from the refcount sub-DB.
+    /// Bookkeeping only in this release — a future commit lands the
+    /// live GC worker that deletes cold entries once their refcount
+    /// reaches zero.
+    ///
+    /// Shipped default off: first release of cold-store-mutating code,
+    /// and enabling on an existing node triggers a one-time init walk
+    /// that is proportional to the current retention window size.
+    #[serde(
+        rename = "enable-cold-gc-bookkeeping",
+        default = "default_enable_cold_gc_bookkeeping"
+    )]
+    pub enable_cold_gc_bookkeeping: bool,
+
+    /// Run the cold-store GC worker on every history-pruning pass
+    /// (issue #1181, Phase 4). Scans `rspace/cold` and deletes
+    /// entries no retained root references, in place. LMDB does not
+    /// shrink the file — reclaimed pages are reused by future
+    /// writes, so cold stops growing unboundedly but the on-disk
+    /// footprint is set by the high-water mark.
+    ///
+    /// Requires `enable-cold-gc-bookkeeping = true` to be meaningful;
+    /// if set true while bookkeeping is off, the sweep runs against
+    /// a `NoopColdGc` that deletes nothing (safe no-op), but
+    /// operators should fix the misconfiguration.
+    ///
+    /// Shipped default off: layer 2 of the opt-in rollout, enabled
+    /// after bookkeeping has soaked.
+    #[serde(
+        rename = "enable-cold-gc-sweep",
+        default = "default_enable_cold_gc_sweep"
+    )]
+    pub enable_cold_gc_sweep: bool,
 }
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
@@ -213,6 +251,17 @@ pub fn default_enable_block_store_gc() -> bool { true }
 /// no `UnknownRootError` regressions. Public so the node's config tests
 /// pin shipped-vs-fallback agreement.
 pub fn default_enable_history_pruning() -> bool { false }
+
+/// Default off for the first release. The init pass on flag flip walks
+/// every currently-retained root's tree, so operators should expect a
+/// startup delay proportional to the retention window on the first run.
+/// Public so the node's config tests pin shipped-vs-fallback agreement.
+pub fn default_enable_cold_gc_bookkeeping() -> bool { false }
+
+/// Default off. Enable only after bookkeeping has been on long enough
+/// for the audit comparator to show a clean report. Flipping this on
+/// alone (without bookkeeping) is harmless but useless.
+pub fn default_enable_cold_gc_sweep() -> bool { false }
 
 fn default_dag_hot_window_depth() -> i64 { 1024 }
 

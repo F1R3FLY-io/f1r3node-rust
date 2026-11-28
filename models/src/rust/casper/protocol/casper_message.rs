@@ -1,5 +1,7 @@
 // See models/src/main/scala/coop/rchain/casper/protocol/CasperMessage.scala
 
+use std::ops::Range;
+
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
 use crypto::rust::signatures::signed::{Signed, ToMessage};
@@ -36,6 +38,7 @@ pub enum CasperMessage {
     // Last finalized state messages
     StoreItemsMessageRequest(StoreItemsMessageRequest),
     StoreItemsMessage(StoreItemsMessage),
+    StoreItemsPrunedResponse(StoreItemsPrunedResponse),
     FloorCacheRequest(FloorCacheRequest),
     FloorCacheResponse(FloorCacheResponse),
     // Snapshot chunk-fetch (Wave 3, Phase 7b-1).
@@ -128,6 +131,14 @@ impl CasperMessage {
     pub fn from_store_items_message(proto: StoreItemsMessageProto) -> Result<Self, String> {
         Ok(CasperMessage::StoreItemsMessage(
             StoreItemsMessage::from_proto(proto)?,
+        ))
+    }
+
+    pub fn from_store_items_pruned_response(
+        proto: StoreItemsPrunedResponseProto,
+    ) -> Result<Self, String> {
+        Ok(CasperMessage::StoreItemsPrunedResponse(
+            StoreItemsPrunedResponse::from_proto(proto)?,
         ))
     }
 
@@ -1168,6 +1179,7 @@ pub struct ProcessedDeploy {
     pub deploy: Signed<DeployData>,
     pub cost: PCost,
     pub deploy_log: Vec<Event>,
+    pub user_log: Range<usize>,
     pub is_failed: bool,
     pub system_deploy_error: Option<String>,
 }
@@ -1184,6 +1196,7 @@ impl ProcessedDeploy {
             deploy,
             cost: PCost { cost: 0 },
             deploy_log: Vec::new(),
+            user_log: 0..0,
             is_failed: false,
             system_deploy_error: None,
         }
@@ -1215,6 +1228,20 @@ impl ProcessedDeploy {
     }
 
     pub fn from_proto(proto: ProcessedDeployProto) -> Result<Self, String> {
+        let deploy_log = proto
+            .deploy_log
+            .into_iter()
+            .map(|e| Event::from_proto(e))
+            .collect::<Result<Vec<Event>, String>>()?;
+        let user_log = proto.user_log_start as usize..proto.user_log_end as usize;
+        if user_log.start > user_log.end || user_log.end > deploy_log.len() {
+            return Err(format!(
+                "user log {}..{} is not a range of the {} logged events",
+                user_log.start,
+                user_log.end,
+                deploy_log.len()
+            ));
+        }
         Ok(Self {
             deploy: DeployData::from_proto(
                 proto
@@ -1222,11 +1249,8 @@ impl ProcessedDeploy {
                     .ok_or_else(|| "Missing deploy field".to_string())?,
             )?,
             cost: proto.cost.ok_or_else(|| "Missing cost field".to_string())?,
-            deploy_log: proto
-                .deploy_log
-                .into_iter()
-                .map(|e| Event::from_proto(e))
-                .collect::<Result<Vec<Event>, String>>()?,
+            deploy_log,
+            user_log,
             is_failed: proto.errored,
             system_deploy_error: {
                 if proto.system_deploy_error.is_empty() {
@@ -1245,6 +1269,10 @@ impl ProcessedDeploy {
             deploy_log: self.deploy_log.into_iter().map(|e| e.to_proto()).collect(),
             errored: self.is_failed,
             system_deploy_error: self.system_deploy_error.unwrap_or_default(),
+            user_log_start: u32::try_from(self.user_log.start)
+                .expect("a deploy log holds fewer than 2^32 events"),
+            user_log_end: u32::try_from(self.user_log.end)
+                .expect("a deploy log holds fewer than 2^32 events"),
         }
     }
 }
@@ -1919,6 +1947,38 @@ impl StoreItemsMessage {
     }
 }
 
+/// Peer's "this subtree has been retention-swept past my horizon" answer to a
+/// [`StoreItemsMessageRequest`]. Issue #1157: mirrors
+/// [`BlockPrunedResponse`] for block bodies onto the rspace-history wire so
+/// a joiner gets an explicit "pruned below height N" answer instead of a
+/// silent dropped request. See `StoreItemsPrunedResponseProto` for the field
+/// semantics.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoreItemsPrunedResponse {
+    pub start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
+    pub retention_floor: i64,
+}
+
+impl StoreItemsPrunedResponse {
+    pub fn from_proto(proto: StoreItemsPrunedResponseProto) -> Result<Self, String> {
+        Ok(Self {
+            start_path: proto
+                .start_path
+                .into_iter()
+                .map(StoreNodeKey::from_proto)
+                .collect::<Result<_, _>>()?,
+            retention_floor: proto.retention_floor,
+        })
+    }
+
+    pub fn to_proto(self) -> StoreItemsPrunedResponseProto {
+        StoreItemsPrunedResponseProto {
+            start_path: self.start_path.iter().map(StoreNodeKey::to_proto).collect(),
+            retention_floor: self.retention_floor,
+        }
+    }
+}
+
 #[cfg(test)]
 mod approved_block_tests {
     use prost::bytes::Bytes;
@@ -2337,6 +2397,7 @@ mod tests {
             deploy: deploy.clone(),
             cost: PCost { cost: 100 },
             deploy_log: vec![Event::Produce(produce_event())],
+            user_log: 0..1,
             is_failed: true,
             system_deploy_error: Some("boom".to_string()),
         };
@@ -2364,6 +2425,29 @@ mod tests {
         assert!(info.errored);
         assert_eq!(info.system_deploy_error, "boom".to_string());
         assert_eq!(info.sig, hex::encode(&deploy.sig));
+    }
+
+    #[test]
+    fn a_user_log_outside_the_deploy_log_is_rejected() {
+        let logged = |user_log_start, user_log_end| ProcessedDeployProto {
+            user_log_start,
+            user_log_end,
+            ..ProcessedDeploy {
+                deploy: signed_deploy(),
+                cost: PCost { cost: 1 },
+                deploy_log: vec![Event::Produce(produce_event())],
+                user_log: 0..1,
+                is_failed: false,
+                system_deploy_error: None,
+            }
+            .to_proto()
+        };
+        assert!(ProcessedDeploy::from_proto(logged(0, 2)).is_err());
+        assert!(ProcessedDeploy::from_proto(logged(1, 0)).is_err());
+        assert_eq!(
+            ProcessedDeploy::from_proto(logged(1, 1)).unwrap().user_log,
+            1..1
+        );
     }
 
     fn commitment(seed: u8) -> BlockCommitment {
@@ -2667,6 +2751,25 @@ mod tests {
 
         let pretty = message.pretty();
         assert!(pretty.starts_with("StoreItemsMessage(history: 1, data: 1"));
+    }
+
+    /// Issue #1157: the peer-wire `StoreItemsPrunedResponse` must preserve
+    /// `start_path` and `retention_floor` across the proto boundary. A
+    /// joiner routes responses back to the originating need by comparing
+    /// `start_path` to the request's start_path, and it reads
+    /// `retention_floor` to decide whether to select another peer or
+    /// deepen its own window. Dropping either value on the wire would
+    /// reintroduce the pre-#1157 silent-timeout behaviour.
+    #[test]
+    fn store_items_pruned_response_round_trip() {
+        let response = StoreItemsPrunedResponse {
+            start_path: vec![(hash32(1), Some(0)), (hash32(2), None)],
+            retention_floor: 42,
+        };
+        assert_eq!(
+            StoreItemsPrunedResponse::from_proto(response.clone().to_proto()).unwrap(),
+            response
+        );
     }
 
     #[test]

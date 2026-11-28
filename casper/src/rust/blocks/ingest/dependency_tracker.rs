@@ -12,6 +12,8 @@ pub const MAX_DISK_ENTRIES: usize = 65_536;
 
 pub const MAX_VALIDATION_FAILURES: u32 = 32;
 
+pub const READY_AGE_LIMIT_DISPATCHES: u64 = 32;
+
 pub const VALIDATION_FAILURE_QUARANTINE_MS: u64 = 120_000;
 
 /// First wait before a failed validation is retried. Each further failure
@@ -84,6 +86,8 @@ struct Held {
     awaiting_root: Option<Blake2b256Hash>,
     retry_at_ms: Option<u64>,
     seq: u64,
+    ready_since: u64,
+    ready_seq: u64,
     vouch: Vouch,
 }
 
@@ -100,6 +104,10 @@ enum Vouch {
 impl Held {
     fn ready_key(&self) -> (i64, u64, BlockHash) {
         (self.meta.height, self.seq, self.meta.hash.clone())
+    }
+
+    fn age_key(&self) -> (u64, u64, BlockHash) {
+        (self.ready_since, self.ready_seq, self.meta.hash.clone())
     }
 }
 
@@ -142,6 +150,9 @@ pub struct DependencyTracker {
     citations: HashMap<BlockHash, usize>,
     root_waiters: HashMap<Blake2b256Hash, HashSet<BlockHash>>,
     ready: BTreeSet<(i64, u64, BlockHash)>,
+    ready_by_age: BTreeSet<(u64, u64, BlockHash)>,
+    dispatches: u64,
+    next_ready_seq: u64,
     cooling: BTreeSet<(u64, BlockHash)>,
     failures: HashMap<BlockHash, u32>,
     quarantined_until: HashMap<BlockHash, u64>,
@@ -159,6 +170,9 @@ impl DependencyTracker {
             citations: HashMap::new(),
             root_waiters: HashMap::new(),
             ready: BTreeSet::new(),
+            ready_by_age: BTreeSet::new(),
+            dispatches: 0,
+            next_ready_seq: 0,
             cooling: BTreeSet::new(),
             failures: HashMap::new(),
             quarantined_until: HashMap::new(),
@@ -205,10 +219,14 @@ impl DependencyTracker {
             awaiting_root: None,
             retry_at_ms: None,
             seq,
+            ready_since: self.dispatches,
+            ready_seq: self.next_ready_seq,
             vouch: Vouch::Unvouched,
         };
         if held.stage == Stage::Ready {
+            self.next_ready_seq += 1;
             self.ready.insert(held.ready_key());
+            self.ready_by_age.insert(held.age_key());
         }
         self.held.insert(hash, held);
     }
@@ -263,15 +281,27 @@ impl DependencyTracker {
             .is_some_and(|until| now_ms < *until)
     }
 
-    /// The lowest ready block, now being worked on.
+    /// The ready block that waited `READY_AGE_LIMIT_DISPATCHES` dispatches
+    /// first, oldest first; otherwise the lowest ready block. It is now being
+    /// worked on.
     pub fn next_ready(&mut self) -> Option<(BlockHash, Work)> {
-        let key = self.ready.pop_first()?;
+        let hash = match self.ready_by_age.first() {
+            Some(oldest)
+                if self.dispatches.saturating_sub(oldest.0) >= READY_AGE_LIMIT_DISPATCHES =>
+            {
+                oldest.2.clone()
+            }
+            _ => self.ready.first()?.2.clone(),
+        };
+        self.dispatches += 1;
         let held = self
             .held
-            .get_mut(&key.2)
+            .get_mut(&hash)
             .expect("the ready set holds only held entries");
+        self.ready.remove(&held.ready_key());
+        self.ready_by_age.remove(&held.age_key());
         held.stage = Stage::Working;
-        Some((key.2, held.work))
+        Some((hash, held.work))
     }
 
     /// `hash` is in the DAG: its own entry leaves and its waiters stop waiting
@@ -303,9 +333,11 @@ impl DependencyTracker {
         let held = self.held.get_mut(hash).expect("a released block is held");
         assert_eq!(held.stage, Stage::Ready, "only a ready block is held back");
         let key = held.ready_key();
+        let age_key = held.age_key();
         held.stage = Stage::Waiting;
         held.missing.extend(missing.iter().cloned());
         self.ready.remove(&key);
+        self.ready_by_age.remove(&age_key);
         for dependency in &missing {
             self.add_waiter(dependency, hash);
         }
@@ -622,7 +654,11 @@ impl DependencyTracker {
             && held.retry_at_ms.is_none();
         if ready {
             held.stage = Stage::Ready;
+            held.ready_since = self.dispatches;
+            held.ready_seq = self.next_ready_seq;
+            self.next_ready_seq += 1;
             self.ready.insert(held.ready_key());
+            self.ready_by_age.insert(held.age_key());
         }
         ready
     }
@@ -699,6 +735,7 @@ impl DependencyTracker {
         }
         if held.stage == Stage::Ready {
             self.ready.remove(&held.ready_key());
+            self.ready_by_age.remove(&held.age_key());
         }
         if let Some(retry_at_ms) = held.retry_at_ms {
             self.cooling.remove(&(retry_at_ms, hash.clone()));
@@ -879,6 +916,26 @@ pub(crate) mod tests {
         assert!(t.is_waited_on(&hash(1)));
         t.inserted(&hash(1));
         assert_eq!(t.next_ready(), Some((hash(2), Work::Validate)));
+    }
+
+    #[test]
+    fn a_block_being_validated_is_never_an_eviction_victim() {
+        let mut t = tracker();
+        let untrusted = |i: u32, height: i64| {
+            let mut m = meta(i, height, &[]);
+            m.trusted = false;
+            m
+        };
+        t.hold(untrusted(1, 9), Work::Validate, vec![]);
+        assert_eq!(t.next_ready(), Some((hash(1), Work::Validate)));
+        t.hold(untrusted(2, 1), Work::Validate, vec![]);
+        let order: Vec<BlockHash> = t
+            .victims(BodyAt::Disk, VictimClass::Unsolicited, None)
+            .into_iter()
+            .map(|(h, _)| h)
+            .collect();
+        assert_eq!(order, vec![hash(2)], "the working block is not a candidate");
+        assert_eq!(t.disk_victim(), Some(hash(2)));
     }
 
     #[test]

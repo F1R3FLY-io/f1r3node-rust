@@ -5,6 +5,25 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DRIVER="$ROOT/scripts/ci/check-node-observation-bindings.sh"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
+mkdir "$WORK/results"
+printf '%s\n' plain logged > "$WORK/results/required-tests.txt"
+cat > "$WORK/results/tests.log" <<'LOG'
+test plain ... ok
+test logged ... ok{"timestamp":"2026-11-25T17:20:46Z","level":"WARN"}
+test failed ... FAILED
+test ignored ... ignored
+test malformed ... ok{invalid}
+{"message":"test embedded ... ok"}
+LOG
+bash "$DRIVER" --check-results "$WORK/results"
+for required in failed ignored malformed embedded log missing; do
+    printf '%s\n' "$required" > "$WORK/results/required-tests.txt"
+    if bash "$DRIVER" --check-results "$WORK/results"; then
+        printf 'Unexpected passing result for %s\n' "$required" >&2
+        exit 1
+    fi
+done
+
 cat > "$WORK/fixture.rs" <<'RS'
 extern "C" fn initialize() {}
 #[used]

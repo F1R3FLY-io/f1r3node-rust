@@ -12,7 +12,9 @@ use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::openai_service::{create_mock_openai_service, OpenAIMockConfig};
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::test_utils::resources::create_runtimes_with_services;
+use rholang::rust::interpreter::test_utils::resources::{
+    create_runtimes_with_services, replay_charged,
+};
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -62,10 +64,9 @@ async fn evaluate_with_mock_service(
 /// Evaluate a term then replay it, returning (play_result, replay_result).
 /// Evaluate-and-replay pattern for non-deterministic process testing:
 ///   1. Play: evaluate on normal runtime
-///   2. Checkpoint: capture root hash + event log
-///   3. Rig: reset replay runtime to root, load event log
-///   4. Replay: evaluate same term on replay runtime
-///   5. Verify: check_replay_data ensures all events were consumed
+///   2. Reset the replay runtime to the state play started from
+///   3. Replay: rig play's event log, evaluate the same term, charge its searches
+///   4. Verify: check_replay_data ensures all events were consumed
 #[allow(clippy::type_complexity)]
 async fn evaluate_and_replay(
     term: &str,
@@ -88,31 +89,28 @@ async fn evaluate_and_replay(
     ) = create_runtimes_with_services(store, false, &mut Vec::new(), external_services).await;
 
     let rand = Blake2b512Random::create_from_bytes(&[]);
+    let pre_play_root = runtime.create_checkpoint().await.root;
 
-    // Play phase
     let play_result = runtime
         .evaluate(term, initial_phlo.clone(), HashMap::new(), rand.clone())
         .await
         .expect("Play evaluation failed");
+    let log = runtime.take_event_log().await;
 
-    // Checkpoint: captures root hash and event log
-    let checkpoint = runtime.create_checkpoint().await;
-
-    // Rig replay runtime with the event log from play
     replay_runtime
-        .reset(&checkpoint.root)
+        .reset(&pre_play_root)
         .await
         .expect("Replay reset failed");
-    replay_runtime
-        .rig(checkpoint.log)
-        .await
-        .expect("Replay rig failed");
-
-    // Replay phase: same term, same phlo, same rand
-    let replay_result = replay_runtime
-        .evaluate(term, initial_phlo, HashMap::new(), rand)
-        .await
-        .expect("Replay evaluation failed");
+    let replay_result = replay_charged(
+        &mut replay_runtime,
+        log,
+        term,
+        initial_phlo,
+        HashMap::new(),
+        rand,
+    )
+    .await
+    .expect("Replay evaluation failed");
 
     // Verify all replay events were consumed
     replay_runtime

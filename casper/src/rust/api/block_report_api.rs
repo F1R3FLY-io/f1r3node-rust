@@ -99,6 +99,17 @@ pub enum BlockReportError {
     BlockNotFound(BlockHash),
     #[error("Block report pre-state is unavailable for block {0:?}")]
     StateUnavailable(BlockHash),
+    /// The block is below this pruning node's history retention floor.
+    /// Its state is outside the window guaranteed for replay.
+    #[error(
+        "Block report cannot replay block {target_block_hash:?} (height {target_block_height}): \
+         state has been swept past retention floor (height {retention_floor})"
+    )]
+    PrunedState {
+        target_block_hash: BlockHash,
+        target_block_height: i64,
+        retention_floor: i64,
+    },
     #[error("Block {block:?} carries a deploy whose phlo limit exceeds the shard cap of {cap}")]
     ExcessivePhloLimit { block: BlockHash, cap: i64 },
     #[error("Block reporter is busy; retry later")]
@@ -274,6 +285,22 @@ impl BlockReportAPI {
         if !force_replay {
             if let Some(cached_report) = self.cached_report(&block.block_hash)? {
                 return Ok(cached_report);
+            }
+        }
+
+        // History GC retains the floor itself. Archive nodes skip the
+        // height check and verify the requested pre-state below.
+        if let Some(retention_floor) =
+            BlockAPI::current_state_retention_floor(casper.as_ref()).await
+        {
+            let target_height = block.body.state.block_number;
+            if target_height < retention_floor {
+                metrics::counter!("block_report.pruned_state", "source" => "casper").increment(1);
+                return Err(BlockReportError::PrunedState {
+                    target_block_hash: block.block_hash.clone(),
+                    target_block_height: target_height,
+                    retention_floor,
+                });
             }
         }
 
