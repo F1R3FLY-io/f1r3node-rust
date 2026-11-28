@@ -69,13 +69,47 @@ if git merge-base --is-ancestor "$sha" "$remote/$target_branch"; then
 fi
 
 count="$(git rev-list --count "$remote/$target_branch..$sha")"
+
+links=""
+if [ "$target_branch" = master ]; then
+	issue_url="https://github[.]com/$(printf '%s' "$repo" | sed 's/[.]/[.]/g')/issues/"
+	issues=""
+	unread=""
+	for pr in $(git log --merges --format=%s "$remote/$target_branch..$sha" |
+		sed -nE 's/^Merge pull request #([0-9]+) from .*/\1/p' | sort -un); do
+		if body="$(gh pr view "$pr" --repo "$repo" --json body --jq .body)"; then
+			found="$(printf '%s\n' "$body" | awk '/^[[:space:]]*(```|~~~)/ { fenced = !fenced; next } !fenced' |
+				grep -oiE "(^|[^[:alnum:]_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]+(#|$issue_url)[0-9]+" |
+				grep -oE '[0-9]+$' || true)"
+			issues="$issues
+$found"
+		else
+			unread="$unread, PR #$pr"
+		fi
+	done
+	issues="$(printf '%s\n' "$issues" | grep -E '^[0-9]+$' | sort -un || true)"
+	if [ -n "$issues" ]; then
+		links="
+
+The descriptions of the promoted pull requests close these issues. GitHub closes them when this pull request merges into \`master\`. Remove a line before the merge if its issue must stay open:
+
+$(printf '%s\n' "$issues" | sed 's/^/Closes #/')"
+	fi
+	if [ -n "$unread" ]; then
+		echo "WARNING: the closing issues of${unread#,} could not be read. Close their issues by hand." >&2
+		links="$links
+
+The closing issues of these pull requests could not be read. Close their issues by hand after the merge:${unread#,}."
+	fi
+fi
+
 branch="$prefix$stamp"
 gh api "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$sha" >/dev/null
 echo "Created $branch at ${sha:0:9} ($remote/$source_branch, $count commits not on $target_branch)."
 
 if ! gh pr create --repo "$repo" --base "$target_branch" --head "$branch" \
 	--title "Promote $source_branch to $target_branch ($stamp)" \
-	--body "Promotes \`$source_branch\` at \`${sha:0:9}\` to \`$target_branch\` ($count commits).
+	--body "Promotes \`$source_branch\` at \`${sha:0:9}\` to \`$target_branch\` ($count commits).$links
 
 This pull request comes from the temporary branch \`$branch\`, $creator. GitHub deletes \`$branch\` after the merge. No open pull request targets it, so no pull request is retargeted.$review
 

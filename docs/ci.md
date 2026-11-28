@@ -355,6 +355,10 @@ When the push run reuses a merge group or pull request result, both Integration 
 
 Run `just promote` to open the promotion pull request. The command runs `.github/scripts/open-promotion-pr.sh`. It creates a temporary `promote/<UTC timestamp>` branch at the `origin/dev` commit and opens the pull request to `master` with your `gh` login.
 
+GitHub applies closing keywords only to pull requests into `master`, so a `Closes #N` line in a pull request into `dev` does not close the issue. The promotion body therefore lists a `Closes #N` line for each issue that a promoted pull request closes in its current description. GitHub closes those issues when the promotion merges. The script ignores fenced code blocks and issues in other repositories.
+
+Before the merge, remove the line of an issue that must stay open, for example a tracking issue. If the script cannot read the closing issues of a promoted pull request, the body names that pull request. Close its issues by hand after the merge. A `ca-canary` to `ca-release` promotion lists no issues, because `ca-release` is not the default branch.
+
 You can also use the **Promote and Back-merge** workflow:
 
 1. Open the **Actions** tab and select **Promote and Back-merge**.
