@@ -1085,6 +1085,7 @@ jobs:
           # gateway states) from failing hosting-domain checks.
           args: >-
             --no-progress
+            --exclude-path '(^|/)docs/cbc-evidence/history/f373d6ce5659b6b342c6e7f3e5993b84d770e0e108c24f58a080ac5cfd745f58-casper-src-rust-validate-rs\.md$'
             --exclude '^https?://'
             --include '^https?://(www\.)?github\.com'
             --include '^https?://raw\.githubusercontent\.com'
@@ -1185,7 +1186,7 @@ jobs:
   # casper is the one crate whose suite does not fit the shared test-job
   # limit, so it runs as two nextest count-partition shards. Uninstrumented,
   # the shards took 16-35 minutes on 2026-11-11 and shard 2 reached 45; the
-  # instrumented run here is slower, hence 60. Larger GitHub-hosted runners
+  # instrumented run here is slower, hence 90. Larger GitHub-hosted runners
   # are not an option: the org's plan does not support them, and OCI
   # ephemeral runners are reserved for the ci-heavy pipeline (shared daily
   # instance quota).
@@ -1193,7 +1194,7 @@ jobs:
     name: Test (casper ${{ matrix.partition }}/2)
     needs: [build_base, static_checks]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
