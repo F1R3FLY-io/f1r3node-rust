@@ -119,7 +119,23 @@ merge_into_seed "Merge pull request #12 from example/topic-12"
 merge_into_seed "Merge pull request #13 from example/topic-13"
 merge_into_seed "Merge pull request #14 from example/topic-14"
 merge_into_seed "Merge pull request #11 from example/topic-11-again"
+merge_into_seed "Merge pull request #15 from example/topic-15"
 git_quiet -C "$TMP/seed" push --quiet origin HEAD:refs/heads/dev
+cat >"$TMP/closing/15" <<'BODY'
+````markdown
+```
+Closes #901
+```
+Closes #902
+````
+<!-- Closes #903 -->
+<!--
+Fixes #904
+-->
+Use `Closes #905` to link an issue, or ``Fixes #906``.
+Closes #0
+Resolves #107
+BODY
 printf 'Closes #101 and fixes: #102. Refs #105.\n' >"$TMP/closing/11"
 cat >"$TMP/closing/12" <<'BODY'
 Resolves #102
@@ -135,17 +151,22 @@ printf 'fail\n' >"$TMP/closing/14"
 (cd "$TMP/work" && PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" PROMOTE_REPOSITORY=example/repo \
 	PROMOTE_TIMESTAMP=20261009-094504 bash "$TOOL") >/dev/null 2>"$TMP/err" ||
 	fail "an unreadable pull request stopped the promotion: $(cat "$TMP/err")"
-for pr in 11 12 13 14; do
+for pr in 11 12 13 14 15; do
 	[ "$(grep -c "^pr view $pr --repo example/repo --json body " "$TMP/gh.log")" = 1 ] ||
 		fail "PR #$pr was not read exactly once: $(cat "$TMP/gh.log")"
 done
-[ "$(grep -c '^pr view ' "$TMP/gh.log")" = 4 ] ||
+[ "$(grep -c '^pr view ' "$TMP/gh.log")" = 5 ] ||
 	fail "a merge that is not a pull request was read: $(cat "$TMP/gh.log")"
-for issue in 101 102 103; do
+for issue in 101 102 103 107; do
 	[ "$(grep -cFx "Closes #$issue" "$TMP/gh.log")" = 1 ] ||
 		fail "issue #$issue is not listed exactly once: $(cat "$TMP/gh.log")"
 done
-[ "$(grep -c '^Closes #' "$TMP/gh.log")" = 3 ] || fail "the body lists issues that no pull request closes: $(cat "$TMP/gh.log")"
+for issue in 0 901 902 903 904 905 906; do
+	if grep -qFx "Closes #$issue" "$TMP/gh.log"; then
+		fail "issue #$issue from a code block, a comment, inline code, or a zero number is listed: $(cat "$TMP/gh.log")"
+	fi
+done
+[ "$(grep -c '^Closes #' "$TMP/gh.log")" = 4 ] || fail "the body lists issues that no pull request closes: $(cat "$TMP/gh.log")"
 grep -Fq 'The descriptions of the promoted pull requests close these issues.' "$TMP/gh.log" ||
 	fail "the body does not explain the closing issues: $(cat "$TMP/gh.log")"
 grep -Fq 'Close their issues by hand after the merge: PR #14.' "$TMP/gh.log" ||
@@ -208,4 +229,4 @@ for pair in master:dev dev:ca-release ca-canary:master ca-release:ca-canary; do
 	[[ ! -s "$TMP/gh.log" ]] || fail "the promotion pair $pair still called gh: $(cat "$TMP/gh.log")"
 done
 
-printf 'PASS: just promote opens the master pull request from a promote/* branch at the dev commit, just ca-promote opens the ca-release pull request from a promote/ca-release-* branch at the ca-canary commit, other branch pairs are refused, names the user who started the workflow, deletes the branch when the pull request fails, lists each issue that the promoted pull requests close once in the master promotion, names a pull request whose issues it cannot read, and lists no issues in the ca-release promotion.\n'
+printf 'PASS: just promote opens the master pull request from a promote/* branch at the dev commit, just ca-promote opens the ca-release pull request from a promote/ca-release-* branch at the ca-canary commit, other branch pairs are refused, names the user who started the workflow, deletes the branch when the pull request fails, lists each issue that the promoted pull requests close once in the master promotion, ignores closing keywords in code blocks, HTML comments, and inline code, names a pull request whose issues it cannot read, and lists no issues in the ca-release promotion.\n'

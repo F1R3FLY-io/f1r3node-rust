@@ -55,6 +55,40 @@ if [ -n "${PROMOTE_TRIGGERED_BY:-}" ]; then
 @$PROMOTE_TRIGGERED_BY started this promotion. A different member of @F1R3FLY-io/ci-maintainers approves it."
 fi
 
+visible_text() {
+	awk -v RS='\001' '{
+		n = split($0, line, "\n")
+		text = ""
+		fence = ""
+		for (i = 1; i <= n; i++) {
+			if (fence == "") {
+				if (match(line[i], /^(   |  | )?(```+|~~~+)/)) {
+					fence = substr(line[i], RSTART, RLENGTH)
+					sub(/^ +/, "", fence)
+					continue
+				}
+				text = text line[i] "\n"
+			} else if (match(line[i], /^(   |  | )?(```+|~~~+)[ \t]*$/)) {
+				closer = substr(line[i], RSTART, RLENGTH)
+				gsub(/[ \t]/, "", closer)
+				if (substr(closer, 1, 1) == substr(fence, 1, 1) && length(closer) >= length(fence)) fence = ""
+			}
+		}
+		while ((start = index(text, "<!--")) > 0) {
+			rest = substr(text, start + 4)
+			stop = index(rest, "-->")
+			if (stop == 0) {
+				text = substr(text, 1, start - 1)
+				break
+			}
+			text = substr(text, 1, start - 1) " " substr(rest, stop + 3)
+		}
+		gsub(/``[^`]*``/, " ", text)
+		gsub(/`[^`]*`/, " ", text)
+		printf "%s", text
+	}'
+}
+
 remote="${PROMOTE_REMOTE:-origin}"
 repo="${PROMOTE_REPOSITORY:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
 stamp="${PROMOTE_TIMESTAMP:-$(date -u +%Y%m%d-%H%M%S)}"
@@ -78,7 +112,7 @@ if [ "$target_branch" = master ]; then
 	for pr in $(git log --merges --format=%s "$remote/$target_branch..$sha" |
 		sed -nE 's/^Merge pull request #([0-9]+) from .*/\1/p' | sort -un); do
 		if body="$(gh pr view "$pr" --repo "$repo" --json body --jq .body)"; then
-			found="$(printf '%s\n' "$body" | awk '/^[[:space:]]*(```|~~~)/ { fenced = !fenced; next } !fenced' |
+			found="$(printf '%s\n' "$body" | visible_text |
 				grep -oiE "(^|[^[:alnum:]_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]+(#|$issue_url)[0-9]+" |
 				grep -oE '[0-9]+$' || true)"
 			issues="$issues
@@ -87,7 +121,7 @@ $found"
 			unread="$unread, PR #$pr"
 		fi
 	done
-	issues="$(printf '%s\n' "$issues" | grep -E '^[0-9]+$' | sort -un || true)"
+	issues="$(printf '%s\n' "$issues" | grep -E '^[1-9][0-9]*$' | sort -un || true)"
 	if [ -n "$issues" ]; then
 		links="
 
