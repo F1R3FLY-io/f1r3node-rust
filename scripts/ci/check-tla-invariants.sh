@@ -119,6 +119,8 @@ POST_FIX_CONFIGS=(
     node_observation/MC_DisplayProjection
     scope_trapped_gc/MC_ScopeTrappedGC
     below_horizon_recovery/MC_BelowHorizonRecovery
+    justification_history/MC_JustificationHistory
+    heartbeat_wake/HeartbeatWake
 )
 
 TLC_WORKERS=auto
@@ -141,6 +143,7 @@ if [[ "$SOAK_PR" == true ]]; then
         node_observation/MC_BoundedCapture
         node_observation/MC_PairedForkChoice
         node_observation/MC_DisplayProjection
+        heartbeat_wake/HeartbeatWake
     )
     TLC_WORKERS=2
 fi
@@ -281,6 +284,10 @@ NEGATIVE_CONTROLS=(
     casper_soak/MC_CasperSoakHarness_control_unsafe:ControlVerdictExact
     scope_trapped_gc/MC_ScopeTrappedGC_payload_leak_pre_fix:Inv_N_NeverInParkedData
     scope_trapped_gc/MC_ScopeTrappedGC_body_mention_pre_fix:Inv_N_NeverInParkedBodyOnForgeable
+    justification_history/MC_JustificationHistory_local_latest_unsafe:HistoryRelative
+    heartbeat_wake/BypassCooldown:CooldownProtectsPending
+    heartbeat_wake/RecheckDespiteLag:RecheckRequiresPendingCooldown
+    heartbeat_wake/WakeOnRejected:WakeOnlyOnAdmission
 )
 
 # Areas whose expected-violation configurations are all registered. A
@@ -364,6 +371,9 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
         check_timeout_cmd="${TIMEOUT_CMD%"$TLC_PER_CONFIG_TIMEOUT"}2m"
         java_options+=" -Xmx512m"
         tlc_args=(-seed 1)
+    elif [[ "${entry%%/*}" == heartbeat_wake ]]; then
+        model=HeartbeatWake
+        workers=1
     fi
     if [[ ! -f "$dir/$model.tla" || ! -f "$dir/$cfg.cfg" ]]; then
         echo "FAIL   $entry (missing $model.tla or $cfg.cfg in $dir — registered config not found)"

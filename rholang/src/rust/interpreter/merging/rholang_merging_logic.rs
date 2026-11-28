@@ -22,6 +22,7 @@ use rspace_plus_plus::rspace::merger::merging_logic::{
 use rspace_plus_plus::rspace::serializers::serializers;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
+use crate::rust::interpreter::matcher::r#match::data_size;
 use crate::rust::interpreter::rho_type::{RhoBigInt, RhoNumber};
 
 pub struct RholangMergingLogic;
@@ -248,6 +249,7 @@ impl RholangMergingLogic {
 
         // Create datum
         let datum = Datum {
+            size: data_size(&par_with_rnd),
             a: par_with_rnd,
             persist: false,
             source: produce,

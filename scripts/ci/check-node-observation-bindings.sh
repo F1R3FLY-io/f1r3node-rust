@@ -2,6 +2,25 @@
 set -euo pipefail
 export LC_ALL=C
 
+check_required_tests() {
+    local directory=$1 required
+    jq -Rr '
+        capture("^test (?<name>\\S+) \\.\\.\\. ok(?<suffix>.*)$")
+        | select(.suffix == "" or (.suffix | fromjson? | type == "object"))
+        | .name
+    ' "$directory"/*.log > "$directory/passed-tests.txt"
+    while IFS= read -r required; do
+        if ! grep -Fxq -- "$required" "$directory/passed-tests.txt"; then
+            printf 'Missing passing result for %s\n' "$required" >&2
+            return 1
+        fi
+    done < "$directory/required-tests.txt"
+}
+if [[ ${1:-} == --check-results && $# == 2 ]]; then
+    check_required_tests "$2"
+    exit 0
+fi
+
 allocated() {
     local file=$1 width
     width=$(readelf --file-header "$file" | awk '$1 == "Class:" { print $2 }')
@@ -133,9 +152,7 @@ while IFS=$'\t' read -r package target raw; do
 done < "$OUTPUT/executables.tsv"
 jq -r '.claims[].properties[].tests[] | select(.source | startswith("casper/") | not) | .name' \
     formal/tlaplus/node_observation/bindings.json | sort -u > "$OUTPUT/required-tests.txt"
-while IFS= read -r required; do
-    grep -hFx "test $required ... ok" "$OUTPUT"/*.log > /dev/null
-done < "$OUTPUT/required-tests.txt"
+check_required_tests "$OUTPUT"
 bash scripts/ci/check-node-canonical-wire.sh export "$OUTPUT/canonical-wire"
 sha256sum -c "$OUTPUT/inputs.sha256" > "$OUTPUT/inputs-after.log"
 sha256sum -c "$OUTPUT/raw-executables.sha256" > "$OUTPUT/raw-after.log"

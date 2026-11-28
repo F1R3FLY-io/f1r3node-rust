@@ -26,7 +26,7 @@ mod eval;
 
 pub use env::Env;
 pub use error::EvalError;
-pub use eval::eval;
+pub use eval::{eval, variable_references};
 
 #[cfg(test)]
 mod tests;

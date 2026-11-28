@@ -49,6 +49,14 @@ impl KeyValueStore for LmdbKeyValueStore {
         })
     }
 
+    fn contains(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<bool>, KvStoreError> {
+        let reader = self.env.read_txn()?;
+        let db = self.db.remap_data_type::<SerdeBincode<&[u8]>>();
+        keys.iter()
+            .map(|key| Ok(db.get(&reader, key)?.is_some()))
+            .collect()
+    }
+
     fn put_one_if_absent(&self, key: ByteBuffer, value: ByteBuffer) -> Result<bool, KvStoreError> {
         in_blocking(|| {
             let mut writer = self.env.write_txn()?;
@@ -510,6 +518,31 @@ mod store_tests {
             .put(kv(&[("k1", "v1"), ("k2", "v2"), ("k3", "v3")]))
             .unwrap();
         store
+    }
+
+    #[test]
+    fn contains_matches_typed_reads_for_valid_missing_and_truncated_rows() {
+        let store = open_scoped_store("presence");
+        let key = b"row".to_vec();
+        let keys = vec![key.clone()];
+        assert_eq!(store.contains(&keys).unwrap(), vec![false]);
+        for value in [vec![], vec![1, 2], vec![42; 65536]] {
+            store.put_one(key.clone(), value).unwrap();
+            assert_eq!(store.contains(&keys).unwrap(), vec![true]);
+            assert!(store.get(&keys).unwrap()[0].is_some());
+        }
+        let raw = store.db.remap_data_type::<heed::types::Bytes>();
+        let encoded = bincode::serialize(&vec![1_u8, 2, 3]).unwrap();
+        for size in [2, encoded.len() - 1] {
+            let mut txn = store.env.write_txn().unwrap();
+            raw.put(&mut txn, &key, &encoded[..size]).unwrap();
+            txn.commit().unwrap();
+            assert!(matches!(store.get(&keys), Err(KvStoreError::IoError(_))));
+            assert!(matches!(
+                store.contains(&keys),
+                Err(KvStoreError::IoError(_))
+            ));
+        }
     }
 
     #[test]

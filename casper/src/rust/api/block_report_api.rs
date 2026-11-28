@@ -99,6 +99,17 @@ pub enum BlockReportError {
     BlockNotFound(BlockHash),
     #[error("Block report pre-state is unavailable for block {0:?}")]
     StateUnavailable(BlockHash),
+    /// The block is below this pruning node's history retention floor.
+    /// Its state is outside the window guaranteed for replay.
+    #[error(
+        "Block report cannot replay block {target_block_hash:?} (height {target_block_height}): \
+         state has been swept past retention floor (height {retention_floor})"
+    )]
+    PrunedState {
+        target_block_hash: BlockHash,
+        target_block_height: i64,
+        retention_floor: i64,
+    },
     #[error("Block {block:?} carries a deploy whose phlo limit exceeds the shard cap of {cap}")]
     ExcessivePhloLimit { block: BlockHash, cap: i64 },
     #[error("Block reporter is busy; retry later")]
@@ -277,6 +288,22 @@ impl BlockReportAPI {
             }
         }
 
+        // History GC retains the floor itself. Archive nodes skip the
+        // height check and verify the requested pre-state below.
+        if let Some(retention_floor) =
+            BlockAPI::current_state_retention_floor(casper.as_ref()).await
+        {
+            let target_height = block.body.state.block_number;
+            if target_height < retention_floor {
+                metrics::counter!("block_report.pruned_state", "source" => "casper").increment(1);
+                return Err(BlockReportError::PrunedState {
+                    target_block_hash: block.block_hash.clone(),
+                    target_block_height: target_height,
+                    retention_floor,
+                });
+            }
+        }
+
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(&proto_util::pre_state_hash(block));
         let has_pre_state = casper
             .runtime_manager()
@@ -405,6 +432,82 @@ impl BlockReportAPI {
     pub async fn prewarm_block_report(&self, hash: BlockHash) -> ApiErr<BlockEventInfo> {
         self.block_report_with_permit(hash, false, ReportPermit::Wait)
             .await
+    }
+
+    pub fn finalized_report_pages<'a>(
+        &self,
+        dag: &'a KeyValueDagRepresentation,
+    ) -> ApiErr<impl Iterator<Item = ApiErr<Vec<(BlockHash, i64)>>> + 'a> {
+        const PAGE_SIZE: usize = 32;
+        let store_error = |error: KvStoreError| BlockReportError::StoreError(error.to_string());
+        let end = dag
+            .block_number_unsafe(&dag.last_finalized_block())
+            .map_err(store_error)?;
+        let start = self.recovery_window_start(end);
+        let mut next = (start <= end).then_some(None);
+        Ok(std::iter::from_fn(move || {
+            let after: Option<Vec<u8>> = next.take()?;
+            Some((|| {
+                let page = dag
+                    .scan_height_range(start, end, false, after.as_deref(), PAGE_SIZE)
+                    .map_err(store_error)?;
+                let mut finalized = Vec::new();
+                for hash in page.rows {
+                    if dag.is_finalized(&hash).map_err(store_error)? {
+                        let height = dag.block_number_unsafe(&hash).map_err(store_error)?;
+                        finalized.push((hash, height));
+                    }
+                }
+                next = page.next.map(Some);
+                Ok(finalized)
+            })())
+        }))
+    }
+
+    pub async fn recover_finalized_reports(
+        &self,
+        dag: &KeyValueDagRepresentation,
+        mut should_report: impl FnMut(&BlockHash) -> bool,
+        mut on_report: impl FnMut(BlockHash, i64, BlockEventInfo),
+    ) -> ApiErr<()> {
+        let mut retry_error = None;
+        for page in self.finalized_report_pages(dag)? {
+            for (hash, height) in page? {
+                if !should_report(&hash) {
+                    continue;
+                }
+                let report = match self.cached_report(&hash) {
+                    Ok(Some(report)) => Ok(report),
+                    Ok(None) => self.prewarm_block_report(hash.clone()).await,
+                    Err(error) => Err(error),
+                };
+                match report {
+                    Ok(report) => on_report(hash, height, report),
+                    Err(error) => {
+                        tracing::debug!(block_hash = %hex::encode(&hash), %error, "Could not recover block report");
+                        if matches!(
+                            error,
+                            BlockReportError::StoreError(_)
+                                | BlockReportError::CasperNotInitialized
+                        ) {
+                            retry_error = Some(error);
+                        }
+                    }
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+        retry_error.map_or(Ok(()), Err)
+    }
+
+    pub fn recovery_window_start(&self, height: i64) -> i64 {
+        const RECOVERY_WINDOW_WITHOUT_RETENTION: i64 = 1_000;
+        let depth = if self.report_cache_retention == 0 {
+            RECOVERY_WINDOW_WITHOUT_RETENTION
+        } else {
+            i64::from(self.report_cache_retention)
+        };
+        height.saturating_sub(depth).max(1)
     }
 
     async fn block_report_with_permit(

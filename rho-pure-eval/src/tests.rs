@@ -509,3 +509,42 @@ fn extended_preserves_shift() {
     assert_eq!(out.shift, 7);
     assert_eq!(out.level(), 3);
 }
+
+#[test]
+fn variable_references_counts_every_reference_evaluation_resolves() {
+    use models::rhoapi::EMethod;
+
+    use crate::eval::variable_references;
+
+    let x_ne_0 = par_of(ExprInstance::ENeqBody(ENeq {
+        p1: Some(evar(0)),
+        p2: Some(gint(0)),
+    }));
+    let y_plus_x = par_of(ExprInstance::EPlusBody(EPlus {
+        p1: Some(evar(1)),
+        p2: Some(evar(0)),
+    }));
+    let guard = par_of(ExprInstance::EAndBody(EAnd {
+        p1: Some(par_of(ExprInstance::ENotBody(ENot { p: Some(x_ne_0) }))),
+        p2: Some(par_of(ExprInstance::EGtBody(EGt {
+            p1: Some(y_plus_x),
+            p2: Some(par_of(ExprInstance::ENegBody(ENeg { p: Some(evar(1)) }))),
+        }))),
+    }));
+    assert_eq!(variable_references(&guard), 4);
+    let env = Env::<Par>::new().put(gint(5)).put(gint(0));
+    assert!(eval(&guard, &env).is_ok());
+
+    let method = par_of(ExprInstance::EMethodBody(EMethod {
+        method_name: "length".to_string(),
+        target: Some(evar(0)),
+        arguments: vec![evar(0)],
+        ..EMethod::default()
+    }));
+    assert_eq!(
+        variable_references(&method),
+        0,
+        "evaluation refuses a method before resolving"
+    );
+    assert_eq!(variable_references(&gint(1)), 0);
+}

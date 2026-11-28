@@ -50,7 +50,7 @@ use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::store::soak_snapshot::SnapshotError;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock as AsyncRwLock};
 
 use super::block_metadata_store::BlockMetadataStore;
 use super::carrier_index::CarrierIndex;
@@ -1352,6 +1352,7 @@ pub struct BlockDagKeyValueStorage {
     /// mutation paths (`insert`, `record_directly_finalized`) still take
     /// exclusive access.
     pub(crate) global_lock: Arc<PlRwLock<()>>,
+    finalization_snapshot_lock: Arc<AsyncRwLock<()>>,
     pub(crate) latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
     pub(crate) block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
     /// Memoized justification-derived floor per block (block hash -> floor hash).
@@ -1456,6 +1457,15 @@ impl BlockDagKeyValueStorage {
             .last_finalized_block
             .as_ref()
             .map(|(hash, _)| hash.clone())
+    }
+
+    pub fn last_finalized_height(&self) -> Option<i64> {
+        let guard = self.block_metadata_index.read();
+        let dag_state = guard.dag_state().read();
+        dag_state
+            .last_finalized_block
+            .as_ref()
+            .map(|(_, height)| *height)
     }
 
     /// Storage-level twin of `KeyValueDagRepresentation::deploy_canonical_appearance`
@@ -1615,6 +1625,7 @@ impl BlockDagKeyValueStorage {
         Ok(Self {
             persistence: Some(persistence),
             global_lock: Arc::new(PlRwLock::new(())),
+            finalization_snapshot_lock: Arc::new(AsyncRwLock::new(())),
             block_metadata_index: Arc::new(PlRwLock::new(block_metadata_store)),
             floor_index: floor_index_db,
             frontier_index: frontier_index_db,
@@ -1740,6 +1751,7 @@ impl BlockDagKeyValueStorage {
         Self {
             persistence: None,
             global_lock,
+            finalization_snapshot_lock: Arc::new(AsyncRwLock::new(())),
             latest_messages_index,
             block_metadata_index,
             floor_index,
@@ -1818,6 +1830,13 @@ impl BlockDagKeyValueStorage {
         // readers do not serialize on each other. Mutators take `.write()`.
         let _lock_guard = self.global_lock.read();
         self.get_representation_internal()
+    }
+
+    pub async fn get_representation_after_finalization(
+        &self,
+    ) -> Result<KeyValueDagRepresentation, KvStoreError> {
+        let _snapshot = self.finalization_snapshot_lock.write().await;
+        self.get_representation()
     }
 
     /// Runs `f` on a representation with the global lock held shared, so no
@@ -1965,10 +1984,9 @@ impl BlockDagKeyValueStorage {
     /// repeat writes nothing.
     pub fn record_deploy_events(&self, block: &BlockMessage) -> Result<(), KvStoreError> {
         let block_number = block.body.state.block_number;
-        let lifecycle_guard = self.lifecycle.write();
-        for pd in &block.body.deploys {
-            lifecycle_guard.append_event_once(
-                &pd.deploy.sig,
+        let included = block.body.deploys.iter().map(|pd| {
+            (
+                pd.deploy.sig.to_vec(),
                 Some(pd.deploy.data.valid_after_block_number),
                 LifecycleEvent {
                     height: block_number,
@@ -1977,18 +1995,20 @@ impl BlockDagKeyValueStorage {
                         is_failed: pd.is_failed,
                     },
                 },
-            )?;
-        }
-        for rd in &block.body.rejected_deploys {
-            lifecycle_guard.append_event_once(&rd.sig, None, LifecycleEvent {
+            )
+        });
+        let rejected = block.body.rejected_deploys.iter().map(|rd| {
+            (rd.sig.to_vec(), None, LifecycleEvent {
                 height: block_number,
                 block_hash: block.block_hash.to_vec(),
                 kind: LifecycleEventKind::Rejected {
                     duplicate: rd.duplicate,
                 },
-            })?;
-        }
-        Ok(())
+            })
+        });
+        self.lifecycle
+            .write()
+            .append_events_once_batch(included.chain(rejected).collect())
     }
 
     /// Internal method to insert without acquiring lock.
@@ -2183,16 +2203,22 @@ impl BlockDagKeyValueStorage {
             // ancestor scan never reads them, and the carrier index must
             // not ingest attacker-chosen keys.
             {
-                let block_number = block.body.state.block_number;
-                let carrier_guard = self.carrier_index.write();
-                for pd in &block.body.deploys {
-                    carrier_guard.record_once(
-                        &pd.deploy.sig,
-                        &models::rust::deploy_seed::deploy_name_seed(&pd.deploy),
-                        block_number,
-                        block.block_hash.to_vec(),
-                    )?;
-                }
+                let deploys: Vec<_> = block
+                    .body
+                    .deploys
+                    .iter()
+                    .map(|pd| {
+                        (
+                            pd.deploy.sig.to_vec(),
+                            models::rust::deploy_seed::deploy_name_seed(&pd.deploy),
+                        )
+                    })
+                    .collect();
+                self.carrier_index.write().record_block(
+                    block.body.state.block_number,
+                    &block.block_hash.to_vec(),
+                    &deploys,
+                )?;
             }
 
             // Lifecycle event ingest, before the block is DAG-visible: a
@@ -2318,6 +2344,7 @@ impl BlockDagKeyValueStorage {
         F: FnMut(&HashSet<BlockHash>) -> Fut,
         Fut: std::future::Future<Output = Result<(), KvStoreError>>,
     {
+        let _finalizing = self.finalization_snapshot_lock.read().await;
         // P5 (slashing audit): bound chosen because typical reconciliation
         // converges in 1–4 loops under realistic block-insert load. A
         // 128-loop ceiling prevents the (TOCTOU-driven) pathological case

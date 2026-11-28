@@ -38,6 +38,7 @@ struct HeartbeatCheckResult {
     bug_failure: bool,
     refresh_deploy_grace_window: bool,
     finality_recovery_attempted: bool,
+    recheck_after: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -241,15 +242,24 @@ impl HeartbeatProposer {
             let mut backoff_until: Option<std::time::Instant> = None;
             let mut deploy_grace_until: Option<std::time::Instant> = None;
             let mut finality_progress = FinalityProgress::new(Instant::now());
+            let mut next_sleep = config.check_interval;
 
             loop {
                 // Race between timer and signal - whichever completes first triggers wake
+                let sleep_for = std::mem::replace(&mut next_sleep, config.check_interval);
                 let wake_source = tokio::select! {
-                    _ = tokio::time::sleep(config.check_interval) => "timer",
+                    _ = tokio::time::sleep(sleep_for) => "timer",
                     _ = notify.notified() => "signal",
                 };
 
                 tracing::debug!("Heartbeat: Woke from {}", wake_source);
+                if cooldown_recheck_ran(wake_source == "timer", sleep_for, config.check_interval) {
+                    metrics::counter!(
+                        casper::rust::metrics_constants::HEARTBEAT_COOLDOWN_RECHECK_METRIC,
+                        "source" => casper::rust::metrics_constants::VALIDATOR_METRICS_SOURCE
+                    )
+                    .increment(1);
+                }
                 let eng = engine_cell.get().await;
 
                 // Access Casper if available and run the check
@@ -277,6 +287,8 @@ impl HeartbeatProposer {
                     .await
                     {
                         Ok(outcome) => {
+                            next_sleep =
+                                next_heartbeat_sleep(config.check_interval, outcome.recheck_after);
                             if outcome.refresh_deploy_grace_window {
                                 let grace_ms = config.deploy_finalization_grace.as_millis();
                                 let grace_duration = Duration::from_millis(std::cmp::min(
@@ -641,6 +653,7 @@ async fn check_lfb_and_propose(
     };
     let LaneDecision {
         pending_deploys_due,
+        pending_blocked_by_cooldown,
         pending_deploy_backstop_due,
         frontier_follow_due,
         stale_lfb_recovery_due,
@@ -747,6 +760,7 @@ async fn check_lfb_and_propose(
                     refresh_deploy_grace_window: has_pending_deploys
                         || has_new_parent_with_user_deploys,
                     finality_recovery_attempted: false,
+                    recheck_after: None,
                 })
             }
             ProposerResult::Failure(status, seq_num) => {
@@ -762,6 +776,7 @@ async fn check_lfb_and_propose(
                     refresh_deploy_grace_window: has_pending_deploys
                         || has_new_parent_with_user_deploys,
                     finality_recovery_attempted: false,
+                    recheck_after: None,
                 })
             }
             ProposerResult::Success(_, _) => {
@@ -771,6 +786,7 @@ async fn check_lfb_and_propose(
                     refresh_deploy_grace_window: has_pending_deploys
                         || has_new_parent_with_user_deploys,
                     finality_recovery_attempted: convergence_recovery_selected,
+                    recheck_after: None,
                 })
             }
             ProposerResult::Started(seq_num) => {
@@ -780,6 +796,7 @@ async fn check_lfb_and_propose(
                     refresh_deploy_grace_window: has_pending_deploys
                         || has_new_parent_with_user_deploys,
                     finality_recovery_attempted: convergence_recovery_selected,
+                    recheck_after: None,
                 })
             }
         }
@@ -878,6 +895,11 @@ async fn check_lfb_and_propose(
             bug_failure: false,
             refresh_deploy_grace_window: has_pending_deploys || has_new_parent_with_user_deploys,
             finality_recovery_attempted: false,
+            recheck_after: cooldown_recheck_delay(
+                pending_blocked_by_cooldown,
+                config.self_propose_cooldown.as_millis(),
+                self_latest_block_timestamp_ms.map(|timestamp_ms| now.saturating_sub(timestamp_ms)),
+            ),
         })
     }
 }
@@ -1058,6 +1080,7 @@ struct LaneInputs {
 /// The lane verdicts plus every intermediate the reason ladders report.
 struct LaneDecision {
     pending_deploys_due: bool,
+    pending_blocked_by_cooldown: bool,
     pending_deploy_backstop_due: bool,
     frontier_follow_due: bool,
     stale_lfb_recovery_due: bool,
@@ -1095,9 +1118,10 @@ fn decide_lanes(i: &LaneInputs) -> LaneDecision {
     // paces on the stale-recovery interval, which subsumes the cooldown at
     // shipped values, and recovery must never be hostage to a knob tuned
     // for routine churn.
-    let pending_deploys_due = i.has_pending_deploys
-        && !i.self_proposed_too_recently
+    let pending_deploys_eligible = i.has_pending_deploys
         && (!i.self_recently_proposed || can_propose_pending_deploys_while_ahead);
+    let pending_deploys_due = pending_deploys_eligible && !i.self_proposed_too_recently;
+    let pending_blocked_by_cooldown = pending_deploys_eligible && i.self_proposed_too_recently;
     // Backstop: even when high lag throttles pending-deploy proposals, force a bounded
     // retry based on local self-proposal cadence so deploys cannot starve indefinitely.
     // Open to EVERY validator: under a pinned floor the backstop firing on
@@ -1161,6 +1185,7 @@ fn decide_lanes(i: &LaneInputs) -> LaneDecision {
     let should_propose = routine_proposal_due || convergence_recovery_selected;
     LaneDecision {
         pending_deploys_due,
+        pending_blocked_by_cooldown,
         pending_deploy_backstop_due,
         frontier_follow_due,
         stale_lfb_recovery_due,
@@ -1171,6 +1196,33 @@ fn decide_lanes(i: &LaneInputs) -> LaneDecision {
         can_follow_frontier_without_pending_deploys,
         allow_frontier_follow_while_ahead_for_deploy_parent,
     }
+}
+
+fn cooldown_recheck_delay(
+    pending_blocked_by_cooldown: bool,
+    cooldown_ms: u128,
+    self_latest_block_age_ms: Option<u128>,
+) -> Option<Duration> {
+    if !pending_blocked_by_cooldown {
+        return None;
+    }
+    let remaining_ms = cooldown_ms.saturating_sub(self_latest_block_age_ms?);
+    (remaining_ms > 0).then(|| Duration::from_millis(remaining_ms.min(u128::from(u64::MAX)) as u64))
+}
+
+fn cooldown_recheck_ran(
+    woke_by_timer: bool,
+    slept_for: Duration,
+    check_interval: Duration,
+) -> bool {
+    woke_by_timer && slept_for < check_interval
+}
+
+fn next_heartbeat_sleep(check_interval: Duration, recheck_after: Option<Duration>) -> Duration {
+    const MIN_RECHECK: Duration = Duration::from_millis(10);
+    recheck_after
+        .map(|delay| delay.max(MIN_RECHECK).min(check_interval))
+        .unwrap_or(check_interval)
 }
 
 fn stale_recovery_window_is_open(
@@ -1569,6 +1621,32 @@ mod tests {
             (count, func)
         }
 
+        fn create_recording_propose_function(
+        ) -> (Arc<std::sync::Mutex<Vec<u128>>>, Arc<ProposeFunction>) {
+            use casper::rust::blocks::proposer::propose_result::{ProposeStatus, ProposeSuccess};
+            use casper::rust::blocks::proposer::proposer::ProposerResult;
+
+            let times_ms = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorded = times_ms.clone();
+            let func: Arc<ProposeFunction> = Arc::new(move |_casper, _is_async| {
+                recorded.lock().unwrap().push(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis(),
+                );
+                Box::pin(async {
+                    Ok(ProposerResult::Success(
+                        ProposeStatus::Success(ProposeSuccess {
+                            result: casper::rust::block_status::ValidBlock::Valid,
+                        }),
+                        models::rust::block_implicits::get_random_block_default(),
+                    ))
+                })
+            });
+            (times_ms, func)
+        }
+
         fn test_hash(byte: u8) -> BlockHash { Bytes::from(vec![byte; 32]) }
 
         fn test_validator(byte: u8) -> Bytes {
@@ -1823,6 +1901,154 @@ mod tests {
                 propose_count.load(Ordering::SeqCst),
                 1,
                 "Should trigger propose when pending deploys exist"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_deploy_held_only_by_the_cooldown_is_checked_again_when_the_cooldown_ends() {
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let mut snapshot =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                validator_id.clone().into(),
+            );
+            snapshot
+                .dag
+                .fixture_mut()
+                .latest_messages_map
+                .insert(validator_id, test_hash(0x19));
+            let casper_impl =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new_with_pending_deploys(
+                    snapshot,
+                    create_lfb_with_age(100),
+                    1,
+                );
+            let mut own_block = models::rust::block_implicits::get_random_block_default();
+            own_block.block_hash = test_hash(0x19);
+            own_block.header.timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64
+                - 1_000;
+            casper_impl.insert_block(&own_block);
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(casper_impl);
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let config = HeartbeatConf {
+                enabled: true,
+                check_interval: Duration::from_secs(60),
+                max_lfb_age: Duration::from_secs(10),
+                self_propose_cooldown: Duration::from_secs(3),
+                ..HeartbeatConf::default()
+            };
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+
+            let outcome = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await
+            .expect("do_heartbeat_check");
+
+            assert_eq!(propose_count.load(Ordering::SeqCst), 0);
+            let next_check = next_heartbeat_sleep(config.check_interval, outcome.recheck_after);
+            assert!(
+                next_check <= Duration::from_secs(2) && next_check > Duration::from_millis(1_500),
+                "the next check must come at the end of the cooldown, not after {:?}",
+                next_check
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_deploy_wake_during_the_cooldown_makes_no_proposal_before_the_cooldown_ends() {
+            use casper::rust::engine::engine_cell::EngineCell;
+            use casper::rust::engine::engine_with_casper::EngineWithCasper;
+
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let mut snapshot =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                validator_id.clone().into(),
+            );
+            snapshot
+                .dag
+                .fixture_mut()
+                .latest_messages_map
+                .insert(validator_id, test_hash(0x1a));
+            let casper =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new_with_pending_deploys(
+                    snapshot,
+                    create_lfb_with_age(100),
+                    1,
+                );
+            let own_block_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis();
+            let mut own_block = models::rust::block_implicits::get_random_block_default();
+            own_block.block_hash = test_hash(0x1a);
+            own_block.header.timestamp = own_block_ms as i64;
+            casper.insert_block(&own_block);
+            let engine_cell = Arc::new(EngineCell::init());
+            engine_cell
+                .set(Arc::new(EngineWithCasper::new(Arc::new(casper))))
+                .await;
+            let (proposal_times_ms, propose_func) = create_recording_propose_function();
+            let heartbeat_signal_ref = new_heartbeat_signal_ref();
+            let config = HeartbeatConf {
+                enabled: true,
+                check_interval: Duration::from_millis(200),
+                max_lfb_age: Duration::from_secs(10),
+                self_propose_cooldown: Duration::from_millis(1_500),
+                ..HeartbeatConf::default()
+            };
+            let cooldown_deadline_ms = own_block_ms + config.self_propose_cooldown.as_millis();
+            let handle = HeartbeatProposer::create(
+                engine_cell,
+                Some(propose_func),
+                validator,
+                config,
+                10,
+                heartbeat_signal_ref.clone(),
+                false,
+            )
+            .expect("heartbeat starts");
+
+            for _ in 0..4 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                heartbeat_signal_ref
+                    .get()
+                    .expect("heartbeat installs its wake signal")
+                    .trigger_wake();
+            }
+            let give_up = std::time::Instant::now() + Duration::from_secs(5);
+            while proposal_times_ms.lock().unwrap().is_empty()
+                && std::time::Instant::now() < give_up
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            handle.abort();
+            let times = proposal_times_ms.lock().unwrap().clone();
+            assert!(
+                !times.is_empty(),
+                "the pending deploy is proposed after the cooldown ends"
+            );
+            let early_by_ms: Vec<u128> = times
+                .iter()
+                .filter(|&&at| at < cooldown_deadline_ms)
+                .map(|&at| cooldown_deadline_ms - at)
+                .collect();
+            assert!(
+                early_by_ms.is_empty(),
+                "a deploy wake inside the cooldown must not propose; proposals came {early_by_ms:?} ms before the deadline"
             );
         }
 
@@ -2686,6 +2912,64 @@ mod tests {
             assert_eq!(propose_count.load(Ordering::SeqCst), 0);
         }
 
+        async fn lag_capped_check(own_block_age_ms: i64) -> (usize, Duration) {
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let (snapshot, lfb) = wide_unfinalized_snapshot(validator_id);
+            let casper_impl =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new_with_pending_deploys(
+                    snapshot, lfb, 1,
+                );
+            let mut self_tip = models::rust::block_implicits::get_random_block_default();
+            self_tip.block_hash = test_hash(0x18);
+            self_tip.header.timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64
+                - own_block_age_ms;
+            casper_impl.insert_block(&self_tip);
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(casper_impl);
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let mut config = empty_frontier_backpressure_config();
+            config.check_interval = Duration::from_secs(60);
+            config.self_propose_cooldown = Duration::from_secs(3);
+            config.advanced.pending_deploy_max_lag = 1;
+            config.advanced.deploy_recovery_max_lag = 1;
+            config.stale_recovery_min_interval = Some(Duration::from_secs(15));
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+            let outcome = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await
+            .expect("do_heartbeat_check");
+            (
+                propose_count.load(Ordering::SeqCst),
+                next_heartbeat_sleep(config.check_interval, outcome.recheck_after),
+            )
+        }
+
+        #[tokio::test]
+        async fn a_deploy_held_by_the_lag_cap_is_not_proposed_at_the_cooldown_end_check() {
+            let (proposals, next_check) = lag_capped_check(1_000).await;
+            assert_eq!(proposals, 0);
+            assert_eq!(
+                next_check,
+                Duration::from_secs(60),
+                "a deploy held by the lag cap must not schedule a cooldown-end check"
+            );
+            let (proposals, _) = lag_capped_check(4_000).await;
+            assert_eq!(
+                proposals, 0,
+                "after the cooldown, a deploy held by the lag cap must not be proposed"
+            );
+        }
+
         /// The terminal ucc-stall state (session 3cd723b6): finalization
         /// stalled long enough that unfinalized width exceeded the cap, and
         /// every validator's latest block sits above the frozen LFB — so a
@@ -2994,5 +3278,105 @@ mod tests {
                 "recovery paces on the interval, never on the cooldown"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod cooldown_recheck_tests {
+    use std::time::Duration;
+
+    use super::{
+        cooldown_recheck_delay, cooldown_recheck_ran, decide_lanes, next_heartbeat_sleep,
+        LaneInputs,
+    };
+
+    fn pending_in_cooldown() -> LaneInputs {
+        LaneInputs {
+            lfb_is_stale: false,
+            lfb_lag_blocks: 2,
+            has_pending_deploys: true,
+            has_new_parents: false,
+            has_new_parent_with_user_deploys: false,
+            deploy_grace_active: false,
+            self_recently_proposed: true,
+            self_proposed_too_recently: true,
+            self_idle_for_recovery_interval: false,
+            stale_recovery_interval_elapsed: false,
+            cone_has_user_work: false,
+            idle_recovery_window_open: false,
+            lag_recovery_leader: false,
+            empty_frontier_backpressure: false,
+            pending_deploy_max_lag: 20,
+            deploy_recovery_max_lag: 64,
+            effective_frontier_chase_cap: 20,
+        }
+    }
+
+    #[test]
+    fn only_a_timer_that_ends_a_shortened_sleep_counts_as_a_cooldown_recheck() {
+        let interval = Duration::from_secs(60);
+        let shortened = Duration::from_millis(1_400);
+        assert!(cooldown_recheck_ran(true, shortened, interval));
+        assert!(
+            !cooldown_recheck_ran(false, shortened, interval),
+            "a signal that interrupts a shortened sleep is not a cooldown recheck"
+        );
+        assert!(!cooldown_recheck_ran(true, interval, interval));
+        assert!(!cooldown_recheck_ran(false, interval, interval));
+    }
+
+    #[test]
+    fn pending_deploys_held_only_by_the_cooldown_are_reported() {
+        let d = decide_lanes(&pending_in_cooldown());
+        assert!(!d.pending_deploys_due && !d.should_propose);
+        assert!(d.pending_blocked_by_cooldown);
+    }
+
+    #[test]
+    fn pending_deploys_held_by_the_lag_cap_are_not_reported_as_cooldown() {
+        let d = decide_lanes(&LaneInputs {
+            lfb_lag_blocks: 30,
+            ..pending_in_cooldown()
+        });
+        assert!(!d.pending_deploys_due);
+        assert!(!d.pending_blocked_by_cooldown);
+    }
+
+    #[test]
+    fn no_pending_deploys_means_no_cooldown_report() {
+        let d = decide_lanes(&LaneInputs {
+            has_pending_deploys: false,
+            ..pending_in_cooldown()
+        });
+        assert!(!d.pending_blocked_by_cooldown);
+    }
+
+    #[test]
+    fn the_recheck_waits_for_the_rest_of_the_cooldown() {
+        assert_eq!(
+            cooldown_recheck_delay(true, 3_000, Some(1_000)),
+            Some(Duration::from_millis(2_000))
+        );
+        assert_eq!(cooldown_recheck_delay(false, 3_000, Some(1_000)), None);
+        assert_eq!(cooldown_recheck_delay(true, 3_000, None), None);
+        assert_eq!(cooldown_recheck_delay(true, 3_000, Some(3_000)), None);
+    }
+
+    #[test]
+    fn the_next_sleep_stays_inside_the_check_interval() {
+        let interval = Duration::from_secs(5);
+        assert_eq!(next_heartbeat_sleep(interval, None), interval);
+        assert_eq!(
+            next_heartbeat_sleep(interval, Some(Duration::from_secs(2))),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            next_heartbeat_sleep(interval, Some(Duration::from_secs(9))),
+            interval
+        );
+        assert_eq!(
+            next_heartbeat_sleep(interval, Some(Duration::from_millis(1))),
+            Duration::from_millis(10)
+        );
     }
 }

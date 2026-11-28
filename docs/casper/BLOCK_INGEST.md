@@ -41,7 +41,7 @@ flowchart LR
 1. `Running` drops a block that the node already holds. It then checks the block's integrity off the async runtime: fields, signature, and the hash against the contents. A block that fails is dropped, the sending peer gets a `Malformed` or `HashMismatch` strike, and nothing keyed by the claimed hash changes. `Running` gives a checked block to an intake lane. It does not wait. If the lane is full, the node drops the block. The node asks for a needed block again later.
 2. An intake task checks interest and sender authorization. It then stores the block. An authorized block goes to the block store. A block with unknown authorization goes to the pending area. A block that intake reads from the block store is checked for integrity first. A stored copy that fails is deleted only if it is the same body (compare-and-delete), and the node asks peers for the block.
 3. The owner classifies the block. A block with all dependencies in the DAG is ready. Other blocks wait, and each missing dependency becomes a need.
-4. The owner gives ready blocks to the validation workers, lowest height first. It dispatches only when a worker is free.
+4. The owner gives ready blocks to the validation workers, lowest height first. It dispatches only when a worker is free. A ready block that waits for 32 dispatches of other blocks (`READY_AGE_LIMIT_DISPATCHES`) is overdue. Overdue blocks take the next free workers in the order they became ready, before lower blocks. A higher block that goes before a lower one is therefore expected after a long wait.
 5. The DAG reports each insert to the owner. The owner then releases the blocks that waited on the inserted block.
 
 A dependency is satisfied when it is in the DAG or recorded as an equivocation.

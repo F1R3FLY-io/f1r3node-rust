@@ -22,6 +22,10 @@ struct Cont;
 struct AlwaysMatch;
 
 impl Match<Wildcard, String, Cont> for AlwaysMatch {
+    fn pattern_size(&self, _: &Wildcard) -> usize { 1 }
+
+    fn data_size(&self, a: &String) -> usize { a.len() }
+
     fn get(&self, _: &Wildcard, a: &String) -> Option<String> { Some(a.clone()) }
 }
 
@@ -29,6 +33,220 @@ async fn make_rspace() -> RSpace<String, Wildcard, String, Cont> {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
     RSpace::create(store, Arc::new(Box::new(AlwaysMatch))).unwrap()
+}
+
+#[tokio::test]
+async fn a_search_outside_the_charging_scope_its_space_requires_fails() {
+    use crate::rspace::errors::RSpaceError;
+    use crate::rspace::rspace_interface::MaybeConsumeResult;
+    use crate::rspace::search_charge::{self, SearchWork};
+
+    async fn receive(
+        space: &RSpace<String, Wildcard, String, Cont>,
+    ) -> Result<MaybeConsumeResult<String, Wildcard, String, Cont>, RSpaceError> {
+        space
+            .consume(
+                vec!["ch".to_string()],
+                vec![Wildcard],
+                Cont,
+                false,
+                std::collections::BTreeSet::new(),
+            )
+            .await
+    }
+
+    let free = make_rspace().await;
+    assert!(receive(&free).await.is_ok(), "a space no charging space wraps searches for free");
+
+    let charged_space = make_rspace().await;
+    charged_space.require_search_charging();
+    assert!(matches!(receive(&charged_space).await, Err(RSpaceError::BugFoundError(_))));
+
+    let paid = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let charger = {
+        let paid = paid.clone();
+        Arc::new(move |work: SearchWork| {
+            paid.lock().unwrap().push(work);
+            true
+        })
+    };
+    assert!(
+        search_charge::charged(charger, receive(&charged_space))
+            .await
+            .is_ok()
+    );
+    assert_eq!(paid.lock().unwrap().len(), 1, "the receive is charged once");
+}
+
+#[tokio::test]
+async fn a_search_is_priced_without_measuring_what_waits_again() {
+    use std::collections::BTreeSet;
+    use std::sync::atomic::AtomicUsize;
+
+    use crate::rspace::search_charge::{self, SearchWork};
+
+    #[derive(Default)]
+    struct Measured {
+        data: AtomicUsize,
+        patterns: AtomicUsize,
+    }
+
+    struct NeverMatch(Arc<Measured>);
+
+    impl Match<Wildcard, String, Cont> for NeverMatch {
+        fn pattern_size(&self, _: &Wildcard) -> usize {
+            self.0.patterns.fetch_add(1, Ordering::SeqCst);
+            1
+        }
+
+        fn data_size(&self, a: &String) -> usize {
+            self.0.data.fetch_add(1, Ordering::SeqCst);
+            a.len()
+        }
+
+        fn get(&self, _: &Wildcard, _: &String) -> Option<String> { None }
+    }
+
+    const DATA: usize = 50;
+    const RECEIVES: usize = 20;
+    let measured = Arc::new(Measured::default());
+    let mut kvm = InMemoryStoreManager::new();
+    let space: RSpace<String, Wildcard, String, Cont> = RSpace::create(
+        kvm.r_space_stores().await.unwrap(),
+        Arc::new(Box::new(NeverMatch(measured.clone()))),
+    )
+    .unwrap();
+    let paid = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let charger = {
+        let paid = paid.clone();
+        Arc::new(move |work: SearchWork| {
+            paid.lock().unwrap().push(work);
+            true
+        })
+    };
+
+    search_charge::charged(charger, async {
+        for i in 0..DATA {
+            space
+                .produce("ch".to_string(), format!("datum-{i:02}"), false)
+                .await
+                .unwrap();
+        }
+        for _ in 0..RECEIVES {
+            space
+                .consume(vec!["ch".to_string()], vec![Wildcard], Cont, false, BTreeSet::new())
+                .await
+                .unwrap();
+        }
+        assert_eq!(measured.data.load(Ordering::SeqCst), DATA, "each datum is measured once");
+        assert_eq!(measured.patterns.load(Ordering::SeqCst), RECEIVES);
+
+        space
+            .produce("ch".to_string(), "datum-50".to_string(), false)
+            .await
+            .unwrap();
+        assert_eq!(measured.data.load(Ordering::SeqCst), DATA + 1);
+        assert_eq!(measured.patterns.load(Ordering::SeqCst), RECEIVES);
+    })
+    .await;
+
+    let paid = paid.lock().unwrap();
+    let size = "datum-00".len();
+    assert_eq!(paid.len(), RECEIVES + 1, "only the receives and the last send search");
+    assert_eq!(paid[0], SearchWork {
+        candidates: DATA as u64,
+        bytes: (DATA * (size + 1)) as u64,
+    });
+    assert_eq!(*paid.last().unwrap(), SearchWork {
+        candidates: (RECEIVES * (DATA + 1)) as u64,
+        bytes: (RECEIVES * (DATA + 1) * (size + 1)) as u64,
+    });
+}
+
+#[tokio::test]
+async fn a_guarded_receive_is_charged_for_its_guard_against_every_candidate() {
+    use std::collections::BTreeSet;
+    use std::sync::atomic::AtomicUsize;
+
+    use crate::rspace::search_charge::{self, GuardSize, SearchWork};
+
+    const GUARD: GuardSize = GuardSize {
+        size: 10,
+        references: 2,
+    };
+
+    const PATTERN: usize = 3;
+
+    struct Guarded(Arc<AtomicUsize>);
+
+    impl Match<Wildcard, String, Cont> for Guarded {
+        fn pattern_size(&self, _: &Wildcard) -> usize { PATTERN }
+
+        fn data_size(&self, a: &String) -> usize { a.len() }
+
+        fn guard_size(&self, _: &Cont) -> Option<GuardSize> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Some(GUARD)
+        }
+
+        fn get(&self, _: &Wildcard, _: &String) -> Option<String> { None }
+    }
+
+    const DATA: usize = 5;
+    const RECEIVES: usize = 3;
+    let measured = Arc::new(AtomicUsize::new(0));
+    let mut kvm = InMemoryStoreManager::new();
+    let space: RSpace<String, Wildcard, String, Cont> = RSpace::create(
+        kvm.r_space_stores().await.unwrap(),
+        Arc::new(Box::new(Guarded(measured.clone()))),
+    )
+    .unwrap();
+    let paid = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let charger = {
+        let paid = paid.clone();
+        Arc::new(move |work: SearchWork| {
+            paid.lock().unwrap().push(work);
+            true
+        })
+    };
+
+    search_charge::charged(charger, async {
+        for i in 0..DATA {
+            space
+                .produce("ch".to_string(), format!("datum-{i}"), false)
+                .await
+                .unwrap();
+        }
+        for _ in 0..RECEIVES {
+            space
+                .consume(vec!["ch".to_string()], vec![Wildcard], Cont, false, BTreeSet::new())
+                .await
+                .unwrap();
+        }
+        space
+            .produce("ch".to_string(), "datum-5".to_string(), false)
+            .await
+            .unwrap();
+    })
+    .await;
+
+    assert_eq!(measured.load(Ordering::SeqCst), RECEIVES, "each receive's guard is measured once");
+    let size = "datum-0".len();
+    let per_receive = |count: usize| {
+        (count * size +
+            count * PATTERN +
+            count * GUARD.size +
+            (GUARD.references + 1) * count * size) as u64
+    };
+    let paid = paid.lock().unwrap();
+    assert_eq!(paid[0], SearchWork {
+        candidates: DATA as u64,
+        bytes: per_receive(DATA),
+    });
+    assert_eq!(*paid.last().unwrap(), SearchWork {
+        candidates: (RECEIVES * (DATA + 1)) as u64,
+        bytes: RECEIVES as u64 * per_receive(DATA + 1),
+    });
 }
 
 // Measures contention on the event_log mutex while N concurrent tasks call
