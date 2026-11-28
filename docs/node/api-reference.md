@@ -511,6 +511,13 @@ The status stays `Pending` at or below the bound and when contestability is unli
 An unresolved floor, a restore gap, or incomplete carrier index coverage also keeps the status `Pending`.
 Admission and block validation use `expirationTimestamp`. Reconciliation uses finalized block heights.
 
+The finalizer retains carrier-index rows down to the reconciliation horizon plus two deploy lifespans.
+This covers a basis lag of up to one deploy lifespan.
+After the basis passes the bound, the rows remain provable for about one more lifespan.
+If the basis lags farther, or the query arrives after the rows are pruned, the answer stays `Pending`
+because absence is no longer provable.
+Use the `basis_block_height` from an earlier `Pending` response to query as soon as the basis passes the bound.
+
 ```bash
 curl -X POST http://localhost:40403/api/deploy-finalization-status \
   -H 'Content-Type: application/json' \
