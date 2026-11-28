@@ -494,18 +494,53 @@ message BodyProto {
 }
 
 message RejectedDeployProto{
-  bytes sig       = 1;
+  // Typed rejection reason. HARD FORK: the field changes block-body
+  // encoding and so must activate at a protocol-version boundary (D-01).
+  // Pre-activation blocks carry REJECTION_REASON_UNSPECIFIED (default 0);
+  // post-activation blocks MUST carry a non-UNSPECIFIED value, and
+  // validators recompute the reason from the merge's authenticated
+  // inputs. A mismatch invalidates the block (InvalidRejectedDeploy).
+  //
+  // Retry eligibility is the semantic consumer: CollateralChainDrop and
+  // MergeConflict are retryable; DuplicateOccurrence and
+  // SafetyInvariantViolation are not. prior_rejection_counts counts
+  // retryable records only, so a permanently unsafe deploy cannot gain
+  // priority through repeated terminal rejections.
+  enum RejectionReason {
+    REJECTION_REASON_UNSPECIFIED      = 0;
+    // The sig's own effect did not conflict, but its dedup-collateral
+    // chain was dropped (another deploy in the same scope lost on
+    // content order and took this chain with it). Retryable.
+    COLLATERAL_CHAIN_DROP             = 1;
+    // Two chains added on the same channel; content ordering kept the
+    // other one. Retryable.
+    MERGE_CONFLICT                    = 2;
+    // The sig's effect is already present in the merge's post-state
+    // (kept copy in the same merge, or already settled in the base).
+    // Not retryable: the standing win is this sig's own effect.
+    DUPLICATE_OCCURRENCE              = 3;
+    // The sig's effect would violate a protocol invariant (e.g., push
+    // a protected single-value cell past one datum). Terminal, not
+    // retryable: re-submitting the same sig cannot succeed.
+    SAFETY_INVARIANT_VIOLATION        = 4;
+  }
+  bytes sig                        = 1;
   // Set by the merge that formed this record when the sig's effect is
   // present in that merge's own post-state (a kept copy in the same merge,
   // or already settled in its base): the record discarded a redundant copy
   // and does not dispute the sig's standing win. Validators recompute the
   // flag during checkpoint validation; a mismatch invalidates the block.
-  bool duplicate  = 2;
+  //
+  // Retained alongside `reason` for wire compatibility: duplicate=true is
+  // equivalent to reason=DUPLICATE_OCCURRENCE post-activation and remains
+  // the only signal on pre-activation records.
+  bool duplicate                   = 2;
   // The block that held the copy this record adjudicated. The merge knows
   // it exactly (the rejected chain's source block); recording it makes
   // coverage an equality instead of an inference. Validators recompute the
   // carrier during checkpoint validation; a mismatch invalidates the block.
-  bytes carrier   = 3;
+  bytes carrier                    = 3;
+  RejectionReason reason           = 4;
 }
 
 message JustificationProto {

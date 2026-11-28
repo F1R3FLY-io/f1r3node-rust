@@ -1595,6 +1595,7 @@ fn stage_spine_state_divergence(
             sig: x_sig.clone(),
             duplicate: false,
             carrier: a.block_hash.clone(),
+            ..Default::default()
         }],
         StateParentOfMerge::MainParent => Vec::new(),
     };

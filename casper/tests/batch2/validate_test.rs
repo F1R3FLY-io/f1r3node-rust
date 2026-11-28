@@ -1951,6 +1951,7 @@ async fn repeat_deploy_rejects_premature_retry_of_a_live_rejection() {
                 sig: deploy_sig.clone(),
                 duplicate: false,
                 carrier: prost::bytes::Bytes::new(),
+                ..Default::default()
             },
         ];
         block_store
@@ -2142,6 +2143,7 @@ async fn repeat_deploy_keeps_the_gate_for_a_rejection_below_the_tip_window() {
             sig: deploy.deploy.sig.clone(),
             duplicate: false,
             carrier: Bytes::new(),
+            ..Default::default()
         }];
         block_store.put(record.block_hash.clone(), &record).unwrap();
         let candidate = candidate_on(&chain[5], &deploy);
@@ -4391,6 +4393,7 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
             sig: Bytes::from(vec![0xABu8; 64]),
             duplicate: false,
             carrier: Bytes::new(),
+            ..Default::default()
         });
 
         let mut snap_rej = mk_casper_snapshot(

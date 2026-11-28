@@ -1006,6 +1006,51 @@ impl BlockCommitment {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum RejectionReason {
+    Unspecified,
+    CollateralChainDrop,
+    MergeConflict,
+    DuplicateOccurrence,
+    SafetyInvariantViolation,
+}
+
+impl RejectionReason {
+    pub fn from_proto(value: i32) -> Self {
+        match value {
+            1 => RejectionReason::CollateralChainDrop,
+            2 => RejectionReason::MergeConflict,
+            3 => RejectionReason::DuplicateOccurrence,
+            4 => RejectionReason::SafetyInvariantViolation,
+            _ => RejectionReason::Unspecified,
+        }
+    }
+
+    pub fn to_proto(self) -> i32 {
+        match self {
+            RejectionReason::Unspecified => 0,
+            RejectionReason::CollateralChainDrop => 1,
+            RejectionReason::MergeConflict => 2,
+            RejectionReason::DuplicateOccurrence => 3,
+            RejectionReason::SafetyInvariantViolation => 4,
+        }
+    }
+
+    /// Retry eligibility: CollateralChainDrop and MergeConflict are
+    /// retryable; DuplicateOccurrence and SafetyInvariantViolation are not.
+    /// Unspecified is treated as retryable on pre-activation records so
+    /// legacy blocks continue to feed recovery, but every post-activation
+    /// record must carry a non-Unspecified reason or validation fails.
+    pub fn is_retryable(self) -> bool {
+        matches!(
+            self,
+            RejectionReason::Unspecified
+                | RejectionReason::CollateralChainDrop
+                | RejectionReason::MergeConflict
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RejectedDeploy {
     pub sig: ByteString,
@@ -1017,6 +1062,21 @@ pub struct RejectedDeploy {
     /// The block that held the copy this record adjudicated — the rejected
     /// chain's source block, recorded by the forming merge.
     pub carrier: ByteString,
+    /// Typed rejection reason. HARD FORK: carried on-wire in post-activation
+    /// blocks and recomputed by validators; mismatch → InvalidRejectedDeploy.
+    /// Pre-activation records decode to Unspecified for wire compatibility.
+    pub reason: RejectionReason,
+}
+
+impl Default for RejectedDeploy {
+    fn default() -> Self {
+        Self {
+            sig: ByteString::new(),
+            duplicate: false,
+            carrier: ByteString::new(),
+            reason: RejectionReason::Unspecified,
+        }
+    }
 }
 
 impl RejectedDeploy {
@@ -1025,6 +1085,7 @@ impl RejectedDeploy {
             sig: proto.sig,
             duplicate: proto.duplicate,
             carrier: proto.carrier,
+            reason: RejectionReason::from_proto(proto.reason),
         }
     }
 
@@ -1033,6 +1094,7 @@ impl RejectedDeploy {
             sig: self.sig,
             duplicate: self.duplicate,
             carrier: self.carrier,
+            reason: self.reason.to_proto(),
         }
     }
 }
@@ -2189,6 +2251,34 @@ mod tests {
         assert_eq!(record.sig, ByteString::from_static(b"sig"));
         assert!(!record.duplicate);
         assert!(record.carrier.is_empty());
+        assert_eq!(record.reason, RejectionReason::Unspecified);
+    }
+
+    #[test]
+    fn rejection_reason_retry_eligibility_matches_epic() {
+        assert!(RejectionReason::Unspecified.is_retryable());
+        assert!(RejectionReason::CollateralChainDrop.is_retryable());
+        assert!(RejectionReason::MergeConflict.is_retryable());
+        assert!(!RejectionReason::DuplicateOccurrence.is_retryable());
+        assert!(!RejectionReason::SafetyInvariantViolation.is_retryable());
+    }
+
+    #[test]
+    fn rejection_reason_proto_roundtrips() {
+        for reason in [
+            RejectionReason::Unspecified,
+            RejectionReason::CollateralChainDrop,
+            RejectionReason::MergeConflict,
+            RejectionReason::DuplicateOccurrence,
+            RejectionReason::SafetyInvariantViolation,
+        ] {
+            assert_eq!(RejectionReason::from_proto(reason.to_proto()), reason);
+        }
+        // Unknown i32 decodes to Unspecified, preserving forward compatibility.
+        assert_eq!(
+            RejectionReason::from_proto(255),
+            RejectionReason::Unspecified
+        );
     }
 
     #[test]

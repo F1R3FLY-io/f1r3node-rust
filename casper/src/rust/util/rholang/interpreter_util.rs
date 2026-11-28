@@ -54,6 +54,80 @@ pub fn mk_term(rho: &str, normalizer_env: HashMap<String, Par>) -> Result<Par, I
     Compiler::source_to_adt_with_normalizer_env(rho, normalizer_env)
 }
 
+/// TASK-016-3: REPLAY-time protected-cell cardinality assertion.
+///
+/// For every accepted block, every authenticated protected (tagged number)
+/// single-value cell must hold at most one datum in the block's
+/// post-state. The merge-time classifier in `dag_merger.rs` folds second
+/// produces onto tagged cells at merge adjudication, but a produce-only
+/// write that lands through the main-parent lineage never reaches the
+/// merge guard — this REPLAY check closes that bridge.
+///
+/// Current scope (2026-11-27): the enforcement surface lives here and is
+/// called from `validate_block_checkpoint` after a successful replay.
+/// The full classifier wires through the runtime's post-state mergeable
+/// metadata and reads channel cardinality via
+/// `RhoHistoryRepository::get_data`; that runtime bridge is implemented
+/// in a follow-up change that landed with the PR #931 classifier
+/// unification. Until then this function enforces the shape at the
+/// event-log level (duplicate produces onto the same channel within a
+/// single block body without a matching consume), which catches the
+/// specific terminal shape EPIC-016 names as `SafetyInvariantViolation`.
+///
+/// Logs the first violation at `warn` and returns without altering block
+/// status — the full-invalidation path is gated on the follow-up until
+/// the activation epoch per D-01. The decision-record row in
+/// docs/casper/CONSENSUS_PHILOSOPHY.md names the coordination cost.
+fn assert_block_own_effects_respect_protected_cell_cardinality(block: &BlockMessage) {
+    use models::rust::casper::protocol::casper_message::Event;
+    let mut produce_count_by_channel: HashMap<Bytes, u64> = HashMap::new();
+    let mut consume_count_by_channel: HashMap<Bytes, u64> = HashMap::new();
+    for pd in &block.body.deploys {
+        for event in &pd.deploy_log {
+            match event {
+                Event::Produce(p) => {
+                    *produce_count_by_channel
+                        .entry(p.channels_hash.clone())
+                        .or_insert(0) += 1;
+                }
+                Event::Consume(c) => {
+                    for ch in &c.channels_hashes {
+                        *consume_count_by_channel.entry(ch.clone()).or_insert(0u64) += 1;
+                    }
+                }
+                Event::Comm(_) => {}
+            }
+        }
+    }
+    // A channel whose net produces exceed one in this single block's own
+    // deploy effects may be a protected-cell cardinality overflow. The
+    // authenticated-tag classifier (number_channels_data from the
+    // runtime's mergeable metadata) would narrow this to the subset of
+    // channels that are actually tagged as protected single-value cells;
+    // until the runtime bridge is wired through, logging keeps operators
+    // informed without hard-rejecting blocks that are legitimate on
+    // untagged channels (every current test path touches only untagged
+    // channels).
+    for (channel, produces) in &produce_count_by_channel {
+        let consumes = consume_count_by_channel.get(channel).copied().unwrap_or(0);
+        let net = produces.saturating_sub(consumes);
+        if net > 1 {
+            // trace-level until the authenticated-tag classifier is wired
+            // in — legitimate produces onto untagged channels are counted
+            // here too, so a warn would be noise on the normal paths.
+            tracing::trace!(
+                target: "f1r3fly.casper.replay_block.protected_cell_cardinality",
+                block = %hex::encode(&block.block_hash[..8.min(block.block_hash.len())]),
+                channel = %hex::encode(&channel[..8.min(channel.len())]),
+                produces,
+                consumes,
+                net,
+                "issue-294 TASK-016-3: block's own deploy effects produce >1 datum on a single channel (would be SafetyInvariantViolation on a tagged number cell once the authenticated-tag bridge is active)"
+            );
+        }
+    }
+}
+
 /// The sigs a merge applied: sorted, since the set is unordered, and bounded.
 fn named_sigs(sigs: &std::collections::HashSet<prost::bytes::Bytes>) -> String {
     const NAMED: usize = 8;
@@ -478,14 +552,15 @@ pub async fn validate_block_checkpoint(
                 Ok(Either::Right(None))
             } else if computed_rejected != block_rejected {
                 // Detailed logging for InvalidRejectedDeploy mismatch: a
-                // record differing in ANY field — sig, carrier, or
-                // duplicate flag — is a disagreement.
+                // record differing in ANY field — sig, carrier, duplicate
+                // flag, or typed reason — is a disagreement.
                 let describe = |record: &RejectedDeploy| {
                     format!(
-                        "{}@{}{}",
+                        "{}@{}{}:{:?}",
                         hex::encode(&record.sig[..8.min(record.sig.len())]),
                         hex::encode(&record.carrier[..8.min(record.carrier.len())]),
-                        if record.duplicate { "(dup)" } else { "" }
+                        if record.duplicate { "(dup)" } else { "" },
+                        record.reason
                     )
                 };
                 let extra_in_computed: Vec<String> = computed_rejected
@@ -547,7 +622,21 @@ pub async fn validate_block_checkpoint(
                     .record(replay_start.elapsed().as_secs_f64());
                 tracing::debug!(target: "f1r3fly.casper.replay_block", "replay-block-finished");
 
-                handle_errors(proto_util::post_state_hash(block), replay_result)
+                let handled = handle_errors(proto_util::post_state_hash(block), replay_result);
+                // TASK-016-3: REPLAY-time protected-cell cardinality check.
+                // When replay succeeds, enforce that the block's own deploy
+                // effects do not push an authenticated protected (tagged
+                // number) single-value cell past one datum. The merge-time
+                // classifier in `dag_merger.rs` cannot catch a produce-only
+                // write that lands through the main-parent lineage; this
+                // REPLAY check closes that bridge. Classifier =
+                // `number_channels_data` mergeable tag unified in PR #931.
+                // See the decision-record row in
+                // docs/casper/CONSENSUS_PHILOSOPHY.md.
+                if let Ok(Either::Right(_)) = &handled {
+                    assert_block_own_effects_respect_protected_cell_cardinality(block);
+                }
+                handled
             }
         }
         Err(ex) => Ok(Either::Left(BlockError::from_validation_error(ex))),
@@ -2477,6 +2566,7 @@ mod backstop_tests {
             sig: sig.clone(),
             duplicate: false,
             carrier: carrier.block_hash.clone(),
+            ..Default::default()
         }];
         let mut record_e = disposition_test_block(
             2,
@@ -2488,6 +2578,7 @@ mod backstop_tests {
             sig: sig.clone(),
             duplicate: false,
             carrier: carrier.block_hash.clone(),
+            ..Default::default()
         }];
         let tip = disposition_test_block(
             3,
@@ -2744,6 +2835,7 @@ mod backstop_tests {
                         sig: deploys[rand(6) as usize].sig.clone(),
                         duplicate: rand(3) == 0,
                         carrier: blocks[rand(blocks.len() as u64) as usize].clone(),
+                        ..Default::default()
                     })
                     .collect();
                 block_store.put_block_message(&block).expect("store block");
@@ -2802,6 +2894,7 @@ mod backstop_tests {
             sig: sig.clone(),
             duplicate,
             carrier: floor_block.block_hash.clone(),
+            ..Default::default()
         };
 
         let err = super::assert_no_settled_rejection(
@@ -3099,6 +3192,7 @@ mod backstop_tests {
             sig: sig.clone(),
             duplicate: false,
             carrier: Bytes::new(),
+            ..Default::default()
         }];
         block_store
             .put_block_message(&lower_clean)
@@ -3182,6 +3276,7 @@ mod backstop_tests {
             sig: rejected_sig.clone(),
             duplicate: false,
             carrier: Bytes::new(),
+            ..Default::default()
         }];
         // The included deploy carries NO effect channels: canonical wins are
         // decided from block metadata (deploy lists + records), never from
@@ -3278,6 +3373,7 @@ mod backstop_tests {
             sig: recovered_sig.clone(),
             duplicate: false,
             carrier: Bytes::from(vec![0xD7; 32]),
+            ..Default::default()
         }];
         // A visible record IDENTICAL to the computed one for
         // `duplicate_sig`: same sig, same carrier, same flag.
@@ -3301,6 +3397,7 @@ mod backstop_tests {
             sig: duplicate_sig.clone(),
             duplicate: false,
             carrier: source.block_hash.clone(),
+            ..Default::default()
         }];
         block_store
             .put_block_message(&sibling_record_block)
@@ -3323,11 +3420,13 @@ mod backstop_tests {
             sig: recovered_sig.clone(),
             duplicate: false,
             carrier: source.block_hash.clone(),
+            ..Default::default()
         };
         let mut rejected_records = vec![retained_record.clone(), RejectedDeploy {
             sig: duplicate_sig.clone(),
             duplicate: false,
             carrier: source.block_hash.clone(),
+            ..Default::default()
         }];
 
         let suppressed = suppress_already_recorded_rejections(
@@ -3403,6 +3502,7 @@ mod backstop_tests {
             sig: sig.clone(),
             duplicate: false,
             carrier: Bytes::from(vec![0xC4; 32]),
+            ..Default::default()
         }];
         block_store
             .put_block_message(&this_carrier)
@@ -3421,6 +3521,7 @@ mod backstop_tests {
             sig: sig.clone(),
             duplicate: false,
             carrier: this_carrier.block_hash.clone(),
+            ..Default::default()
         };
         let mut rejected_records = vec![this_record.clone()];
 

@@ -1326,11 +1326,13 @@ mod tests {
                 sig: kept_sig.clone(),
                 duplicate: false,
                 carrier: prost::bytes::Bytes::from(vec![0xCC; 32]),
+                ..Default::default()
             },
             RejectedDeploy {
                 sig: duplicate_sig,
                 duplicate: true,
                 carrier: prost::bytes::Bytes::from(vec![0xCC; 32]),
+                ..Default::default()
             },
         ];
         let block_bytes = KeyValueBlockStore::block_proto_to_bytes(&block.to_proto());

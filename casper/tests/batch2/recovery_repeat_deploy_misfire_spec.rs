@@ -136,6 +136,7 @@ async fn repeat_deploy_gates_retry_on_a_live_parent_rejection_record() {
             sig: deploy_sig.clone(),
             duplicate: false,
             carrier: prost::bytes::Bytes::new(),
+            ..Default::default()
         }];
         block_store
             .put(block_n.block_hash.clone(), &block_n)
@@ -372,6 +373,7 @@ async fn repeat_deploy_verdict_is_identical_across_divergent_local_views() {
             sig: deploy_sig.clone(),
             duplicate: false,
             carrier: prost::bytes::Bytes::new(),
+            ..Default::default()
         }];
         block_store
             .put(block_m.block_hash.clone(), &block_m)

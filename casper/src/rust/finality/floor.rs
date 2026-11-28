@@ -1066,11 +1066,199 @@ async fn derive_floor_metered<W: WorkMeter>(
         meter.step(WorkKind::Traversal)?;
         ordered.push(candidate);
     }
+    // Issue #294: at equal block_number, prefer the candidate whose own
+    // deploys have accumulated more retryable prior rejections in its
+    // main-parent ancestry. Siblings share the ancestry — what
+    // discriminates them is which sigs they CARRY and how many times
+    // those sigs have already lost. A candidate carrying a sig that was
+    // rejected in prior merges deserves to anchor the merge base, because
+    // placing its chain in scope again would just repeat the loss
+    // (the C1 base-bias remedy).
+    //
+    // On-DAG data: the candidate's body and the ancestry's
+    // rejected_deploys are authenticated and every validator reads the
+    // same records for the same hashes, so the tiebreak stays deterministic
+    // across proposer and validator recompute. Fork-choice score is
+    // unchanged — only ties that hash would otherwise decide are
+    // reordered — so P4 (fork choice stays deploy-content-blind) holds.
+    // See the decision-record row in docs/casper/CONSENSUS_PHILOSOPHY.md.
+    const FLOOR_LOSS_TIEBREAK_WALK_DEPTH: usize = 64;
+    let mut candidate_loss_score: HashMap<BlockHash, u64> = HashMap::new();
+    for candidate in &candidates {
+        if candidate_loss_score.contains_key(&candidate.hash) {
+            continue;
+        }
+        meter.step(WorkKind::Traversal)?;
+        meter.allocate(4, 256)?;
+        let candidate_block = match block_store.get(&candidate.hash)? {
+            Some(b) => b,
+            None => {
+                candidate_loss_score.insert(candidate.hash.clone(), 0);
+                continue;
+            }
+        };
+        let sigs: HashSet<Bytes> = candidate_block
+            .body
+            .deploys
+            .iter()
+            .map(|pd| pd.deploy.sig.clone())
+            .collect();
+        let mut per_sig: HashMap<Bytes, u64> = HashMap::with_capacity(sigs.len());
+        for s in &sigs {
+            per_sig.insert(s.clone(), 0);
+        }
+        // Score the candidate's own body first — a deploy may have
+        // historical records on the candidate itself.
+        for r in &candidate_block.body.rejected_deploys {
+            if r.reason.is_retryable() && !r.duplicate {
+                if let Some(c) = per_sig.get_mut(&r.sig) {
+                    *c = c.saturating_add(1);
+                }
+            }
+        }
+        // Walk main-parent ancestry up to the bound, counting retryable
+        // rejections against the candidate's own sigs.
+        let mut cursor = candidate_block.header.parents_hash_list.first().cloned();
+        let mut walked = 0usize;
+        while let Some(hash) = cursor {
+            if walked >= FLOOR_LOSS_TIEBREAK_WALK_DEPTH {
+                break;
+            }
+            walked += 1;
+            meter.step(WorkKind::Traversal)?;
+            meter.allocate(4, 256)?;
+            let block = match block_store.get(&hash)? {
+                Some(b) => b,
+                None => break,
+            };
+            for r in &block.body.rejected_deploys {
+                if r.reason.is_retryable() && !r.duplicate {
+                    if let Some(c) = per_sig.get_mut(&r.sig) {
+                        *c = c.saturating_add(1);
+                    }
+                }
+            }
+            cursor = block.header.parents_hash_list.first().cloned();
+        }
+        let score = per_sig.values().copied().max().unwrap_or(0);
+        candidate_loss_score.insert(candidate.hash.clone(), score);
+    }
+    // Issue #294 (floor-side remedy): under unequal validator weights, a
+    // sibling of a parent can unilaterally meet the finality threshold and
+    // the sort-by-block_number-desc rule pins the floor to that sibling —
+    // which drags the merge base to the sibling's chain and the
+    // fairness-promoted main parent is immediately overridden. When at
+    // least one parent carries a deploy with a recorded retryable prior
+    // rejection, candidates that are DAG ancestors of EVERY parent sort
+    // ahead of sibling candidates. This restores the classical
+    // multi-parent-merge shape in exactly the key-contention scenario the
+    // sentinel reproduces: both siblings reach scope, and merge
+    // adjudication (including PR #299 loss priority) decides.
+    //
+    // The gate is load-bearing: when no parent carries a retryable prior
+    // rejection, there is no fairness signal to protect and the classical
+    // "highest finalized tip" sort is preserved — a sibling frontier can
+    // legitimately dominate (see `derive_floor_case_b_selects_dominating_finalized_tip`).
+    // P4 holds because the "ancestor-of-all" predicate is purely
+    // structural over authenticated DAG metadata; no deploy content is
+    // read beyond the authenticated rejection records that gate the rule.
+    //
+    // Determinism: `is_dag_ancestor` reads the DAG structure both proposer
+    // and validator share for the same (parents, justifications) snapshot.
+    let any_parent_carries_retryable_loss = {
+        let mut flagged = false;
+        'parents: for parent in parents {
+            meter.step(WorkKind::Traversal)?;
+            meter.allocate(4, 256)?;
+            let Some(parent_block) = block_store.get(parent)? else {
+                continue;
+            };
+            let sigs: HashSet<Bytes> = parent_block
+                .body
+                .deploys
+                .iter()
+                .map(|pd| pd.deploy.sig.clone())
+                .collect();
+            if sigs.is_empty() {
+                continue;
+            }
+            let mut cursor = parent_block.header.parents_hash_list.first().cloned();
+            let mut walked = 0usize;
+            while let Some(hash) = cursor {
+                if walked >= FLOOR_LOSS_TIEBREAK_WALK_DEPTH {
+                    break;
+                }
+                walked += 1;
+                meter.step(WorkKind::Traversal)?;
+                meter.allocate(4, 256)?;
+                let block = match block_store.get(&hash)? {
+                    Some(b) => b,
+                    None => break,
+                };
+                for r in &block.body.rejected_deploys {
+                    if r.reason.is_retryable() && !r.duplicate && sigs.contains(&r.sig) {
+                        flagged = true;
+                        break 'parents;
+                    }
+                }
+                cursor = block.header.parents_hash_list.first().cloned();
+            }
+        }
+        flagged
+    };
+    let is_ancestor_of_all_parents: HashMap<BlockHash, bool> = if any_parent_carries_retryable_loss
+    {
+        let mut map: HashMap<BlockHash, bool> = HashMap::new();
+        for candidate in &candidates {
+            if map.contains_key(&candidate.hash) {
+                continue;
+            }
+            let mut ancestor_of_all = true;
+            for parent in parents {
+                meter.step(WorkKind::Traversal)?;
+                meter.allocate(4, 256)?;
+                if candidate.hash == *parent {
+                    continue;
+                }
+                if !dag.is_dag_ancestor_metered(meter, &candidate.hash, parent)? {
+                    ancestor_of_all = false;
+                    break;
+                }
+            }
+            map.insert(candidate.hash.clone(), ancestor_of_all);
+        }
+        map
+    } else {
+        HashMap::new()
+    };
     sort_by_metered(meter, &mut ordered, |a, b| {
-        b.block_number
-            .cmp(&a.block_number)
+        let a_ancestor = is_ancestor_of_all_parents
+            .get(&a.hash)
+            .copied()
+            .unwrap_or(false);
+        let b_ancestor = is_ancestor_of_all_parents
+            .get(&b.hash)
+            .copied()
+            .unwrap_or(false);
+        // ancestor-of-all first (true > false → sort b first), but only
+        // when the gate above fired.
+        b_ancestor
+            .cmp(&a_ancestor)
+            .then_with(|| b.block_number.cmp(&a.block_number))
+            .then_with(|| {
+                let sa = candidate_loss_score.get(&a.hash).copied().unwrap_or(0);
+                let sb = candidate_loss_score.get(&b.hash).copied().unwrap_or(0);
+                sb.cmp(&sa)
+            })
             .then_with(|| b.hash.cmp(&a.hash))
     })?;
+    if any_parent_carries_retryable_loss {
+        tracing::debug!(
+            target: "f1r3fly.casper.floor.loss_tiebreak",
+            candidates = ?ordered.iter().map(|c| format!("{}#{}:ancestor={}:score={}", hex::encode(&c.hash[..8.min(c.hash.len())]), c.block_number, is_ancestor_of_all_parents.get(&c.hash).copied().unwrap_or(false), candidate_loss_score.get(&c.hash).copied().unwrap_or(0))).collect::<Vec<_>>(),
+            "issue-294 floor ordered candidates (ancestor-of-all first; gate fired)"
+        );
+    }
 
     let chosen = in_blocking(|| -> Result<Option<Floor>, CasperError> {
         let mut chosen: Option<Floor> = None;

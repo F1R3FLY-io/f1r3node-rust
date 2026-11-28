@@ -1545,6 +1545,7 @@ mod merkle_block_hash_tests {
             sig: Bytes::from(vec![0xF1; 64]),
             duplicate: false,
             carrier: Bytes::from(vec![0xF2; 32]),
+            ..Default::default()
         }];
         assert_ne!(hash_block(&b), h0, "rejected_deploys must affect hash");
 
@@ -1559,11 +1560,13 @@ mod merkle_block_hash_tests {
             sig: Bytes::from(vec![0x01; 64]),
             duplicate: false,
             carrier: Bytes::new(),
+            ..Default::default()
         };
         let r_b = RejectedDeploy {
             sig: Bytes::from(vec![0x02; 64]),
             duplicate: false,
             carrier: Bytes::new(),
+            ..Default::default()
         };
         let mut a = empty_block();
         a.body.rejected_deploys = vec![r_a.clone(), r_b.clone()];
@@ -1771,6 +1774,7 @@ mod merkle_block_hash_tests {
             sig: Bytes::from(vec![0x77; 64]),
             duplicate: false,
             carrier: Bytes::from(vec![0x88; 32]),
+            ..Default::default()
         }];
         unsigned.body.applied_from_scope = vec![Bytes::from(vec![0x99; 64])];
 
@@ -2191,6 +2195,7 @@ mod merkle_block_hash_tests {
             sig: Bytes::from(vec![8; 64]),
             duplicate: true,
             carrier: Bytes::from(vec![9; 32]),
+            ..Default::default()
         }];
         b.body.applied_from_scope = vec![Bytes::from(vec![10; 64])];
         b.body.merge_base = Bytes::from(vec![11; 32]);
