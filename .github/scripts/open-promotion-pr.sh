@@ -55,6 +55,40 @@ if [ -n "${PROMOTE_TRIGGERED_BY:-}" ]; then
 @$PROMOTE_TRIGGERED_BY started this promotion. A different member of @F1R3FLY-io/ci-maintainers approves it."
 fi
 
+visible_text() {
+	awk -v RS='\001' '{
+		n = split($0, line, "\n")
+		text = ""
+		fence = ""
+		for (i = 1; i <= n; i++) {
+			if (fence == "") {
+				if (match(line[i], /^(   |  | )?(```+|~~~+)/)) {
+					fence = substr(line[i], RSTART, RLENGTH)
+					sub(/^ +/, "", fence)
+					continue
+				}
+				text = text line[i] "\n"
+			} else if (match(line[i], /^(   |  | )?(```+|~~~+)[ \t]*$/)) {
+				closer = substr(line[i], RSTART, RLENGTH)
+				gsub(/[ \t]/, "", closer)
+				if (substr(closer, 1, 1) == substr(fence, 1, 1) && length(closer) >= length(fence)) fence = ""
+			}
+		}
+		while ((start = index(text, "<!--")) > 0) {
+			rest = substr(text, start + 4)
+			stop = index(rest, "-->")
+			if (stop == 0) {
+				text = substr(text, 1, start - 1)
+				break
+			}
+			text = substr(text, 1, start - 1) " " substr(rest, stop + 3)
+		}
+		gsub(/``[^`]*``/, " ", text)
+		gsub(/`[^`]*`/, " ", text)
+		printf "%s", text
+	}'
+}
+
 remote="${PROMOTE_REMOTE:-origin}"
 repo="${PROMOTE_REPOSITORY:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
 stamp="${PROMOTE_TIMESTAMP:-$(date -u +%Y%m%d-%H%M%S)}"
@@ -69,13 +103,47 @@ if git merge-base --is-ancestor "$sha" "$remote/$target_branch"; then
 fi
 
 count="$(git rev-list --count "$remote/$target_branch..$sha")"
+
+links=""
+if [ "$target_branch" = master ]; then
+	issue_url="https://github[.]com/$(printf '%s' "$repo" | sed 's/[.]/[.]/g')/issues/"
+	issues=""
+	unread=""
+	for pr in $(git log --merges --format=%s "$remote/$target_branch..$sha" |
+		sed -nE 's/^Merge pull request #([0-9]+) from .*/\1/p' | sort -un); do
+		if body="$(gh pr view "$pr" --repo "$repo" --json body --jq .body)"; then
+			found="$(printf '%s\n' "$body" | visible_text |
+				grep -oiE "(^|[^[:alnum:]_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]+(#|$issue_url)[0-9]+" |
+				grep -oE '[0-9]+$' || true)"
+			issues="$issues
+$found"
+		else
+			unread="$unread, PR #$pr"
+		fi
+	done
+	issues="$(printf '%s\n' "$issues" | grep -E '^[1-9][0-9]*$' | sort -un || true)"
+	if [ -n "$issues" ]; then
+		links="
+
+The descriptions of the promoted pull requests close these issues. GitHub closes them when this pull request merges into \`master\`. Remove a line before the merge if its issue must stay open:
+
+$(printf '%s\n' "$issues" | sed 's/^/Closes #/')"
+	fi
+	if [ -n "$unread" ]; then
+		echo "WARNING: the closing issues of${unread#,} could not be read. Close their issues by hand." >&2
+		links="$links
+
+The closing issues of these pull requests could not be read. Close their issues by hand after the merge:${unread#,}."
+	fi
+fi
+
 branch="$prefix$stamp"
 gh api "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$sha" >/dev/null
 echo "Created $branch at ${sha:0:9} ($remote/$source_branch, $count commits not on $target_branch)."
 
 if ! gh pr create --repo "$repo" --base "$target_branch" --head "$branch" \
 	--title "Promote $source_branch to $target_branch ($stamp)" \
-	--body "Promotes \`$source_branch\` at \`${sha:0:9}\` to \`$target_branch\` ($count commits).
+	--body "Promotes \`$source_branch\` at \`${sha:0:9}\` to \`$target_branch\` ($count commits).$links
 
 This pull request comes from the temporary branch \`$branch\`, $creator. GitHub deletes \`$branch\` after the merge. No open pull request targets it, so no pull request is retargeted.$review
 
