@@ -554,10 +554,23 @@ impl ColdGc for LmdbColdGc {
                 break;
             }
             report.scanned += page.rows.len();
-            let keys: Vec<Vec<u8>> = page.rows.iter().map(|(k, _)| k.clone()).collect();
+            // Cold-store keys were written via `bincode::serialize(&Blake2b256Hash)`
+            // in `history_repository_impl::do_checkpoint`, which prepends an 8-byte
+            // LE length to the 32 raw bytes. The refcount store, in contrast, keys
+            // on the raw `Blake2b256Hash::bytes()` form. Normalise each cold-store
+            // key to its raw form for the refcount lookup, but keep the original
+            // encoded key for the delete so we actually remove the row we scanned.
+            let original_keys: Vec<Vec<u8>> = page.rows.iter().map(|(k, _)| k.clone()).collect();
+            let lookup_keys: Vec<Vec<u8>> = original_keys
+                .iter()
+                .map(|k| cold_key_to_refcount_key(k))
+                .collect();
 
-            let refs = self.refcount_store.get(&keys).map_err(HistoryError::from)?;
-            let orphans: Vec<Vec<u8>> = keys
+            let refs = self
+                .refcount_store
+                .get(&lookup_keys)
+                .map_err(HistoryError::from)?;
+            let orphans: Vec<Vec<u8>> = original_keys
                 .into_iter()
                 .zip(refs.into_iter())
                 .filter_map(|(k, r)| r.is_none().then_some(k))
@@ -594,6 +607,27 @@ fn decode_count(bytes: &[u8]) -> u64 {
     let n = bytes.len().min(8);
     buf[..n].copy_from_slice(&bytes[..n]);
     u64::from_le_bytes(buf)
+}
+
+/// Normalise a cold-store key to the raw `Blake2b256Hash::bytes()` form used
+/// by the refcount store. `do_checkpoint` writes cold-store keys via
+/// `bincode::serialize(&Blake2b256Hash)`, which prepends an 8-byte LE length
+/// (= 32) to the 32 hash bytes, so the on-disk key is 40 bytes. The historic
+/// raw-bytes form (and all in-tree tests) uses the 32-byte hash directly; the
+/// reader fallback in `rspace_history_reader_impl` accepts both. Anything else
+/// is an unknown format — we return it as-is so sweep will not incorrectly
+/// match a refcount entry; the caller treats a miss as "orphan" and will
+/// delete it, which is the safer outcome for a corrupt/foreign key.
+fn cold_key_to_refcount_key(key: &[u8]) -> Vec<u8> {
+    const BINCODE_LEN_PREFIX: usize = 8;
+    const HASH_BYTES: usize = 32;
+    if key.len() == BINCODE_LEN_PREFIX + HASH_BYTES {
+        let len = u64::from_le_bytes(key[..BINCODE_LEN_PREFIX].try_into().unwrap()) as usize;
+        if len == HASH_BYTES {
+            return key[BINCODE_LEN_PREFIX..].to_vec();
+        }
+    }
+    key.to_vec()
 }
 
 #[cfg(test)]
@@ -1194,6 +1228,66 @@ mod tests {
         assert!(cold.get_one(&leaf_b.bytes()).unwrap().is_some());
         // Orphan deleted.
         assert!(cold.get_one(&orphan.bytes()).unwrap().is_none());
+    }
+
+    /// Production cold-store keys are `bincode::serialize(&Blake2b256Hash)`
+    /// (8-byte LE length prefix + 32 raw bytes = 40 bytes), while the
+    /// refcount store keys on the raw 32-byte form. Before the key-encoding
+    /// fix, sweep would pass the 40-byte cold-store key straight into
+    /// `refcount_store.get(...)`, every lookup would miss, and every
+    /// retained leaf would be classified as an orphan and deleted. This
+    /// test reproduces that scenario and asserts the referenced leaves
+    /// survive.
+    #[test]
+    fn sweep_handles_bincode_encoded_cold_store_keys() {
+        let (root, leaf_a, leaf_b, history) = seeded_root_two_leaves();
+        let cold: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+
+        // Match production: cold-store rows are keyed on bincode-serialized
+        // `Blake2b256Hash`, not raw bytes. Include an orphan in the same
+        // format to exercise the sweep's delete path.
+        let orphan = Blake2b256Hash::from_bytes(vec![0x44; 32]);
+        let encode = |h: &Blake2b256Hash| bincode::serialize(h).unwrap();
+        cold.put(vec![
+            (encode(&leaf_a), vec![0x01]),
+            (encode(&leaf_b), vec![0x02]),
+            (encode(&orphan), vec![0x99]),
+        ])
+        .unwrap();
+
+        let gc = LmdbColdGc::new(
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        );
+        let prev = Blake2b256Hash::from_bytes(vec![0; 32]);
+        gc.on_checkpoint(&root, &prev, history.as_ref()).unwrap();
+
+        let report = gc.sweep(cold.as_ref()).unwrap();
+        assert_eq!(report.scanned, 3);
+        assert_eq!(report.deleted, 1, "only the orphan must be swept");
+        assert!(
+            cold.get_one(&encode(&leaf_a)).unwrap().is_some(),
+            "retained leaf_a must survive sweep"
+        );
+        assert!(
+            cold.get_one(&encode(&leaf_b)).unwrap().is_some(),
+            "retained leaf_b must survive sweep"
+        );
+        assert!(cold.get_one(&encode(&orphan)).unwrap().is_none());
+    }
+
+    #[test]
+    fn cold_key_to_refcount_key_strips_bincode_prefix() {
+        let h = Blake2b256Hash::from_bytes(vec![0x7A; 32]);
+        let encoded = bincode::serialize(&h).unwrap();
+        assert_eq!(encoded.len(), 40);
+        assert_eq!(cold_key_to_refcount_key(&encoded), h.bytes());
+    }
+
+    #[test]
+    fn cold_key_to_refcount_key_passes_raw_32_bytes_through() {
+        let raw = vec![0x5C; 32];
+        assert_eq!(cold_key_to_refcount_key(&raw), raw);
     }
 
     /// After retiring a root, its leaves lose their refcount and

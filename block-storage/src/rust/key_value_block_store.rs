@@ -349,8 +349,7 @@ impl KeyValueBlockStore {
     pub fn discard_copy(&self, block: &BlockMessage) -> Result<bool, KvStoreError> {
         let key = block.block_hash.to_vec();
         let Some(bytes) = self.store.get_one(&key)? else {
-            return Ok(self.pending.get(&block.block_hash).as_ref() == Some(block)
-                && self.pending.remove(&block.block_hash));
+            return Ok(self.pending.remove_if(&block.block_hash, block));
         };
         let stored = BlockMessage::from_proto(Self::bytes_to_block_proto(&bytes)?).ok();
         if stored.as_ref() != Some(block) {

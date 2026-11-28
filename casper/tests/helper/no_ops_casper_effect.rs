@@ -37,6 +37,7 @@ pub struct NoOpsCasperEffect {
     self_created_should_fail: bool,
     pub shard_conf: CasperShardConf,
     pub genesis_hash: Option<BlockHash>,
+    pub last_finalized_block: Option<BlockMessage>,
     /// Shared handle used by the pruned/unavailable split in
     /// `BlockAPI::get_block` and `BlockAPI::get_blocks_by_heights`.
     /// Tests that exercise retention-horizon behaviour set this to
@@ -74,6 +75,7 @@ impl Clone for NoOpsCasperEffect {
             self_created_should_fail: self.self_created_should_fail,
             shard_conf: self.shard_conf.clone(),
             genesis_hash: self.genesis_hash.clone(),
+            last_finalized_block: self.last_finalized_block.clone(),
             anchor_handle: self.anchor_handle.clone(),
         }
     }
@@ -113,6 +115,7 @@ impl NoOpsCasperEffect {
             self_created_should_fail: false,
             shard_conf: CasperShardConf::new(),
             genesis_hash: None,
+            last_finalized_block: None,
             anchor_handle: Arc::new(AtomicI64::new(0)),
         }
     }
@@ -143,6 +146,7 @@ impl NoOpsCasperEffect {
             self_created_should_fail: false,
             shard_conf: CasperShardConf::new(),
             genesis_hash: None,
+            last_finalized_block: None,
             anchor_handle: Arc::new(AtomicI64::new(0)),
         }
     }
@@ -182,7 +186,10 @@ impl MultiParentCasper for NoOpsCasperEffect {
     }
 
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
-        Ok(get_random_block_default())
+        Ok(self
+            .last_finalized_block
+            .clone()
+            .unwrap_or_else(get_random_block_default))
     }
 
     async fn block_dag(&self) -> Result<KeyValueDagRepresentation, CasperError> {
