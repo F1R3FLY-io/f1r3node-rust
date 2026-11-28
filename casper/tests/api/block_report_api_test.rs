@@ -480,6 +480,107 @@ fn cached(store: &CompressedBlockEventInfoStore, blocks: &[BlockMessage]) -> Vec
 }
 
 #[tokio::test]
+async fn report_recovery_fills_missing_cache_entries_across_pages() {
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    let store = report_store();
+    let (api, chain, replays) = api_over_a_finalized_chain(34, 32, false, store.clone()).await;
+    let storage = BlockDagKeyValueStorage::new(&mut InMemoryStoreManager::new())
+        .await
+        .unwrap();
+    storage.insert(&chain[0], InsertMode::Approved).unwrap();
+    for block in &chain[1..] {
+        storage.insert(block, InsertMode::Normal).unwrap();
+    }
+    storage
+        .record_directly_finalized(chain[34].block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    let dag = storage
+        .get_representation_after_finalization()
+        .await
+        .unwrap();
+    cache(&store, &chain[2..3]);
+
+    let mut recovered = std::collections::HashMap::new();
+    api.recover_finalized_reports(
+        &dag,
+        |_| true,
+        |hash, height, _| {
+            assert_eq!(store.contains(vec![hash.to_vec()]).unwrap(), [true]);
+            assert_eq!(chain[height as usize].block_hash, hash);
+            assert!(recovered.insert(hash, height).is_none());
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(cached(&store, &chain[..2]), [false, false]);
+    assert!(cached(&store, &chain[2..]).into_iter().all(|found| found));
+    assert_eq!(replays.load(Ordering::SeqCst), 32);
+    assert_eq!(recovered.len(), 33);
+
+    api.recover_finalized_reports(
+        &dag,
+        |hash| !recovered.contains_key(hash),
+        |_, _, _| panic!("report was already recovered"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(replays.load(Ordering::SeqCst), 32);
+}
+
+#[tokio::test]
+async fn live_prewarm_can_complete_before_the_recovery_scan_finishes() {
+    use std::sync::atomic::AtomicBool;
+
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    let store = report_store();
+    let (api, chain, replays) = api_over_a_finalized_chain(34, 32, false, store.clone()).await;
+    let storage = BlockDagKeyValueStorage::new(&mut InMemoryStoreManager::new())
+        .await
+        .unwrap();
+    storage.insert(&chain[0], InsertMode::Approved).unwrap();
+    for block in &chain[1..] {
+        storage.insert(block, InsertMode::Normal).unwrap();
+    }
+    storage
+        .record_directly_finalized(chain[34].block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    let dag = storage
+        .get_representation_after_finalization()
+        .await
+        .unwrap();
+    cache(&store, &chain[2..34]);
+
+    let recovery_started = Notify::new();
+    let recovery_finished = AtomicBool::new(false);
+    let recovery = async {
+        api.recover_finalized_reports(&dag, |_| true, |_, _, _| recovery_started.notify_one())
+            .await
+            .unwrap();
+        recovery_finished.store(true, Ordering::SeqCst);
+    };
+    let live = async {
+        recovery_started.notified().await;
+        api.prewarm_block_report(chain[34].block_hash.clone())
+            .await
+            .unwrap();
+        assert!(!recovery_finished.load(Ordering::SeqCst));
+    };
+    tokio::join!(recovery, live);
+    assert_eq!(replays.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn a_prune_step_deletes_reports_below_the_window_and_keeps_those_inside_it() {
     let store = report_store();
     let (api, chain, _) = api_over_a_finalized_chain(200, 50, false, store.clone()).await;
