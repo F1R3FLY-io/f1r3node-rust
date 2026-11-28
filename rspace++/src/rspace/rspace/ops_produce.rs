@@ -19,6 +19,7 @@ use crate::rspace::metrics_constants::{
 use crate::rspace::rspace_interface::{
     MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult,
 };
+use crate::rspace::search_charge::{self, SearchWork};
 use crate::rspace::space_matcher::SpaceMatcher;
 use crate::rspace::trace::event::{COMM, Produce};
 
@@ -49,11 +50,12 @@ where
 
         let t1 = Instant::now();
         let datum = Arc::new(Datum {
+            size: self.matcher.data_size(&data),
             a: data,
             persist,
             source: produce_ref.clone(),
         });
-        let extracted = self.extract_produce_candidate(grouped_channels, &channel, &datum);
+        let extracted = self.extract_produce_candidate(grouped_channels, &channel, &datum)?;
         metrics::counter!("rspace.produce.extract_candidate_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t1.elapsed().as_nanos() as u64);
 
@@ -95,7 +97,7 @@ where
         grouped_channels: Vec<Vec<C>>,
         bat_channel: &C,
         data: &Arc<Datum<A>>,
-    ) -> MaybeProduceCandidate<C, P, A, K> {
+    ) -> Result<MaybeProduceCandidate<C, P, A, K>, RSpaceError> {
         let fetch_matching_continuations =
             |channels: Vec<C>| -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)> {
                 // Arc-shared fetch: probing continuations no longer deep-clones
@@ -126,9 +128,31 @@ where
 
         self.run_matcher_for_channels(
             grouped_channels,
+            bat_channel,
+            data,
             fetch_matching_continuations,
             fetch_matching_data,
         )
+    }
+
+    /// The work a send's search of one join group could do: each waiting
+    /// receive tried against the data on every channel of the group, whose
+    /// counts and summed sizes are `totals` in the group's order.
+    fn join_work<'k>(
+        receives: impl Iterator<Item = &'k WaitingContinuation<P, K>>,
+        totals: &[(usize, usize)],
+    ) -> SearchWork
+    where
+        P: 'k,
+        K: 'k,
+    {
+        let mut work = SearchWork::default();
+        for receive in receives {
+            for (pattern_size, (count, size)) in receive.pattern_sizes.iter().zip(totals) {
+                work += SearchWork::of(*count, *size, *pattern_size, receive.guard_size, 1);
+            }
+        }
+        work
     }
 
     fn process_match_found(
@@ -143,11 +167,10 @@ where
         } = pc;
 
         let WaitingContinuation {
-            patterns: _patterns,
-            continuation: _cont,
             persist,
             peeks,
             source: consume_ref,
+            ..
         } = &continuation;
 
         let produce_counters_closure = |produces: &[Produce]| self.produce_counters(produces);
@@ -198,16 +221,22 @@ where
         }
     }
 
+    /// Searches each join group on the sent datum's channel for a waiting
+    /// receive. Every distinct group is charged, those after a match included,
+    /// so what a send pays does not depend on which group it matched.
     fn run_matcher_for_channels(
         &self,
         grouped_channels: Vec<Vec<C>>,
+        bat_channel: &C,
+        sent: &Datum<A>,
         fetch_matching_continuations: impl Fn(
             Vec<C>,
         )
             -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
         fetch_matching_data: impl Fn(C) -> (C, IndexedData<A>),
-    ) -> MaybeProduceCandidate<C, P, A, K> {
-        for channels in &grouped_channels {
+    ) -> Result<MaybeProduceCandidate<C, P, A, K>, RSpaceError> {
+        let mut charged: Vec<&Vec<C>> = Vec::with_capacity(grouped_channels.len());
+        for (position, channels) in grouped_channels.iter().enumerate() {
             let t_cont = Instant::now();
             let match_candidates = fetch_matching_continuations(channels.to_vec());
             metrics::counter!("rspace.matcher.fetch_continuations_ns", "source" => RSPACE_METRICS_SOURCE)
@@ -223,6 +252,26 @@ where
             metrics::counter!("rspace.matcher.fetch_data_ns", "source" => RSPACE_METRICS_SOURCE)
                 .increment(t_data.elapsed().as_nanos() as u64);
 
+            if !charged.contains(&channels) {
+                charged.push(channels);
+                let totals: Vec<(usize, usize)> = channels
+                    .iter()
+                    .map(|channel| {
+                        let data = &channel_to_indexed_data[channel];
+                        (data.len(), data.iter().map(|(datum, _)| datum.size).sum())
+                    })
+                    .collect();
+                search_charge::charge(
+                    Self::join_work(
+                        match_candidates
+                            .iter()
+                            .map(|(continuation, _)| &**continuation),
+                        &totals,
+                    ),
+                    self.search_charging_required(),
+                )?;
+            }
+
             let t_match = Instant::now();
             let first_match = self.extract_first_match(
                 &self.matcher,
@@ -234,10 +283,37 @@ where
                 .increment(t_match.elapsed().as_nanos() as u64);
 
             if let Some(produce_candidate) = first_match {
-                return Some(produce_candidate);
+                let store = self.get_store();
+                for rest in &grouped_channels[position + 1..] {
+                    if charged.contains(&rest) {
+                        continue;
+                    }
+                    charged.push(rest);
+                    let totals: Vec<(usize, usize)> = rest
+                        .iter()
+                        .map(|channel| {
+                            let data = store.get_data_arc(channel);
+                            let size: usize = data.iter().map(|datum| datum.size).sum();
+                            if channel == bat_channel {
+                                (data.len() + 1, size + sent.size)
+                            } else {
+                                (data.len(), size)
+                            }
+                        })
+                        .collect();
+                    let waiting = store.get_continuations_arc(rest);
+                    search_charge::charge(
+                        Self::join_work(
+                            waiting.iter().map(|continuation| &**continuation),
+                            &totals,
+                        ),
+                        self.search_charging_required(),
+                    )?;
+                }
+                return Ok(Some(produce_candidate));
             }
         }
-        None
+        Ok(None)
     }
 
     pub(super) fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)> {
