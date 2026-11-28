@@ -514,16 +514,16 @@ pub(crate) async fn compute_snapshot(
                 )?;
 
                 for block_hash in traversal_result {
-                    let block_deploys = this
+                    let scope = this
                         .block_store
-                        .deploy_identities(&block_hash)?
+                        .deploys_for_scope(&block_hash)?
                         .ok_or_else(|| {
                             CasperError::RuntimeError(format!(
                                 "Missing block {} during deploys_in_scope traversal",
                                 PrettyPrinter::build_string_bytes(&block_hash)
                             ))
                         })?;
-                    for identity in block_deploys.iter() {
+                    for identity in scope.identities.iter() {
                         let deploy_sig: Bytes = identity.sig.clone().into();
                         let mut holders = all_seeds
                             .entry(identity.seed.clone())
@@ -539,11 +539,9 @@ pub(crate) async fn compute_snapshot(
                     // rejected_in_scope set. The block creator and validator
                     // intersect this with deploys_in_scope to decide
                     // re-inclusion eligibility for merge-rejected deploys.
-                    if let Some(rejected_sigs) =
-                        this.block_store.rejected_deploy_sigs(&block_hash)?
-                    {
-                        for sig in rejected_sigs {
-                            all_rejected.insert(sig.into());
+                    if let Some(rejected) = scope.rejected {
+                        for sig in rejected.iter() {
+                            all_rejected.insert(sig.clone().into());
                         }
                     }
                 }

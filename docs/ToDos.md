@@ -58,6 +58,7 @@ tasks:
       - "On 2026-11-27, the user requested removal of redundant hashing on improvement-proposal/storage-only-compression. Raw reads retain structural checks; typed checkpoint leaves reuse their generated hashes. Generic writes and compressed reads retain hash validation."
 ```
 
+- **Heartbeat H1 coordination (2026-10-19).** `pi-session-heartbeat-h1-cbc` owns H1 implementation and TASK-021-28 after the runtime handoff. `claude-session-f1r3node-rust-71` runs the outside-sandbox checks. F1/F2 are the baseline at `ed9b3c996`. The [design](designs/deploy-heartbeat-wake.md) records the H1 prototype. Local coordination uses `docs/handoffs/channel-deploy-heartbeat-wake-2026-10-18.md`, not a published reference.
 - **Maintainer identity ratification (2026-11-13).** Status: implemented locally on `ci/maintainer-identity-ratificatio`, claimed by Codex. The maintainer selected active `ci-maintainers` membership as an additional authority for commit authors. Focused policy, workflow, queue, and release checks passed. The registry proposal was removed. Review, commit, App configuration, and rollout through `master` and `ca-canary` remain pending.
 - **Consensus boundary track (2026-10-12).** EPIC-025 tracks the design PR #627 and the implementation by Nama21yo: issue #624 with PR #651, and issue #625. Decision D7 layers the PR #651 lifecycle runtime under the ReplicationMedium contract. Our role on PR #651 and issue #625 is reviewer feedback only.
 
@@ -855,6 +856,23 @@ tasks:
       - "A /harmonize run with the fixed tooling keeps the frontmatter, the local STE prose, and resolvable links, and adds no STE Check findings."
       - "CLAUDE.md and AGENTS.md link the epic, user story, and ToDos standards and state the repository tasking conventions. AGENTS.md also carries the sections that harmonize adds to CLAUDE.md."
       - "The guidance states where a value stream is recorded, after the maintainer chooses the user story, the epic, or both."
+  - id: TASK-023-16
+    title: "Finish the integration pin hotfix and preserve historical evidence"
+    status: in_progress
+    priority: p0
+    claimed_by: codex-session-pr1009-followup
+    claimed_at: 2026-11-13T01:21:41Z
+    branch: hotfix/system-integration-log-window-pin-cbda724b0b240dec701f82ecc5837de22c59a7c1
+    pr_base_branch: master
+    pull_request: 1009
+    decision: "The user approved the pin update, link-check fix, evidence refresh, and PR description update on this branch."
+    notes:
+      - "CI run 43350215944 exposed a pre-existing receipt-verifier cancellation test race. The test now waits for detached worker cleanup before asserting that no peer entries remain."
+    acceptance:
+      - "All three harness pins name system-integration 54f89b684fb64aa0357e23d266d734782f17cb62, which contains the PR #182 merge e155ed6d22466747a8fa73d3a2e8d0acf84e59bb."
+      - "The immutable prior ledger retains its bytes and is excluded from current-path link checks. Current evidence links remain checked."
+      - "Cleanup verification passes and renewed acceptance payloads are prepared without changing existing signatures."
+      - "The PR description covers the consensus fix, pin update, validation, and remaining maintainer review."
   - id: TASK-023-15
     title: "Require explicit merge requests and protect workflow revision selection"
     status: in_progress
@@ -1543,6 +1561,8 @@ tasks:
       - "Each fix behavior has a test that fails before its change and passes after it."
       - "Two consecutive integration preflights pass test_load with 0 unfinalized deploys in every phase."
       - "A 24-hour soak shows a test_load failure rate lower than soak 37640235959 on the same base."
+    notes:
+      - "2026-10-25: the empty-heartbeat candidate is PR #768 (F1, F2, and H1, TASK-021-28). H1 removed the failing high phases but failed its finalization p95 threshold (design section 5.2), so it needs a revision. Issue #24 measures this task's gate on dev first (issue #764)."
     candidate_fix_empty_heartbeat_blocks: "If the soak shows that the heartbeat lane builds many empty blocks in the failing phases, suppress empty heartbeat blocks while user deploys are pending or finality advances. This changes proposer behavior and the liveness mechanism that the discharged heartbeat proposal amplification bound claim covers, so it needs its own pending claim, a TDD plan, and evidence that finality still advances without deploys."
     candidate_fix_api_lfb: "If the measurement implicates the API path, bond_status and exploratory_deploy read the stored LFB (dag.last_finalized_block) instead of computing it. This changes cbc=mandatory casper code, so it needs a pending claim and a TDD cycle first, with a test that two overlapping LFB requests apply the finalization effect once for each block."
   - id: TASK-021-14
@@ -1720,6 +1740,35 @@ tasks:
       - "An evidence-copy test with a stale session directory that is still written copies only the files of the failed session."
       - "A maintainer accepts the review package for both CbC-mandatory files."
       - "A daily soak after the merge has .subprocess-data near 1 MB after each segment, and residual-writers.txt names why the owner match missed."
+  - id: TASK-021-28
+    title: "Revise and verify the H1 heartbeat amplification claim"
+    status: in_progress
+    claimed_by: pi-session-heartbeat-h1-cbc
+    claimed_at: 2026-10-18T21:32:01Z
+    branch: fix/issue-24-deploy-heartbeat-wake
+    pr_base_branch: dev
+    blocked_by: []
+    scope: "H1 implementation, claim revision, and source-bound verification. The runtime owner transferred H1 on 2026-10-18 after F1/F2 landed at ed9b3c996."
+    design: docs/designs/deploy-heartbeat-wake.md
+    stage: "H1 acceptance at 0a4acca7a is recorded from the maintainer handoff with its stated limits. Performance and separate display-projection acceptance remain open. External policy/read-back audit is requested."
+    notes:
+      - "H1 claim: 9a7294eafa86da423339f522ec6742c28b763bc3:docs/claims/heartbeat-proposal-amplification-bound.md. Verification record: 9a7294eafa86da423339f522ec6742c28b763bc3:docs/casper/validation/heartbeat-h1-verification-2026-10-19.md."
+      - "Renumbered from TASK-021-26 on 2026-10-25. The ID collided with the soak disk task that dev merged first. The claim spec and the validation records of 2026-10-19 keep TASK-021-26, because evidence ledgers pin them."
+      - "2026-10-21 comparison (issue #24 comment 6319658249, design section 5.2): H1 failed the finalization p95 threshold of design section 5.1. H1 had 26.8 s, and F1/F2 had 24.7 s. The slow share and the block rate passed."
+      - "2026-10-23 standup plan (issue #764, design section 7): H1 goes into dev and, through ca-sync, into the release train. It merges only after it meets all three thresholds. The revision continues on this branch, or on a new fix/ branch that is promoted to master for a weekend soak."
+      - "2026-11-26 plan (user): PR #768 stays in draft. F1 and F2 go forward separately on current dev. F1 wakes the heartbeat when a deploy arrives and autopropose is off. F2 rechecks at the end of the cooldown. Both keep the cooldown. H1 adds an exception to the cooldown and has not qualified yet."
+      - "2026-11-26 evidence state: no paired H1 result is newer than the 2026-10-21 comparison. The cost-accounting changes on ca-canary and ca-release removed the quadratic active-set work from the PoS epoch close and rewrote withdrawal scheduling. A-LIN stops the accounting protocol from adopting a finalized block that does not extend the main chain of the previous finalized block. None of these changes shows the H1 latency on dev or master, which use legacy PoS."
+      - "2026-11-26 CA port blocker: the accounting proposer can build a block that carries execution records and no new deploys. Block creation marks those records cited. The H1 rejection after the build can then discard the block, and later proposals skip the records. Keep H1 off on the accounting path until the deploy-only check runs before those updates. A test must show that the ordinary heartbeat still publishes record-only blocks."
+      - "2026-11-26 step 1 (dev): run new CI and a timing comparison for F1 and F2 on current dev. Compare a revised H1 with that F1 and F2 baseline over at least 20 matched high phases. H1 must meet all three recorded thresholds. Renew the correctness evidence for the updated code. The proposer.rs record is older than the dev merge ce70d8ee1."
+      - "2026-11-26 merge requirement: qualify the same F1/F2 change on dev and ca-canary before merging it into dev. Apply the same requirement to a future H1 candidate."
+      - "2026-11-26 step 2 (master and ca-canary): after the change merges to dev, run Promote and Back-merge from master with operation=promote, then with operation=ca-sync. The sync takes the current dev tip. Mergify merges the sync after its review and CI. The sync needs no soak before the merge."
+      - "2026-11-26 step 3 (ca-release): before a canary revision with H1 on is promoted, verify that order and execution both advance under load and that A-LIN records zero holds. The promoted ca-release commit needs its own successful 60-hour soak before the tag."
+    acceptance:
+      - "The revised claim is pending before H1 code begins, and the prior evidence remains unchanged in history."
+      - "The implementation satisfies the routine-block bound, the request-credit bound, and the nonempty exemption under the configured cooldown."
+      - "Tests cover mode expiry, re-entry, failed requests, actual block classification, and recovery timing after exempt blocks."
+      - "Source-bound evidence covers heartbeat_proposer.rs and the proposer.rs nonempty-request enforcement. No historical discharge is reused for H1."
+      - "Required verification and maintainer acceptance complete before this task is marked complete."
 ---
 ```
 

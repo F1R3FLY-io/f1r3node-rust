@@ -135,6 +135,24 @@ The `DA` count can be different from the line totals that `cargo llvm-cov report
 4. Check formatting
 5. Run clippy
 
+### Markdown Link Check
+
+The job checks local links and repository-hosting URLs. It excludes one immutable copy of the prior validation ledger: `docs/cbc-evidence/history/f373d6ce5659b6b342c6e7f3e5993b84d770e0e108c24f58a080ac5cfd745f58-casper-src-rust-validate-rs.md`.
+That copy retains links relative to the original ledger directory. Its bytes and content digest remain unchanged. Current ledgers and other history files still receive link checks.
+
+PR #1009 uses the integration harness pin of `master`, system-integration `54f89b684fb64aa0357e23d266d734782f17cb62`. It descends from merge `e155ed6d22466747a8fa73d3a2e8d0acf84e59bb`, which includes the standalone recreation fix from PR #182.
+The fix replaces stale Docker handles and preserves retired logs and their test ownership.
+
+```yaml cross-reference
+reference:
+  purpose: evidence
+  repository: https://github.com/F1R3FLY-io/system-integration
+  checkout: ../../system-integration
+  revision: 54f89b684fb64aa0357e23d266d734782f17cb62
+  path: integration-tests/test/infra/providers/docker.py
+  url: https://github.com/F1R3FLY-io/system-integration/blob/54f89b684fb64aa0357e23d266d734782f17cb62/integration-tests/test/infra/providers/docker.py
+```
+
 ### Commit Policy
 
 The job verifies commit identities in pull requests. It reads the pull request head SHA, so it has no cache step. A cache step in the same job matches the CodeQL rule `actions/cache-poisoning/poisonable-step`. The step fetches commit objects only.
@@ -354,6 +372,12 @@ When the push run reuses a merge group or pull request result, both Integration 
 ## Promotion from dev to master
 
 Run `just promote` to open the promotion pull request. The command runs `.github/scripts/open-promotion-pr.sh`. It creates a temporary `promote/<UTC timestamp>` branch at the `origin/dev` commit and opens the pull request to `master` with your `gh` login.
+
+GitHub applies closing keywords only to pull requests into `master`, so a `Closes #N` line in a pull request into `dev` does not close the issue. The promotion body therefore lists a `Closes #N` line for each issue that a promoted pull request closes in its current description. GitHub closes those issues when the promotion merges. The script ignores fenced code blocks, inline code, HTML comments, and issues in other repositories.
+
+The script recognizes `close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`, and `resolved`, with an optional colon. As on GitHub, each issue needs its own keyword: `Closes #10, closes #11` closes both issues, but `Closes #10, #11` closes only issue #10. The script finds the promoted pull requests from their `Merge pull request #N` merge commits, which the Mergify `merge` method creates.
+
+Before the merge, remove the line of an issue that must stay open, for example a tracking issue. If the script cannot read the closing issues of a promoted pull request, the body names that pull request. Close its issues by hand after the merge. A `ca-canary` to `ca-release` promotion lists no issues, because `ca-release` is not the default branch.
 
 You can also use the **Promote and Back-merge** workflow:
 
