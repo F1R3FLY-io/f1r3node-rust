@@ -1,31 +1,35 @@
 {
+  "schema": "cbc-run-report/v1",
+  "run_id": "observer-report-recovery-20261125-01",
+  "kind": "finalization-snapshot-regression",
   "artifact": {
     "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
-    "id": "block-storage-src-rust-dag-block-dag-key-value-storage-rs",
-    "commit": "3473c4af8e39b60a0c5d0a5772e325f9e5154648",
-    "commit_is_base": true,
-    "working_tree": false,
-    "sha256": "ded2bac64e8e6b32734e8a921249bee775275d44e2f675a79f3bbc363da99a8f"
+    "commit": "6e71b61712e95f9558dd9af0a30f32369bf4f8c0",
+    "sha256": "cd61784b203b00fd1cf902b2329ab02ac5dc46dfb4865914330aa64ebd31274c"
   },
-  "claim": "A recovery snapshot waits for an in-flight finalization to persist the finalized block.",
-  "status": "pending",
-  "scope": "observer-report-recovery-snapshot-ordering",
+  "claim_ids": [
+    "CLAIM-CASPER-NODE-OBSERVATION-002",
+    "CLAIM-CASPER-NODE-OBSERVATION-003",
+    "CLAIM-CASPER-NODE-OBSERVATION-005"
+  ],
+  "change": "A block report recovery scan reads a DAG snapshot that includes an in-flight finalization. get_representation_after_finalization takes the write side of finalization_snapshot_lock, and record_directly_finalized holds the read side until its effect returns. The same change adds last_finalized_height for the startup recovery window.",
   "evidence": {
     "kind": "bounded-regression-tests",
     "ref": "block-storage/tests/block_dag_storage_test.rs",
     "sha256": "f5dc87fe0ee71fd7c41544c058f104bbc868c576e899325e6ce2aa16da0580ef",
     "test": "recovery_snapshot_waits_for_in_flight_finalization",
-    "observation": "The test paused finalization inside its effect. The recovery snapshot remained pending until the effect resumed, then included the finalized hash.",
+    "observation": "The test paused finalization inside its effect, before finality is visible. The recovery snapshot stayed pending. After the effect resumed, the snapshot completed and contained the finalized hash.",
     "command": "bash scripts/ci/run-tests.sh cargo test --offline -p block-storage --test block_dag_storage_test recovery_snapshot_waits_for_in_flight_finalization -- --exact",
     "result": "1 passed, 0 failed",
-    "run_date": "2026-11-25"
+    "run_date": "2026-11-28"
   },
   "previous_record": {
     "path": "docs/cbc-evidence/block-storage-src-rust-dag-block-dag-key-value-storage-rs.md",
-    "commit": "3473c4af8e39b60a0c5d0a5772e325f9e5154648",
-    "sha256": "66249e5087ae81aa66fd33ddcd02701e301d536a2148199192da00b58c72128b",
-    "status": "discharged",
-    "source_sha256": "8d74386319993358bccd1a2674f970c0c49c2187614fd60f19733f1619638ab2"
+    "sha256": "f3dbc3db29cc98d2227f03857cbd8ccaafd59d987261fc73acade7371e728c33",
+    "source_sha256": "a247350dda3ee9a9e6e355cd3d7f709e9f13ce23dddace5f4bf80b47c8b23d6a",
+    "status": "pending"
   },
-  "waiver": null
+  "previous_run_report": "docs/cbc-evidence/runs/observer-report-recovery-20261125-01/history/0fb2c48523cd129feaea3283657963396a601afe306d11733ba976d3a17ed12f-report.json",
+  "reason_pending": "The maintainer acceptances for 002, 003, and 005 cover earlier revisions. The records bind the changed source digest, and the regression covers the new synchronization. A maintainer must accept the claims for the current bytes.",
+  "required_next": "A maintainer reviews this run and accepts 002, 003, and 005 for source cd61784b203b00fd1cf902b2329ab02ac5dc46dfb4865914330aa64ebd31274c, or records why a claim no longer applies."
 }
