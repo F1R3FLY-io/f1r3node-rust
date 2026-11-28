@@ -373,7 +373,7 @@ impl<T: HorizonRequesterOps> HorizonSync<T> {
         };
         if !expired.is_empty() {
             tracing::info!(
-                "LFS forward-horizon: resending {} chunk request(s) with no response within their timeout",
+                "No responses for {} LFS forward-horizon chunk request(s) within their timeout. Resending requests.",
                 expired.len()
             );
         }
@@ -555,4 +555,105 @@ pub async fn stream<T: HorizonRequesterOps>(
     };
 
     Ok((stream, last_error))
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::StreamExt;
+    use rspace_plus_plus::rspace::shared::trie_importer::TrieImporter;
+
+    use super::*;
+
+    struct MissingState;
+
+    impl TrieImporter for MissingState {
+        fn set_history_items(&self, _: StoreItems) { panic!("the peer sent no history") }
+        fn set_data_items(&self, _: StoreItems) { panic!("the peer sent no data") }
+        fn set_root(&self, _: &Blake2b256Hash) { panic!("recovery is not complete") }
+    }
+
+    impl RSpaceImporter for MissingState {
+        fn get_history_item(&self, _: Blake2b256Hash) -> Option<Vec<u8>> { None }
+        fn has_data_items(&self, hashes: &[Blake2b256Hash]) -> Vec<bool> {
+            vec![false; hashes.len()]
+        }
+    }
+
+    struct RecordingOps(Arc<Mutex<Vec<StatePartPath>>>);
+
+    #[async_trait]
+    impl HorizonRequesterOps for RecordingOps {
+        async fn request_for_horizon_chunk(
+            &self,
+            path: &StatePartPath,
+            _: i32,
+        ) -> Result<(), CasperError> {
+            self.0.lock().unwrap().push(path.clone());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn silent_peer_retry_is_observable_before_recovery_completes() {
+        #[derive(Clone)]
+        struct LogWriter(Arc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for LogWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let writer = LogWriter(logs.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let root = Blake2b256Hash::new(b"missing state");
+        let path: StatePartPath = vec![(root.clone(), None)];
+        let sends = Arc::new(Mutex::new(Vec::new()));
+        let (_tx, rx) = mpsc::channel(4);
+        let (stream, error) = stream(
+            vec![root],
+            Arc::new(|_| Ok(false)),
+            Arc::new(MissingState),
+            RecordingOps(sends.clone()),
+            rx,
+            crate::rust::engine::initializing::LFS_REQUEST_TIMEOUT,
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap();
+        let mut stream = Box::pin(stream);
+        assert!(!stream.next().await.unwrap().is_finished());
+        assert_eq!(*sends.lock().unwrap(), vec![path.clone()]);
+        assert!(!String::from_utf8_lossy(&logs.lock().unwrap()).contains("No responses for"));
+
+        tokio::time::timeout(Duration::from_secs(12), async {
+            tokio::select! {
+                state = stream.next() => panic!("a silent peer must not finish recovery: {state:?}"),
+                _ = async {
+                    while sends.lock().unwrap().len() < 2 {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                } => {}
+            }
+        })
+        .await
+        .expect("a silent peer must be retried within the restore progress budget");
+        assert_eq!(*sends.lock().unwrap(), vec![path.clone(), path]);
+        assert!(error.lock().unwrap().is_none());
+        let output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(
+            output.contains("No responses for"),
+            "retry evidence missing: {output}"
+        );
+        assert!(output.contains("LFS forward-horizon"));
+    }
 }

@@ -1,3 +1,5 @@
+#![cfg(feature = "cbc-casper")]
+
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,9 +13,9 @@ use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::peer_node::{NodeIdentifier, PeerNode};
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::{RPConf, RPConfCell};
-use node::rust::api::admin_web_api::AdminWebApiImpl;
-use node::rust::api::web_api::WebApiImpl;
-use node::rust::web::shared_handlers::AppState;
+use node::rust::consensus::casper::api::admin_web_api::AdminWebApiImpl;
+use node::rust::consensus::casper::api::web_api::WebApiImpl;
+use node::rust::consensus::casper::web::shared_handlers::AppState;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
@@ -112,7 +114,7 @@ mod http_deploy_validation {
     use crypto::rust::signatures::signed::Signed;
     use models::rust::casper::protocol::casper_message::{CasperMessage, DeployData};
     use models::rust::deploy_request::DeployRequest;
-    use node::rust::web::web_api_routes::WebApiRoutes;
+    use node::rust::consensus::casper::web::web_api_routes::WebApiRoutes;
     use serde_json::{json, Value};
     use shared::rust::token_amount::TokenAmount;
     use tower::ServiceExt;
@@ -328,7 +330,7 @@ mod http_deploy_validation {
 
     #[test]
     fn json_routes_document_extraction_errors_in_all_openapi_artifacts() {
-        use node::rust::web::web_api_docs::{AdminApi, PublicApi};
+        use node::rust::consensus::casper::web::web_api_docs::{AdminApi, PublicApi};
         use utoipa::OpenApi;
 
         let static_api: Value =

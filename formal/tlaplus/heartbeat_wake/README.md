@@ -40,9 +40,9 @@ rocq check -silent -Q theories HeartbeatWake HeartbeatWake.MainTheorem
 
 | Model input or result | Rust source and observable effect |
 | --- | --- |
-| `ApiProposes` | [Node setup](../../../node/src/rust/runtime/setup.rs) provides an API proposer when autopropose is enabled and the node has a proposal trigger. |
+| `ApiProposes` | [Casper assembly](../../../node/src/rust/consensus/casper/assembly.rs) provides an API proposer when autopropose is enabled and the node has a proposal trigger. |
 | `wake` | [Deploy admission](../../../casper/src/rust/engine/multi_parent_casper/block_admission.rs) signals the heartbeat after a new reservation, when the wake is enabled and a signal exists. |
-| `Cooling` | [Heartbeat check](../../../node/src/rust/instances/heartbeat_proposer.rs) compares the known age of the latest own block with the configured cooldown. |
+| `Cooling` | [Heartbeat check](../../../node/src/rust/consensus/casper/instances/heartbeat_proposer.rs) compares the known age of the latest own block with the configured cooldown. |
 | `Ready` and `otherLaneDue` | The heartbeat evaluates pending-deploy lag eligibility and the other lanes from the current snapshot before it returns a recheck. |
 | `sleep` | The heartbeat clamps the timer delay to the smaller of the check interval and the floored recheck delay. The next check evaluates the current snapshot. |
 

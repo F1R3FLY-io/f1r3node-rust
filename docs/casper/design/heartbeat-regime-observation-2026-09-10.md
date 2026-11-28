@@ -31,7 +31,7 @@ Any of these breaks the lock-step. Heights fall to one or two blocks, the ancest
 
 **Correction (2026-09-18).** The walk described above is `dev` before 2026-09-14. Commit `e32221581` bounds the walk and the scoring by the fork-choice floor when the fault-tolerance threshold is above zero. Commit `6e7e92eb3` keeps the approved block as the bound when the threshold is at or below zero. The observation has not been re-measured after the fix.
 
-Only the backpressure activation logs at info level, in `node/src/rust/instances/heartbeat_proposer.rs`. The lag-cap and cooldown throttles log their reason at debug level. A silent switch at info level points at those two throttles.
+Only the backpressure activation logs at info level, in `node/src/rust/consensus/casper/instances/heartbeat_proposer.rs`. The lag-cap and cooldown throttles log their reason at debug level. A silent switch at info level points at those two throttles.
 
 ## Implications
 

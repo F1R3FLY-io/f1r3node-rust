@@ -65,6 +65,7 @@ COMMON_ENV=(
   SKIP_CI_TESTS=1
   SKIP_TEST_LOCK=1
   TEST_CRATES=casper
+  TEST_RUNNER=nextest
   # Shadow any inherited SKIP_* / QUICK the caller set so this harness is
   # self-contained: when the parent push used e.g. SKIP_TESTS=1, the inner
   # hook would otherwise also skip tests and the "casper PASS" grep below

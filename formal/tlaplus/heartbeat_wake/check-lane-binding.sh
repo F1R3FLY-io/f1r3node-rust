@@ -2,14 +2,15 @@
 set -euo pipefail
 
 baseline=${1:?dev baseline commit is required}
-artifact=node/src/rust/instances/heartbeat_proposer.rs
+artifact=node/src/rust/consensus/casper/instances/heartbeat_proposer.rs
+baseline_artifact=node/src/rust/instances/heartbeat_proposer.rs
 cd "$(git rev-parse --show-toplevel)"
 model_config=formal/tlaplus/heartbeat_wake/HeartbeatWake.cfg
 times=$(sed -nE 's/^[[:space:]]*Times[[:space:]]*=[[:space:]]*\{([0-9, ]+)\}$/\1/p' "$model_config")
 minimum_recheck=$(sed -nE 's/^[[:space:]]*MinimumRecheck[[:space:]]*=[[:space:]]*([0-9]+)$/\1/p' "$model_config")
 scratch=$(mktemp -d)
 trap 'rm -r "$scratch"' EXIT
-git show "$baseline:$artifact" > "$scratch/baseline.rs"
+git show "$baseline:$baseline_artifact" > "$scratch/baseline.rs"
 
 emit_module() {
     local module=$1 source=$2 cooldown_flag=$3

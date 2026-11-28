@@ -47,7 +47,7 @@ Accept Git output only after a successful exit and valid UTF-8 decoding.
 Reject empty Git output and embedded control characters.
 
 The build script exports the selected value through `cargo:rustc-env=F1R3NODE_BUILD_ID`.
-The [version module](../../node/src/rust/web/version_info.rs) reads that value at compile time.
+The [version module](../../node/src/rust/api/version_info.rs) reads that value at compile time.
 HTTP status, `/version`, gRPC status, and the startup log retain their common version function.
 
 Cargo tracks the input environment variable and the actual Git metadata paths.
