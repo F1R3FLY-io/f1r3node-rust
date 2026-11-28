@@ -5,10 +5,12 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use shared::rust::ByteBuffer;
 use shared::rust::store::key_value_store::KeyValueStore;
 use tracing::{Level, debug};
 
 use super::cold_store::{ContinuationsLeaf, DataLeaf, JoinsLeaf};
+use super::cold_store_codec::ColdStoreCodec;
 use super::history_action::{DeleteAction, HistoryAction, InsertAction};
 use super::history_reader::HistoryReader;
 use super::history_repository::{HistoryPruneResult, PREFIX_DATUM, PREFIX_JOINS, PREFIX_KONT};
@@ -79,6 +81,15 @@ pub struct HistoryRepositoryImpl<C, P, A, K> {
 
 type ColdAction = (Blake2b256Hash, Option<PersistedData>);
 const CHECKPOINT_PARALLEL_ACTIONS_THRESHOLD: usize = 256;
+
+pub(super) struct CheckpointLeaf {
+    key: ByteBuffer,
+    value: ByteBuffer,
+}
+
+impl CheckpointLeaf {
+    pub(super) fn into_pair(self) -> (ByteBuffer, ByteBuffer) { (self.key, self.value) }
+}
 
 // Timed lock helpers (issue-146/147: measuring whether these blocking
 // `std::sync::Mutex`es serialize concurrent PRECHARGE/REFUND system-deploy
@@ -502,7 +513,7 @@ where
         // local Vec).
         let serialize_start = Instant::now();
         let mut serialized_bytes = 0u64;
-        let serialized_cold_actions: Vec<(Vec<u8>, Vec<u8>)> = cold_actions
+        let serialized_cold_actions = cold_actions
             .into_iter()
             .map(|(key, value)| {
                 let serialized_key = bincode::serialize(&key)
@@ -512,7 +523,10 @@ where
                 serialized_bytes = serialized_bytes
                     .saturating_add(serialized_key.len() as u64)
                     .saturating_add(serialized_value.len() as u64);
-                (serialized_key, serialized_value)
+                CheckpointLeaf {
+                    key: serialized_key,
+                    value: serialized_value,
+                }
             })
             .collect();
         metrics::histogram!(HISTORY_CHECKPOINT_SERIALIZE_TIME_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
@@ -545,9 +559,17 @@ where
 
         // store cold data under the shared prune guard.
         let leaf_write_start = Instant::now();
-        self.leaf_store
-            .put_if_absent(serialized_cold_actions)
-            .expect("History Repository Impl: Failed to put if absent");
+        let write = if let Some(codec) = self.leaf_store.as_any().downcast_ref::<ColdStoreCodec>() {
+            codec.put_checkpoint_if_absent(serialized_cold_actions)
+        } else {
+            self.leaf_store.put_if_absent(
+                serialized_cold_actions
+                    .into_iter()
+                    .map(CheckpointLeaf::into_pair)
+                    .collect(),
+            )
+        };
+        write.expect("History Repository Impl: Failed to put if absent");
         metrics::histogram!(HISTORY_CHECKPOINT_LEAF_WRITE_TIME_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
             .record(leaf_write_start.elapsed().as_secs_f64());
 

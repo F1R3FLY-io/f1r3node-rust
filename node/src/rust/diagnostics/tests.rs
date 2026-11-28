@@ -154,6 +154,7 @@ mod tests {
             },
             storage: Storage {
                 data_dir: PathBuf::from("/tmp/test"),
+                cold_store_compression: false,
                 file_io_provisioning: Default::default(),
                 cli_oracle_static_files: Vec::new(),
                 cli_oracle_static_dirs: Vec::new(),

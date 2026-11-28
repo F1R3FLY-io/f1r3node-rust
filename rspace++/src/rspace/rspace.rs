@@ -53,6 +53,15 @@ pub struct RSpaceStore {
     pub cold: Arc<dyn KeyValueStore>,
 }
 
+impl RSpaceStore {
+    pub fn with_cold_compression(mut self, enabled: bool) -> Self {
+        self.cold = Arc::new(crate::rspace::history::cold_store_codec::ColdStoreCodec::new(
+            self.cold, enabled,
+        ));
+        self
+    }
+}
+
 #[repr(C)]
 #[derive(Clone)]
 pub struct RSpace<C, P, A, K> {

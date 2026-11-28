@@ -9,6 +9,7 @@ use crate::rspace::errors::{HistoryError, HistoryRepositoryError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::checkpoint_writer::KvCheckpointWriter;
 use crate::rspace::history::cold_gc::{AuditReport, ColdGc, NoopColdGc, SweepReport};
+use crate::rspace::history::cold_store_codec::ColdStoreCodec;
 use crate::rspace::history::history::{History, HistoryInstances};
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::history_repository_impl::HistoryRepositoryImpl;
@@ -220,6 +221,8 @@ where
         Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>,
         HistoryRepositoryError,
     > {
+        let cold_key_value_store = ColdStoreCodec::ensure(cold_key_value_store);
+
         // Roots store
         let roots_repository = RootRepository {
             roots_store: Box::new(RootsStoreInstances::roots_store(roots_key_value_store.clone())),

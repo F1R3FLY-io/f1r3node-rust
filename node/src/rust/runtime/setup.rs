@@ -467,7 +467,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             .map_err(|e| CasperError::Other(format!("Failed to get eval stores: {}", e)))?;
 
         rho_runtime::create_runtime_from_kv_store(
-            eval_stores,
+            eval_stores.with_cold_compression(conf.storage.cold_store_compression),
             casper::rust::genesis::genesis::Genesis::default_mergeable_tags_arc(),
             false,
             &mut Vec::new(),
@@ -526,7 +526,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
         tracing::debug!("[Setup] Creating RuntimeManager with history...");
         let result = RuntimeManager::create_with_history_config_with_cold_gc(
-            rspace_stores,
+            rspace_stores.with_cold_compression(conf.storage.cold_store_compression),
             mergeable_store,
             Genesis::default_mergeable_tags_arc(),
             external_services.clone(),
@@ -574,7 +574,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             let rspace_stores = rnode_store_manager
                 .r_space_stores()
                 .await
-                .map_err(|e| CasperError::Other(format!("Failed to get rspace stores: {}", e)))?;
+                .map_err(|e| CasperError::Other(format!("Failed to get rspace stores: {}", e)))?
+                .with_cold_compression(conf.storage.cold_store_compression);
             reporting_casper::rho_reporter(
                 &rspace_stores,
                 runtime_manager.replay_lock(),

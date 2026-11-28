@@ -255,6 +255,17 @@ run_rocq_checks() {
     check_assumptions scope_trapped_gc ScopeTrappedGC 2 \
         rholang_scope_trapped_invariant \
         rholang_scope_trapped_sweep_safe
+
+    ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
+        "$REPO_ROOT/formal/rocq/cold_store_compression/theories/"
+    build_rocq_project cold_store_compression ColdStoreCompression
+    check_assumptions cold_store_compression ColdStoreCompression 16 \
+        canonical_roundtrip corrupt_frame_refused unknown_format_refused \
+        successful_compressed_read_verified physical_choice_preserves_state \
+        write_preserves_other_keys canonical_export_independent canonical_observer_independent \
+        changed_row_preserved different_value_preserved deletion_requires_matching_value \
+        stable_matching_row_deleted acquire_preserves_bounds release_preserves_bounds \
+        acquire_release_exact arbitrary_trace_preserves_bounds
 }
 
 if [[ "$run_tla" == true ]]; then

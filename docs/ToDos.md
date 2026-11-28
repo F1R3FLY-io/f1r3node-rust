@@ -26,6 +26,38 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 
 ## Active Coordination
 
+### EPIC-032: Storage-only cold-leaf compression
+
+```yaml
+epic_id: EPIC-032
+title: "Preserve canonical state while compressing physical cold leaves"
+status: in_progress
+priority: p2
+user_story: US-009
+tasks:
+  - id: TASK-032-1
+    title: "Implement the approved storage-only compression proposal"
+    status: in_progress
+    claimed_by: codex-session-cold-compression
+    claimed_at: 2026-11-26T08:28:38Z
+    branch: improvement-proposals/storage-only-compression
+    acceptance:
+      - "Codec and store-interface regression tests pass for raw and compressed records."
+      - "Checkpoint, replay, restart, and state-transfer tests preserve canonical values and roots."
+      - "An offline benchmark reports complete physical sizes and round-trip timing."
+      - "Compressed writes default to disabled, with rollback limits documented."
+    notes:
+      - "Implementation requested by the user on 2026-11-26."
+      - "The user requested formal evidence and disposable live-shard validation on 2026-11-26."
+      - "The existing running shard remains outside the validation scope."
+      - "Experimental codec, disabled-by-default node integration, regression tests, and offline benchmark are implemented."
+      - "A positive TLC model, five negative controls, 16 Coq theorems, and Rust model-comparison tests pass; formal acceptance remains pending."
+      - "Disposable live validation finalized 100 counter and 100 synthetic lock-record deploys, checked a late observer and write-disabled restart, and reached finalized height 79 without OOM or automatic restarts."
+      - "After a diagnostic-tool fix, a second fresh-genesis run passed the complete harness with exit zero, including final state verification at height 68 and stopped-store inspection. The earlier diagnostic failure remains recorded."
+      - "Evidence, proof gaps, and release gates are recorded in docs/cbc-evidence/cold-store-compression-2026-11-26.md."
+      - "On 2026-11-27, the user requested removal of redundant hashing on improvement-proposal/storage-only-compression. Raw reads retain structural checks; typed checkpoint leaves reuse their generated hashes. Generic writes and compressed reads retain hash validation."
+```
+
 - **Heartbeat H1 coordination (2026-10-19).** `pi-session-heartbeat-h1-cbc` owns H1 implementation and TASK-021-28 after the runtime handoff. `claude-session-f1r3node-rust-71` runs the outside-sandbox checks. F1/F2 are the baseline at `ed9b3c996`. The [design](designs/deploy-heartbeat-wake.md) records the H1 prototype. Local coordination uses `docs/handoffs/channel-deploy-heartbeat-wake-2026-10-18.md`, not a published reference.
 - **Maintainer identity ratification (2026-11-13).** Status: implemented locally on `ci/maintainer-identity-ratificatio`, claimed by Codex. The maintainer selected active `ci-maintainers` membership as an additional authority for commit authors. Focused policy, workflow, queue, and release checks passed. The registry proposal was removed. Review, commit, App configuration, and rollout through `master` and `ca-canary` remain pending.
 - **Consensus boundary track (2026-10-12).** EPIC-025 tracks the design PR #627 and the implementation by Nama21yo: issue #624 with PR #651, and issue #625. Decision D7 layers the PR #651 lifecycle runtime under the ReplicationMedium contract. Our role on PR #651 and issue #625 is reviewer feedback only.

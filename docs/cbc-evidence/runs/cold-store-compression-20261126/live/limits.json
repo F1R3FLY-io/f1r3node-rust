@@ -1,0 +1,32 @@
+{
+  "boot": {
+    "restart": "no",
+    "cpus": 1,
+    "mem_limit": "4g",
+    "memswap_limit": "4g"
+  },
+  "validator1": {
+    "restart": "no",
+    "cpus": 1,
+    "mem_limit": "4g",
+    "memswap_limit": "4g"
+  },
+  "validator2": {
+    "restart": "no",
+    "cpus": 1,
+    "mem_limit": "4g",
+    "memswap_limit": "4g"
+  },
+  "validator3": {
+    "restart": "no",
+    "cpus": 1,
+    "mem_limit": "4g",
+    "memswap_limit": "4g"
+  },
+  "observer": {
+    "restart": "no",
+    "cpus": 1,
+    "mem_limit": "4g",
+    "memswap_limit": "4g"
+  }
+}

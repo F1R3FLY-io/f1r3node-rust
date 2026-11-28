@@ -10,6 +10,7 @@ pub mod root_repository;
 pub mod cold_gc;
 pub mod cold_gc_lmdb;
 pub mod cold_store;
+pub mod cold_store_codec;
 pub mod history_repository_impl;
 pub mod prune_guard;
 
